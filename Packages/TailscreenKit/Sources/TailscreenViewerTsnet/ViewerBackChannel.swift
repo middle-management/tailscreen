@@ -1,6 +1,7 @@
 import Foundation
 import TailscaleKit
 import TailscreenProtocol
+import TailscreenTransport
 
 /// Viewer-side outbound TCP back-channel to the sharer — the portable
 /// counterpart of the macOS client's annotation/control channel
@@ -45,12 +46,24 @@ public actor ViewerBackChannel {
         }
     }
 
-    private let tailscale: TailscaleHandle
+    /// Which tunnel the channel dials through. An enum rather than an
+    /// injected dial closure so nothing non-Sendable crosses the actor
+    /// boundary — both payloads already do (the handle crossed the old
+    /// init; `GuestClientNode` is an actor).
+    private enum Wire {
+        /// The tailnet: dial `target` ("host:port") over the tsnet node.
+        case tailnet(TailscaleHandle, target: String)
+        /// A share-by-token tunnel: dial `port` on the sharer's guest node.
+        case guest(GuestClientNode, port: UInt16)
+    }
+
+    private let wire: Wire
+    /// Human-readable name of the dial target, for the log lines.
     private let target: String
     private let logger: LogSink
     private let handlers: Handlers
 
-    private var connection: OutgoingConnection?
+    private var connection: (any FramedControlChannel)?
     private var runLoop: Task<Void, Never>?
     private var stopped = false
 
@@ -67,8 +80,23 @@ public actor ViewerBackChannel {
         handlers: Handlers = Handlers(),
         logger: LogSink
     ) {
-        self.tailscale = tailscale
-        self.target = TsnetTransport.formatAddr(host: host, port: port)
+        let target = TsnetTransport.formatAddr(host: host, port: port)
+        self.wire = .tailnet(tailscale, target: target)
+        self.target = target
+        self.handlers = handlers
+        self.logger = logger
+    }
+
+    /// The guest twin: same channel, dialed through the share-by-token
+    /// tunnel (`GuestClientNode.dial`) instead of the tailnet.
+    public init(
+        guest: GuestClientNode,
+        port: UInt16 = NetworkConfig.tailscreenPort,
+        handlers: Handlers = Handlers(),
+        logger: LogSink
+    ) {
+        self.wire = .guest(guest, port: port)
+        self.target = "guest tunnel :\(port)"
         self.handlers = handlers
         self.logger = logger
     }
@@ -187,14 +215,22 @@ public actor ViewerBackChannel {
         }
     }
 
-    /// Dial the sharer once. Returns nil (logged) on failure.
-    private func dial() async -> OutgoingConnection? {
+    /// Dial the sharer once, over whichever tunnel this channel rides.
+    /// Returns nil (logged) on failure.
+    private func dial() async -> (any FramedControlChannel)? {
         do {
-            let conn = try await OutgoingConnection(
-                tailscale: tailscale, to: target, proto: .tcp, logger: logger)
-            try await conn.connect()
-            logger.log("[backchannel] connected to \(target)")
-            return conn
+            switch wire {
+            case .tailnet(let tailscale, let dialTarget):
+                let conn = try await OutgoingConnection(
+                    tailscale: tailscale, to: dialTarget, proto: .tcp, logger: logger)
+                try await conn.connect()
+                logger.log("[backchannel] connected to \(target)")
+                return conn
+            case .guest(let guest, let port):
+                let conn = try await guest.dial(port: port)
+                logger.log("[backchannel] connected to \(target)")
+                return conn
+            }
         } catch {
             logger.log("[backchannel] dial \(target) failed: \(error)")
             return nil
@@ -205,7 +241,7 @@ public actor ViewerBackChannel {
     /// cancelled. Only annotation + control-grant/revoke are meaningful to a
     /// viewer; everything else (sharer→sharer or viewer→sharer types the
     /// sharer would never send us) is dropped.
-    private func receiveLoop(over connection: OutgoingConnection) async {
+    private func receiveLoop(over connection: any FramedControlChannel) async {
         var parser = ScreenShareMessageParser()
         while !Task.isCancelled && !stopped {
             let startNs = DispatchTime.now().uptimeNanoseconds

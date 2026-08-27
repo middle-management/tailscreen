@@ -157,6 +157,19 @@ capability to knock, never capability to watch.**
   meeting link: anyone holding it can put a knock on your screen (though
   nothing more). The worst a leaked token enables is approval-prompt
   noise until you press New Link or stop sharing.
+- **Guests can draw and ask to drive — behind the same gates as anyone
+  else.** The framed control channel (annotations, remote control) rides
+  the guest tunnel, and every protection on it is identity-anchored, not
+  tailnet-anchored: inbound ops are honoured only from *admitted* viewers
+  (a knocker who was never approved can dial the port and still reaches
+  nothing), remote control requires your explicit per-request grant to
+  exactly one connection at a time, the grant dies with the guest's
+  disconnect or your revoke (panic hotkey included), and denying a guest
+  severs their control channel along with their tunnel. What admission
+  means is the one thing that changed — for a guest it is your explicit
+  approval, every time — so the answer to "who can send input to my
+  machine?" stays: only the one viewer you granted, for as long as you
+  let them.
 - **A share can be link-only.** Started signed out (macOS), a share runs
   with the guest tunnel as its *only* transport — no Tailscale account,
   no control plane, no tailnet listener bound at all. Everything above

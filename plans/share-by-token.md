@@ -437,6 +437,38 @@ Windows zip build registers nothing (both noted in the matrix); a running
 instance is not reused — single-instance redirection is future work, and
 `ProtocolActivation.observe` is already the wire it would use.)*
 
+**Phase 9 — Guest TCP control channel.** The follow-up phases 3–5 deferred:
+annotations and remote control for guests, on both sides of the wire.
+*(status: landed. No fork changes and no new wire bytes — the guest C
+surface always had TCP (`GuestServerNode.listen` / `GuestClientNode.dial`,
+fds bit-compatible with tsnet's), so the whole phase is adoption. One new
+seam each side: `TailscreenControlListener.start(adopting:)` reuses the
+entire accept/framed-dispatch machinery over a guest-bound `Listener`, and
+`FramedControlChannel` (TailscreenTransport) names the three-call overlap
+between `OutgoingConnection` and `IncomingConnection` so the viewers' one
+channel implementation dials either tunnel. Server: a second
+`guestControlListener` lifecycle slot (attach via
+`attachGuestControlListener` mid-share or `startGuestOnly`'s new param;
+detach and share-stop close it), with the SAME handler closures installed
+on both listeners — guests pass the same admitted-viewer gate (their addrs
+are in the fan-out set), the same single-grantee control gate, the same
+per-connection annotation bookkeeping; outbound send/broadcast/expel-close
+loop over both channels (connection UUIDs are process-unique, so by-ID
+sends route by no-op). `SharerLinkSession.enable` and both macOS link
+paths bind the TCP side fail-soft (a link whose bind failed still carries
+video/voice). Viewers: `ViewerBackChannel` grew a guest init (a `Wire`
+enum, not an injected closure — nothing non-Sendable crosses the actor),
+`TsnetTransport`'s guest path now fires `onBackChannelReady`, the mac
+client's channel loop took a redial closure, and all three hosts dropped
+their guest caps-masking — the sharer's advertised caps decide, guest or
+not (a sharer that predates the channel doesn't advertise over a link).
+Docs: usage, the matrix row, and a security.md bullet — every control-
+channel protection was already identity-anchored (admitted-viewer gate,
+one grantee by connection ID, revoke-on-disconnect), so what changed is
+only what admission means for a guest: explicit approval, every time.
+No new catalog keys. Validation is the hand-run: guest draws on a mac
+sharer's overlay, requests control, drives, sharer revokes.)*
+
 Each phase is a separate PR; 0 and 1 can proceed in parallel (1 targets the
 fork directly). Docs ship with their phases per the repo rule, safe under the
 /next preview channel.

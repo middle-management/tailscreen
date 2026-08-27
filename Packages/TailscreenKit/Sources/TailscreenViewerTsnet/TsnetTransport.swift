@@ -53,8 +53,9 @@ public struct ViewerConfig: Sendable {
     /// `statePath` and `nodeRole` are all ignored, and the sharer must
     /// approve this viewer before any video flows (guest approval is
     /// mandatory on the sharer side). The TCP back-channel (annotations /
-    /// remote control) is not yet wired for guests: `onBackChannelReady`
-    /// never fires, and hosts should gate that chrome accordingly.
+    /// remote control) rides the same tunnel: `onBackChannelReady` fires
+    /// exactly as on the tailnet path, and the sharer's advertised caps
+    /// gate the chrome, guest or not.
     public var guestToken: String?
 
     public init(
@@ -582,18 +583,26 @@ public final class TsnetTransport {
             // sharer, so there is no tsnet node, no sign-in, and no peer
             // discovery. `preparedNode` (a tailnet node a picker host may
             // hold) is deliberately untouched. The dial blocks for the
-            // tunnel bring-up: DERP connect, handshake, NAT traversal. No
-            // back-channel yet — guest TCP follows with the sharer's guest
-            // control listener.
+            // tunnel bring-up: DERP connect, handshake, NAT traversal.
             logger.log("▶ Build \(buildIdentity ?? "unknown") — guest viewer session starting")
             let client = GuestClientNode(token: token, logger: logger)
             let listener = try await client.dialUDP(port: config.port)
             let dest = Self.formatAddr(host: try await client.serverAddr(), port: config.port)
             logger.log("Guest tunnel up; dialing \(dest) (share-by-token)")
+            // The framed TCP back-channel, through the guest tunnel — same
+            // channel as the tailnet path, different dial. Best-effort with
+            // its own reconnect loop: a sharer that predates the guest TCP
+            // channel never accepts, the redial keeps retrying quietly, and
+            // its advertised caps still gate the host's affordances.
+            let backChannel = ViewerBackChannel(
+                guest: client, port: config.port,
+                handlers: backChannelHandlers, logger: logger)
+            await backChannel.start()
+            onBackChannelReady?(backChannel)
             return try await runSession(
                 config: config,
                 wiring: SessionWiring(
-                    listener: listener, dest: dest, backChannel: nil,
+                    listener: listener, dest: dest, backChannel: backChannel,
                     tailnetNode: nil, guestClient: client),
                 endpoints: SessionAV(
                     decoder: decoder, videoSink: videoSink, audioSink: audioSink,

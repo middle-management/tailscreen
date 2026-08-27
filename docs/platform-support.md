@@ -51,6 +51,7 @@ what the partial case *is*, because that is the part a reader can act on.
 | Copy Link / Copy Token buttons | ✅ | ⚠️ select the link text | ⚠️ select the link text |
 | Start a share without signing in (link-only) | ✅ | ❌ | ❌ |
 | Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ |
+| Guests draw + request control (same capability gates as tailnet viewers) | ✅ | ✅ | ✅ |
 | `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² |
 
 ¹ Link clicks reach the Linux app once a `.desktop` entry registering the

@@ -174,6 +174,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// also reachable by token. Same detach-then-close discipline as
         /// `packetListener`; nil for tailnet-only shares.
         var guestPacketListener: PacketListener?
+        /// The guest tunnel's framed TCP control channel (annotations,
+        /// remote control), when the host wired one. A SECOND
+        /// `TailscreenControlListener`, not a mode of the tailnet one:
+        /// they accept from different tunnels, and connection UUIDs are
+        /// process-unique, so send-by-ID to both is a routed send (the
+        /// non-owner no-ops). Detached and stopped with the guest packet
+        /// listener — a link that dies takes its control channel with it.
+        var guestControlListener: TailscreenControlListener?
         /// The share's master latch: set true at the end of `start()`'s
         /// bring-up, false first thing in `stop()` (and in deinit). Every
         /// loop, guard, and (re)spawn path gates on a locked read, so a
@@ -223,6 +231,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     private var isRunning: Bool { lifecycle.withLock { $0.isRunning } }
     private var controlListener: TailscreenControlListener? {
         lifecycle.withLock { $0.controlListener }
+    }
+    /// Every live framed-TCP channel — the tailnet listener, the guest one,
+    /// or both. Outbound control traffic (grant/revoke by connection ID,
+    /// annotation broadcast, expel-close) loops over this so a message
+    /// reaches its connection whichever tunnel carried it; a by-ID send on
+    /// the listener that doesn't own the ID is a no-op.
+    private var controlChannels: [TailscreenControlListener] {
+        lifecycle.withLock { [$0.controlListener, $0.guestControlListener].compactMap { $0 } }
     }
     /// Routed send facade over the tailnet + guest listeners (nil when
     /// stopped). Send sites treat it exactly like the single listener they
@@ -1101,7 +1117,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public func startGuestOnly(
         filterData: Data?,
         quality: QualitySettings = .default,
-        guestPacketListener: PacketListener
+        guestPacketListener: PacketListener,
+        guestControlListener: TailscreenControlListener? = nil
     ) async throws {
         guard !isRunning else { return }
 
@@ -1111,7 +1128,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
         lifecycle.withLock { lc in
             lc.guestPacketListener = guestPacketListener
+            lc.guestControlListener = guestControlListener
             lc.isRunning = true
+        }
+        if let guestControlListener {
+            installControlHandlers(on: guestControlListener)
+            logger.log("Guest-only share: guest TCP control channel installed")
         }
         logger.log("Guest-only share: guest UDP stream is the only socket (no tsnet node)")
 
@@ -1614,7 +1636,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         inputRateLimiter.withLock { $0 = EventRateLimiter() }
         remoteControlInjector?.activate(selection: decodedSelection())
         Task { [weak self] in
-            await self?.controlListener?.send(.controlGranted, to: connectionID)
+            guard let self else { return }
+            for channel in self.controlChannels {
+                await channel.send(.controlGranted, to: connectionID)
+            }
         }
         logger.log("Granted remote control to \(request.viewerIP)")
         notifyControlGrantChanged()
@@ -1657,7 +1682,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func sendControlRevoked(to connectionID: UUID, reason: String) {
         Task { [weak self] in
-            await self?.controlListener?.send(.controlRevoked(reason: reason), to: connectionID)
+            guard let self else { return }
+            for channel in self.controlChannels {
+                await channel.send(.controlRevoked(reason: reason), to: connectionID)
+            }
         }
     }
 
@@ -1689,7 +1717,17 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `ScreenShareMessage.annotation` ops and per-connection close
     /// notifications here.
     private func installControlHandlers() {
-        guard let listener = controlListener else { return }
+        for channel in controlChannels { installControlHandlers(on: channel) }
+    }
+
+    /// One listener's worth of the wiring above. Called for the tailnet
+    /// listener and (when a link is live) the guest one — the closures are
+    /// identical on purpose: a guest connection passes the same
+    /// admitted-viewer gate (guest addrs are in the fan-out set), the same
+    /// single-grantee control gate, and the same per-connection annotation
+    /// bookkeeping. What differs between the tunnels is who can DIAL them,
+    /// and that was decided at admission.
+    private func installControlHandlers(on listener: TailscreenControlListener) {
         listener.onAnnotation = { [weak self] op, connectionID, peerAddress in
             guard let self else { return }
             // Gate: the TCP back-channel accepts a connection from any peer
@@ -1797,11 +1835,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// can attach its own without observing this share's stale closures.
     /// `onRequestToShare` is owned by AppState and intentionally untouched.
     private func uninstallControlHandlers() {
-        controlListener?.onAnnotation = nil
-        controlListener?.onConnectionClosed = nil
-        controlListener?.onControlRequest = nil
-        controlListener?.onInputEvent = nil
-        controlListener?.onControlReleased = nil
+        for channel in controlChannels {
+            channel.onAnnotation = nil
+            channel.onConnectionClosed = nil
+            channel.onControlRequest = nil
+            channel.onInputEvent = nil
+            channel.onControlReleased = nil
+        }
     }
 
     /// Broadcast a framed `AnnotationOp` to every connection on the shared
@@ -1825,7 +1865,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 state = state.mapValues { _ in [] }
             }
         }
-        await controlListener?.broadcast(.annotation(op), excluding: excludingConnection)
+        // Both tunnels: a tailnet viewer's stroke must reach guest viewers
+        // and vice versa. `excluding` only matches on the origin's own
+        // listener; on the other one it excludes nothing, which is right.
+        for channel in controlChannels {
+            await channel.broadcast(.annotation(op), excluding: excludingConnection)
+        }
     }
 
     /// Update the per-connection annotation-UUID set in response to an
@@ -2750,6 +2795,28 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         return true
     }
 
+    /// Adopt the guest tunnel's framed TCP control channel (annotations +
+    /// remote control for guests). The caller has already bound the guest
+    /// node's TCP listener and wrapped it in a started
+    /// `TailscreenControlListener`; this installs the share's handlers on
+    /// it and routes outbound control traffic through it. Returns false
+    /// (caller keeps ownership) when the share isn't running or a guest
+    /// channel is already attached — mirroring
+    /// `attachGuestPacketListener`, and for the same reason: adopting a
+    /// channel behind a share that raced to a stop would leak a listener
+    /// nothing will ever stop.
+    public func attachGuestControlListener(_ listener: TailscreenControlListener) -> Bool {
+        let attached = lifecycle.withLock { lc -> Bool in
+            guard lc.isRunning, lc.guestControlListener == nil else { return false }
+            lc.guestControlListener = listener
+            return true
+        }
+        guard attached else { return false }
+        installControlHandlers(on: listener)
+        logger.log("Guest TCP control channel attached (share-by-token)")
+        return true
+    }
+
     /// Detach and close the guest listener — the toggle flipping off, or a
     /// New Link rotation. Every guest is disconnected first (pending rows
     /// denied, connected rows one-time expelled) so each gets HELLO_DENY +
@@ -2767,11 +2834,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         if !(guestPending.isEmpty && guestConnected.isEmpty) {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
-        let listenerToClose = lifecycle.withLock { lc -> PacketListener? in
-            let pl = lc.guestPacketListener
+        typealias GuestPair = (PacketListener?, TailscreenControlListener?)
+        let (listenerToClose, controlToStop) = lifecycle.withLock { lc -> GuestPair in
+            let pair = (lc.guestPacketListener, lc.guestControlListener)
             lc.guestPacketListener = nil
-            return pl
+            lc.guestControlListener = nil
+            return pair
         }
+        // Stop the guest control channel AFTER the expels above: the expel
+        // path severs each guest's annotation connection by IP through the
+        // still-registered channel, which is what fires onConnectionClosed
+        // and retires their strokes. stop() then closes any stragglers.
+        await controlToStop?.stop()
         await listenerToClose?.close()
         guestAddrs.withLock { $0.removeAll() }
         if listenerToClose != nil {
@@ -2833,9 +2907,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let connectionIDs = annotationConnectionIP.withLock { state in
             state.filter { $0.value == ip }.map { $0.key }
         }
-        guard !connectionIDs.isEmpty, let listener = controlListener else { return }
+        let channels = controlChannels
+        guard !connectionIDs.isEmpty, !channels.isEmpty else { return }
         Task {
-            for id in connectionIDs { await listener.close(connectionID: id) }
+            for channel in channels {
+                for id in connectionIDs { await channel.close(connectionID: id) }
+            }
         }
     }
 
@@ -3979,15 +4056,25 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // AppState owns it (the production path), leave it running so
         // request-to-share traffic keeps flowing after the share ends.
         // Both slots clear under one hold; the stop happens outside it.
-        let ownedListener = lifecycle.withLock { lc -> TailscreenControlListener? in
-            let owned = lc.ownedControlListener
+        typealias ListenerPair = (TailscreenControlListener?, TailscreenControlListener?)
+        let (ownedListener, guestListener) = lifecycle.withLock { lc -> ListenerPair in
+            let pair = (lc.ownedControlListener, lc.guestControlListener)
             lc.ownedControlListener = nil
             lc.controlListener = nil
-            return owned
+            lc.guestControlListener = nil
+            return pair
         }
         if let ownedListener {
             await ownedListener.stop()
             logger.log("Server stop: owned control listener closed")
+        }
+        // The guest control channel dies with the share unconditionally —
+        // unlike AppState's tailnet listener there is no idle traffic for
+        // it to keep serving, and its listener is bound on a guest node the
+        // host is about to close anyway.
+        if let guestListener {
+            await guestListener.stop()
+            logger.log("Server stop: guest control channel closed")
         }
 
         // Only close the node if this server actually owns it. When AppState

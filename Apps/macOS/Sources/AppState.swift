@@ -1724,10 +1724,23 @@ class AppState: ObservableObject {
                                 await self?.evictGuest(ip: ip)
                             }
                         }
+                        // The tunnel's TCP side: annotations + remote control
+                        // for guests. Fail-soft — a link whose TCP bind
+                        // failed still carries video and voice.
+                        var guestControl: TailscreenControlListener?
+                        do {
+                            let tcp = try await gs.listen(port: NetworkConfig.tailscreenPort)
+                            let ctl = TailscreenControlListener()
+                            ctl.start(adopting: tcp)
+                            guestControl = ctl
+                        } catch {
+                            logger.log("Guest TCP control channel unavailable (\(error))")
+                        }
                         try await srv.startGuestOnly(
                             filterData: effectiveFilterData,
                             quality: qualitySettings,
-                            guestPacketListener: pl)
+                            guestPacketListener: pl,
+                            guestControlListener: guestControl)
                         shareLinkToken = try await gs.token()
                         guestServer = gs
                         isGuestOnlyShare = true
@@ -2173,6 +2186,20 @@ class AppState: ObservableObject {
                 await pl.close()
                 await gs.close()
                 return
+            }
+            // The tunnel's TCP side: annotations + remote control for
+            // guests. Fail-soft — the link still carries video and voice
+            // when the bind fails; the server owns stopping an adopted
+            // channel (detach and share-stop both close it).
+            do {
+                let tcp = try await gs.listen(port: NetworkConfig.tailscreenPort)
+                let ctl = TailscreenControlListener()
+                ctl.start(adopting: tcp)
+                if !server.attachGuestControlListener(ctl) {
+                    await ctl.stop()
+                }
+            } catch {
+                logger.log("Guest TCP control channel unavailable (\(error))")
             }
             shareLinkToken = try await gs.token()
             guestServer = gs

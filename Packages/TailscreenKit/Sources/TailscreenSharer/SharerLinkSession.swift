@@ -13,6 +13,7 @@
 import Foundation
 import TailscaleKit
 import TailscreenProtocol
+import TailscreenTransport
 
 public enum SharerLinkError: Error, Sendable {
     /// The server refused the listener — the share stopped (or already has
@@ -54,6 +55,24 @@ public actor SharerLinkSession {
             await pl.close()
             await gs.close()
             throw SharerLinkError.attachRefused
+        }
+        // The tunnel's TCP side: the framed control channel that gives
+        // guests annotations and remote control. Fail-soft — a link whose
+        // TCP bind failed still carries video and voice, which is the core
+        // of a share; the loud log is the debugging trail for the dead
+        // affordances that would result. (In practice a node whose UDP
+        // listen just succeeded binds TCP too.) The server owns stopping
+        // it: detach and share-stop both close the adopted channel.
+        do {
+            let tcp = try await gs.listen(port: port)
+            let control = TailscreenControlListener(port: port)
+            control.start(adopting: tcp)
+            if !server.attachGuestControlListener(control) {
+                await control.stop()
+            }
+        } catch {
+            logger?.log(
+                "Guest TCP control channel unavailable (\(error)) — link carries video/voice only")
         }
         let minted = try await gs.token()
         guestServer = gs

@@ -1491,15 +1491,12 @@ final class AppUIState: ObservableObject {
                             self.sessionPhase = .viewing
                             // Drawing and Request Control appear only if the
                             // sharer said it can serve them. Withheld bits mean
-                            // a quieter UI, never a broken one. A guest session
-                            // additionally has no TCP back-channel yet
-                            // (`onBackChannelReady` never fires — see
-                            // `ViewerConfig.guestToken`), so both TCP-backed
-                            // affordances stay hidden there regardless of what
-                            // the sharer advertised.
-                            self.interaction.setCaps(
-                                isGuest
-                                    ? caps.subtracting([.remoteControl, .annotations]) : caps)
+                            // a quieter UI, never a broken one — and the
+                            // sharer's caps decide for guests too now: the
+                            // back-channel rides the guest tunnel, and a
+                            // sharer that predates it doesn't advertise these
+                            // bits over a link in the first place.
+                            self.interaction.setCaps(caps)
                         }
                     },
                     onAwaitingApproval: { [weak self] in
