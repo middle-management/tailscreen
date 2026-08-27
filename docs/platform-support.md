@@ -51,7 +51,15 @@ what the partial case *is*, because that is the part a reader can act on.
 | Copy Link / Copy Token buttons | ✅ | ⚠️ select the link text | ⚠️ select the link text |
 | Start a share without signing in (link-only) | ✅ | ❌ | ❌ |
 | Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ |
-| `tailscreen:` link opens the join screen | ✅ | ❌ paste it instead | ❌ paste it instead |
+| `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² |
+
+¹ Link clicks reach the Linux app once a `.desktop` entry registering the
+`tailscreen` scheme is installed — the Flatpak exports one at install, an
+AppImage only after desktop integration (e.g. AppImageLauncher or Gear
+Lever); a bare binary or tarball run registers nothing, and there the join
+card and `tailscreen --join <link>` are the way in. ² On Windows the MSIX
+declares the scheme, so the packaged install handles clicks; the zip build
+registers nothing.
 
 The two colour rows are independent, and the viewing one is why a mac
 sharer's 10-bit setting can quietly do nothing: viewers advertise whether

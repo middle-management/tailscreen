@@ -94,12 +94,13 @@ Type=Application
 Name=Tailscreen
 GenericName=Screen Sharing
 Comment=Share and view screens peer-to-peer over Tailscale
-Exec=$BIN_NAME
+Exec=$BIN_NAME %u
 Icon=$ICON_NAME
 Terminal=false
 Categories=Network;RemoteAccess;Utility;
 Keywords=screen;share;remote;tailscale;viewer;sharing;
 StartupNotify=true
+MimeType=x-scheme-handler/tailscreen;
 EOF
 
 # Icon. Prefer a real PNG if one has been added under packaging/icons/; otherwise

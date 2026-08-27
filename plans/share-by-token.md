@@ -416,6 +416,27 @@ named by tunnel IP, not key fingerprint (the resolve is async and the
 row mapping isn't; same polish bucket as the macOS notification labels);
 link-only (signed-out) sharing stays macOS-only, tracked in the matrix.)*
 
+**Phase 8 — `tailscreen:` scheme handlers on Linux and Windows.** A copied
+link that must be *pasted* on two of three platforms is half a link; this
+closes the click.
+*(status: landed. Linux: the `.desktop` entries (Flatpak file, AppImage
+script) gain `MimeType=x-scheme-handler/tailscreen;` + `Exec … %u`, and the
+GTK app accepts the link as a bare positional argument — the same parse as
+`--join`, via `ShareLinkFormat.token(fromUserInput:)` — so a scheme-handler
+launch is just a spelled-differently `--join`. Windows: the MSIX manifest
+declares `uap:Protocol Name="tailscreen"`, and `ProtocolActivation.swift`
+(third Windows-bound file, same `#if os(Windows)` + stub pattern) reads the
+launch URI from the AppLifecycle activation args with an argv fallback. On
+both platforms a link launch goes STRAIGHT to the guest session and skips
+sign-in auto-resume: each click on Windows starts a new process (packaged
+Win32 apps are multi-instance, nothing redirects), and a guest session
+needs no tsnet node, so a second instance never contends for the state
+directory — the same semantics as the GTK `--join` run. Deviations: an
+AppImage registers the scheme only after desktop integration, and the
+Windows zip build registers nothing (both noted in the matrix); a running
+instance is not reused — single-instance redirection is future work, and
+`ProtocolActivation.observe` is already the wire it would use.)*
+
 Each phase is a separate PR; 0 and 1 can proceed in parallel (1 targets the
 fork directly). Docs ship with their phases per the repo rule, safe under the
 /next preview channel.
