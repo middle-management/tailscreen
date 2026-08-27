@@ -177,6 +177,48 @@ than expected:
   `docs/self-hosted.md`. We would want this: the free relays are rate-limited,
   and a relayed fallback carries full screen-share bitrate.
 
+### One token, many viewers — yes, with an eviction gap
+
+A tailcat server is genuinely multi-client, not a one-shot pipe. `locoBackend`
+holds `clients map[key.NodePublic]*tailcfg.Node`, and each `meow` handshake from
+a new key allocates the next node ID (`id := len(b.clients) + 2` — "server is ID
+1, clients are IDs 2, 3, ..."), rebuilds the netmap with every client in it, and
+hands it to magicsock (`tailcat.go:1240-1300`). One token, N simultaneous
+clients, exactly the shape a share needs: the token is derived from the
+*server's* key, so every viewer pastes the same string.
+
+Better still, viewers stay individually distinguishable. Each client is given an
+address derived from its own node key — `tcAddrForKey`, folding 80 bits of the
+key into Tailscale's `fd7a:115c:a1e0::/48` ULA — and that address is installed
+as the peer's `AllowedIPs`, so WireGuard itself enforces the binding. Our
+per-viewer admission keys on peer source IP today (`docs/security.md:98`) and
+that logic would carry over unchanged. One caveat: the address is a lossy
+80-bit projection of the key, so anything we *persist* — a remembered approval,
+a block list — should store the node key, not the derived IP.
+
+The gap is **eviction**. There is no `delete(` anywhere in tailcat:
+`b.clients` and `allowedClients` are both append-only, and `AddAllowedClient`
+has no counterpart that removes. Two consequences:
+
+- **"Drop this viewer" stays an app-layer action.** `plans/platform-alignment.md`
+  holds that dropping a viewer mid-share is a decision that must exist on every
+  platform that can share at all. Under tailcat we can close the framed TCP
+  channel and stop sending RTP, but the peer stays in the netmap and can
+  re-handshake; the tunnel-layer gate only ever tightens for *future* keys, not
+  the one already in. That is not a regression — the approval gate is app-layer
+  today too — but it does mean tailcat's key gate cannot be the whole story, and
+  a `RemoveAllowedClient` is the second thing to send upstream after UDP.
+- **The client map grows for the process lifetime.** A long share with viewers
+  joining and leaving accumulates peers, and each join rebuilds and re-sorts the
+  full netmap. Fine at meeting scale, worth knowing before anyone leaves a
+  sharer up all day. It also means node IDs would collide if removal were ever
+  bolted on naively, since they are derived from `len(b.clients)`.
+
+One thing that is *not* different from today: fan-out is still N unicast
+tunnels, so the sharer encodes once but encrypts and uploads per viewer. That is
+already true over tsnet. What changes is how often a relay sits in the path —
+usually not, after hole-punching, but always for browser viewers.
+
 ### What it costs
 
 **The hub has no analogue.** `TailscalePeerDiscovery` and the `tailscreen-…`
