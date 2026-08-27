@@ -123,6 +123,24 @@ final class ViewerAccessPolicyTests: XCTestCase {
         XCTAssertEqual(Server.admissionDecision(policy: nil, requireApproval: false), .admit)
     }
 
+    func testAdmissionDecisionGuestsAlwaysPark() {
+        typealias Server = TailscaleScreenShareServer
+        // A guest (share-by-token viewer) never auto-admits: the token is
+        // capability to knock, never to watch. Open-door mode and even a
+        // remembered allow still park them behind the prompt.
+        XCTAssertEqual(
+            Server.admissionDecision(policy: nil, requireApproval: false, isGuest: true), .park)
+        XCTAssertEqual(
+            Server.admissionDecision(policy: nil, requireApproval: true, isGuest: true), .park)
+        XCTAssertEqual(
+            Server.admissionDecision(policy: .allow, requireApproval: false, isGuest: true), .park)
+        // A deny still rejects outright.
+        XCTAssertEqual(
+            Server.admissionDecision(policy: .deny, requireApproval: false, isGuest: true), .reject)
+        // And the default keeps tailnet behavior byte-identical.
+        XCTAssertEqual(Server.admissionDecision(policy: nil, requireApproval: false), .admit)
+    }
+
     // MARK: - drainDecision (setRequireApproval(false) toggle-off drain)
 
     func testDrainDecisionDeniesBlockedAndApprovesTheRest() {
@@ -145,6 +163,21 @@ final class ViewerAccessPolicyTests: XCTestCase {
             pendingStableIDs: ["4.4.4.4:4": nil],
             policies: ["nBLOCKED": .deny])
         XCTAssertEqual(decision.approve, ["4.4.4.4:4"])
+        XCTAssertTrue(decision.deny.isEmpty)
+    }
+
+    func testDrainDecisionLeavesGuestsParked() {
+        // Toggling the gate off opens the door to the tailnet, not to
+        // token holders: a parked guest is neither approved nor denied.
+        let pending: [String: String?] = [
+            "1.1.1.1:1": "nALLOWED",
+            "[fd7a::42]:7447": nil  // guest — addr came off the guest listener
+        ]
+        let decision = TailscaleScreenShareServer.drainDecision(
+            pendingStableIDs: pending,
+            policies: ["nALLOWED": .allow],
+            guestAddrs: ["[fd7a::42]:7447"])
+        XCTAssertEqual(decision.approve, ["1.1.1.1:1"])
         XCTAssertTrue(decision.deny.isEmpty)
     }
 

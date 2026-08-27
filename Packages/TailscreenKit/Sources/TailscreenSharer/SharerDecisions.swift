@@ -106,7 +106,17 @@ extension TailscaleScreenShareServer {
     /// gate when it's on. Extracted so the precedence
     /// (blocklist > allowlist > gate) is unit testable — same pattern as
     /// `audioRelayDecision`.
-    public static func admissionDecision(policy: PeerPolicy?, requireApproval: Bool) -> Admission {
+    public static func admissionDecision(
+        policy: PeerPolicy?, requireApproval: Bool, isGuest: Bool = false
+    ) -> Admission {
+        // A guest (share-by-token viewer) never auto-admits: not by a
+        // remembered allow, not by open-door mode, not by pre-approval
+        // (the caller guards that path). Holding the token is capability
+        // to KNOCK, never to watch — the sharer's explicit approval is the
+        // only way in, every join. A deny still rejects outright.
+        if isGuest {
+            return policy == .deny ? .reject : .park
+        }
         switch policy {
         case .deny:
             return .reject
@@ -125,7 +135,8 @@ extension TailscaleScreenShareServer {
     /// blocked. Results are sorted for determinism.
     public static func drainDecision(
         pendingStableIDs: [String: String?],
-        policies: [String: PeerPolicy]
+        policies: [String: PeerPolicy],
+        guestAddrs: Set<String> = []
     ) -> (approve: [String], deny: [String]) {
         var approve: [String] = []
         var deny: [String] = []
@@ -133,6 +144,11 @@ extension TailscaleScreenShareServer {
             let policy = stableID.flatMap { policies[$0] }
             if policy == .deny {
                 deny.append(addr)
+            } else if guestAddrs.contains(addr) {
+                // Turning the approval gate off opens the door to the
+                // tailnet, not to token holders: parked guests stay
+                // parked until the sharer answers their prompt.
+                continue
             } else {
                 approve.append(addr)
             }
