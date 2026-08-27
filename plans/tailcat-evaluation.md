@@ -364,44 +364,54 @@ dependency. We have never patched tailscale.com and would not need to: tailcat
 does not either, it just imports 25 of its public packages. So there is no
 patching involved in this plan, only importing.
 
-The problem is the pin:
+What stands between us and it is a **dependency bump**, and as of now that is
+all it is.
 
 | | `tailscale.com` |
 | :- | :- |
 | `upstream/libtailscale` (ours, at `5e89501`) | `v1.94.1` |
 | tailcat (at `c04c5af`) | `v1.101.0-pre.0.20260720143344-246c82a658b3` |
+| latest tagged | **`v1.102.3`** |
 
-Seven minor versions, and the gap lands exactly on the load-bearing part.
-`createEngine` installs two hooks (`tailcat.go:1211-1212`):
+The gap matters because it lands on the load-bearing part. `createEngine`
+installs two hooks (`tailcat.go:1211-1212`):
 
 ```go
 e.SetPeerConfigFunc(lb.peerAllowedIPs)
 e.SetPeerByIPPacketFunc(lb.peerByIP)
 ```
 
-**Neither exists in v1.94.1.** Grepping the whole module for
-`PeerConfigFunc` / `PeerByIPPacketFunc` returns nothing. And these are not
-incidental: they are the mechanism by which a peer is configured into WireGuard
-*lazily, at handshake time*, which is precisely what you need when no control
-plane is going to hand you a netmap. The code comment says so — "the WireGuard
-device learns about the new peer lazily via the config source installed with
+These are the mechanism by which a peer is configured into WireGuard *lazily,
+at handshake time* — precisely what you need when no control plane is going to
+hand you a netmap. Tailcat's own comment says so: "the WireGuard device learns
+about the new peer lazily via the config source installed with
 `SetPeerConfigFunc` when the client's handshake arrives" (`tailcat.go:1292`).
 Without them you are back to reconfiguring the engine from a full netmap on
 every join, which is a different and worse design.
 
-So the answer is **yes in principle, not on the module we have pinned today.**
-The prerequisite is bumping libtailscale's `tailscale.com` from v1.94.1 to
-something ≥ the version carrying those hooks, and that bump has a blast radius
-into `Patches/`: several patches touch tsnet internals directly (013 and 017
-add `ListenPacket` and its close path, 021 fixes a `GetRemoteAddr` fd race, 026
-initialises the Go runtime on Windows), and each needs re-validating against a
-newer tsnet.
+**Neither exists in v1.94.1** — grepping the whole module for `PeerConfigFunc`
+or `PeerByIPPacketFunc` returns nothing. **Both exist in v1.102.3**, and not as
+an implementation detail: they are declared on the public `wgengine.Engine`
+interface (`wgengine/wgengine.go:183-187`), with `userspaceEngine` implementing
+them (`wgengine/userspace.go:685-745`). Every one of the 25 `tailscale.com`
+packages tailcat imports is present there too.
 
-Read the other way, this is encouraging. Those hooks appear to be upstream
-*adding seams for exactly this* — running magicsock with no control plane
-behind it — which means the capability is moving into `tailscale.com` proper
-rather than living only in tailcat. Waiting for it to reach a tagged release we
-would bump to anyway is a cheaper path than chasing a pseudo-version.
+So the answer is **yes, and the prerequisite is a routine dependency bump**:
+libtailscale's `tailscale.com` from v1.94.1 to v1.102.3. Not a fork, not a
+patch to tailscale.com, not a wait on upstream — the seams for running magicsock
+with no control plane behind it are in a tagged release today.
+
+The cost is not zero: the bump has a blast radius into `Patches/`, since several
+patches touch tsnet internals directly (013 and 017 add `ListenPacket` and its
+close path, 021 fixes a `GetRemoteAddr` fd race, 026 initialises the Go runtime
+on Windows), and each needs re-validating against a tsnet eight minor versions
+newer. That is ordinary dependency-upgrade work rather than a design problem,
+and it is work we owe the submodule regardless of anything in this document.
+
+Worth reading the direction of travel: these hooks exist because upstream is
+adding seams for exactly this use case. Control-plane-free operation is becoming
+a `tailscale.com` capability rather than a tailcat-only trick, which makes
+building on it a considerably safer bet than this document assumed at the outset.
 
 One thing that is *not* an obstacle: the toolchain. libtailscale's own `go.mod`
 already says `go 1.25.5`, well above both our documented Go 1.21+ floor and
@@ -458,25 +468,32 @@ in under a screen-sharing feature.
 
 ## Recommendation
 
-In order. The first two do not depend on each other, and neither depends on
+In order. The first three do not depend on each other, and none depends on
 resolving the archive question.
 
-1. **File the UDP issue upstream on tailcat**, framed as the netcat gap. It
+1. **Bump `upstream/libtailscale`'s `tailscale.com` from v1.94.1 to v1.102.3.**
+   This is the concrete unblocker: `SetPeerConfigFunc` and
+   `SetPeerByIPPacketFunc`, the two hooks any control-plane-free design needs,
+   exist only from a version we are eight minors behind. It is ordinary upgrade
+   work we owe the submodule anyway, it re-validates the patch series against a
+   current tsnet, and nothing else here can start without it.
+
+2. **File the UDP issue upstream on tailcat**, framed as the netcat gap. It
    costs an issue, the patch is small, and it is plausibly something they want
    independent of us. If it lands, whatever we vendor needs no local change at
    all — so this is worth doing first precisely because it might make later
    steps cheaper.
 
-2. **Specify the reliable-transport profile** in `docs/spec.md` with a
+3. **Specify the reliable-transport profile** in `docs/spec.md` with a
    conformance vector. This is the actual prerequisite for a browser viewer,
    it is useful with no tailcat involvement at all as a fallback for viewers on
    UDP-blocking networks, and it is the one piece nobody upstream can do for us.
 
-3. **Browser viewer** is the better prize. `sdk/go` doing the hard part changes
+4. **Browser viewer** is the better prize. `sdk/go` doing the hard part changes
    the estimate substantially — most of the remaining work is the profile in
-   (2), a WebCodecs shim, and the wasm size budget.
+   (3), a WebCodecs shim, and the wasm size budget.
 
-4. **No-sign-in share** is architecturally the cleanest match to what tailcat
+5. **No-sign-in share** is architecturally the cleanest match to what tailcat
    is. Its real cost is not the transport but the hub: a token-shaped entry
    path in a UI built around enumerating peers.
 
