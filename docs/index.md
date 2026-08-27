@@ -101,6 +101,25 @@ Curious what&rsquo;s underneath?
   </div>
 </div>
 </div>
+
+<div class="ts-spotlight">
+  <div class="ts-spotlight-icon">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+      <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/>
+      <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>
+    </svg>
+  </div>
+  <div class="ts-spotlight-body">
+    <h3>Invite anyone, by link</h3>
+    <p>Someone outside your tailnet &mdash; no Tailscale account, nothing to
+    sign up for? Flip <strong>Share via Link</strong> and send them a one-off
+    link. They knock over an encrypted tunnel, wait at your approval prompt
+    like everyone else, and once you let them in they get the full seat:
+    video, voice, drawing, even requesting the mouse. The link dies the
+    moment you stop sharing, rotate it, or flip the toggle off &mdash;
+    there&rsquo;s nothing to revoke later.</p>
+  </div>
+</div>
 </div>
 
 <!-- Product screenshots. These are BUILD ARTIFACTS, not hand-taken shots:
@@ -245,7 +264,9 @@ Curious what&rsquo;s underneath?
   <div class="ts-step">
     <span class="ts-step-n">3</span>
     <h3>A window opens</h3>
-    <p>That&rsquo;s the whole thing. No links, no PINs, no calendar invite.</p>
+    <p>That&rsquo;s the whole thing. No links, no PINs, no calendar invite.
+    (And for someone <em>outside</em> your tailnet, one link &mdash;
+    <strong>Share via Link</strong> &mdash; is the whole ceremony instead.)</p>
   </div>
 </div>
 </div>
@@ -257,7 +278,9 @@ Curious what&rsquo;s underneath?
   <li>macOS 15 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland),
   or Windows 10/11 (x64 or arm64) &mdash; in any combination on the two
   ends.</li>
-  <li>A Tailscale account &mdash; the free personal tier is fine. (Or a
+  <li>A Tailscale account &mdash; the free personal tier is fine &mdash;
+  except for guests joining (or, on macOS, hosting) a share by link, who
+  need no account at all. (Or a
   <a href="{{ site.baseurl }}{% link self-hosted.md %}">self-hosted,
   compatible control plane</a> such as headscale &mdash; no Tailscale
   account needed at all.)</li>

@@ -31,8 +31,7 @@ tailscreen/
 │   │                           #   three apps share (builds and tests on Linux)
 │   ├── TailscreenHubUI/        # Shared hub chrome for the GTK + WinUI apps
 │   ├── TailscaleKit/           # Wraps libtailscale
-│   │   ├── upstream/libtailscale/  # Git submodule
-│   │   ├── Patches/            # .patch files applied on top of upstream Swift
+│   │   ├── upstream/libtailscale/  # Git submodule — our fork's tailscreen-main branch
 │   │   └── libtailscale.pc     # pkg-config file (consumed via PKG_CONFIG_PATH)
 │   └── …                       # Platform backends (X11CaptureKit,
 │                               #   PortalCaptureKit, XTestInjectKit,
@@ -84,31 +83,33 @@ The most common build failure, worth repeating: **bare `swift build`
 fails to link** until `make tailscale` (or `make build`) has produced
 `libtailscale.a`. Always start with `make`.
 
-## TailscaleKit and the patches
+## TailscaleKit and the fork
 
-`Packages/TailscaleKit/upstream/libtailscale` is a submodule pinned in
-`.gitmodules` with `ignore = dirty`. After cloning, run:
+`Packages/TailscreenKit`'s transport wraps `libtailscale` via the
+`Packages/TailscaleKit/upstream/libtailscale` submodule, which points at
+**our fork** — `middle-management/libtailscale`, branch `tailscreen-main`:
+upstream `tailscale/libtailscale` history with our changes as ordinary
+commits on top. After cloning, run:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-The patches under `Packages/TailscaleKit/Patches/` get applied on top of the
-upstream Swift sources during `make tailscale`. They're all small. They
-add things like:
+The commits used to be a `.patch` series applied at build time; they were
+converted one-to-one into fork commits, so there is no patch step anymore
+— `make tailscale` just builds what the submodule pins. They're all
+focused: Swift-facing glue (`send`/`receive` on connections, a public
+`logout`, listener poll-timeout handling), the `tsnet ListenPacket` /
+`PacketListener` wrapper for the UDP video path, Linux and Windows
+portability, and the guest (share-by-token) surface — the per-link
+tunnel node behind Share via Link.
 
-- A `Foundation` import the upstream forgets in some files.
-- Glue imports for the C-bridge types.
-- `send`/`receive` on connections.
-- A public `logout`.
-- Listener poll-timeout handling.
-- The `tsnet ListenPacket` / `PacketListener` Swift wrapper for the UDP
-  video path.
-
-**Don't edit `Packages/TailscaleKit/Sources/` directly.** Those paths are
-symlinks into the submodule. You'll lose your edits the next `make
-tailscale` run, plus the changes won't survive a fresh clone. Add or
-modify a `.patch` file instead and re-run `make tailscale`.
+**Editing `Packages/TailscaleKit/Sources/` edits the submodule** — those
+paths are symlinks into it. That's fine, but the change must be committed
+*in the submodule* on `tailscreen-main`, pushed to the fork, and the
+submodule pointer bumped here; an uncommitted submodule edit is invisible
+to everyone else. Keep each change one logical commit so it can become an
+upstream PR later.
 
 ## Auth keys for connectivity tests
 
