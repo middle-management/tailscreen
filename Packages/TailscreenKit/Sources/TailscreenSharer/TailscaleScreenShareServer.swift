@@ -2834,13 +2834,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         if !(guestPending.isEmpty && guestConnected.isEmpty) {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
-        let (listenerToClose, controlToStop) = lifecycle.withLock {
-            lc -> (PacketListener?, TailscreenControlListener?) in
-            let pl = lc.guestPacketListener
-            let ctl = lc.guestControlListener
+        typealias GuestPair = (PacketListener?, TailscreenControlListener?)
+        let (listenerToClose, controlToStop) = lifecycle.withLock { lc -> GuestPair in
+            let pair = (lc.guestPacketListener, lc.guestControlListener)
             lc.guestPacketListener = nil
             lc.guestControlListener = nil
-            return (pl, ctl)
+            return pair
         }
         // Stop the guest control channel AFTER the expels above: the expel
         // path severs each guest's annotation connection by IP through the
@@ -4057,14 +4056,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // AppState owns it (the production path), leave it running so
         // request-to-share traffic keeps flowing after the share ends.
         // Both slots clear under one hold; the stop happens outside it.
-        let (ownedListener, guestListener) = lifecycle.withLock {
-            lc -> (TailscreenControlListener?, TailscreenControlListener?) in
-            let owned = lc.ownedControlListener
-            let guest = lc.guestControlListener
+        typealias ListenerPair = (TailscreenControlListener?, TailscreenControlListener?)
+        let (ownedListener, guestListener) = lifecycle.withLock { lc -> ListenerPair in
+            let pair = (lc.ownedControlListener, lc.guestControlListener)
             lc.ownedControlListener = nil
             lc.controlListener = nil
             lc.guestControlListener = nil
-            return (owned, guest)
+            return pair
         }
         if let ownedListener {
             await ownedListener.stop()
