@@ -294,7 +294,24 @@ bit-compatible with tsnet fds, so the wrappers vend the ordinary
 
 **Phase 3 — Core integration.** Server dual-listener routing,
 `ViewerIdentity`, admission rule, viewer `Destination.token` +
-`GuestTransport`. Extend `test-local.sh` with a `--guest` mode; net-impair
+`GuestTransport`.
+*(status: core landed. Sharer: `start(guestPacketListener:)` feeds guest
+datagrams through the same pipeline via the `MediaSockets` routing facade;
+guests are tagged by arrival listener, always park behind the approval
+prompt (open-door, remembered-allow and pre-approval all excluded, pinned
+by truth-table tests), and a deny/remembered-deny fires
+`onGuestViewerDenied` for tunnel-level eviction. `ViewerInfo`/
+`PendingViewerInfo` carry `isGuest` — implemented as a flag plus the guest
+node key from `GuestServerNode.peers()` rather than the planned enum, since
+the addr-keyed rosters made the flag the smaller honest change. Viewer:
+`ViewerConfig.guestToken` (spelled so instead of a `Destination` enum —
+same reasoning) routes `TsnetTransport.run` through the guest tunnel with
+no tsnet node; the session core is extracted as `runSession`, shared by
+both paths; the dest filter comes from `guest_client_server_addr`, pinned
+in the fork's ctest against the address real frames carry. Deferred to a
+follow-up: the guest TCP control channel (annotations/remote control for
+guests) on both sides, and `test-local.sh --guest`, which needs the phase-4
+host wiring.)* Extend `test-local.sh` with a `--guest` mode; net-impair
 runs over the guest path. *Gate*: two local instances, one tailnet-less,
 full session: pending → approve → video+annotations+remote-control → drop.
 Pure-decision suites extended per the test-catalog conventions (admission
