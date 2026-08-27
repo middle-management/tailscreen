@@ -1130,12 +1130,20 @@ struct ViewerApp: App {
         let guests =
             sharer.viewers.filter(\.isGuest).count
             + sharer.pendingViewers.filter(\.isGuest).count
+        // Hoisted with explicit types: closure literals needing @MainActor
+        // @Sendable inference inside one init call (plus the conditional
+        // optional) sink the Swift 6 typechecker outright on Linux.
+        let toggle: @MainActor @Sendable (Bool) -> Void = { gSharer.setLinkSharing($0) }
+        var newLink: (@MainActor @Sendable () -> Void)?
+        if sharer.linkToken != nil {
+            newLink = { gSharer.rotateLink() }
+        }
         return HubLinkSharing(
             token: sharer.linkToken,
             busy: sharer.linkBusy,
             guestCount: guests,
-            onToggle: { gSharer.setLinkSharing($0) },
-            onNewLink: sharer.linkToken != nil ? { gSharer.rotateLink() } : nil)
+            onToggle: toggle,
+            onNewLink: newLink)
     }
 
     /// Route a card prompt back to whichever feature raised it.

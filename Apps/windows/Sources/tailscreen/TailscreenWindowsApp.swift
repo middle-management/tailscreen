@@ -1032,13 +1032,22 @@ final class AppUIState: ObservableObject {
         let guests =
             sharing.viewers.filter(\.isGuest).count
             + sharing.pendingViewers.filter(\.isGuest).count
+        // Hoisted with explicit types: closure literals needing @MainActor
+        // @Sendable inference inside one init call (plus the conditional
+        // optional) sink the Swift 6 typechecker outright on Linux.
+        let toggle: @MainActor @Sendable (Bool) -> Void = { [weak self] on in
+            self?.shareSession.setLinkSharing(on)
+        }
+        var newLink: (@MainActor @Sendable () -> Void)?
+        if sharing.linkToken != nil {
+            newLink = { [weak self] in self?.shareSession.rotateLink() }
+        }
         return HubLinkSharing(
             token: sharing.linkToken,
             busy: sharing.linkBusy,
             guestCount: guests,
-            onToggle: { [weak self] on in self?.shareSession.setLinkSharing(on) },
-            onNewLink: sharing.linkToken != nil
-                ? { [weak self] in self?.shareSession.rotateLink() } : nil)
+            onToggle: toggle,
+            onNewLink: newLink)
     }
 
     /// Take a share-status snapshot, and reconcile the notifications with it.
