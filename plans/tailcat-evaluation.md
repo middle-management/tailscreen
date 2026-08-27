@@ -350,6 +350,65 @@ netstack's unexported `ipstack` field, turns out to be load-bearing for exactly
 one function: `DrainTCP`, a graceful-shutdown nicety (`tailcat.go:545`). A port
 that skips `DrainTCP` inherits none of it.
 
+### Can we build it on the module we already ship?
+
+The appealing version of all this is: we already vendor a patched tailscale,
+tailcat is only glue over `tailscale.com`, so write the glue ourselves against
+the module we have and get a control-plane-free share with no new dependency at
+all. That is right in shape and wrong in detail today, for one concrete reason.
+
+First, what "our patched tailscale module" is. `Patches/` patches
+**libtailscale** — `github.com/tailscale/libtailscale`, the c-archive wrapper —
+not `tailscale.com` itself, which libtailscale consumes as an ordinary module
+dependency. We have never patched tailscale.com and would not need to: tailcat
+does not either, it just imports 25 of its public packages. So there is no
+patching involved in this plan, only importing.
+
+The problem is the pin:
+
+| | `tailscale.com` |
+| :- | :- |
+| `upstream/libtailscale` (ours, at `5e89501`) | `v1.94.1` |
+| tailcat (at `c04c5af`) | `v1.101.0-pre.0.20260720143344-246c82a658b3` |
+
+Seven minor versions, and the gap lands exactly on the load-bearing part.
+`createEngine` installs two hooks (`tailcat.go:1211-1212`):
+
+```go
+e.SetPeerConfigFunc(lb.peerAllowedIPs)
+e.SetPeerByIPPacketFunc(lb.peerByIP)
+```
+
+**Neither exists in v1.94.1.** Grepping the whole module for
+`PeerConfigFunc` / `PeerByIPPacketFunc` returns nothing. And these are not
+incidental: they are the mechanism by which a peer is configured into WireGuard
+*lazily, at handshake time*, which is precisely what you need when no control
+plane is going to hand you a netmap. The code comment says so — "the WireGuard
+device learns about the new peer lazily via the config source installed with
+`SetPeerConfigFunc` when the client's handshake arrives" (`tailcat.go:1292`).
+Without them you are back to reconfiguring the engine from a full netmap on
+every join, which is a different and worse design.
+
+So the answer is **yes in principle, not on the module we have pinned today.**
+The prerequisite is bumping libtailscale's `tailscale.com` from v1.94.1 to
+something ≥ the version carrying those hooks, and that bump has a blast radius
+into `Patches/`: several patches touch tsnet internals directly (013 and 017
+add `ListenPacket` and its close path, 021 fixes a `GetRemoteAddr` fd race, 026
+initialises the Go runtime on Windows), and each needs re-validating against a
+newer tsnet.
+
+Read the other way, this is encouraging. Those hooks appear to be upstream
+*adding seams for exactly this* — running magicsock with no control plane
+behind it — which means the capability is moving into `tailscale.com` proper
+rather than living only in tailcat. Waiting for it to reach a tagged release we
+would bump to anyway is a cheaper path than chasing a pseudo-version.
+
+One thing that is *not* an obstacle: the toolchain. libtailscale's own `go.mod`
+already says `go 1.25.5`, well above both our documented Go 1.21+ floor and
+noble's apt Go — so the situation the earlier toolchain note worried about is
+one we are already in and have already solved with `go: setup-go`. tailcat's
+`go 1.26.5` changes nothing.
+
 ### Why vendor rather than rewrite
 
 All of which argues for taking the code, not retyping it.
