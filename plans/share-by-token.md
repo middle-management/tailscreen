@@ -271,6 +271,12 @@ filter+forwarder added, Go test pushes RTP-shaped datagrams both ways,
 relayed and direct. *Gate*: this passing turns the rest into schedule; a
 failure here stops the plan and we fall back to TCP-profile investigation
 (the reliable-transport profile from the evaluation) before touching UI.
+*(status: **passed**. The fork's `guest/` package (PR
+middle-management/libtailscale#1) vendors tailcat at `c04c5af` and adds
+`OnUDP`/`ServedUDPPorts`/a UDP filter match/`DialUDPPort`. 32 RTP-shaped
+1200-byte datagrams round-trip byte-identical on a verified direct path and
+verified DERP-relayed, and a filtered port yields silence with `OnUDP`
+never called — all under `-race`.)*
 
 **Phase 2 — Guest node, exported.** Full C surface + eviction + tests in the
 fork; `GuestNode` Swift wrapper + unit tests in TailscaleKit. *Gate*: a
