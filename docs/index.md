@@ -27,7 +27,7 @@ image: /assets/social-card.png
 <div class="ts-container">
 <figure class="ts-hero-shot">
   <img src="{{ '/assets/screenshots/macos-viewer.png' | relative_url }}"
-       alt="The Tailscreen viewer window, titled Viewing robert-macbook, showing a remote screen with pen, line, arrow, rectangle and oval strokes drawn over it, the drawing tools along the title bar, and a stats overlay reading 60 fps over HEVC."
+       alt="The Tailscreen viewer window, titled Viewing robert-macbook, showing a remote machine&rsquo;s code editor and terminal with review marks drawn over them &mdash; a circled block, an arrow pointing at it, an underline and a boxed line of output &mdash; the drawing tools along the title bar, and a stats overlay reading 60 fps over HEVC."
        fetchpriority="high" decoding="async">
   <figcaption>The whole UI is a compact window (plus a menubar sharing tool on
   the Mac). The viewer is just a window &mdash; with someone else&rsquo;s
