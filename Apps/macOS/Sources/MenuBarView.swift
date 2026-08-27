@@ -49,7 +49,11 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var mainView: some View {
-        if !appState.tailscaleAuth.isAuthenticated {
+        // Signed out AND idle → the pointer to the window's sign-in pane.
+        // Signed out but SHARING (a guest-only, link-only share) → the full
+        // popover: the sharing card is the sharer tool, and its approval
+        // prompts must be reachable regardless of sign-in state.
+        if !appState.tailscaleAuth.isAuthenticated && appState.sharingState == .idle {
             SignedOutMenuView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
@@ -419,7 +423,12 @@ private struct SharingCard: View {
                 ControlRequestsList(requests: appState.controlRequests)
             }
 
-            ApprovalToggle()
+            // The approval toggle governs tailnet viewers; a guest-only
+            // share has none (guest approval is mandatory regardless), so
+            // showing it would be a switch wired to nothing.
+            if !appState.isGuestOnlyShare {
+                ApprovalToggle()
+            }
 
             if appState.linkSharingEnabled {
                 ShareViaLinkSection()
@@ -560,21 +569,31 @@ private struct ShareViaLinkSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle(
-                isOn: Binding(
-                    get: { appState.shareLinkToken != nil || appState.shareLinkBusy },
-                    set: { appState.setShareLinkActive($0) }
-                )
-            ) {
-                Text(L("Share via Link"))
+            if appState.isGuestOnlyShare {
+                // A guest-only share IS its link — there is no off position
+                // short of Stop Sharing, so a toggle here would be a switch
+                // that refuses to flip. State the mode instead.
+                Text(L("Sharing via link — the link is the only way in"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Toggle(
+                    isOn: Binding(
+                        get: { appState.shareLinkToken != nil || appState.shareLinkBusy },
+                        set: { appState.setShareLinkActive($0) }
+                    )
+                ) {
+                    Text(L("Share via Link"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(appState.shareLinkBusy)
+                .accessibilityHint(
+                    L("Creates a link that lets people outside your tailnet ask to join"))
             }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .disabled(appState.shareLinkBusy)
-            .accessibilityHint(
-                L("Creates a link that lets people outside your tailnet ask to join"))
 
             if appState.shareLinkBusy {
                 HStack(spacing: 6) {

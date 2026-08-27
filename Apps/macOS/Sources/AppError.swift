@@ -251,6 +251,35 @@ extension AppError {
         )
     }
 
+    /// A signed-out (link-only) share was asked for while Settings → Link
+    /// sharing is off. Normally unreachable — the welcome pane hides its
+    /// button behind the same gate — but Settings can change under an open
+    /// picker.
+    static func linkSharingDisabled() -> AppError {
+        AppError(
+            code: "TS-LINK-001",
+            title: L("Link Sharing Is Off"),
+            message:
+                L(
+                    "Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet."
+                ),
+            underlying: nil,
+            action: nil
+        )
+    }
+
+    /// A guest-only share's bring-up failed before capture — the relay
+    /// bootstrap or the guest node, not the screen.
+    static func linkShareStartFailed(_ underlying: Error) -> AppError {
+        AppError(
+            code: "TS-LINK-002",
+            title: L("Couldn't Start Sharing"),
+            message: L("The share link couldn't be created. Check the network and try again."),
+            underlying: String(describing: underlying),
+            action: nil
+        )
+    }
+
     /// Legacy free-form alert constructor. Used by the `showAlert
     /// Message(title:message:)` shim so existing call sites keep
     /// working without forcing every site to define its own AppError

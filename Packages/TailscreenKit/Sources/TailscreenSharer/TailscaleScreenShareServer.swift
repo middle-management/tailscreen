@@ -229,12 +229,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// used to snapshot; `MediaSockets.send` picks the socket by addr.
     private var media: MediaSockets? {
         lifecycle.withLock { lc in
-            guard let primary = lc.packetListener else { return nil }
+            // At least one socket, or nil: a stopped share must read as nil
+            // so every send site no-ops instead of holding an empty pair.
+            guard lc.packetListener != nil || lc.guestPacketListener != nil else { return nil }
             // `guestAddrs` is a ~Copyable Mutex, so the closure captures self
             // (weakly — a snapshot outliving the server routes to primary,
             // whose send then fails the same way it always has).
             return MediaSockets(
-                primary: primary,
+                primary: lc.packetListener,
                 guest: lc.guestPacketListener,
                 isGuestAddr: { [weak self] addr in self?.isGuestAddr(addr) ?? false })
         }
@@ -1087,6 +1089,47 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// Bring the server up with the guest (share-by-token) listener as its
+    /// ONLY socket — a link-only share, no Tailscale sign-in anywhere in the
+    /// picture. No tsnet node is created or borrowed, so there is no tailnet
+    /// listener, no TCP control listener (ask-to-share and the annotation
+    /// back-channel ride tsnet; guests have neither yet), and no LocalAPI
+    /// identity resolution — every viewer arrives on the guest listener and
+    /// is a guest by construction, waiting at the mandatory approval gate.
+    /// Everything else — capture supervision, fan-out, loss recovery, the
+    /// sweeps, voice relay — runs exactly as in a tailnet share.
+    public func startGuestOnly(
+        filterData: Data?,
+        quality: QualitySettings = .default,
+        guestPacketListener: PacketListener
+    ) async throws {
+        guard !isRunning else { return }
+
+        let normalizedQuality = quality.normalized()
+        sessionQuality.withLock { $0 = normalizedQuality }
+        currentFpsTier.withLock { $0 = normalizedQuality.fpsCap }
+
+        lifecycle.withLock { lc in
+            lc.guestPacketListener = guestPacketListener
+            lc.isRunning = true
+        }
+        logger.log("Guest-only share: guest UDP stream is the only socket (no tsnet node)")
+
+        Task { [weak self] in
+            await self?.receiveControlLoop(pl: guestPacketListener, isGuest: true)
+        }
+        Task { [weak self] in await self?.sweepIdleViewers() }
+        Task { [weak self] in await self?.adaptiveBitrateSweep() }
+
+        lastFilterData.withLock { $0 = filterData }
+        remoteControlInjector?.setSelection(decodedSelection())
+        if let filterData {
+            try startHelperCapture(filterData: filterData)
+        } else {
+            logger.log("Screen-share server: no filterData — skipping helper-capture spawn (test mode)")
+        }
+    }
+
     // MARK: - Capture supervision (helper spawn / restart / crash budget)
 
     private func startHelperCapture(filterData: Data) throws {
@@ -1918,7 +1961,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
                 if deadConsecutive || deadWindowed {
                     let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window, \(total) total"
-                    if isGuest {
+                    // In a guest-ONLY share the guest listener is the only
+                    // socket there is, so its death is the share's — read the
+                    // live lifecycle rather than a spawn-time flag, because a
+                    // share can gain/lose its tailnet half over its life.
+                    let tailnetAlive = lifecycle.withLock { $0.packetListener != nil }
+                    if isGuest && tailnetAlive {
                         // Guests losing their socket must not tear down the
                         // tailnet share; the token side just goes dark.
                         logger.log("Server: guest receive loop dead (\(detail)) — token share offline")
@@ -2971,16 +3019,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     private func outstandingResolveTargets() -> [String: String] {
         // Each `withLock` closure is `@Sendable`, so it can't mutate a
         // captured outer var — collect inside and merge the returned maps.
+        // Guests are excluded outright: their tunnel addrs are in no netmap,
+        // so including them just spins the resolver through its full retry
+        // budget per guest join (and in a guest-only share there is no node
+        // to ask at all).
         let pending = pendingViewerInfos.withLock { state -> [String: String] in
             var m: [String: String] = [:]
-            for (addr, info) in state where info.hostname == nil || info.stableID == nil {
+            for (addr, info) in state
+            where !info.isGuest && (info.hostname == nil || info.stableID == nil) {
                 m[addr] = info.tailscaleIP
             }
             return m
         }
         let connected = viewerInfos.withLock { state -> [String: String] in
             var m: [String: String] = [:]
-            for (addr, info) in state where info.hostname == nil || info.stableID == nil {
+            for (addr, info) in state
+            where !info.isGuest && (info.hostname == nil || info.stableID == nil) {
                 m[addr] = info.tailscaleIP
             }
             return m

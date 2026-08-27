@@ -48,6 +48,7 @@ what the partial case *is*, because that is the part a reader can act on.
 | Wide gamut / 10-bit / HDR (sharing) | ✅ | ❌ | ❌ |
 | Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ |
 | Share via Link (guests without a Tailscale account) | ✅ | ❌ | ❌ |
+| Start a share without signing in (link-only) | ✅ | ❌ | ❌ |
 | Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ |
 | `tailscreen:` link opens the join screen | ✅ | ❌ paste it instead | ❌ paste it instead |
 
