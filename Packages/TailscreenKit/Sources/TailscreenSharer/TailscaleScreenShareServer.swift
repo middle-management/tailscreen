@@ -55,6 +55,11 @@ public struct ViewerInfo: Sendable, Identifiable, Hashable {
     /// any other wire-supplied claim.
     public var stableID: String?
     public let connectedAt: Date
+    /// True when this viewer joined through the share-by-token (guest)
+    /// tunnel rather than the tailnet. Guests have no StableNodeID; their
+    /// durable identity is the guest node key the host resolves from
+    /// `GuestServerNode.peers()`.
+    public let isGuest: Bool
 
     /// What a viewer row says: the resolved hostname minus the `tailscreen-`
     /// marker, falling back to the tailnet IP while the netmap lookup is
@@ -72,7 +77,8 @@ public struct ViewerInfo: Sendable, Identifiable, Hashable {
     /// that need to fake one.
     public init(
         id: String, tailscaleIP: String, hostname: String? = nil,
-        health: ViewerHealth = .good, stableID: String? = nil, connectedAt: Date
+        health: ViewerHealth = .good, stableID: String? = nil, connectedAt: Date,
+        isGuest: Bool = false
     ) {
         self.id = id
         self.tailscaleIP = tailscaleIP
@@ -80,6 +86,7 @@ public struct ViewerInfo: Sendable, Identifiable, Hashable {
         self.health = health
         self.stableID = stableID
         self.connectedAt = connectedAt
+        self.isGuest = isGuest
     }
 }
 
@@ -98,6 +105,9 @@ public struct PendingViewerInfo: Sendable, Identifiable, Hashable {
     /// decision under the spoof-resistant key.
     public var stableID: String?
     public let arrivedAt: Date
+    /// See `ViewerInfo.isGuest`. Approval is mandatory for guests, so a
+    /// pending guest row is the *only* way one ever reaches the roster.
+    public var isGuest: Bool = false
 
     /// See `ViewerInfo.displayName` — the approval prompt names a peer the
     /// same way the roster does.
@@ -160,6 +170,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// fan-out / denial datagrams all observe nil and no-op rather
         /// than racing the close.
         var packetListener: PacketListener?
+        /// The guest (share-by-token) UDP listener, when this share is
+        /// also reachable by token. Same detach-then-close discipline as
+        /// `packetListener`; nil for tailnet-only shares.
+        var guestPacketListener: PacketListener?
         /// The share's master latch: set true at the end of `start()`'s
         /// bring-up, false first thing in `stop()` (and in deinit). Every
         /// loop, guard, and (re)spawn path gates on a locked read, so a
@@ -210,7 +224,21 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     private var controlListener: TailscreenControlListener? {
         lifecycle.withLock { $0.controlListener }
     }
-    private var packetListener: PacketListener? { lifecycle.withLock { $0.packetListener } }
+    /// Routed send facade over the tailnet + guest listeners (nil when
+    /// stopped). Send sites treat it exactly like the single listener they
+    /// used to snapshot; `MediaSockets.send` picks the socket by addr.
+    private var media: MediaSockets? {
+        lifecycle.withLock { lc in
+            guard let primary = lc.packetListener else { return nil }
+            // `guestAddrs` is a ~Copyable Mutex, so the closure captures self
+            // (weakly — a snapshot outliving the server routes to primary,
+            // whose send then fails the same way it always has).
+            return MediaSockets(
+                primary: primary,
+                guest: lc.guestPacketListener,
+                isGuestAddr: { [weak self] addr in self?.isGuestAddr(addr) ?? false })
+        }
+    }
     private var helperCapture: (any CaptureEncoding)? { lifecycle.withLock { $0.helperCapture } }
     private var helperCodec: VideoCodec? { lifecycle.withLock { $0.helperCodec } }
 
@@ -464,6 +492,26 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Consumed on first matching HELLO. A remembered `deny` still outranks
     /// it — a pre-approval never un-blocks a blocked peer.
     private let preApprovedIPs = Mutex<Set<String>>([])
+
+    /// Addrs whose datagrams arrive on the guest (share-by-token) listener.
+    /// Populated by the guest receive loop, consulted by send routing, the
+    /// admission gate (guests always require approval), and eviction.
+    /// Grows for the share's life; cleared by `stop()`.
+    private let guestAddrs = Mutex<Set<String>>([])
+
+    private func isGuestAddr(_ addr: String) -> Bool {
+        guestAddrs.withLock { $0.contains(addr) }
+    }
+
+    /// Fired (with the guest's tunnel IP, no port) when a guest viewer is
+    /// denied or expelled by remembered-deny — the moments the rejection
+    /// should also close the tunnel. The host maps the IP to the guest's
+    /// node key (GuestServerNode.peers()) and calls removePeer, which
+    /// closes flows and denylists the key for the share's life. A plain
+    /// disconnect ("✕", idle sweep, voluntary BYE) deliberately does NOT
+    /// fire this: those are one-time, and the guest may reconnect through
+    /// the approval gate again.
+    public var onGuestViewerDenied: (@Sendable (String) -> Void)?
 
     /// Addrs kicked by `expelViewer`, with the expel time. A straggler
     /// KEEPALIVE/PLI from a kicked client (its HELLO_DENY still in flight,
@@ -908,7 +956,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         filterData: Data?,
         quality: QualitySettings = .default,
         existingNode: TailscaleNode? = nil,
-        controlListener: TailscreenControlListener? = nil
+        controlListener: TailscreenControlListener? = nil,
+        guestPacketListener: PacketListener? = nil
     ) async throws {
         guard !isRunning else { return }
 
@@ -1010,9 +1059,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         lifecycle.withLock { $0.packetListener = packetListener }
         logger.log("UDP video stream listening on \(bindAddr)")
 
+        // Guest (share-by-token) listener: same wire protocol, second
+        // socket, viewers arriving through the token tunnel. Its datagrams
+        // feed the same handleIncoming; its addrs are tagged as guests.
+        if let guestPacketListener {
+            lifecycle.withLock { $0.guestPacketListener = guestPacketListener }
+            logger.log("Guest UDP stream attached (share-by-token)")
+        }
+
         lifecycle.withLock { $0.isRunning = true }
 
-        Task { [weak self] in await self?.receiveControlLoop() }
+        Task { [weak self] in await self?.receiveControlLoop(pl: packetListener, isGuest: false) }
+        if let guestPacketListener {
+            Task { [weak self] in
+                await self?.receiveControlLoop(pl: guestPacketListener, isGuest: true)
+            }
+        }
         Task { [weak self] in await self?.sweepIdleViewers() }
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
@@ -1812,8 +1874,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// every `readFailed` as a timeout let a dead socket busy-spin with the
     /// error counter permanently reset, so the give-up ladder was
     /// unreachable — the elapsed-time classification below tells them apart.
-    private func receiveControlLoop() async {
-        guard let pl = packetListener else { return }
+    private func receiveControlLoop(pl: PacketListener, isGuest: Bool) async {
         var consecutiveErrors = 0
         var errorStampsNs: [UInt64] = []
         while isRunning {
@@ -1821,6 +1882,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             do {
                 let (data, from) = try await pl.recv(timeout: 1_000)
                 consecutiveErrors = 0
+                if isGuest {
+                    // Origin is decided here, once, for the share's life:
+                    // everything downstream (send routing, the mandatory
+                    // approval gate, eviction) keys off this set.
+                    guestAddrs.withLock { _ = $0.insert(from) }
+                }
                 handleIncoming(data: data, from: from)
             } catch {
                 guard isRunning else { break }
@@ -1847,8 +1914,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
                 if deadConsecutive || deadWindowed {
                     let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window, \(total) total"
-                    logger.log("Server: receive loop dead (\(detail)) — stopping share")
-                    onCaptureStopped?(Self.receiveLoopDeadError(underlying: error))
+                    if isGuest {
+                        // Guests losing their socket must not tear down the
+                        // tailnet share; the token side just goes dark.
+                        logger.log("Server: guest receive loop dead (\(detail)) — token share offline")
+                    } else {
+                        logger.log("Server: receive loop dead (\(detail)) — stopping share")
+                        onCaptureStopped?(Self.receiveLoopDeadError(underlying: error))
+                    }
                     break
                 }
                 try? await Task.sleep(
@@ -1890,7 +1963,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
                 let ack = helloAckDatagram(for: addr, ssrc: assignedSSRC)
                 Task { [weak self] in
-                    guard let pl = self?.packetListener else { return }
+                    guard let pl = self?.media else { return }
                     try? await pl.send(ack, to: addr)
                 }
             } else if (pendingViewers.withLock { $0[addr] != nil }) {
@@ -1899,7 +1972,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 // "Waiting for approval"; resend on every HELLO retry in
                 // case an earlier one was lost on the UDP path.
                 Task { [weak self] in
-                    guard let pl = self?.packetListener else { return }
+                    guard let pl = self?.media else { return }
                     let pending = ScreenShareControlMessage.encode(.helloPending)
                     try? await pl.send(pending, to: addr)
                 }
@@ -2012,7 +2085,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             state[addr] = viewer
         }
 
-        if !decision.serve.isEmpty, let pl = packetListener {
+        if !decision.serve.isEmpty, let pl = media {
             let served = decision.serve
             Task { [weak self] in
                 guard let self else { return }
@@ -2193,7 +2266,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// place (not rebuilt-to-prune like video) because audio has multiple
     /// producers addressing different recipient subsets; stale chains are
     /// pruned at viewer-removal points.
-    private func enqueueAudioPackets(_ packet: Data, to recipients: [String], on pl: PacketListener) {
+    private func enqueueAudioPackets(_ packet: Data, to recipients: [String], on pl: MediaSockets) {
         guard !recipients.isEmpty else { return }
         audioSendTails.withLock { tails in
             for addr in recipients {
@@ -2230,7 +2303,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             )
         }
         guard validated.valid else { return }
-        if let pl = packetListener {
+        if let pl = media {
             enqueueAudioPackets(packet, to: validated.recipients, on: pl)
         }
         onAudioReceived?(packet)
@@ -2305,12 +2378,15 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // an unknown/uncached peer passes `nil` policy, so `admissionDecision`
         // degrades to the plain approval gate. An already-known viewer isn't
         // subject to admission — it just refreshes below.
+        let guest = isGuestAddr(addr)
         let cachedStableID = alreadyKnown ? nil : peerStableIDCache.withLock({ $0[ip] })
         let cachedPolicy = cachedStableID.flatMap { id in accessPolicies.withLock { $0[id] } }
-        var admission = Self.admissionDecision(policy: cachedPolicy, requireApproval: approvalRequired)
+        var admission = Self.admissionDecision(
+            policy: cachedPolicy, requireApproval: approvalRequired, isGuest: guest)
         // A one-time pre-approval (from accepting this peer's request-to-share)
-        // admits it straight away — but never overrides a remembered deny.
-        if !alreadyKnown && admission != .reject {
+        // admits it straight away — but never overrides a remembered deny,
+        // and never applies to guests (their approval is per-join, always).
+        if !alreadyKnown && admission != .reject && !guest {
             let preApproved = preApprovedIPs.withLock { $0.remove(ip) != nil }
             if preApproved { admission = .admit }
         }
@@ -2351,7 +2427,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             let cachedStableID = peerStableIDCache.withLock { $0[ip] }
             let info = PendingViewerInfo(
                 id: addr, tailscaleIP: ip, hostname: cachedName, stableID: cachedStableID,
-                arrivedAt: Date())
+                arrivedAt: Date(), isGuest: guest)
             pendingViewerInfos.withLock { $0[addr] = info }
             logger.log("Viewer pending approval \(addr)")
             notifyPendingViewersChanged()
@@ -2403,7 +2479,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // (the viewer ignores an ACK that matches its current SSRC).
             let ack = helloAckDatagram(for: addr, ssrc: audioSSRC)
             Task { [weak self] in
-                guard let pl = self?.packetListener else { return }
+                guard let pl = self?.media else { return }
                 try? await pl.send(ack, to: addr)
             }
             publishAddedViewer(addr: addr)
@@ -2440,7 +2516,9 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 state.mapValues { $0.stableID }
             }
             let policies = accessPolicies.withLock { $0 }
-            let decision = Self.drainDecision(pendingStableIDs: pendingStableIDs, policies: policies)
+            let decision = Self.drainDecision(
+                pendingStableIDs: pendingStableIDs, policies: policies,
+                guestAddrs: guestAddrs.withLock { $0 })
             for addr in decision.deny {
                 denyViewer(addr: addr)
             }
@@ -2492,7 +2570,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     private func applyRememberedPolicyToPending(addr: String, stableID: String?) {
         let policy = stableID.flatMap { id in accessPolicies.withLock { $0[id] } }
         let gate = requireApproval.withLock { $0 }
-        switch Self.admissionDecision(policy: policy, requireApproval: gate) {
+        switch Self.admissionDecision(policy: policy, requireApproval: gate, isGuest: isGuestAddr(addr)) {
         case .admit:
             logger.log("Pending viewer \(addr) auto-admitted (remembered allow or gate off)")
             approveViewer(addr: addr)
@@ -2518,7 +2596,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             tailscaleIP: ip,
             hostname: cachedName,
             stableID: cachedStableID,
-            connectedAt: Date()
+            connectedAt: Date(),
+            isGuest: isGuestAddr(addr)
         )
         viewerInfos.withLock { $0[addr] = info }
         notifyViewersChanged()
@@ -2566,7 +2645,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // starts flowing on the next encoded AU.
         let ack = helloAckDatagram(for: addr, ssrc: pending.audioSSRC)
         Task { [weak self] in
-            guard let pl = self?.packetListener else { return }
+            guard let pl = self?.media else { return }
             try? await pl.send(ack, to: addr)
         }
         helperCapture?.requestKeyframe()
@@ -2585,6 +2664,9 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         notifyPendingViewersChanged()
         logger.log("Viewer denied \(addr)")
         sendDenialDatagrams(to: addr)
+        if isGuestAddr(addr) {
+            onGuestViewerDenied?(ipFromAddr(addr))
+        }
     }
 
     /// Sharer-initiated one-time disconnect of a connected viewer — the
@@ -2635,6 +2717,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         notifyViewersChanged()
         logger.log("Viewer expelled (\(reason)) \(addr)")
         sendDenialDatagrams(to: addr)
+        // A policy-driven expel is a standing rejection: close the guest
+        // tunnel too. A one-time disconnect is not — the guest may knock
+        // again through the approval gate.
+        if reason == "remembered deny", isGuestAddr(addr) {
+            onGuestViewerDenied?(ipFromAddr(addr))
+        }
     }
 
     /// Close every TCP annotation connection whose peer dialed from `ip`.
@@ -2660,7 +2748,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let denied = ScreenShareControlMessage.encode(.helloDenied)
         let bye = ScreenShareControlMessage.encode(.serverBye)
         Task { [weak self] in
-            guard let pl = self?.packetListener else { return }
+            guard let pl = self?.media else { return }
             try? await pl.send(denied, to: addr)
             for _ in 0..<3 {
                 try? await pl.send(bye, to: addr)
@@ -3013,7 +3101,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             let liveAddrs = viewers.withLock { Set($0.keys) }
             let pingTargets = pingAddrs.filter { liveAddrs.contains($0) }
-            if let pl = packetListener, !pingTargets.isEmpty {
+            if let pl = media, !pingTargets.isEmpty {
                 let ping = ScreenShareControlMessage.encodePing(serverUptimeNs: now)
                 Task {
                     for addr in pingTargets { try? await pl.send(ping, to: addr) }
@@ -3369,7 +3457,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // racing a stop either copies out the still-live listener — whose
         // remaining sends just fail once the socket closes — or reads nil
         // here and no-ops. Nothing below holds the lock.
-        guard let pl = packetListener else { return }
+        guard let pl = media else { return }
         // Codec is cached from the parameter-sets blob the helper
         // sends right after its first encoded frame.
         guard let codec = helperCodec else { return }
@@ -3570,7 +3658,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// per-viewer audio send chains so a slow viewer's `pl.send` parks only
     /// its own next packet instead of stalling audio to everyone.
     public func sendAudioRTP(_ packet: Data) {
-        guard let pl = packetListener else { return }
+        guard let pl = media else { return }
         let recipients = viewers.withLock { Array($0.keys) }
         enqueueAudioPackets(packet, to: recipients, on: pl)
     }
@@ -3704,7 +3792,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let goodbyeAddrs =
             viewers.withLock { Array($0.keys) }
             + pendingViewers.withLock { Array($0.keys) }
-        if let pl = packetListener, !goodbyeAddrs.isEmpty {
+        if let pl = media, !goodbyeAddrs.isEmpty {
             let payload = ScreenShareControlMessage.encode(.serverBye)
             for _ in 0..<3 {
                 for addr in goodbyeAddrs {
@@ -3751,12 +3839,15 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // once the slot is nil every sender — broadcast, NACK service,
         // audio fan-out, denial datagrams — snapshots nil and no-ops
         // instead of racing the close.
-        let packetListenerToClose = lifecycle.withLock { lc -> PacketListener? in
-            let pl = lc.packetListener
+        let socketsToClose = lifecycle.withLock { lc in
+            let sockets = (lc.packetListener, lc.guestPacketListener)
             lc.packetListener = nil
-            return pl
+            lc.guestPacketListener = nil
+            return sockets
         }
-        await packetListenerToClose?.close()
+        await socketsToClose.0?.close()
+        await socketsToClose.1?.close()
+        guestAddrs.withLock { $0.removeAll() }
         logger.log("Server stop: packet listener closed")
 
         let receiveErrors = receiveLoopErrorTotal.withLock { count -> Int in

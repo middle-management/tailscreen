@@ -47,6 +47,16 @@ public struct ViewerConfig: Sendable {
     }
     public var nodeRole: NodeRole = .viewerOnly
 
+    /// A share-by-token connection token. When set, the session runs over
+    /// the guest (control-plane-free) tunnel instead of the tailnet: no
+    /// tsnet node, no sign-in — `hostname`, `authKey`, `controlURL`,
+    /// `statePath` and `nodeRole` are all ignored, and the sharer must
+    /// approve this viewer before any video flows (guest approval is
+    /// mandatory on the sharer side). The TCP back-channel (annotations /
+    /// remote control) is not yet wired for guests: `onBackChannelReady`
+    /// never fires, and hosts should gate that chrome accordingly.
+    public var guestToken: String?
+
     public init(
         hostname: String,
         port: UInt16 = NetworkConfig.tailscreenPort,
@@ -63,6 +73,15 @@ public struct ViewerConfig: Sendable {
         self.statePath = statePath
         self.caps = caps
         self.nodeRole = nodeRole
+    }
+
+    /// A guest (share-by-token) session: everything tailnet-related is
+    /// inert, so only the token and capabilities matter.
+    public init(guestToken: String, caps: ScreenShareCaps = [.nack, .receiverReport, .fec]) {
+        self.hostname = ""
+        self.statePath = ""
+        self.caps = caps
+        self.guestToken = guestToken
     }
 }
 
@@ -558,6 +577,34 @@ public final class TsnetTransport {
         onDecoderResetNeeded: (@MainActor () -> Void)? = nil,
         onDecodeFatal: (@MainActor () -> Void)? = nil
     ) async throws {
+        if let token = config.guestToken {
+            // Guest (share-by-token) path: the token names the relay and the
+            // sharer, so there is no tsnet node, no sign-in, and no peer
+            // discovery. `preparedNode` (a tailnet node a picker host may
+            // hold) is deliberately untouched. The dial blocks for the
+            // tunnel bring-up: DERP connect, handshake, NAT traversal. No
+            // back-channel yet — guest TCP follows with the sharer's guest
+            // control listener.
+            logger.log("▶ Build \(buildIdentity ?? "unknown") — guest viewer session starting")
+            let client = GuestClientNode(token: token, logger: logger)
+            let listener = try await client.dialUDP(port: config.port)
+            let dest = Self.formatAddr(host: try await client.serverAddr(), port: config.port)
+            logger.log("Guest tunnel up; dialing \(dest) (share-by-token)")
+            return try await runSession(
+                config: config,
+                wiring: SessionWiring(
+                    listener: listener, dest: dest, backChannel: nil,
+                    tailnetNode: nil, guestClient: client),
+                endpoints: SessionAV(
+                    decoder: decoder, videoSink: videoSink, audioSink: audioSink,
+                    microphone: microphone),
+                shouldClose: shouldClose,
+                callbacks: SessionCallbacks(
+                    onVoiceReady: onVoiceReady, onAdmitted: onAdmitted,
+                    onAwaitingApproval: onAwaitingApproval, onDeclined: onDeclined,
+                    onEnded: onEnded, onDecoderResetNeeded: onDecoderResetNeeded,
+                    onDecodeFatal: onDecodeFatal))
+        }
         // Bring the node up if a caller skipped `prepare` (the direct-host
         // path); a picker host that already called `prepare` + `discoverPeers` reuses
         // the live node (this is a no-op then).
@@ -624,15 +671,92 @@ public final class TsnetTransport {
             handlers: backChannelHandlers, logger: logger)
         await backChannel.start()
         onBackChannelReady?(backChannel)
+
+        return try await runSession(
+            config: config,
+            wiring: SessionWiring(
+                listener: listener, dest: dest, backChannel: backChannel,
+                tailnetNode: node, guestClient: nil),
+            endpoints: SessionAV(
+                decoder: decoder, videoSink: videoSink, audioSink: audioSink,
+                microphone: microphone),
+            shouldClose: shouldClose,
+            callbacks: SessionCallbacks(
+                onVoiceReady: onVoiceReady, onAdmitted: onAdmitted,
+                onAwaitingApproval: onAwaitingApproval, onDeclined: onDeclined,
+                onEnded: onEnded, onDecoderResetNeeded: onDecoderResetNeeded,
+                onDecodeFatal: onDecodeFatal))
+    }
+
+    /// The transport-agnostic half of a viewing session: everything after a
+    /// datagram socket and a destination exist — the outbound queue, the
+    /// detached receive task, voice, the tick loop, and teardown. `run`
+    /// reaches it from both paths: the tailnet one (tsnet node +
+    /// back-channel) and the guest one (share-by-token tunnel, no node, no
+    /// back-channel yet). Exactly one of `tailnetNode` / `guestClient` is
+    /// non-nil and is torn down at exit.
+    /// The socket-and-node half of a session — what `run`'s two paths
+    /// differ in. Exactly one of `tailnetNode` / `guestClient` is non-nil.
+    fileprivate struct SessionWiring {
+        let listener: PacketListener
+        let dest: String
+        let backChannel: ViewerBackChannel?
+        let tailnetNode: TailscaleNode?
+        let guestClient: GuestClientNode?
+    }
+
+    /// The media endpoints a session decodes into and captures from.
+    fileprivate struct SessionAV {
+        let decoder: VideoDecoding
+        let videoSink: VideoSink
+        let audioSink: AudioSink?
+        let microphone: MicrophoneCapturing?
+    }
+
+    /// The host-facing callbacks a session fires (the subset of `run`'s
+    /// that outlives transport setup).
+    fileprivate struct SessionCallbacks {
+        let onVoiceReady: (@MainActor @Sendable (VoiceUplink) -> Void)?
+        let onAdmitted: (@Sendable (ScreenShareCaps) -> Void)?
+        let onAwaitingApproval: (@Sendable () -> Void)?
+        let onDeclined: (@Sendable () -> Void)?
+        let onEnded: (@Sendable (ViewerCloseReason, _ wasAdmitted: Bool) -> Void)?
+        let onDecoderResetNeeded: (@MainActor () -> Void)?
+        let onDecodeFatal: (@MainActor () -> Void)?
+    }
+
+    private func runSession(
+        config: ViewerConfig,
+        wiring: SessionWiring,
+        endpoints: SessionAV,
+        shouldClose: @escaping () -> Bool,
+        callbacks: SessionCallbacks
+    ) async throws {
+        let listener = wiring.listener
+        let dest = wiring.dest
+        let backChannel = wiring.backChannel
+        let decoder = endpoints.decoder
+        let videoSink = endpoints.videoSink
+        let audioSink = endpoints.audioSink
+        let microphone = endpoints.microphone
+        let onVoiceReady = callbacks.onVoiceReady
+        let onAdmitted = callbacks.onAdmitted
+        let onAwaitingApproval = callbacks.onAwaitingApproval
+        let onDeclined = callbacks.onDeclined
+        let onEnded = callbacks.onEnded
+        let onDecoderResetNeeded = callbacks.onDecoderResetNeeded
+        let onDecodeFatal = callbacks.onDecodeFatal
         // Teardown backstop for every exit path (incl. a throw before the
         // normal end): cancel the back-channel's loop + close its socket. Kept
         // fire-and-forget on purpose — `stop()` can park up to the receive
         // poll interval closing the live connection, and blocking session
         // teardown on that would freeze the window close. The unstructured Task
-        // is independently rooted so it still runs to completion, and
-        // `node.down()` below tears the whole node (and this fd) down
-        // regardless, so ordering here is immaterial.
-        defer { Task { await backChannel.stop() } }
+        // is independently rooted so it still runs to completion, and the
+        // node/tunnel teardown below tears this fd down regardless, so
+        // ordering here is immaterial.
+        defer {
+            if let backChannel { Task { await backChannel.stop() } }
+        }
 
         // Ordered, non-blocking outbound queue: `onControlToSend` (a sync
         // closure the session calls on the receive thread) yields here, and a
@@ -969,11 +1093,11 @@ public final class TsnetTransport {
         await listener.close()
         // When retaining, `teardown()` is the only thing that takes the node
         // down — `retainedNode` was claimed at entry, so nothing to do here.
-        if !retainsNodeAcrossSessions {
-            try? await node.down()
+        // (`preparedNode` bookkeeping is `run`'s defer, on the tailnet path.)
+        if let tailnetNode = wiring.tailnetNode, !retainsNodeAcrossSessions {
+            try? await tailnetNode.down()
         }
-        // `preparedNode = nil` is handled by the `defer` above (which also
-        // covers the throwing exit paths).
+        await wiring.guestClient?.close()
     }
 
     /// Surface an interactive-login URL: print it prominently on stderr, so it
