@@ -56,17 +56,24 @@ public final class LinuxShareSession {
         public let id: String
         public let label: String
         public let stableID: String?
+        /// A share-by-token guest: no StableNodeID ever resolves (the
+        /// remember actions don't apply), and the row carries a badge.
+        public let isGuest: Bool
         /// The link's state, straight off the server. Passed as the ENUM
         /// rather than a rendered string: this package has no string catalog,
         /// so interpolating it here put an untranslated lowercase `degraded`
         /// beside somebody's hostname in the UI. The host words it.
         public let health: ViewerHealth
 
-        public init(id: String, label: String, stableID: String?, health: ViewerHealth) {
+        public init(
+            id: String, label: String, stableID: String?, health: ViewerHealth,
+            isGuest: Bool = false
+        ) {
             self.id = id
             self.label = label
             self.stableID = stableID
             self.health = health
+            self.isGuest = isGuest
         }
     }
 
@@ -82,15 +89,19 @@ public final class LinuxShareSession {
     public struct PendingViewer: Identifiable, Equatable, Sendable {
         public let id: String
         public let label: String
+        /// See `ConnectedViewer.isGuest` — a pending guest's approval is the
+        /// only way one ever reaches the roster.
+        public let isGuest: Bool
         /// See `ConnectedViewer.stableID` — "Always Allow" / "Deny & Block" on
         /// a pending row persists under this, not under the hostname a peer
         /// sends.
         public let stableID: String?
 
-        public init(id: String, label: String, stableID: String?) {
+        public init(id: String, label: String, stableID: String?, isGuest: Bool = false) {
             self.id = id
             self.label = label
             self.stableID = stableID
+            self.isGuest = isGuest
         }
     }
 
@@ -148,6 +159,80 @@ public final class LinuxShareSession {
     // MARK: State
 
     public private(set) var phase: Phase = .idle
+
+    // MARK: Link sharing (share-by-token)
+
+    /// The live share link's token, nil while the link is off. Mirrors the
+    /// portable `SharerLinkSession`; published through `onLinkSharingChanged`
+    /// so the host's card can render toggle/link/count without owning any of
+    /// the lifecycle.
+    public private(set) var linkToken: String?
+    /// True while the link is being created or rotated (the relay bootstrap
+    /// blocks for the network). Toggle flips are ignored meanwhile.
+    public private(set) var linkBusy = false
+    /// Fired on every (token, busy) movement, on the main actor.
+    public var onLinkSharingChanged: ((String?, Bool) -> Void)?
+    private let link = SharerLinkSession()
+
+    /// The share-by-token toggle. `on` brings the guest node up and attaches
+    /// its listener to the running server; `off` drops every guest and kills
+    /// the token. No-op while idle — the link is minted per share.
+    public func setLinkSharing(_ on: Bool) {
+        guard !linkBusy, let server else { return }
+        linkBusy = true
+        publishLink()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if on {
+                do {
+                    self.linkToken = try await self.link.enable(on: server)
+                } catch {
+                    FileHandle.standardError.write(
+                        Data("warning: share link failed to start (\(error))\n".utf8))
+                    self.linkToken = nil
+                }
+            } else {
+                await self.link.disable(on: server)
+                self.linkToken = nil
+            }
+            self.linkBusy = false
+            self.publishLink()
+        }
+    }
+
+    /// New Link: the old token dies the moment this starts (current guests
+    /// drop with it) and a fresh node key mints a fresh one.
+    public func rotateLink() {
+        guard !linkBusy, linkToken != nil, let server else { return }
+        linkBusy = true
+        publishLink()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                self.linkToken = try await self.link.rotate(on: server)
+            } catch {
+                FileHandle.standardError.write(
+                    Data("warning: share link rotation failed (\(error))\n".utf8))
+                self.linkToken = nil
+            }
+            self.linkBusy = false
+            self.publishLink()
+        }
+    }
+
+    private func publishLink() {
+        onLinkSharingChanged?(linkToken, linkBusy)
+    }
+
+    /// The share ended (any path): the server already told every guest, so
+    /// only the guest node is left to close. Synchronous state first so the
+    /// card's toggle drops with the share rather than a beat later.
+    private func teardownLink() {
+        linkToken = nil
+        linkBusy = false
+        publishLink()
+        Task { [link] in await link.teardown() }
+    }
     /// The sharer's own drawing state — the same store the viewers run, so the
     /// stroke geometry, the undo stack and the identity-derived colour are
     /// shared code rather than a second implementation on the sharing side.
@@ -370,7 +455,7 @@ public final class LinuxShareSession {
             let rows = infos.map {
                 ConnectedViewer(
                     id: $0.id, label: $0.displayName, stableID: $0.stableID,
-                    health: $0.health)
+                    health: $0.health, isGuest: $0.isGuest)
             }
             Task { @MainActor [weak self] in
                 guard let self, self.core.isCurrentShare(generation) else { return }
@@ -382,7 +467,8 @@ public final class LinuxShareSession {
             // `PendingViewer`. Fires off the main actor; hop.
             let waiting = pending.map {
                 PendingViewer(
-                    id: $0.id, label: $0.displayName, stableID: $0.stableID)
+                    id: $0.id, label: $0.displayName, stableID: $0.stableID,
+                    isGuest: $0.isGuest)
             }
             Task { @MainActor [weak self] in
                 guard let self, self.core.isCurrentShare(generation) else { return }
@@ -410,6 +496,12 @@ public final class LinuxShareSession {
                 guard let self, self.core.isCurrentShare(generation) else { return }
                 self.handleCaptureStopped(error)
             }
+        }
+        // Tunnel-level eviction: a Deny (or remembered-deny expel) on a guest
+        // also closes their tunnel and denylists their node key for the
+        // link's life, so a denied guest can't keep knocking.
+        server.onGuestViewerDenied = { [link] ip in
+            Task { await link.evict(ip: ip) }
         }
         // Installed HERE, before `start()`, and never reassigned: the server's
         // callbacks are bare stored vars its receive thread reads with no
@@ -468,6 +560,7 @@ public final class LinuxShareSession {
                 self.server = nil
                 self.teardownOverlay()
                 self.stopVoice()
+                self.teardownLink()
                 self.onShareDidEnd?(.startFailed)
             }
         }
@@ -526,6 +619,9 @@ public final class LinuxShareSession {
         access.reset()
         teardownOverlay()
         stopVoice()
+        // The token dies with the share; the server's stop() closes the
+        // guest listener and tells every guest, so only the node remains.
+        teardownLink()
         Task { await server.stop() }
     }
 
@@ -569,6 +665,7 @@ public final class LinuxShareSession {
         clearControlState()
         teardownOverlay()
         stopVoice()
+        teardownLink()
     }
 
     private func setPhase(_ new: Phase) {

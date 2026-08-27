@@ -142,6 +142,9 @@ public struct ShareCard: View {
     /// even the Stop button — because if it shows the wrong thing, stopping is
     /// what the next click is for.
     let preview: HubPreview?
+    /// The share-by-token half, when this host's engine has it. Nil renders
+    /// nothing — same capability rule as the microphone and drawing slots.
+    let linkSharing: HubLinkSharing?
     /// The nuance under the headline — "Nobody watching yet", "1 waiting for
     /// approval". Separate from `statusLine` because the headline says the
     /// STATE and this says what is true about it right now, which is the
@@ -171,6 +174,7 @@ public struct ShareCard: View {
         secondaryStart: HubAction? = nil,
         changeSource: HubAction? = nil,
         preview: HubPreview? = nil,
+        linkSharing: HubLinkSharing? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
@@ -192,6 +196,7 @@ public struct ShareCard: View {
         self.secondaryStart = secondaryStart
         self.changeSource = changeSource
         self.preview = preview
+        self.linkSharing = linkSharing
         self.statusDetail = statusDetail
         self.onStart = onStart
         self.onStop = onStop
@@ -215,6 +220,7 @@ public struct ShareCard: View {
             }
             drawingCluster
             peopleCluster
+            linkCluster
             settingsCluster
         }
         .padding(14)
@@ -387,9 +393,17 @@ public struct ShareCard: View {
             Divider()
             ForEach(prompts, id: \.id) { prompt in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(prompt.message)
-                        .font(.callout)
-                        .fontWeight(.bold)
+                    HStack(spacing: 8) {
+                        Text(prompt.message)
+                            .font(.callout)
+                            .fontWeight(.bold)
+                        if prompt.isGuest {
+                            // The answer admits someone from OUTSIDE the
+                            // tailnet — said at the moment of deciding.
+                            HubGuestChip()
+                        }
+                        Spacer()
+                    }
                     HStack(spacing: 6) {
                         Button(prompt.acceptLabel) { onAccept(prompt.id) }
                         Button(prompt.declineLabel) { onDecline(prompt.id) }
@@ -408,6 +422,55 @@ public struct ShareCard: View {
             ForEach(viewers, id: \.id) { viewer in
                 HubViewerRowView(viewer: viewer)
             }
+        }
+    }
+
+    /// The share-by-token controls: the Share via Link toggle, and — while a
+    /// link is live — the link itself as selectable text (these toolkits have
+    /// no clipboard affordance, and a link you can select and paste always
+    /// works — the `HubLoginCard` lesson), the guest count, New Link, and the
+    /// consent caption. Only while sharing: the link is minted per share and
+    /// dies with it, so an idle card has nothing honest to show here.
+    @ViewBuilder private var linkCluster: some View {
+        if isSharing, let linkSharing {
+            Divider()
+            Toggle(
+                L("Share via Link"),
+                isOn: Binding(
+                    get: { linkSharing.token != nil || linkSharing.busy },
+                    set: { linkSharing.onToggle($0) })
+            )
+            .toggleStyle(.switch)
+            if linkSharing.busy {
+                Text(L("Creating link…"))
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+            } else if let token = linkSharing.token {
+                Text(ShareLinkFormat.link(token: token))
+                    .font(.caption)
+                    .textSelectionEnabled()
+                Text(guestCountLine)
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+                if let onNewLink = linkSharing.onNewLink {
+                    Button(L("New Link"), action: onNewLink)
+                }
+                Text(
+                    L(
+                        "Anyone with the link can ask to join; you approve each guest. The link stops working when sharing stops."
+                    )
+                )
+                .font(.caption)
+                .foregroundColor(HubStyle.secondaryText)
+            }
+        }
+    }
+
+    private var guestCountLine: String {
+        switch linkSharing?.guestCount ?? 0 {
+        case 0: return L("No guests yet")
+        case 1: return L("1 guest")
+        case let n: return L("\(n) guests")
         }
     }
 

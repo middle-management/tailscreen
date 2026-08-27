@@ -62,6 +62,11 @@ public enum HubStyle {
     /// Never alone — the row spells the health out beside them.
     public static let healthDegraded = Color(red: 0.9, green: 0.72, blue: 0.1)
     public static let healthThrottled = Color(red: 0.95, green: 0.55, blue: 0.1)
+    /// The guest badge, matching the macOS roster's purple capsule: a
+    /// share-by-token viewer, identified by node key rather than a machine
+    /// name. Purple so it reads as identity-kind, not health or attention.
+    public static let guestChipFill = Color(red: 0.55, green: 0.35, blue: 0.85, opacity: 0.18)
+    public static let guestChipText = Color(red: 0.45, green: 0.28, blue: 0.75)
     /// The "you are controlling" state — the same orange the macOS viewer
     /// frames the video with while a grant is live, as a translucent tint so
     /// it reads on both light and dark like the sharing chip does.
@@ -150,6 +155,41 @@ public struct HubToggle: Sendable {
     }
 }
 
+/// The share-by-token half of a live share, as the card renders it: the
+/// Share via Link toggle, the link itself (selectable text — a URL you can
+/// select and paste always works, the `HubLoginCard` lesson; copy buttons
+/// are a host affordance these toolkits don't have), New Link, and the
+/// guest count. Nil on `ShareCard` renders nothing — a host whose engine
+/// has no link sharing shows no dead switch.
+public struct HubLinkSharing: Sendable {
+    /// The live link's token; nil = link off (which is what the toggle
+    /// shows). The card renders it as the full `tailscreen:` link.
+    public let token: String?
+    /// True while the link is being created or rotated (the relay
+    /// bootstrap blocks for the network) — the card shows progress copy
+    /// and the host ignores toggle flips meanwhile.
+    public let busy: Bool
+    /// Connected + pending guests, for the count line under the link.
+    public let guestCount: Int
+    public let onToggle: @MainActor @Sendable (Bool) -> Void
+    /// New Link rotation (the old link dies, guests drop). Nil hides it.
+    public let onNewLink: (@MainActor @Sendable () -> Void)?
+
+    public init(
+        token: String?,
+        busy: Bool,
+        guestCount: Int,
+        onToggle: @escaping @MainActor @Sendable (Bool) -> Void,
+        onNewLink: (@MainActor @Sendable () -> Void)? = nil
+    ) {
+        self.token = token
+        self.busy = busy
+        self.guestCount = guestCount
+        self.onToggle = onToggle
+        self.onNewLink = onNewLink
+    }
+}
+
 /// Something asking the person at this machine for a yes or a no.
 ///
 /// One type for what were two features: a viewer waiting to be admitted, and a
@@ -202,6 +242,12 @@ public struct HubViewerRow: Identifiable, Sendable {
     public let onAlwaysAllow: (@MainActor @Sendable () -> Void)?
     public let onDenyAndBlock: (@MainActor @Sendable () -> Void)?
     public let onForget: (@MainActor @Sendable () -> Void)?
+    /// A share-by-token guest: badged so the sharer can tell at a glance
+    /// which kind of viewer they are deciding about. Hosts pass the
+    /// remember-actions as nil for guests — those persist under a Tailscale
+    /// StableNodeID, which a guest never has (Deny already denylists the
+    /// guest's node key at the tunnel for the link's life).
+    public let isGuest: Bool
 
     public init(
         id: String,
@@ -212,7 +258,8 @@ public struct HubViewerRow: Identifiable, Sendable {
         onKick: (@MainActor @Sendable () -> Void)? = nil,
         onAlwaysAllow: (@MainActor @Sendable () -> Void)? = nil,
         onDenyAndBlock: (@MainActor @Sendable () -> Void)? = nil,
-        onForget: (@MainActor @Sendable () -> Void)? = nil
+        onForget: (@MainActor @Sendable () -> Void)? = nil,
+        isGuest: Bool = false
     ) {
         self.id = id
         self.label = label
@@ -223,6 +270,7 @@ public struct HubViewerRow: Identifiable, Sendable {
         self.onAlwaysAllow = onAlwaysAllow
         self.onDenyAndBlock = onDenyAndBlock
         self.onForget = onForget
+        self.isGuest = isGuest
     }
 }
 
@@ -279,15 +327,20 @@ public struct HubPrompt: Identifiable, Sendable {
     public let message: String
     public let acceptLabel: String
     public let declineLabel: String
+    /// A share-by-token guest knocking — badged, because the answer admits
+    /// someone from outside the tailnet and the sharer should know that at
+    /// the moment of deciding.
+    public let isGuest: Bool
 
     public init(
         id: String, message: String, acceptLabel: String = L("Allow"),
-        declineLabel: String = L("Deny")
+        declineLabel: String = L("Deny"), isGuest: Bool = false
     ) {
         self.id = id
         self.message = message
         self.acceptLabel = acceptLabel
         self.declineLabel = declineLabel
+        self.isGuest = isGuest
     }
 }
 

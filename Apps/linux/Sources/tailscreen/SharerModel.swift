@@ -202,6 +202,16 @@ final class SharerModel: ObservableObject {
     @Published private(set) var micAvailable = false
     @Published private(set) var micOn = false
 
+    /// The live share link's token + busy flag, mirrored off the engine so
+    /// the card's link section renders without owning any lifecycle. Nil
+    /// token = link off, which is what the toggle shows.
+    @Published private(set) var linkToken: String?
+    @Published private(set) var linkBusy = false
+
+    /// The card's Share via Link toggle / New Link, forwarded to the engine.
+    func setLinkSharing(_ on: Bool) { engine.setLinkSharing(on) }
+    func rotateLink() { engine.rotateLink() }
+
     // MARK: Sharer drawing
 
     /// The sharer's own drawing state — the engine's store, exposed for the
@@ -318,6 +328,10 @@ final class SharerModel: ObservableObject {
                 })
         }
         engine.onControlGrantChanged = { [weak self] name in self?.controlGrantedTo = name }
+        engine.onLinkSharingChanged = { [weak self] token, busy in
+            self?.linkToken = token
+            self?.linkBusy = busy
+        }
         engine.onDrawingChanged = { [weak self] tool, refusal in
             guard let self else { return }
             self.activeTool = tool

@@ -47,7 +47,8 @@ what the partial case *is*, because that is the part a reader can act on.
 | HEVC ⇄ H.264 negotiation | ✅ | ✅ | ✅ |
 | Wide gamut / 10-bit / HDR (sharing) | ✅ | ❌ | ❌ |
 | Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ |
-| Share via Link (guests without a Tailscale account) | ✅ | ❌ | ❌ |
+| Share via Link (guests without a Tailscale account) | ✅ | ✅ | ✅ |
+| Copy Link / Copy Token buttons | ✅ | ⚠️ select the link text | ⚠️ select the link text |
 | Start a share without signing in (link-only) | ✅ | ❌ | ❌ |
 | Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ |
 | `tailscreen:` link opens the join screen | ✅ | ❌ paste it instead | ❌ paste it instead |

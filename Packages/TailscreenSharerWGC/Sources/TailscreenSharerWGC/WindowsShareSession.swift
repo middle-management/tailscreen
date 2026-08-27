@@ -127,6 +127,12 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// wire or the wrong one is, and after a mid-share source change that
         /// is not a hypothetical.
         public var preview: ThumbnailScaler.Thumbnail?
+        /// The live share link's token — nil while the link is off, which is
+        /// what the card's Share via Link toggle shows. Dies with the share.
+        public var linkToken: String?
+        /// True while the link is being created or rotated (the relay
+        /// bootstrap blocks for the network); toggle flips are ignored.
+        public var linkBusy = false
 
         public init() {}
     }
@@ -150,12 +156,19 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// nothing at all for a healthy viewer — a note on every row makes
         /// the one that matters invisible.
         public let health: ViewerHealth
+        /// A share-by-token guest: no StableNodeID ever resolves (the
+        /// remember actions don't apply), and the row carries a badge.
+        public let isGuest: Bool
 
-        public init(id: String, displayName: String, stableID: String?, health: ViewerHealth) {
+        public init(
+            id: String, displayName: String, stableID: String?, health: ViewerHealth,
+            isGuest: Bool = false
+        ) {
             self.id = id
             self.displayName = displayName
             self.stableID = stableID
             self.health = health
+            self.isGuest = isGuest
         }
     }
 
@@ -175,11 +188,17 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// See `ConnectedViewer.stableID`: "Always Allow" / "Deny & Block" on a
         /// pending row persists under this, not under `displayName`.
         public let stableID: String?
+        /// See `ConnectedViewer.isGuest` — a pending guest's approval is the
+        /// only way one ever reaches the roster.
+        public let isGuest: Bool
 
-        public init(id: String, displayName: String, stableID: String? = nil) {
+        public init(
+            id: String, displayName: String, stableID: String? = nil, isGuest: Bool = false
+        ) {
             self.id = id
             self.displayName = displayName
             self.stableID = stableID
+            self.isGuest = isGuest
         }
     }
 
@@ -465,7 +484,7 @@ public final class WindowsShareSession: @unchecked Sendable {
                 ConnectedViewer(
                     id: $0.id, displayName: $0.displayName,
                     stableID: $0.stableID,
-                    health: $0.health)
+                    health: $0.health, isGuest: $0.isGuest)
             }
             self.update {
                 $0.viewerCount = rows.count
@@ -480,7 +499,7 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.pendingViewers = pending.map {
                     PendingViewer(
                         id: $0.id, displayName: $0.displayName,
-                        stableID: $0.stableID)
+                        stableID: $0.stableID, isGuest: $0.isGuest)
                 }
             }
             self.noteRoster()
@@ -500,6 +519,12 @@ public final class WindowsShareSession: @unchecked Sendable {
         // device is not opened before a node that may still be waiting on a
         // browser login.
         newServer.onAudioReceived = voiceSession.inboundHandler
+        // Tunnel-level eviction: a Deny (or remembered-deny expel) on a guest
+        // also closes their tunnel and denylists their node key for the
+        // link's life, so a denied guest can't keep knocking.
+        newServer.onGuestViewerDenied = { [link] ip in
+            Task { await link.evict(ip: ip) }
+        }
         newServer.onCaptureStopped = { [weak self] error in
             guard let self, self.isCurrentShare(generation) else { return }
             // Before the status push: a capture that died must not leave the
@@ -521,7 +546,12 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.drawingAvailable = false
                 $0.micAvailable = false
                 $0.micOn = false
+                $0.linkToken = nil
+                $0.linkBusy = false
             }
+            // The server drives its own teardown from here (listener close
+            // included); only the guest node remains.
+            Task { [link = self.link] in await link.teardown() }
         }
 
         // Publish the server, then assert the gate — in that order, and both
@@ -725,6 +755,61 @@ public final class WindowsShareSession: @unchecked Sendable {
         update { $0.requireApproval = enabled }
     }
 
+    // MARK: Link sharing (share-by-token)
+
+    /// The portable link half — guest node lifecycle, attach/detach, the
+    /// deny→tunnel-evict mapping — shared verbatim with the GTK engine.
+    private let link = SharerLinkSession()
+
+    /// The card's Share via Link toggle. `on` brings the guest node up and
+    /// attaches its listener to the running server; `off` drops every guest
+    /// and kills the token. No-op while idle or busy.
+    public func setLinkSharing(_ on: Bool) {
+        let (server, busy) = lock.withLock { (self.server, self.status.linkBusy) }
+        guard !busy, let server else { return }
+        update { $0.linkBusy = true }
+        Task { [link] in
+            var token: String?
+            if on {
+                do {
+                    token = try await link.enable(on: server)
+                } catch {
+                    FileHandle.standardError.write(
+                        Data("warning: share link failed to start (\(error))\n".utf8))
+                }
+            } else {
+                await link.disable(on: server)
+            }
+            self.update {
+                $0.linkToken = token
+                $0.linkBusy = false
+            }
+        }
+    }
+
+    /// New Link: the old token dies the moment this starts (current guests
+    /// drop with it) and a fresh node key mints a fresh one.
+    public func rotateLink() {
+        let (server, state) = lock.withLock {
+            (self.server, (self.status.linkBusy, self.status.linkToken))
+        }
+        guard !state.0, state.1 != nil, let server else { return }
+        update { $0.linkBusy = true }
+        Task { [link] in
+            var token: String?
+            do {
+                token = try await link.rotate(on: server)
+            } catch {
+                FileHandle.standardError.write(
+                    Data("warning: share link rotation failed (\(error))\n".utf8))
+            }
+            self.update {
+                $0.linkToken = token
+                $0.linkBusy = false
+            }
+        }
+    }
+
     /// Waive the approval gate once for a peer this machine INVITED.
     ///
     /// Accepting somebody's ask to share and then making them wait at the
@@ -903,7 +988,17 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         liveOverlay?.clear()
         stopVoice()
-        guard let running else { return }
+        // The token dies with the share. The server's stop() below closes
+        // the guest listener and tells every guest, so only the node is left
+        // to close — and the card's toggle drops with the share.
+        await link.teardown()
+        guard let running else {
+            update {
+                $0.linkToken = nil
+                $0.linkBusy = false
+            }
+            return
+        }
         await running.stop()
         update {
             $0.isSharing = false
@@ -920,6 +1015,8 @@ public final class WindowsShareSession: @unchecked Sendable {
             // that is no longer going anywhere, and it looks exactly like a
             // live one.
             $0.preview = nil
+            $0.linkToken = nil
+            $0.linkBusy = false
         }
     }
 
