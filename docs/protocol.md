@@ -335,6 +335,23 @@ refresh, or when the "only screens being shared" filter turns on. Every
 failure — timeout, EOF, an older peer dropping the unknown byte — reads as
 *status unknown*, never as "not sharing".
 
+## Guests — the same protocol over a token-bootstrapped tunnel
+
+Everything on this page also runs over the **share-by-token guest tunnel**
+("Share via Link"): a per-link ephemeral WireGuard pair whose bootstrap —
+the sharer's public key plus relay details — travels in an opaque `tc…`
+token instead of a tailnet's netmap. Nothing on the wire inside the tunnel
+changes: both channels of `7447`, the same bytes, the same capability
+negotiation, the same loss-recovery ladder. What the tunnel can't supply
+is peer enumeration — the token *is* the rendezvous, so discovery is
+simply inapplicable — and the sharer compensates at the admission layer:
+a guest's stable identifier is its WireGuard node key, approval is
+mandatory on every join, and a deny evicts that key at the tunnel for the
+life of the link. The full accounting is
+[Appendix D of the specification]({{ site.baseurl }}{% link spec.md %}#appendix-d-transport-bootstrap-via-connection-token-guest-mode)
+(informative — it adds no wire values and changes no requirements) and the
+[security model]({{ site.baseurl }}{% link security.md %}).
+
 ## Changing the protocol
 
 Every wire constant above is pinned by a registry test

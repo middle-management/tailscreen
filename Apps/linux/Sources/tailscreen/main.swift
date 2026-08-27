@@ -279,6 +279,9 @@ if gSelfTest {
     // Show the account menu in the preview (no-op actions).
     gSwitchProfile = { _ in }
     gAddAccount = {}
+    // Render the "Join a Share…" card too (no-op): the live idle hub always
+    // offers it, and a screenshot without it under-sells the shipped chrome.
+    gJoinShare = { _ in }
     // `--ui-preview-video` jumps straight to the video state (a color-bars
     // frame) so the window-grows-to-video behaviour is screenshot-reviewable.
     if gArgs.contains("--ui-preview-video") {

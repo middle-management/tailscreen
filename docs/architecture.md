@@ -209,11 +209,13 @@ for the grant-time disclosure).
 This is the part that, if Tailscale didn't exist, we would have written and
 hated.
 
-[TailscaleKit](https://github.com/tailscale/libtailscale) is a Swift
-wrapper around `libtailscale` (the same C library used by Tailscale's own
-embeds), pulled in as a local SwiftPM package so our patches apply on top
-of the upstream Swift sources. The patches are small glue; the list is in
-[Contributing]({{ site.baseurl }}{% link contributing.md %}#tailscalekit-and-the-patches).
+[TailscaleKit](https://github.com/middle-management/libtailscale) is a
+Swift wrapper around `libtailscale` (the same C library used by
+Tailscale's own embeds), pulled in as a local SwiftPM package whose
+submodule points at our fork — upstream history with our changes as
+ordinary commits on top. The commits are small glue plus the guest-tunnel
+surface; the story is in
+[Contributing]({{ site.baseurl }}{% link contributing.md %}#tailscalekit-and-the-fork).
 
 Each Tailscreen session spins up an **ephemeral tsnet node**: a fresh
 Tailscale identity that lives only as long as the session. The Tailscale
@@ -232,6 +234,30 @@ The sharp edge in the auth flow is that interactive login only works after
 a tsnet node is initialized, which means after a share or a connection
 has been started at least once. There is no chicken-and-egg fix;
 that's just how `libtailscale` works.
+
+### Guests: the share-by-token tunnel
+
+**Share via Link** carries the same protocol to people who aren't on the
+tailnet at all. Flipping it on mints a fresh WireGuard key pair for the
+share and encodes its public key plus DERP bootstrap details into an
+opaque token (`tc…`, wrapped in a `tailscreen:` link). A guest holding
+the token reaches the sharer through the named relay, completes an
+authenticated handshake, and from there it's ordinary WireGuard — direct
+when NAT traversal permits, relayed ciphertext when not. Both channels of
+port 7447 run over that tunnel unchanged: the sharer binds a second UDP
+listener and a second framed-TCP listener on the guest node beside the
+tailnet ones, and everything downstream — RTP fan-out, loss recovery,
+annotations, remote control — treats a guest connection like any other.
+
+What differs is admission, not transport. A guest's identity is its
+WireGuard node key (there's no Tailscale identity to look up), approval is
+mandatory on every join — the remembered-allow store, open-door mode, and
+ask-to-share pre-approval deliberately don't apply — and denying a guest
+also evicts its key at the tunnel for the life of the link. The key pair
+is never persisted: stop sharing, press New Link, or flip the toggle off
+and every outstanding copy of the link is dead. On macOS a share can even
+run **link-only** — started signed out, no tsnet node at all, the guest
+tunnel as its only transport.
 
 ## Annotations
 

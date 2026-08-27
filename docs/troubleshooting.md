@@ -210,6 +210,35 @@ PQ`, or `—` for a plain BT.709 stream that tags nothing). It shows no range
 because its decoder hands the renderer RGB, by which point the stream's
 range no longer exists to report.
 
+## The share link won't mint, or a guest can't connect
+
+Creating a link needs the network twice: once to fetch the DERP relay map
+and once to hold the relay connection the token names. "Couldn't create
+the link" almost always means one of those was unreachable — check the
+sharer's connectivity (or, if you set a custom relay under **Settings →
+Link sharing**, that your override URL serves a valid relay map).
+
+A guest stuck on the waiting placard is usually not stuck: guest approval
+is mandatory, every join, so nothing happens until the sharer presses
+Accept — check the sharer's screen (or notifications) for the prompt. If
+the guest instead fails outright, the usual causes in order: the link was
+**rotated or the share stopped** (each link dies with its share — ask for
+a fresh one); the token was mangled in transit (paste it again — the
+whole `tailscreen://join?token=…` line or the bare `tc…` token both
+work); or the guest's network blocks the outbound HTTPS/TLS connection
+the relay bootstrap needs.
+
+## Clicking a tailscreen: link does nothing
+
+The scheme is registered by the *packaged* app, and each platform has a
+gap to know about. macOS: only the released `.app` bundle registers — a
+`make run` development binary never does. Linux: the Flatpak registers at
+install; an AppImage only after desktop integration (AppImageLauncher or
+similar); a bare binary or tarball never — use **Join a Share…** or
+`tailscreen --join <link>` instead. Windows: the MSIX registers; the zip
+build doesn't. Pasting the link into the join field always works
+everywhere.
+
 ## The app is in English even though my system isn't
 
 Tailscreen ships English and Swedish today; anything else falls back to
