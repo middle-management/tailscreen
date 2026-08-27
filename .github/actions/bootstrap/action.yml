@@ -1,9 +1,10 @@
 name: Bootstrap libtailscale
 description: >-
   The prologue every Tailscreen build job repeats: materialize the TailscaleKit
-  symlinks (Windows), apply the patch series, set up Go, and produce
-  libtailscale.a for the target — restored from cache when the inputs have not
-  moved.
+  symlinks (Windows), set up Go, and produce libtailscale.a for the target —
+  restored from cache when the inputs have not moved. (The former patch-series
+  step is gone: the submodule is our libtailscale fork, which carries those
+  changes as commits.)
 
 # WHY THIS DOES NOT CHECK OUT THE REPO.
 #
@@ -15,7 +16,7 @@ description: >-
 # (app-macos / app-windows / app-linux) are where they stop being repeated.
 #
 # Everything after the checkout is here, and it is the same everywhere by
-# construction: a fix to the patch loop, the Go pin, the cgo toolchain
+# construction: a fix to the fork-verify step, the Go pin, the cgo toolchain
 # selection or the Windows staging lands in one file.
 
 inputs:
@@ -28,10 +29,6 @@ inputs:
       helps if the account may create links at all.
     required: false
     default: 'false'
-  patches:
-    description: Apply Packages/TailscaleKit/Patches/*.patch to the submodule.
-    required: false
-    default: 'true'
   go:
     description: >-
       'setup-go' installs Go via actions/setup-go from the submodule's go.mod;
@@ -70,23 +67,6 @@ outputs:
 runs:
   using: composite
   steps:
-    # PATCHES BEFORE MATERIALIZE, and the order is load-bearing: the patches
-    # edit the submodule's Swift sources in place, and materialize COPIES that
-    # directory. Copy first and you get pristine upstream, whose `import
-    # Combine` is ungated and fails on Windows with `no such module 'Combine'`
-    # — a portability error for code that is already portable, just not yet
-    # patched.
-    #
-    # This is Packages/TailscaleKit/Makefile's apply-patches loop inlined,
-    # because `make` is not on the Windows image and is not in the slim
-    # swift:*-noble containers either. GNU `patch` is everywhere: Git for
-    # Windows ships it in usr/bin, already on PATH.
-    #
-    # -F0 forbids fuzz, so a hunk that no longer matches its context is a hard
-    # error rather than a silently mis-applied patch (that is how a stale hunk
-    # in patch 021 survived for months). The marker file is what the Makefile
-    # uses to know the loop already ran, so writing it here keeps a later
-    # `make -C Packages/TailscaleKit` from double-applying the whole series.
     # Every build step below is gated on `inputs.libtailscale` matching one
     # exact string, so an unrecognized value does not error — it matches
     # nothing and quietly produces no archive. The staging step's looser
@@ -116,18 +96,16 @@ runs:
             ;;
         esac
 
-    - name: Apply the TailscaleKit patch series
-      if: inputs.patches == 'true'
+    # The submodule checkout must be our fork's branch, not pristine
+    # upstream — a wrong checkout would compile (on macOS) and silently drop
+    # every one of our changes. The Linux-portability gate is the cheapest
+    # tell: pristine upstream's `import Combine` is ungated.
+    - name: Verify the submodule is the patched fork
       shell: bash
       working-directory: Packages/TailscaleKit
       run: |
-        for p in Patches/*.patch; do
-          echo "applying $(basename "$p")"
-          patch -p1 -N -F0 -r - --no-backup-if-mismatch < "$p"
-        done
-        touch .patches-applied
         grep -n 'canImport(Combine)' Sources/TailscaleKit/IncomingConnection.swift \
-          || { echo "patches did not take: Combine import still ungated" >&2; exit 1; }
+          || { echo "submodule is not the fork branch (pristine upstream?): Combine import ungated" >&2; exit 1; }
 
     # Belt and braces: core.symlinks only helps if the runner is also allowed
     # to create them. This makes real copies of any that came through as text.
@@ -157,13 +135,14 @@ runs:
 
     # The single biggest cross-job win in this repo's CI: the Go c-archive is
     # ~45-100 s and was built once per job, upward of a dozen times per push,
-    # from inputs that change only when the submodule or the patch series does.
+    # from inputs that change only when the submodule revision does (our fork's
+    # commits, formerly the patch series, ride inside it).
     #
     # Everything that can change the bytes is in the key: the runner OS and
     # architecture, the requested target (host / universal / a Windows arch),
     # the Go provisioning mode (apt's Go in the containers is not setup-go's),
-    # the pinned submodule revision, and the patch series — several of which
-    # ADD .go files, so a patch edit really is a source change.
+    # and the pinned submodule revision — which since the fork carries every
+    # source change, including the added .go files.
     #
     # No restore-keys, deliberately. A prefix fallback would hand a job an
     # archive built from DIFFERENT sources, and unlike a SwiftPM .build there is
@@ -201,18 +180,15 @@ runs:
         path: |
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
-        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ steps.base.outputs.id }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ steps.base.outputs.id }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}
 
-    # tar preserves mtimes, so a restored archive is OLDER than the
-    # .patches-applied marker written moments ago — and
-    # Packages/TailscaleKit/Makefile's rule is `$(UPSTREAM_LIB): $(PATCH_MARKER)`.
-    # Without this touch, every `make tailscale` downstream would decide the
-    # archive is stale and rebuild exactly what the cache just saved.
+    # tar preserves mtimes; keep the restored archive newer than everything
+    # else so `make tailscale` downstream doesn't rebuild what the cache just
+    # saved.
     - name: Refresh the restored archive's timestamps
       if: steps.libtailscale-cache.outputs.cache-hit == 'true'
       shell: bash
       run: |
-        touch Packages/TailscaleKit/.patches-applied
         touch Packages/TailscaleKit/upstream/libtailscale/libtailscale.a \
               Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
         ls -la Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
@@ -398,9 +374,10 @@ runs:
 
     # Not `make tailscale`: make isn't on the Windows image, and the Makefile
     # target does Unix-only path handling around the same two commands. The
-    # patch series above supplies bridge_windows.go (patch 024), without which
-    # this does not compile at all — it is what replaces the socketpair +
-    # SCM_RIGHTS handoff that has no Windows equivalent.
+    # fork's windows-bridge-seam commit (formerly patch 024) supplies
+    # bridge_windows.go, without which this does not compile at all — it is
+    # what replaces the socketpair + SCM_RIGHTS handoff that has no Windows
+    # equivalent.
     - name: Build libtailscale.a for windows/amd64
       if: inputs.libtailscale == 'windows-amd64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
       shell: bash
@@ -449,7 +426,7 @@ runs:
         path: |
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
-        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ steps.base.outputs.id }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ steps.base.outputs.id }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}
 
     # MSVC wants tailscale.lib — Modules/libtailscale/module.modulemap says
     # `link "tailscale"`, so the Swift driver emits -ltailscale and on Windows

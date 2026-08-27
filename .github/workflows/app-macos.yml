@@ -170,7 +170,7 @@ jobs:
           echo "label=$label" >> "$GITHUB_OUTPUT"
           echo "version=$version label=$label"
 
-      # Patches + Go + the universal (arm64 + x86_64) c-archive, lipo-merged.
+      # Go + the universal (arm64 + x86_64) c-archive, lipo-merged.
       # See .github/actions/bootstrap.
       - name: Bootstrap libtailscale (universal)
         uses: ./.github/actions/bootstrap

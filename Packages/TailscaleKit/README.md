@@ -1,6 +1,6 @@
 # TailscaleKit Swift Package
 
-A Swift Package wrapping the official [TailscaleKit](https://github.com/tailscale/libtailscale/tree/main/swift) framework from Tailscale's libtailscale repository.
+A Swift Package wrapping the [TailscaleKit](https://github.com/tailscale/libtailscale/tree/main/swift) framework from Tailscale's libtailscale repository — via [our fork](https://github.com/middle-management/libtailscale) (branch `tailscreen-main`), which carries Tailscreen's changes (the former `Patches/` series) as ordinary commits on top of upstream.
 
 This package provides a clean, reusable Swift Package Manager integration for TailscaleKit, making it easy to add Tailscale networking to any Swift project without requiring Xcode.
 
@@ -8,7 +8,7 @@ This package provides a clean, reusable Swift Package Manager integration for Ta
 
 ✅ **Official TailscaleKit** - Uses the official Swift framework from Tailscale
 ✅ **Swift Package Manager** - Standard SPM package structure
-✅ **Git Submodule** - Tracks upstream libtailscale directly
+✅ **Git Submodule** - Tracks our libtailscale fork (upstream + our commits)
 ✅ **No Xcode Required** - Build with command-line Swift tools
 ✅ **Easy Updates** - Update to latest Tailscale with one command
 ✅ **Actor-based** - Swift 6 concurrency compliant
@@ -190,7 +190,7 @@ TailscaleKit/
 ├── include/
 │   └── tailscale.h           # Symlink → upstream/libtailscale/tailscale.h
 └── upstream/
-    └── libtailscale/         # Git submodule (official Tailscale source)
+    └── libtailscale/         # Git submodule (our fork of tailscale/libtailscale)
         ├── swift/TailscaleKit/  # Original Swift sources
         ├── tailscale.h          # Original C header
         └── libtailscale.a       # Built by `make c-archive`
