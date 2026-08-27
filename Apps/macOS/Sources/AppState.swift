@@ -245,6 +245,14 @@ class AppState: ObservableObject {
     /// (or the toggle, or a New Link rotation).
     @Published private(set) var shareLinkToken: String?
 
+    /// True while the current share is guest-only: started signed out, the
+    /// link is the only way in and the guest listener is the server's only
+    /// socket. The link section renders without its off-toggle then (turning
+    /// the link off would strand a share nobody can reach — Stop Sharing is
+    /// the way out), and the approval toggle hides (it governs tailnet
+    /// viewers, of which there are none).
+    @Published private(set) var isGuestOnlyShare = false
+
     /// True while a link is being created or rotated (the guest node's DERP
     /// bootstrap blocks for the network). Drives the section's spinner and
     /// disables the toggle against double-fires.
@@ -1454,6 +1462,12 @@ class AppState: ObservableObject {
         // Bake the sharer-side settings (system-audio output, Cloaked Apps
         // exclusions) into the selection bytes the server caches.
         let effectiveFilterData = applyingShareTransforms(to: filterData)
+        // A share started while signed out can only be reached by link: run
+        // it guest-only — the guest node is the whole transport, no tsnet
+        // node anywhere. Decided here rather than passed in, because nothing
+        // signed out can start a share any other way (the welcome pane's
+        // Share-via-Link button and the picker both land here).
+        let guestOnly = !tailscaleAuth.isAuthenticated
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -1471,6 +1485,14 @@ class AppState: ObservableObject {
                 captureOutline?.hide()
                 captureOutline = nil
             }
+        }
+        if guestOnly && !linkSharingEnabled {
+            // The welcome pane hides its Share-via-Link button behind the
+            // same gate, so reaching here means Settings changed underneath
+            // an open picker — say why rather than failing generically.
+            // (The defer above resets `.starting` and releases the lock.)
+            presentError(.linkSharingDisabled())
+            return
         }
         do {
             // If Tailscale is already initialized, just start sharing
@@ -1686,23 +1708,55 @@ class AppState: ObservableObject {
                 }
 
                 do {
-                    // Reuse the AppState-owned tsnet node so the screen
-                    // share doesn't spin up a second machine that needs
-                    // its own browser sign-in.
-                    let sharedNode = try await getOrCreateNode()
-                    try await srv.start(
-                        hostname: hostname,
-                        filterData: effectiveFilterData,
-                        quality: qualitySettings,
-                        existingNode: sharedNode,
-                        controlListener: askToShare.controlListener
-                    )
+                    if guestOnly {
+                        // Link-only share: the guest node comes up first (it
+                        // is the whole transport), its listener is the
+                        // server's only socket, and the token exists the
+                        // moment the share does. Eviction wiring is the same
+                        // as the mid-share attach path.
+                        let relay = linkShareRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let gs = try GuestServerNode(
+                            derpMapURL: relay.isEmpty ? nil : relay, logger: logger)
+                        try await gs.start()
+                        let pl = try await gs.listenPacket(port: NetworkConfig.tailscreenPort)
+                        srv.onGuestViewerDenied = { [weak self] ip in
+                            Task { @MainActor [weak self] in
+                                await self?.evictGuest(ip: ip)
+                            }
+                        }
+                        try await srv.startGuestOnly(
+                            filterData: effectiveFilterData,
+                            quality: qualitySettings,
+                            guestPacketListener: pl)
+                        shareLinkToken = try await gs.token()
+                        guestServer = gs
+                        isGuestOnlyShare = true
+                        logger.log("Guest-only share started — link is the only way in")
+                    } else {
+                        // Reuse the AppState-owned tsnet node so the screen
+                        // share doesn't spin up a second machine that needs
+                        // its own browser sign-in.
+                        let sharedNode = try await getOrCreateNode()
+                        try await srv.start(
+                            hostname: hostname,
+                            filterData: effectiveFilterData,
+                            quality: qualitySettings,
+                            existingNode: sharedNode,
+                            controlListener: askToShare.controlListener
+                        )
+                    }
                 } catch {
                     // Tear down anything `start` brought up before throwing —
                     // listeners, encoder, capture pipeline — so a future
-                    // Start Sharing rebuilds from scratch.
+                    // Start Sharing rebuilds from scratch. The guest node too:
+                    // a half-started link-only share must not leave a live
+                    // token behind a share that never happened.
                     await srv.stop()
                     server = nil
+                    await guestServer?.close()
+                    guestServer = nil
+                    shareLinkToken = nil
+                    isGuestOnlyShare = false
                     // `CancellationError` here means the user clicked Stop
                     // Sharing while we were mid-bring-up; suppress the
                     // failure alert because the cancellation was intentional.
@@ -1715,15 +1769,22 @@ class AppState: ObservableObject {
                         presentError(.screenCaptureBundlePoisoned())
                     } else if case ScreenCaptureError.noFramesDelivered = error {
                         presentError(.screenCaptureNoFrames())
+                    } else if guestOnly {
+                        // The failure was most likely the relay bootstrap or
+                        // the guest node, not screen capture — say so.
+                        presentError(.linkShareStartFailed(error))
                     } else {
                         presentError(.screenCaptureGeneric(error))
                     }
                     return
                 }
 
-                // Get the Tailscale IP addresses
-                let ips = try await srv.getIPAddresses()
-                tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+                if !guestOnly {
+                    // Get the Tailscale IP addresses (a guest-only share has
+                    // no node to ask, and no tailnet address to show).
+                    let ips = try await srv.getIPAddresses()
+                    tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+                }
             }
 
             // Update metadata
@@ -1740,6 +1801,23 @@ class AppState: ObservableObject {
             showCaptureOutline()
 
             sharingState = .active
+
+            // Automation affordance (test-local.sh / e2e scripts): mint the
+            // link as soon as the share is up and print it as a greppable
+            // marker, so a second instance can join by token with no UI. A
+            // guest-only share already has its token; a tailnet share
+            // enables the link the way the toggle would.
+            if ProcessInfo.processInfo.environment["TAILSCREEN_AUTOSHARE_LINK"] == "1" {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if self.shareLinkToken == nil {
+                        await self.enableShareLink()
+                    }
+                    if let token = self.shareLinkToken {
+                        self.logger.log("E2E_MARKER shareLink token=\(token)")
+                    }
+                }
+            }
         } catch {
             presentError(.sharingGeneric(error))
         }
@@ -1777,6 +1855,7 @@ class AppState: ObservableObject {
         shareLinkToken = nil
         shareLinkError = nil
         guestPeersByIP = [:]
+        isGuestOnlyShare = false
         micCapture?.stop()
         micCapture = nil
         voiceChannel = nil
@@ -2039,6 +2118,10 @@ class AppState: ObservableObject {
     /// `shareLinkBusy` guarding double-fires.
     func setShareLinkActive(_ on: Bool) {
         guard !shareLinkBusy else { return }
+        // A guest-only share IS its link: the UI hides the off-toggle there,
+        // and this guard is the belt to that suspender — turning the link off
+        // would leave a share running that nobody can reach.
+        if !on, isGuestOnlyShare { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
             if on {

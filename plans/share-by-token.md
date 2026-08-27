@@ -366,6 +366,35 @@ join rows for Linux/Windows (`tailscreen:` URL registration stays a
 macOS-only row — paste works everywhere). Sharer-side guest mode on
 Linux/Windows remains the tracked matrix gap.)*
 
+**Phase 6 — Guest-only shares (share without signing in), macOS.** The
+original "share screen without a control plane" use case completed: a
+share whose only transport is the guest tunnel — no Tailscale account,
+no tsnet node, the link is the only way in.
+*(status: landed. Server: `MediaSockets` takes an optional primary (with
+no tailnet listener the guest socket carries everything, and every addr
+is a guest by construction); `startGuestOnly(filterData:quality:
+guestPacketListener:)` brings the server up with no node, no tailnet
+listener, and no TCP control listener; the guest receive loop's death is
+the share's death when no tailnet listener exists (read live from the
+lifecycle, since a share can gain/lose its tailnet half); and the
+identity resolver skips guest addrs outright — they are in no netmap,
+and each guest join was spinning it through its full retry budget.
+macOS: `startSharing` runs guest-only automatically when signed out
+(nothing signed out could start a share before, so no plumbing through
+the picker); the guest node comes up first and its token exists the
+moment the share does; the welcome pane gains "Share your screen via
+Link…" (gated on the Settings feature switch, with a TS-LINK error
+pair for the off-gate and bring-up-failure cases); the menubar shows the
+full sharer tool while signed out + sharing, with the approval toggle
+hidden (it governs tailnet viewers, of which there are none) and the
+link section's off-toggle replaced by a mode line (Stop Sharing is the
+way out — turning off a link-only share's only transport would strand
+it). `TAILSCREEN_AUTOSHARE_LINK=1` mints the link at share start and
+prints an `E2E_MARKER shareLink token=…` line for scripted two-instance
+runs. Docs: usage/security link-only sections, matrix row (macOS-only —
+the GTK/WinUI sharer side stays with their sharer-port work). Remaining
+for the gate: a hand-run signed-out share on a real Mac.)*
+
 Each phase is a separate PR; 0 and 1 can proceed in parallel (1 targets the
 fork directly). Docs ship with their phases per the repo rule, safe under the
 /next preview channel.

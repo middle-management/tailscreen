@@ -535,14 +535,31 @@ private struct WelcomePane: View {
             }
             .padding(.top, 4)
 
-            // The no-account path: watching a share by link needs no
-            // Tailscale sign-in, so the empty state must offer it too.
+            // The no-account paths: both halves of a share can run by link
+            // alone, so the empty state offers each. Joining needs a token
+            // from someone; sharing mints one — the picker opens, and the
+            // share comes up guest-only with its link in the menubar card.
             Button(L("Join a Share…")) {
                 appState.joinSheetPresented = true
             }
             .buttonStyle(.link)
             .font(.callout)
             .accessibilityHint(L("Joins a shared screen with a link or token, without signing in"))
+            if appState.linkSharingEnabled, appState.sharingState == .idle {
+                Button(L("Share your screen via Link…")) {
+                    Task { await appState.presentNativePicker() }
+                }
+                .buttonStyle(.link)
+                .font(.callout)
+                .accessibilityHint(
+                    L("Shares your screen over a link, without signing in — you approve each guest"))
+            } else if appState.isGuestOnlyShare {
+                Text(L("You're sharing via link — the link and your guests are in the menu bar."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Spacer(minLength: 0)
         }

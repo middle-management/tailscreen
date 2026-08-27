@@ -204,6 +204,15 @@ offered, turn it off in **Settings → Link sharing** (macOS; the switch
 also holds a relay override for
 [self-hosting]({{ site.baseurl }}{% link self-hosted.md %})).
 
+**Sharing without signing in** works too: the macOS welcome screen offers
+**Share your screen via Link…** alongside the sign-in button. The picker
+opens, the share starts as a *link-only* share — no Tailscale account,
+no tailnet, the link is the only way in — and the menubar card shows the
+link with the same Copy / New Link / guest controls. Approval is still
+mandatory for every guest, and Stop Sharing is the way to end it (a
+link-only share has no link-off toggle: turning off its only transport
+would leave a share running that nobody can reach).
+
 **Joining** works on all three platforms:
 
 - **macOS** — click a `tailscreen:` link, or **Join a Share…** (the link

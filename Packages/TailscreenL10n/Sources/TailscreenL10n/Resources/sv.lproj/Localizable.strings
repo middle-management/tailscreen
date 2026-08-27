@@ -657,3 +657,12 @@
 "Adds a Share via Link switch while you're sharing. Guests join over an encrypted tunnel without a Tailscale account, bypassing your tailnet's access rules — so approval is always required for every guest, and links stop working the moment sharing stops." = "Lägger till en Dela via länk-knapp medan du delar. Gäster ansluter över en krypterad tunnel utan Tailscale-konto och går förbi ditt tailnets åtkomstregler — därför krävs alltid godkännande för varje gäst, och länkar slutar fungera i samma stund som delningen stoppas.";
 "Relay override (DERP map URL)" = "Egen relä (DERP-kartans URL)";
 "Optional. Guest traffic bootstraps through a Tailscale relay; point this at your own DERP map to self-host it. Applies to the next link you create." = "Valfritt. Gästtrafik startar via ett Tailscale-relä; peka den här på din egen DERP-karta för att driva det själv. Gäller nästa länk du skapar.";
+
+/* MARK: - Guest-only (link-only) shares (MainWindowView.swift, MenuBarView.swift, AppError.swift) */
+"Share your screen via Link…" = "Dela din skärm via länk…";
+"Shares your screen over a link, without signing in — you approve each guest" = "Delar din skärm över en länk, utan att logga in — du godkänner varje gäst";
+"You're sharing via link — the link and your guests are in the menu bar." = "Du delar via länk — länken och dina gäster finns i menyraden.";
+"Sharing via link — the link is the only way in" = "Delar via länk — länken är enda vägen in";
+"Link Sharing Is Off" = "Länkdelning är avstängd";
+"Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet." = "Att dela utan att logga in sker över en delningslänk, och länkdelning är avstängd i Inställningar. Slå på den under Inställningar → Länkdelning, eller logga in för att dela över ditt tailnet.";
+"The share link couldn't be created. Check the network and try again." = "Delningslänken kunde inte skapas. Kontrollera nätverket och försök igen.";

@@ -672,3 +672,12 @@
 "Adds a Share via Link switch while you're sharing. Guests join over an encrypted tunnel without a Tailscale account, bypassing your tailnet's access rules — so approval is always required for every guest, and links stop working the moment sharing stops." = "Adds a Share via Link switch while you're sharing. Guests join over an encrypted tunnel without a Tailscale account, bypassing your tailnet's access rules — so approval is always required for every guest, and links stop working the moment sharing stops.";
 "Relay override (DERP map URL)" = "Relay override (DERP map URL)";
 "Optional. Guest traffic bootstraps through a Tailscale relay; point this at your own DERP map to self-host it. Applies to the next link you create." = "Optional. Guest traffic bootstraps through a Tailscale relay; point this at your own DERP map to self-host it. Applies to the next link you create.";
+
+/* MARK: - Guest-only (link-only) shares (MainWindowView.swift, MenuBarView.swift, AppError.swift) */
+"Share your screen via Link…" = "Share your screen via Link…";
+"Shares your screen over a link, without signing in — you approve each guest" = "Shares your screen over a link, without signing in — you approve each guest";
+"You're sharing via link — the link and your guests are in the menu bar." = "You're sharing via link — the link and your guests are in the menu bar.";
+"Sharing via link — the link is the only way in" = "Sharing via link — the link is the only way in";
+"Link Sharing Is Off" = "Link Sharing Is Off";
+"Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet." = "Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet.";
+"The share link couldn't be created. Check the network and try again." = "The share link couldn't be created. Check the network and try again.";

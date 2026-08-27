@@ -157,6 +157,12 @@ capability to knock, never capability to watch.**
   meeting link: anyone holding it can put a knock on your screen (though
   nothing more). The worst a leaked token enables is approval-prompt
   noise until you press New Link or stop sharing.
+- **A share can be link-only.** Started signed out (macOS), a share runs
+  with the guest tunnel as its *only* transport — no Tailscale account,
+  no control plane, no tailnet listener bound at all. Everything above
+  applies unchanged; what disappears is surface, not protection: there is
+  no tailnet side to reach, and the DERP relay that bootstraps guests
+  still sees only ciphertext.
 
 ## Who can control your machine
 
