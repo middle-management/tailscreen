@@ -223,6 +223,47 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Link sharing (share-by-token guests)
+
+    /// Settings feature gate for sharing via link. Default on but inert —
+    /// nothing runs until a share flips "Share via Link" on. Off hides the
+    /// menubar section entirely.
+    @Published var linkSharingEnabled: Bool = LinkSharingDefaults.loadEnabled() {
+        didSet { LinkSharingDefaults.saveEnabled(linkSharingEnabled) }
+    }
+
+    /// Settings override for the DERP relay map URL guests bootstrap
+    /// through (self-hosted derper). Empty string = Tailscale's public map.
+    /// Snapshotted when a link is created; changing it mid-link applies on
+    /// the next New Link.
+    @Published var linkShareRelayURL: String = LinkSharingDefaults.loadRelayURL() {
+        didSet { LinkSharingDefaults.saveRelayURL(linkShareRelayURL) }
+    }
+
+    /// The live share link's token — non-nil exactly while the guest node is
+    /// up, which is what the menubar toggle reflects. Dies with the share
+    /// (or the toggle, or a New Link rotation).
+    @Published private(set) var shareLinkToken: String?
+
+    /// True while a link is being created or rotated (the guest node's DERP
+    /// bootstrap blocks for the network). Drives the section's spinner and
+    /// disables the toggle against double-fires.
+    @Published private(set) var shareLinkBusy = false
+
+    /// User-facing reason the last link creation failed, cleared on the next
+    /// attempt (and with the share). Rendered under the toggle.
+    @Published private(set) var shareLinkError: String?
+
+    /// The guest node backing the live link. Created by `setShareLinkActive`,
+    /// destroyed by it, by New Link, and by `stopSharing`.
+    private var guestServer: GuestServerNode?
+
+    /// Tunnel IP → admitted guest peer, refreshed from
+    /// `GuestServerNode.peers()` whenever the roster changes while a link is
+    /// live. Supplies the roster's key fingerprints and the eviction lookup
+    /// (`onGuestViewerDenied` reports an IP; `removePeer` wants the key).
+    @Published private(set) var guestPeersByIP: [String: GuestPeer] = [:]
+
     /// Persistent per-peer allow/deny store behind "Always Allow" /
     /// "Deny & Block" and the Settings "Remembered viewers" list. Keyed by
     /// Tailscale StableNodeID. The live server never touches this store —
@@ -601,6 +642,23 @@ class AppState: ObservableObject {
     /// user re-finding the row. `host` is what `connect(to:)` dialed (IP or
     /// name); `displayName` is what titles and messages show.
     private var lastViewerPeer: (host: String, displayName: String)?
+
+    /// The share-by-token token of the current / most recent viewer session,
+    /// nil for tailnet sessions. Reconnect redials through the guest path
+    /// when set — a token in `lastViewerPeer.host` would otherwise be
+    /// re-dialed as a hostname. The token stays valid until the sharer
+    /// stops the link, so a mid-session reconnect is expected to work.
+    private var lastViewerGuestToken: String?
+
+    /// True while the viewer session (current or connecting) runs over a
+    /// guest tunnel. Drives the stats overlay's connection row and the
+    /// join-flavored copy.
+    @Published private(set) var viewerIsGuestSession = false
+
+    /// Join-a-Share sheet state. `joinSheetInput` is what the sheet's paste
+    /// field edits — pre-filled by a `tailscreen:` URL open.
+    @Published var joinSheetPresented = false
+    @Published var joinSheetInput = ""
 
     /// Hosts for the ended-state pane and the non-modal notice banner,
     /// built alongside the other viewer overlays in `ensureViewer`.
@@ -1711,6 +1769,14 @@ class AppState: ObservableObject {
 
         await server?.stop()
         server = nil
+        // The token dies with the share: the server's stop() already closed
+        // the guest listener and sent everyone SERVER_BYE, so only the guest
+        // node itself is left to tear down.
+        await guestServer?.close()
+        guestServer = nil
+        shareLinkToken = nil
+        shareLinkError = nil
+        guestPeersByIP = [:]
         micCapture?.stop()
         micCapture = nil
         voiceChannel = nil
@@ -1965,10 +2031,139 @@ class AppState: ObservableObject {
         server?.setShareSystemAudio(isSystemAudioOn)
     }
 
+    // MARK: - Link sharing (share-by-token) actions
+
+    /// The menubar "Share via Link" toggle. `on` brings the guest node up
+    /// and mints the token; `off` kills the token and drops every guest.
+    /// Both run async (the DERP bootstrap blocks for the network), with
+    /// `shareLinkBusy` guarding double-fires.
+    func setShareLinkActive(_ on: Bool) {
+        guard !shareLinkBusy else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if on {
+                await self.enableShareLink()
+            } else {
+                await self.disableShareLink()
+            }
+        }
+    }
+
+    /// Kill the current link and mint a fresh one — new node key, new
+    /// token; the old link is dead the moment this starts, and every
+    /// current guest is dropped with it.
+    func rotateShareLink() {
+        guard !shareLinkBusy, shareLinkToken != nil else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.disableShareLink()
+            await self.enableShareLink()
+        }
+    }
+
+    private func enableShareLink() async {
+        guard linkSharingEnabled, sharingState == .active, let server, guestServer == nil else {
+            return
+        }
+        shareLinkBusy = true
+        shareLinkError = nil
+        defer { shareLinkBusy = false }
+
+        // Tunnel-level eviction: a Deny (or remembered-deny expel) on a
+        // guest also closes their tunnel and denylists their node key for
+        // this link's life, so a denied guest can't keep knocking.
+        server.onGuestViewerDenied = { [weak self] ip in
+            Task { @MainActor [weak self] in
+                await self?.evictGuest(ip: ip)
+            }
+        }
+
+        let relay = linkShareRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let gs = try GuestServerNode(
+                derpMapURL: relay.isEmpty ? nil : relay, logger: logger)
+            try await gs.start()
+            let pl = try await gs.listenPacket(port: NetworkConfig.tailscreenPort)
+            guard server.attachGuestPacketListener(pl) else {
+                // The share raced to a stop (or a listener is somehow still
+                // attached) — nothing adopted the socket, so close it here.
+                await pl.close()
+                await gs.close()
+                return
+            }
+            shareLinkToken = try await gs.token()
+            guestServer = gs
+            logger.log("Share link active")
+        } catch {
+            logger.log("Share link failed to start: \(error)")
+            shareLinkError = L("Couldn't create the link. Check the network and try again.")
+        }
+    }
+
+    private func disableShareLink() async {
+        guard guestServer != nil || shareLinkToken != nil else { return }
+        // Order matters: detaching first sends each guest HELLO_DENY +
+        // SERVER_BYE through the still-open guest socket, so their windows
+        // say "disconnected" instead of timing out against a dead tunnel.
+        await server?.detachGuestPacketListener()
+        await guestServer?.close()
+        guestServer = nil
+        shareLinkToken = nil
+        guestPeersByIP = [:]
+        logger.log("Share link stopped — token dead")
+    }
+
+    /// Map a denied guest's tunnel IP back to its node key and evict it at
+    /// the tunnel: flows close now, and the key is refused for the life of
+    /// this link. Fired by the server's deny paths via `onGuestViewerDenied`.
+    private func evictGuest(ip: String) async {
+        guard let gs = guestServer else { return }
+        await refreshGuestPeers()
+        guard let peer = guestPeersByIP[ip] else {
+            logger.log("Guest evict: no peer for \(ip) (already gone)")
+            return
+        }
+        do {
+            try await gs.removePeer(key: peer.key)
+        } catch {
+            logger.log("Guest evict failed for \(ip): \(error)")
+        }
+        guestPeersByIP.removeValue(forKey: ip)
+    }
+
+    /// Refresh the tunnel-IP → guest-peer map from the guest node. Called
+    /// whenever the roster changes while a link is live (fingerprints for
+    /// the rows) and before an eviction lookup.
+    func refreshGuestPeers() async {
+        guard let gs = guestServer else {
+            if !guestPeersByIP.isEmpty { guestPeersByIP = [:] }
+            return
+        }
+        let peers = (try? await gs.peers()) ?? []
+        guestPeersByIP = Dictionary(peers.map { ($0.addr, $0) }, uniquingKeysWith: { _, last in last })
+    }
+
+    /// Roster label for a guest row: the short node-key fingerprint
+    /// ("9c8d…4f21") once the peer map has it, nil (fall back to the tunnel
+    /// IP) until then. Guests have no hostname — the key is their identity.
+    func guestFingerprint(forIP ip: String) -> String? {
+        guestPeersByIP[ip].map { ShareLinkFormat.keyFingerprint($0.key) }
+    }
+
+    /// Connected + pending guests, the count the link section shows.
+    var guestCount: Int {
+        currentViewers.filter(\.isGuest).count + pendingViewers.filter(\.isGuest).count
+    }
+
     /// Connect to a sharer. `displayName` is what titles and messages call
     /// the peer (defaults to `host`, which may be a bare tailnet IP).
-    func connect(to host: String, displayName: String? = nil) async {
-        guard !host.isEmpty else { return }
+    /// With `guestToken` set the session runs over a share-by-token guest
+    /// tunnel instead: `host` is ignored (pass ""), there is no tsnet node
+    /// or sign-in, and the sharer must approve the join — the waiting
+    /// placard is the expected first state.
+    func connect(to host: String, displayName: String? = nil, guestToken: String? = nil) async {
+        guard !host.isEmpty || guestToken != nil else { return }
+        lastViewerGuestToken = guestToken
 
         connectionState = .connecting
         defer {
@@ -1986,6 +2181,8 @@ class AppState: ObservableObject {
         lastViewerPeer = (host: host, displayName: displayName ?? host)
         isAwaitingAdmission = true
         let renderer = ensureViewer()
+        viewerIsGuestSession = guestToken != nil
+        renderer.statsModel.isGuestSession = guestToken != nil
         refreshViewerWindowTitle()
         refreshViewerVideoAccessibilityLabel()
         // Belt-and-braces zoom reset at session entry: disconnect()
@@ -2141,10 +2338,18 @@ class AppState: ObservableObject {
                 }
             }
 
-            // Reuse the AppState-owned tsnet node so connecting doesn't
-            // spin up a third machine + browser sign-in flow.
-            let sharedNode = try await getOrCreateNode()
-            try await c.connect(to: host, port: NetworkConfig.tailscreenPort, existingNode: sharedNode)
+            if let guestToken {
+                // Share-by-token: the token names the relay and the sharer,
+                // so no node, no sign-in, no discovery. The dial blocks for
+                // the tunnel bring-up.
+                try await c.connectGuest(token: guestToken)
+            } else {
+                // Reuse the AppState-owned tsnet node so connecting doesn't
+                // spin up a third machine + browser sign-in flow.
+                let sharedNode = try await getOrCreateNode()
+                try await c.connect(
+                    to: host, port: NetworkConfig.tailscreenPort, existingNode: sharedNode)
+            }
 
             // A HELLO_DENY that landed while we were still `.connecting` has
             // already torn the session down and alerted; don't re-promote it
@@ -2163,6 +2368,34 @@ class AppState: ObservableObject {
             client = nil
             isAwaitingAdmission = false
         }
+    }
+
+    /// Join a share from whatever the user pasted into the join sheet — a
+    /// bare token or a `tailscreen:` link. Returns false (sheet shows its
+    /// inline error, stays up) when the input holds no plausible token;
+    /// true dismisses the sheet and starts the guest connect.
+    func joinShare(input: String) -> Bool {
+        guard let token = ShareLinkFormat.token(fromUserInput: input) else { return false }
+        joinSheetPresented = false
+        joinSheetInput = ""
+        Task { @MainActor [weak self] in
+            await self?.connect(to: "", displayName: L("Shared screen"), guestToken: token)
+        }
+        return true
+    }
+
+    /// A `tailscreen:` URL landed (Finder, browser, another app). Open the
+    /// join sheet with the token pre-filled rather than connecting
+    /// outright — a clicked link is a request to *look at* joining, and the
+    /// sheet's copy is where "the sharer must approve you" gets said.
+    func handleOpenURL(_ url: URL) {
+        guard let token = ShareLinkFormat.token(fromUserInput: url.absoluteString) else {
+            logger.log("Ignoring un-parseable \(ShareLinkFormat.scheme): URL")
+            return
+        }
+        joinSheetInput = token
+        joinSheetPresented = true
+        presentMainWindow()
     }
 
     /// Holds a strong ref to the window's delegate; NSWindow.delegate is
@@ -2580,6 +2813,9 @@ class AppState: ObservableObject {
         dismissViewerNotice()
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
+        viewerIsGuestSession = false
+        // Deliberately NOT `lastViewerGuestToken = nil`: Reconnect redials
+        // the most recent session, and for a guest one that means the token.
         // End any remote-control session and stop capturing input (also
         // clears the control border + announces to VoiceOver).
         if viewerControlState != .none {
@@ -2653,7 +2889,11 @@ class AppState: ObservableObject {
             if self.connectionState == .viewing {
                 await self.disconnect()
             }
-            await self.connect(to: peer.host, displayName: peer.displayName)
+            // A guest session redials by token — its `host` is empty, and
+            // the token stays valid as long as the sharer's link is up.
+            await self.connect(
+                to: peer.host, displayName: peer.displayName,
+                guestToken: self.lastViewerGuestToken)
             // A failed redial has already alerted (`connectionFailed`);
             // don't leave a visible window as an unexplained frozen frame
             // behind that alert. The deny path sets its own ending.
@@ -4221,6 +4461,11 @@ class AppState: ObservableObject {
                         label: $0.displayName)
                 }
         currentViewers = viewers
+        // While a link is live, keep the tunnel-IP → node-key map fresh so
+        // guest rows can show key fingerprints and evictions can resolve.
+        if shareLinkToken != nil, viewers.contains(where: \.isGuest) {
+            Task { @MainActor [weak self] in await self?.refreshGuestPeers() }
+        }
         // Both rosters, coalesced to the end of the turn — see
         // `scheduleNoteRoster()`. The roster is re-emitted whenever anything
         // about it changes, including a StableNodeID resolving, which is
@@ -4245,6 +4490,12 @@ class AppState: ObservableObject {
     /// the approval gate.
     private func handlePendingViewersChanged(_ pending: [PendingViewerInfo]) {
         pendingViewers = pending
+        // Pending guests already hold a live tunnel (tunnel admission is the
+        // knock, not the approval), so their key fingerprints are resolvable
+        // now — which is exactly when the approval row wants one.
+        if shareLinkToken != nil, pending.contains(where: \.isGuest) {
+            Task { @MainActor [weak self] in await self?.refreshGuestPeers() }
+        }
         scheduleNoteRoster()
         let candidates = Self.noticeCandidates(pending)
         let answered = SharerNoticeDecision.noticesToWithdraw(
@@ -4856,6 +5107,33 @@ enum ColorCaptureDefaults {
     ) -> Bool {
         if let stored = defaults.object(forKey: key) as? Bool { return stored }
         return environment[envKey] == "1"
+    }
+}
+
+/// Persistence for Settings → Link Sharing. Same plain-`UserDefaults`
+/// pattern as `ColorCaptureDefaults` (stored-property initialisers read it
+/// in `AppState.init`). The feature gate defaults **on** — it is inert
+/// until a share flips "Share via Link" on, and the off switch exists for
+/// the "no tokens ever leave this machine" posture, not as a safety
+/// default (approval is mandatory for every guest regardless).
+enum LinkSharingDefaults {
+    static let enabledKey = "linkSharingEnabled"
+    static let relayURLKey = "linkShareRelayURL"
+
+    static func loadEnabled(defaults: UserDefaults = .standard) -> Bool {
+        (defaults.object(forKey: enabledKey) as? Bool) ?? true
+    }
+
+    static func saveEnabled(_ value: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(value, forKey: enabledKey)
+    }
+
+    static func loadRelayURL(defaults: UserDefaults = .standard) -> String {
+        defaults.string(forKey: relayURLKey) ?? ""
+    }
+
+    static func saveRelayURL(_ value: String, defaults: UserDefaults = .standard) {
+        defaults.set(value, forKey: relayURLKey)
     }
 }
 

@@ -421,6 +421,10 @@ private struct SharingCard: View {
 
             ApprovalToggle()
 
+            if appState.linkSharingEnabled {
+                ShareViaLinkSection()
+            }
+
             // GeometryReader measures the popover's actual width, which
             // we feed into a derived height via the shared display's
             // aspect ratio. This is more robust than chaining
@@ -536,6 +540,113 @@ private struct SharingCard: View {
     }
 }
 
+/// The share-by-token controls inside the SharingCard: the "Share via
+/// Link" toggle (spins the guest node up / tears it down), the live token
+/// with Copy Link / Copy Token, New Link rotation, and the guest count.
+/// Hidden entirely when Settings → Link Sharing is off (the section's
+/// `linkSharingEnabled` gate at the call site). The token is minted per
+/// link and dies with the toggle, a rotation, or the share — the static
+/// caption says so, because a dead link fails silently on the other end.
+private struct ShareViaLinkSection: View {
+    @EnvironmentObject var appState: AppState
+
+    private var guestCountText: String {
+        switch appState.guestCount {
+        case 0: return L("No guests yet")
+        case 1: return L("1 guest")
+        default: return L("\(appState.guestCount) guests")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                isOn: Binding(
+                    get: { appState.shareLinkToken != nil || appState.shareLinkBusy },
+                    set: { appState.setShareLinkActive($0) }
+                )
+            ) {
+                Text(L("Share via Link"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(appState.shareLinkBusy)
+            .accessibilityHint(
+                L("Creates a link that lets people outside your tailnet ask to join"))
+
+            if appState.shareLinkBusy {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                    Text(L("Creating link…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let token = appState.shareLinkToken {
+                HStack(spacing: 6) {
+                    Image(systemName: "link")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(verbatim: token)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(L("Share link token"))
+                HStack(spacing: 6) {
+                    Button(L("Copy Link")) {
+                        copyToPasteboard(ShareLinkFormat.link(token: token))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                    .help(L("Copies a tailscreen: link that opens the join screen"))
+                    Button(L("Copy Token")) {
+                        copyToPasteboard(token)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help(L("Copies the bare token, for pasting into the join screen"))
+                    Button(L("New Link")) {
+                        appState.rotateShareLink()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help(L("Replaces the link — the old one stops working and current guests are dropped"))
+                    Spacer(minLength: 0)
+                }
+                Text(verbatim: guestCountText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(
+                    L(
+                        "Anyone with the link can ask to join; you approve each guest. The link stops working when sharing stops."
+                    )
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let error = appState.shareLinkError {
+                Text(verbatim: error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func copyToPasteboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+}
+
 /// Compact input + output device pickers. Used inside both
 /// SharingCard and ViewingCard — anywhere voice playback is active.
 /// Refreshes the device list on appear so hot-plugged devices show
@@ -638,7 +749,7 @@ struct ViewersList: View {
                             .frame(width: 8, height: 8)
                             .help(Self.tooltip(for: viewer.health))
                             .accessibilityHidden(true)
-                        Text(viewer.displayName)
+                        Text(rowName(for: viewer))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -647,6 +758,9 @@ struct ViewersList: View {
                             // tooltip; fold it into the name's spoken
                             // label so it isn't color-only.
                             .accessibilityLabel(healthLabel(for: viewer))
+                        if viewer.isGuest {
+                            GuestBadge()
+                        }
                         Spacer(minLength: 0)
                         Button {
                             appState.disconnectConnectedViewer(viewer.id)
@@ -667,8 +781,16 @@ struct ViewersList: View {
     /// "wisp, connection degraded — packet loss" — one spoken string, so
     /// the health dot's meaning survives without color or a mouse.
     private func healthLabel(for viewer: ViewerInfo) -> String {
-        let name = viewer.displayName
+        let name = rowName(for: viewer)
         return L("\(name), \(Self.tooltip(for: viewer.health))")
+    }
+
+    /// Guests have no hostname; their identity is the guest node key, so
+    /// the row shows its short fingerprint once the host's peer map has it
+    /// (falling back to the tunnel IP for the beat before it resolves).
+    private func rowName(for viewer: ViewerInfo) -> String {
+        guard viewer.isGuest else { return viewer.displayName }
+        return appState.guestFingerprint(forIP: viewer.tailscaleIP) ?? viewer.displayName
     }
 
     private static func dotColor(for health: ViewerHealth) -> Color {
@@ -753,43 +875,70 @@ struct PendingViewersList: View {
                     Image(systemName: "person.crop.circle.badge.questionmark")
                         .font(.subheadline)
                         .foregroundStyle(.orange)
-                    Text(viewer.displayName)
+                    Text(rowName(for: viewer))
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if viewer.isGuest {
+                        GuestBadge()
+                    }
                     Spacer(minLength: 4)
-                    Menu {
-                        // Enabled even before the StableNodeID resolves: the
-                        // intent is queued and persisted the moment it lands.
-                        Button(L("Deny & Block")) {
-                            appState.denyPendingViewerAndBlock(viewer.id)
+                    if viewer.isGuest {
+                        // No remembered variants for guests: those persist
+                        // under a Tailscale StableNodeID, which a guest never
+                        // has. Deny already denylists the guest's node key at
+                        // the tunnel for the life of this link — the guest
+                        // equivalent of "& Block".
+                        Button(L("Deny")) {
+                            appState.denyPendingViewer(viewer.id)
                         }
-                    } label: {
-                        Text(L("Deny")).font(.caption)
-                    } primaryAction: {
-                        appState.denyPendingViewer(viewer.id)
-                    }
-                    .menuStyle(.button)
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .fixedSize()
-                    .accessibilityLabel(L("Deny \(viewer.displayName)"))
-                    Menu {
-                        // Enabled even before the StableNodeID resolves: the
-                        // intent is queued and persisted the moment it lands.
-                        Button(L("Always Allow")) {
-                            appState.approvePendingViewerAlways(viewer.id)
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .accessibilityLabel(L("Deny \(viewer.displayName)"))
+                        Button(L("Accept")) {
+                            appState.approvePendingViewer(viewer.id)
                         }
-                    } label: {
-                        Text(L("Accept")).font(.caption)
-                    } primaryAction: {
-                        appState.approvePendingViewer(viewer.id)
+                        .font(.caption)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .accessibilityLabel(L("Accept \(viewer.displayName)"))
+                    } else {
+                        Menu {
+                            // Enabled even before the StableNodeID resolves: the
+                            // intent is queued and persisted the moment it lands.
+                            Button(L("Deny & Block")) {
+                                appState.denyPendingViewerAndBlock(viewer.id)
+                            }
+                        } label: {
+                            Text(L("Deny")).font(.caption)
+                        } primaryAction: {
+                            appState.denyPendingViewer(viewer.id)
+                        }
+                        .menuStyle(.button)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .accessibilityLabel(L("Deny \(viewer.displayName)"))
+                        Menu {
+                            // Enabled even before the StableNodeID resolves: the
+                            // intent is queued and persisted the moment it lands.
+                            Button(L("Always Allow")) {
+                                appState.approvePendingViewerAlways(viewer.id)
+                            }
+                        } label: {
+                            Text(L("Accept")).font(.caption)
+                        } primaryAction: {
+                            appState.approvePendingViewer(viewer.id)
+                        }
+                        .menuStyle(.button)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .accessibilityLabel(L("Accept \(viewer.displayName)"))
                     }
-                    .menuStyle(.button)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                    .fixedSize()
-                    .accessibilityLabel(L("Accept \(viewer.displayName)"))
                 }
             }
         }
@@ -799,6 +948,30 @@ struct PendingViewersList: View {
             RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous)
                 .fill(Color.orange.opacity(0.12))
         )
+    }
+
+    /// See `ViewersList.rowName(for:)` — same fingerprint stand-in, and a
+    /// pending guest's tunnel is already up, so the key usually resolves
+    /// before the sharer looks.
+    private func rowName(for viewer: PendingViewerInfo) -> String {
+        guard viewer.isGuest else { return viewer.displayName }
+        return appState.guestFingerprint(forIP: viewer.tailscaleIP) ?? viewer.displayName
+    }
+}
+
+/// Small capsule marking a roster/approval row as a share-by-token guest —
+/// someone outside the tailnet, identified by node key rather than a
+/// machine name, so the sharer can tell at a glance which kind of viewer
+/// they are deciding about.
+struct GuestBadge: View {
+    var body: some View {
+        Text(L("Guest"))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.purple)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.purple.opacity(0.15)))
+            .accessibilityLabel(L("Guest viewer"))
     }
 }
 

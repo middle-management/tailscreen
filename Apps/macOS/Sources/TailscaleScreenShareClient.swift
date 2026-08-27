@@ -50,6 +50,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     private var packetListener: PacketListener?
     private var serverAddr: String?
+    /// The guest (share-by-token) tunnel this session runs over, when it was
+    /// opened with `connectGuest` instead of a tailnet dial. Owned like a
+    /// self-created node: torn down in `disconnect()`.
+    private var guestClient: GuestClientNode?
+    /// True for share-by-token sessions. Read by the receive loop to keep the
+    /// TCP-backed affordances (annotations, remote control) off — guests have
+    /// no back-channel yet, so offering either would produce silent no-ops.
+    private(set) var isGuestSession = false
     private let renderer: MetalViewerRenderer
     private var decoder: VideoDecoder?
 
@@ -368,6 +376,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // Reset the per-session viewer UI support flags; the loss-recovery
         // data plane is rebuilt fresh below as a new `ViewerSession`.
         resetViewerSupportState()
+        isGuestSession = false
 
         let node: TailscaleNode
         if let existing = existingNode {
@@ -470,6 +479,53 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         annotationReceiveTask = Task { [weak self] in
             await self?.runAnnotationChannel(initial: initialAnnotationConn, host: hostname, port: port)
         }
+    }
+
+    /// Connect over a share-by-token guest tunnel instead of the tailnet:
+    /// no tsnet node, no sign-in — the token names the DERP relay and the
+    /// sharer's node key, and the sharer must approve this viewer before
+    /// video flows (guest approval is mandatory on their side, so the
+    /// awaiting-approval placard is the expected first state). The dial
+    /// blocks for the tunnel bring-up (relay connect, handshake, NAT
+    /// traversal in the background). Everything downstream — the
+    /// `ViewerSession` data plane, keepalives, voice — is the tailnet
+    /// path's; only the socket and the missing TCP back-channel differ
+    /// (annotations/remote control stay off for guest sessions).
+    func connectGuest(token: String) async throws {
+        guard !isConnected else { return }
+
+        renderer.resetStats()
+        resetViewerSupportState()
+        isGuestSession = true
+
+        logger.log("Starting guest (share-by-token) tunnel…")
+        let guest = GuestClientNode(token: token, logger: logger)
+        self.guestClient = guest
+        let pl = try await guest.dialUDP(port: NetworkConfig.tailscreenPort)
+        self.packetListener = pl
+        let addr = formatAddr(
+            host: try await guest.serverAddr(), port: NetworkConfig.tailscreenPort)
+        self.serverAddr = addr
+        logger.log("Guest tunnel up, dialing \(addr)")
+
+        let decoder = VideoDecoder()
+        self.decoder = decoder
+        buildViewerSession(decoder: decoder, addr: addr)
+
+        self.isConnected = true
+
+        viewerSession?.start()
+        logger.log("HELLO sent via ViewerSession to \(addr) (guest)")
+
+        receiveTask = Task { [weak self] in
+            await self?.receiveLoop()
+        }
+        keepaliveTask = Task { [weak self] in
+            await self?.keepaliveLoop()
+        }
+        // No annotation back-channel: the guest TCP control channel is a
+        // tracked follow-up, and dialing the tailnet address over a tunnel
+        // that doesn't carry it would just burn a connect timeout.
     }
 
     /// IPv6 literals must be bracketed: "[::1]:7447", not "::1:7447". IPv4
@@ -660,8 +716,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 awaitingApproval = false
                 assignedAudioSSRC = ssrc
                 onAudioSSRCAssigned?(ssrc)
-                onRemoteControlSupportChanged?(session.serverCaps.contains(.remoteControl))
-                onAnnotationSupportChanged?(session.serverCaps.contains(.annotations))
+                // Guest sessions have no TCP back-channel yet, so the
+                // sharer's advertised annotation/remote-control support is
+                // moot — keep both affordances off rather than offering
+                // controls whose messages have nowhere to go.
+                let backChannelUsable = !isGuestSession
+                onRemoteControlSupportChanged?(
+                    backChannelUsable && session.serverCaps.contains(.remoteControl))
+                onAnnotationSupportChanged?(
+                    backChannelUsable && session.serverCaps.contains(.annotations))
             }
             if session.isStopped {
                 logger.log("Receive(VS): sharer stopped")
@@ -797,6 +860,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             try? await node.close()
         }
         self.node = nil
+
+        // Guest tunnel teardown mirrors the owned-node case: the tunnel dies
+        // with the session (the fd was already closed with the listener).
+        if let guest = guestClient {
+            await guest.close()
+            self.guestClient = nil
+        }
 
         if let decoder = decoder {
             decoder.onDecodedFrame = nil

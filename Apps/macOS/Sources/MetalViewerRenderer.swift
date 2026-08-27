@@ -94,6 +94,12 @@ final class ViewerStatsModel: ObservableObject, @unchecked Sendable {
     /// the overlay's hosting view's `isHidden`.
     @Published var isVisible: Bool = false
 
+    /// True while the session runs over a share-by-token guest tunnel
+    /// (no tailnet). Set by AppState at connect; drives the overlay's
+    /// Connection row. Survives `reset()` on purpose — it is session
+    /// identity, not a counter.
+    @Published var isGuestSession: Bool = false
+
     /// Rolling history of the last `historyCapacity` per-second snapshots:
     /// latency in ms, bitrate in bps, drop percentage. Drives the sparkline
     /// chart in `ViewerStatsOverlay`. Appended to on every 1 s flush from

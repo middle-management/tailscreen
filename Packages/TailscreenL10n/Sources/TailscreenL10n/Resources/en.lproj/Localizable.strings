@@ -638,3 +638,37 @@
 "This build has no system-wide shortcuts — use the microphone button here" = "This build has no system-wide shortcuts — use the microphone button here";
 "You are controlling %@" = "You are controlling %@";
 "You are controlling this screen" = "You are controlling this screen";
+
+/* MARK: - Link sharing / share-by-token (MenuBarView.swift, MainWindowView.swift, SettingsView.swift, AppState.swift, ViewerStatsOverlay.swift) */
+"Share via Link" = "Share via Link";
+"Creates a link that lets people outside your tailnet ask to join" = "Creates a link that lets people outside your tailnet ask to join";
+"Creating link…" = "Creating link…";
+"Share link token" = "Share link token";
+"Copy Link" = "Copy Link";
+"Copies a tailscreen: link that opens the join screen" = "Copies a tailscreen: link that opens the join screen";
+"Copy Token" = "Copy Token";
+"Copies the bare token, for pasting into the join screen" = "Copies the bare token, for pasting into the join screen";
+"New Link" = "New Link";
+"Replaces the link — the old one stops working and current guests are dropped" = "Replaces the link — the old one stops working and current guests are dropped";
+"Anyone with the link can ask to join; you approve each guest. The link stops working when sharing stops." = "Anyone with the link can ask to join; you approve each guest. The link stops working when sharing stops.";
+"No guests yet" = "No guests yet";
+"1 guest" = "1 guest";
+"%lld guests" = "%lld guests";
+"Guest" = "Guest";
+"Guest viewer" = "Guest viewer";
+"Guest link" = "Guest link";
+"Couldn't create the link. Check the network and try again." = "Couldn't create the link. Check the network and try again.";
+"Join a shared screen" = "Join a shared screen";
+"Join a Share…" = "Join a Share…";
+"Join" = "Join";
+"Paste a share link or token from the person sharing their screen." = "Paste a share link or token from the person sharing their screen.";
+"tailscreen: link or token" = "tailscreen: link or token";
+"That doesn't look like a share link or token." = "That doesn't look like a share link or token.";
+"You'll join as a guest over an encrypted tunnel; the sharer has to approve you before you see anything." = "You'll join as a guest over an encrypted tunnel; the sharer has to approve you before you see anything.";
+"Join a shared screen with a link or token" = "Join a shared screen with a link or token";
+"Joins a shared screen with a link or token, without signing in" = "Joins a shared screen with a link or token, without signing in";
+"Link sharing" = "Link sharing";
+"Allow sharing via link" = "Allow sharing via link";
+"Adds a Share via Link switch while you're sharing. Guests join over an encrypted tunnel without a Tailscale account, bypassing your tailnet's access rules — so approval is always required for every guest, and links stop working the moment sharing stops." = "Adds a Share via Link switch while you're sharing. Guests join over an encrypted tunnel without a Tailscale account, bypassing your tailnet's access rules — so approval is always required for every guest, and links stop working the moment sharing stops.";
+"Relay override (DERP map URL)" = "Relay override (DERP map URL)";
+"Optional. Guest traffic bootstraps through a Tailscale relay; point this at your own DERP map to self-host it. Applies to the next link you create." = "Optional. Guest traffic bootstraps through a Tailscale relay; point this at your own DERP map to self-host it. Applies to the next link you create.";

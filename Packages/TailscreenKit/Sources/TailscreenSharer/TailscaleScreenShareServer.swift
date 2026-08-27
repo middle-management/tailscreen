@@ -1891,6 +1891,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 handleIncoming(data: data, from: from)
             } catch {
                 guard isRunning else { break }
+                // A detached guest listener errors its own loop out; that is
+                // the intended shutdown (toggle off, New Link rotation), not
+                // a dead socket worth logging a ladder for.
+                if isGuest, lifecycle.withLock({ $0.guestPacketListener !== pl }) { break }
                 if case TailscaleError.readFailed = error {
                     let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
                     if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
@@ -2677,6 +2681,54 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// unknown addr (no-op).
     public func disconnectViewer(addr: String) {
         expelViewer(addr: addr, reason: "disconnected by sharer")
+    }
+
+    /// Attach a guest (share-by-token) listener to a share that is already
+    /// running — the "Share via Link" toggle flips on mid-share, after the
+    /// host has brought its guest node up. Same effect as passing
+    /// `guestPacketListener` to `start()`: datagrams feed the shared
+    /// pipeline, their addrs are tagged as guests. Returns false (and does
+    /// not adopt the listener) when the share isn't running or a guest
+    /// listener is already attached — the caller keeps ownership then.
+    public func attachGuestPacketListener(_ pl: PacketListener) -> Bool {
+        let attached = lifecycle.withLock { lc -> Bool in
+            guard lc.isRunning, lc.guestPacketListener == nil else { return false }
+            lc.guestPacketListener = pl
+            return true
+        }
+        guard attached else { return false }
+        logger.log("Guest UDP stream attached (share-by-token)")
+        Task { [weak self] in await self?.receiveControlLoop(pl: pl, isGuest: true) }
+        return true
+    }
+
+    /// Detach and close the guest listener — the toggle flipping off, or a
+    /// New Link rotation. Every guest is disconnected first (pending rows
+    /// denied, connected rows one-time expelled) so each gets HELLO_DENY +
+    /// SERVER_BYE *through the guest socket* before it closes; the token
+    /// itself dies with the host's guest node, which the caller closes
+    /// after this returns. No-op when no guest listener is attached.
+    public func detachGuestPacketListener() async {
+        let guestPending = pendingViewers.withLock { Array($0.keys) }.filter { isGuestAddr($0) }
+        let guestConnected = viewers.withLock { Array($0.keys) }.filter { isGuestAddr($0) }
+        for addr in guestPending { denyViewer(addr: addr) }
+        for addr in guestConnected { expelViewer(addr: addr, reason: "link sharing turned off") }
+        // The denial datagrams above ride fire-and-forget tasks through the
+        // `media` snapshot; give them a beat to reach the socket before it
+        // goes away. Best-effort by nature — UDP semantics apply anyway.
+        if !(guestPending.isEmpty && guestConnected.isEmpty) {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        let listenerToClose = lifecycle.withLock { lc -> PacketListener? in
+            let pl = lc.guestPacketListener
+            lc.guestPacketListener = nil
+            return pl
+        }
+        await listenerToClose?.close()
+        guestAddrs.withLock { $0.removeAll() }
+        if listenerToClose != nil {
+            logger.log("Guest UDP stream detached (share-by-token)")
+        }
     }
 
     /// Kick an already-connected viewer: a blocked peer being pulled back

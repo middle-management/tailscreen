@@ -623,3 +623,37 @@
 "This build has no system-wide shortcuts — use the microphone button here" = "Det här bygget saknar systemomfattande genvägar — använd mikrofonknappen här";
 "You are controlling %@" = "Du styr %@";
 "You are controlling this screen" = "Du styr den här skärmen";
+
+/* MARK: - Link sharing / share-by-token (MenuBarView.swift, MainWindowView.swift, SettingsView.swift, AppState.swift, ViewerStatsOverlay.swift) */
+"Share via Link" = "Dela via länk";
+"Creates a link that lets people outside your tailnet ask to join" = "Skapar en länk som låter personer utanför ditt tailnet be om att få vara med";
+"Creating link…" = "Skapar länk…";
+"Share link token" = "Delningslänkens kod";
+"Copy Link" = "Kopiera länk";
+"Copies a tailscreen: link that opens the join screen" = "Kopierar en tailscreen:-länk som öppnar anslutningsvyn";
+"Copy Token" = "Kopiera kod";
+"Copies the bare token, for pasting into the join screen" = "Kopierar den råa koden, för att klistra in i anslutningsvyn";
+"New Link" = "Ny länk";
+"Replaces the link — the old one stops working and current guests are dropped" = "Ersätter länken — den gamla slutar fungera och nuvarande gäster kopplas bort";
+"Anyone with the link can ask to join; you approve each guest. The link stops working when sharing stops." = "Alla med länken kan be om att få vara med; du godkänner varje gäst. Länken slutar fungera när delningen stoppas.";
+"No guests yet" = "Inga gäster ännu";
+"1 guest" = "1 gäst";
+"%lld guests" = "%lld gäster";
+"Guest" = "Gäst";
+"Guest viewer" = "Gästtittare";
+"Guest link" = "Gästlänk";
+"Couldn't create the link. Check the network and try again." = "Kunde inte skapa länken. Kontrollera nätverket och försök igen.";
+"Join a shared screen" = "Gå med i en delad skärm";
+"Join a Share…" = "Gå med i en delning…";
+"Join" = "Gå med";
+"Paste a share link or token from the person sharing their screen." = "Klistra in en delningslänk eller kod från personen som delar sin skärm.";
+"tailscreen: link or token" = "tailscreen:-länk eller kod";
+"That doesn't look like a share link or token." = "Det där ser inte ut som en delningslänk eller kod.";
+"You'll join as a guest over an encrypted tunnel; the sharer has to approve you before you see anything." = "Du går med som gäst över en krypterad tunnel; den som delar måste godkänna dig innan du ser något.";
+"Join a shared screen with a link or token" = "Gå med i en delad skärm med en länk eller kod";
+"Joins a shared screen with a link or token, without signing in" = "Går med i en delad skärm med en länk eller kod, utan att logga in";
+"Link sharing" = "Länkdelning";
+"Allow sharing via link" = "Tillåt delning via länk";
+"Adds a Share via Link switch while you're sharing. Guests join over an encrypted tunnel without a Tailscale account, bypassing your tailnet's access rules — so approval is always required for every guest, and links stop working the moment sharing stops." = "Lägger till en Dela via länk-knapp medan du delar. Gäster ansluter över en krypterad tunnel utan Tailscale-konto och går förbi ditt tailnets åtkomstregler — därför krävs alltid godkännande för varje gäst, och länkar slutar fungera i samma stund som delningen stoppas.";
+"Relay override (DERP map URL)" = "Egen relä (DERP-kartans URL)";
+"Optional. Guest traffic bootstraps through a Tailscale relay; point this at your own DERP map to self-host it. Applies to the next link you create." = "Valfritt. Gästtrafik startar via ett Tailscale-relä; peka den här på din egen DERP-karta för att driva det själv. Gäller nästa länk du skapar.";

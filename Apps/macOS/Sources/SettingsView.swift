@@ -26,6 +26,7 @@ struct SettingsView: View {
             accountsSection
             keyboardShortcutsSection
             viewersSection
+            linkSharingSection
             remoteControlSection
             rememberedViewersSection
             cloakedAppsSection
@@ -226,6 +227,38 @@ struct SettingsView: View {
             Text(
                 L(
                     "New viewers wait on a Connecting prompt until you Accept or Deny them. On by default — turn off to let anyone on your tailnet connect instantly."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Link sharing
+
+    /// The share-by-token feature gate + relay override. The consent
+    /// posture is stated here once, in full, because this is the only
+    /// surface with room for it — the menubar section carries the short
+    /// version.
+    private var linkSharingSection: some View {
+        Section(L("Link sharing")) {
+            Toggle(
+                L("Allow sharing via link"),
+                isOn: $appState.linkSharingEnabled)
+            Text(
+                L(
+                    "Adds a Share via Link switch while you're sharing. Guests join over an encrypted tunnel without a Tailscale account, bypassing your tailnet's access rules — so approval is always required for every guest, and links stop working the moment sharing stops."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            TextField(
+                L("Relay override (DERP map URL)"),
+                text: $appState.linkShareRelayURL,
+                prompt: Text(verbatim: "https://"))
+            Text(
+                L(
+                    "Optional. Guest traffic bootstraps through a Tailscale relay; point this at your own DERP map to self-host it. Applies to the next link you create."
                 )
             )
             .font(.caption)
