@@ -31,6 +31,10 @@ public struct PickerContent: View {
     /// The sharing half of the hub, when this host can share. `nil` renders a
     /// viewer-only hub — a build with no capture backend, or a screenshot.
     var shareCard: ShareCard?
+    /// The share-by-token way in, when this host wires it. Rendered in every
+    /// phase — including before sign-in — because joining by token is exactly
+    /// the path that needs no Tailscale account.
+    var joinCard: HubJoinCard?
     /// What to say when discovery found nothing. Both apps mean the same thing
     /// and neither should have to guess at the wording.
     var emptyMessage = L("No Tailscreen screens found on your tailnet.")
@@ -65,7 +69,8 @@ public struct PickerContent: View {
         onSelect: @escaping @MainActor @Sendable (String) -> Void,
         onAskToShare: (@MainActor @Sendable (String) -> Void)? = nil,
         onOpenLogin: (@MainActor @Sendable () -> Void)? = nil,
-        shareCard: ShareCard? = nil
+        shareCard: ShareCard? = nil,
+        joinCard: HubJoinCard? = nil
     ) {
         self.statusLine = statusLine
         self.isPicking = isPicking
@@ -80,6 +85,7 @@ public struct PickerContent: View {
         self.onAskToShare = onAskToShare
         self.onOpenLogin = onOpenLogin
         self.shareCard = shareCard
+        self.joinCard = joinCard
         // Preview/screenshot affordance: open the first row's detail pane so the
         // expanded state is visible without a click.
         _expandedID = State(wrappedValue: autoExpandFirst ? screens.first?.id : nil)
@@ -102,6 +108,9 @@ public struct PickerContent: View {
                 }
                 if let shareCard {
                     shareCard
+                }
+                if let joinCard {
+                    joinCard
                 }
                 if isPicking {
                     VStack(alignment: .leading, spacing: 10) {

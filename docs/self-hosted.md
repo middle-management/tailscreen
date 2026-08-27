@@ -102,6 +102,33 @@ The first share or connect spins up an ephemeral node against headscale.
 You can confirm it landed by tailing headscale's logs and watching for a
 new `tailscreen-...` machine join.
 
+## Your own relay for share links (derper)
+
+[Share via Link]({{ site.baseurl }}{% link usage.md %}#sharing-via-link-guests)
+guests don't use a control plane at all — the link itself carries the
+crypto — but they do bootstrap through a **DERP relay**: the sharer waits
+there, the guest's first packets arrive there, and the connection then
+upgrades to a direct path when NAT allows (staying relayed when it
+doesn't). By default that's Tailscale's public relay network.
+
+To keep guest traffic on infrastructure you run:
+
+1. Run Tailscale's relay server,
+   [`derper`](https://pkg.go.dev/tailscale.com/cmd/derper), on a machine
+   both ends can reach, with a real hostname and TLS
+   (`derper -hostname derp.example.com`).
+2. Serve a DERP map describing it — a JSON document in Tailscale's
+   [`tailcfg.DERPMap`](https://pkg.go.dev/tailscale.com/tailcfg#DERPMap)
+   shape with one region pointing at your derper — from any URL you
+   control.
+3. Put that URL in **Settings → Link sharing → Relay override** on the
+   sharing Mac. It applies to the next link you create.
+
+Guests need no configuration: the token embeds the relay details, so a
+link minted against your derper carries your derper. The relay sees only
+ciphertext either way — self-hosting it is about availability and traffic
+policy, not confidentiality.
+
 ## Caveats
 
 - **Interactive login expects a browser-redirect endpoint.** Tailscale's

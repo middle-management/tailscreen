@@ -1249,3 +1249,48 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | :--- | :--- |
 | 1 | Initial specification, describing the protocol as shipped. |
 | 1 | Stated the substrate as a **tailnet** with four named properties (TS-GEN-017 … TS-GEN-019) rather than as Tailscale specifically, so that headscale — already supported and exercised by the end-to-end harness — is inside the specification rather than outside it. A widening: everything conforming before still conforms. |
+| 1 | Added **Appendix D** (informative): transport bootstrap via connection token (guest mode). No wire values added, no normative requirements changed — the appendix records how a token-bootstrapped tunnel relates to TS-GEN-017 and where the sharer compensates at the admission layer. |
+
+---
+
+## Appendix D. Transport bootstrap via connection token (guest mode)
+
+*Informative.* This appendix describes how a Tailscreen deployment can
+carry the protocol over a substrate that is bootstrapped by a **connection
+token** instead of a shared tailnet ("Share via Link" / guest mode). It
+adds **no normative requirements**: nothing on the wire inside the tunnel
+changes, no wire value is added to Appendix A, and every requirement in
+this document applies to a guest session exactly as to a tailnet one.
+
+**Mechanism (scope statement only).** The sharer generates a fresh
+WireGuard key pair per link and encodes its public key plus relay
+(DERP) bootstrap details into an opaque token string (`tc` + base64url; the
+encoding is owned by the transport implementation and is deliberately not
+specified here — implementations treat tokens as opaque). A guest holding
+the token reaches the sharer through the named relay, completes an
+authenticated handshake, and the pair then carries ordinary WireGuard
+traffic — upgrading to a direct path when NAT traversal permits. Port
+7447, both channels ([§2](#2-transport)), runs over that tunnel unchanged.
+
+**Relation to the substrate requirements.** The guest tunnel supplies
+properties 1–3 of TS-GEN-017 (authentication, encryption/integrity, and a
+stable per-node identifier — the guest's WireGuard node public key) but
+not property 4: there is no peer enumeration, and discovery
+([§14](#14-discovery)) is inapplicable — the token *is* the rendezvous.
+That is acceptable within TS-GEN-019 because a guest session is a
+deliberately scoped two-party rendezvous, not a substitute tailnet, and
+the deployment compensates at the admission layer:
+
+- Admission identity is keyed on the guest's **node public key** — the
+  identifier the tunnel actually authenticates — playing the role
+  TS-ADM-006 assigns to the stable node identifier.
+- The sharer treats guests as a second identity class with **mandatory
+  per-join approval**: remembered-allow, any open-admission mode, and
+  request-to-share pre-approval do not apply to guests. (This is a
+  deployment policy stated here for interoperability of expectations; it
+  is enforced sharer-side and needs nothing on the wire.)
+- Denying a guest additionally refuses its node key at the tunnel for the
+  remaining life of the token.
+
+A token, and the key pair behind it, lives at most as long as one share
+and is never persisted.

@@ -349,6 +349,22 @@ Linux/Windows rides the same `SharerModel`/WGC hosts afterwards, tracked as
 matrix gaps per `plans/platform-alignment.md`'s rule (a *decision* — approve,
 deny, drop a guest — must exist wherever guests can exist, so those land with
 the sharer port, not after it).
+*(status: landed. `HubJoinCard` (TailscreenHubUI, parsing via the shared
+`ShareLinkFormat`) renders in `PickerContent` on both swift-cross-ui hosts
+— including before sign-in, and on the Windows `SignInPane`, since joining
+needs no account — and both apps route it through the phase-3
+`ViewerConfig.guestToken` path (GTK: `startSession(guestToken:)` + a
+`--join` CLI twin of the direct-host mode; Windows: `joinShare(token:)`
+over the extracted `startSession`, with no `phase` guard so a signed-out
+join works). Both hosts gate the TCP-backed affordances (annotations,
+remote control) off for guest sessions and redial by token on Reconnect.
+Docs: `usage.md` "Sharing via link (guests)", `security.md` "Guests:
+sharing outside the tailnet", `self-hosted.md` derper recipe for the
+relay override, `spec.md` Appendix D (informative guest-bootstrap scope
+statement against TS-GEN-017), and the platform matrix flips the
+join rows for Linux/Windows (`tailscreen:` URL registration stays a
+macOS-only row — paste works everywhere). Sharer-side guest mode on
+Linux/Windows remains the tracked matrix gap.)*
 
 Each phase is a separate PR; 0 and 1 can proceed in parallel (1 targets the
 fork directly). Docs ship with their phases per the repo rule, safe under the

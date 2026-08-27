@@ -172,6 +172,54 @@ If you'd rather have the old anyone-on-the-tailnet-connects-instantly
 behavior, turn the toggle off in **Settings → Viewers**. Blocked peers
 stay blocked even then — the deny list outranks the toggle.
 
+## Sharing via link (guests)
+
+Everything above assumes both machines are on your tailnet. **Share via
+Link** is the way in for someone who isn't — no Tailscale account, no
+install ceremony beyond Tailscreen itself.
+
+While sharing on macOS, flip **Share via Link** in the menubar's sharing
+card. Tailscreen mints a one-off link (a `tailscreen:` URL wrapping a
+`tc…` token) and shows it with three buttons:
+
+- **Copy Link** — the `tailscreen:` URL. On a machine with Tailscreen
+  installed, opening it lands in the join screen with the token filled in.
+- **Copy Token** — the bare token, for pasting into the join screen by
+  hand.
+- **New Link** — replaces the link with a fresh one. The old link stops
+  working immediately and any current guests are dropped.
+
+Guests knock, they don't walk in: **every guest waits at your approval
+prompt, every time** — Always Allow, the open-door toggle, and accepted
+share requests deliberately don't apply to them, because a link gets
+forwarded and you can't know who holds it. Guest rows are badged
+**Guest** and named by a short fingerprint of their cryptographic key
+rather than a machine name (guests don't have one you could trust).
+Denying a guest also closes their tunnel and blocks that key for as long
+as the link lives, so a denied guest can't keep knocking.
+
+The link dies when you stop sharing, flip the toggle off, or press New
+Link — there is nothing to revoke later. If you never want the feature
+offered, turn it off in **Settings → Link sharing** (macOS; the switch
+also holds a relay override for
+[self-hosting]({{ site.baseurl }}{% link self-hosted.md %})).
+
+**Joining** works on all three platforms:
+
+- **macOS** — click a `tailscreen:` link, or **Join a Share…** (the link
+  icon in the hub header, also offered on the sign-in screen), and paste
+  the link or token.
+- **Linux and Windows** — **Join a Share…** in the hub (offered before
+  sign-in too — joining needs no account). The Linux app also takes
+  `tailscreen --join <token-or-link>` on the command line.
+
+You join as a guest over an encrypted tunnel; the sharer has to approve
+you before you see anything, so expect the waiting placard first. Guest
+sessions carry video and voice; annotations and remote control aren't
+available to guests yet. Creating a link (the sharer side) is
+macOS-only today — see the
+[platform matrix]({{ site.baseurl }}{% link platform-support.md %}).
+
 ## Asking someone to share
 
 The flow also works in reverse. Expand a peer's row in the Screens list

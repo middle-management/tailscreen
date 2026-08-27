@@ -342,7 +342,16 @@ struct TailscreenWindowsApp: App {
             ? L("Sign in to your tailnet to share this screen or watch someone else's.")
             : state.detail
         let label = state.phase == .failed ? L("Try again") : L("Sign in to Tailscale")
-        return SignInPane(message: message, buttonLabel: label) { model.signIn() }
+        return SignInPane(
+            message: message, buttonLabel: label, onSignIn: { model.signIn() },
+            joinCard: hubJoinCard)
+    }
+
+    /// The share-by-token way in. A computed property with an explicit type
+    /// for the usual result-builder reason.
+    private var hubJoinCard: HubJoinCard {
+        let model = state
+        return HubJoinCard(onJoin: { token in model.joinShare(token: token) })
     }
 
     /// Signed in, or on the way there. `PickerContent` covers both: with
@@ -368,7 +377,8 @@ struct TailscreenWindowsApp: App {
             onSelect: { id in model.connect(toID: id) },
             onAskToShare: { id in model.askToShare(id: id) },
             onOpenLogin: { model.openLoginURL() },
-            shareCard: state.shareCard)
+            shareCard: state.shareCard,
+            joinCard: hubJoinCard)
     }
 
     /// Build stamp, and whatever the last thing to go wrong was.
@@ -414,21 +424,31 @@ struct SignInPane: View {
     let message: String
     let buttonLabel: String
     let onSignIn: @MainActor @Sendable () -> Void
+    /// The share-by-token way in, offered beside sign-in because joining by
+    /// token is exactly the path that needs no Tailscale account — hiding it
+    /// behind the sign-in button would gate the accountless flow on an
+    /// account. Nil renders nothing.
+    var joinCard: HubJoinCard?
 
     var body: some View {
-        VStack(spacing: 12) {
-            Text(L("Screens on your tailnet"))
-                .font(.headline)
-                .fontWeight(.semibold)
-            Text(message)
-                .font(.callout)
-                .foregroundColor(HubStyle.secondaryText)
-                .multilineTextAlignment(.center)
-            Button(buttonLabel, action: onSignIn)
+        VStack(spacing: 14) {
+            VStack(spacing: 12) {
+                Text(L("Screens on your tailnet"))
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                Text(message)
+                    .font(.callout)
+                    .foregroundColor(HubStyle.secondaryText)
+                    .multilineTextAlignment(.center)
+                Button(buttonLabel, action: onSignIn)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .hubCard()
+            if let joinCard {
+                joinCard
+            }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .hubCard()
         .frame(maxWidth: HubStyle.contentMaxWidth)
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -555,6 +575,11 @@ final class AppUIState: ObservableObject {
     /// The last dialed peer's row id, retained past the session's end so the
     /// ended placard's Reconnect can redial through `connect(toID:)`.
     private var lastPeerID: String?
+    /// The last guest session's share token, nil for tailnet sessions. The
+    /// ended placard's Reconnect redials through the guest path when set —
+    /// there is no peer row to resolve, and the token stays valid as long as
+    /// the sharer's link is up.
+    private var lastGuestToken: String?
     /// Bumped per decoded frame so SwiftCrossUI re-runs `updateWinUIElement`.
     /// The frame itself travels through `frameStore`, never through this.
     @Published var frameGeneration = 0
@@ -1295,12 +1320,37 @@ final class AppUIState: ObservableObject {
     }
 
     func connect(to peer: DiscoveredSharer) {
-        guard phase == .ready, sessionTask == nil else { return }
+        guard phase == .ready else { return }
+        lastGuestToken = nil
+        startSession(
+            config: ViewerConfig(
+                // Dial by IP, not hostname: the transport documents that this
+                // sidesteps the from == dest hostname mismatch the CLI host
+                // path warns about.
+                hostname: peer.tailscaleIP,
+                statePath: stateDirectory()),
+            displayName: peer.displayName, peerID: peer.id, isGuest: false)
+    }
+
+    /// Join a share-by-token session (the hub's join card, signed in or not
+    /// — the guest tunnel needs no tsnet node, so no `phase` guard). The
+    /// token arrives already parsed by `HubJoinCard`.
+    func joinShare(token: String) {
+        lastGuestToken = token
+        startSession(
+            config: ViewerConfig(guestToken: token),
+            displayName: L("Shared screen"), peerID: nil, isGuest: true)
+    }
+
+    private func startSession(
+        config: ViewerConfig, displayName: String, peerID: String?, isGuest: Bool
+    ) {
+        guard sessionTask == nil else { return }
         stopRequested = false
-        watching = peer.displayName
+        watching = displayName
         sessionPhase = .connecting
-        lastPeerID = peer.id
-        status = L("Connecting to \(peer.displayName)…")
+        lastPeerID = peerID
+        status = L("Connecting to \(displayName)…")
         detail = ""
 
         sessionTask = Task { [weak self] in
@@ -1350,13 +1400,7 @@ final class AppUIState: ObservableObject {
             let decoder = FFmpegVideoDecoder()
             do {
                 try await transport.run(
-                    config: ViewerConfig(
-                        // Dial by IP, not hostname: the transport documents
-                        // that this sidesteps the from == dest hostname
-                        // mismatch the CLI host path warns about.
-                        hostname: peer.tailscaleIP,
-                        statePath: stateDirectory()
-                    ),
+                    config: config,
                     decoder: decoder,
                     videoSink: sink,
                     audioSink: audio,
@@ -1375,19 +1419,26 @@ final class AppUIState: ObservableObject {
                             // session that ended immediately — a stale
                             // `.viewing` must not clobber the ended placard.
                             guard let self, self.sessionTask != nil else { return }
-                            self.status = L("Watching \(peer.displayName)")
+                            self.status = L("Watching \(displayName)")
                             self.sessionPhase = .viewing
                             // Drawing and Request Control appear only if the
                             // sharer said it can serve them. Withheld bits mean
-                            // a quieter UI, never a broken one.
-                            self.interaction.setCaps(caps)
+                            // a quieter UI, never a broken one. A guest session
+                            // additionally has no TCP back-channel yet
+                            // (`onBackChannelReady` never fires — see
+                            // `ViewerConfig.guestToken`), so both TCP-backed
+                            // affordances stay hidden there regardless of what
+                            // the sharer advertised.
+                            self.interaction.setCaps(
+                                isGuest
+                                    ? caps.subtracting([.remoteControl, .annotations]) : caps)
                         }
                     },
                     onAwaitingApproval: { [weak self] in
                         Task { @MainActor in
                             // Same stale-hop guard as `onAdmitted`.
                             guard let self, self.sessionTask != nil else { return }
-                            self.status = L("Waiting for \(peer.displayName) to approve…")
+                            self.status = L("Waiting for \(displayName) to approve…")
                             self.sessionPhase = .awaitingApproval
                         }
                     },
@@ -1416,7 +1467,13 @@ final class AppUIState: ObservableObject {
             // Before the status line, so a stale grant or armed tool can never
             // outlive the session that produced it.
             interaction.endSession()
-            status = transport.accountIdentity.map { L("Signed in as \($0)") } ?? L("Signed in")
+            // Restore the pre-session header line. A guest session can run
+            // with no account at all, and "Signed in" over the sign-in pane
+            // would be the header contradicting the card under it.
+            status =
+                phase == .ready
+                ? transport.accountIdentity.map { L("Signed in as \($0)") } ?? L("Signed in")
+                : L("Not signed in")
             if let end = ended.value {
                 // Sharer stop / deny / kick / timeout / socket death: keep
                 // `watching` so the window shows the ended placard with the
@@ -1450,6 +1507,10 @@ final class AppUIState: ObservableObject {
         guard sessionTask == nil else { return }
         sessionPhase = nil
         watching = nil
+        if let token = lastGuestToken {
+            joinShare(token: token)
+            return
+        }
         guard let id = lastPeerID else { return }
         connect(toID: id)
     }
