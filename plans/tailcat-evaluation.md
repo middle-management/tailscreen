@@ -197,8 +197,30 @@ built, and it is the largest single line item in this use case. (tailcat #5,
 "Add C bindings", is upstream reaching for the same thing from the other side;
 worth watching or contributing to rather than solving privately.)
 
-**Toolchain floor.** tailcat's `go.mod` says `go 1.26.5`. `CLAUDE.md` documents
-our build requirement as Go 1.21+, and CI would have to move with it.
+**Toolchain floor — a CI-image problem, not a contributor problem.** tailcat's
+`go.mod` says `go 1.26.5` against our documented Go 1.21+ floor, but on a stock
+upstream Go this resolves itself: `GOTOOLCHAIN` defaults to `auto`, so the go
+command downloads and re-execs the required toolchain. Verified on this
+container — Go 1.24.7 against a `go 1.26.5` module printed
+`go: downloading go1.26.5 (linux/amd64)` and built without a flag or a prompt.
+A dependency's `go` line propagates the same way, with `go get` bumping the main
+module's line to match.
+
+Where it does *not* resolve itself is our CI. Most jobs in `build.yml` and
+`app-linux.yml` install Go as `golang-go` from apt, and
+[Debian patches the `GOTOOLCHAIN` default from `auto` to `path`](https://groups.google.com/g/linux.debian.bugs.dist/c/LNPCmBbxlSo)
+— it will use a `goX.Y` binary already in `PATH` but will never download one,
+because fetching binaries from the network at build time is against policy. So
+those jobs get a hard error rather than a silent upgrade, and noble's apt Go is
+1.22.
+
+The fix already exists and is one line: `.github/actions/bootstrap` takes
+`go: setup-go`, which installs via `actions/setup-go` reading the version out of
+a `go.mod`. `build.yml:983` and `app-linux.yml:193` already do exactly this for
+the job whose apt Go could not parse libtailscale's `go.mod`. Any job that
+builds a tailcat-linked archive flips to `setup-go` the same way; jobs that
+don't touch Go at all are unaffected. `CLAUDE.md`'s "Go 1.21+" line would want
+updating in the same commit.
 
 ## Use case 2: browser viewer
 
