@@ -250,6 +250,14 @@ identity prose in `security.md`/spec notes the second identity class.
 ## Phases & gates
 
 **Phase 0 — Own the archive.** Fork libtailscale; patches→commits;
+*(in progress: `scripts/fork-libtailscale.sh` performs and verifies the
+patches→commits conversion — 23 commits on `tailscreen-main` off the pinned
+`5e89501`, byte-identical to the `make apply-patches` tree, `go build`/`go
+test` green. Blocked on the fork repo existing: the GitHub App cannot create
+org repos (403) and the session cannot reach `tailscale/libtailscale` to
+fork it, so a human creates `middle-management/libtailscale` — GitHub Fork
+button or an empty public repo — then the script's printed push command
+publishes the branch.)*
 `tailscale.com` → v1.102.3; submodule → fork; Makefile patch machinery
 removed; CI bootstrap uses `go: setup-go` wherever the archive builds.
 *Gate*: `make build`, `make test-protocol`, `make test-differential`,
