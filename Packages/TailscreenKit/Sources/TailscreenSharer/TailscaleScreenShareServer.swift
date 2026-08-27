@@ -230,11 +230,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     private var media: MediaSockets? {
         lifecycle.withLock { lc in
             guard let primary = lc.packetListener else { return nil }
-            let guestAddrs = self.guestAddrs
+            // `guestAddrs` is a ~Copyable Mutex, so the closure captures self
+            // (weakly — a snapshot outliving the server routes to primary,
+            // whose send then fails the same way it always has).
             return MediaSockets(
                 primary: primary,
                 guest: lc.guestPacketListener,
-                isGuestAddr: { addr in guestAddrs.withLock { $0.contains(addr) } })
+                isGuestAddr: { [weak self] addr in self?.isGuestAddr(addr) ?? false })
         }
     }
     private var helperCapture: (any CaptureEncoding)? { lifecycle.withLock { $0.helperCapture } }
