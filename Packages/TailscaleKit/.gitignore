@@ -33,3 +33,6 @@ upstream/libtailscale/libtailscale.h
 .vscode/
 
 # Note: Sources/, lib/, and include/ are symlinks - they are tracked!
+
+# Per-submodule-commit build stamp (see the Makefile fix on the phase-0 PR)
+.lib-built-*
