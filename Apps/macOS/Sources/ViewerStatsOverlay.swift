@@ -33,7 +33,9 @@ struct ViewerStatsOverlay: View {
             // codec names above. Absent for a plain BT.709 stream, which tags
             // nothing, so "—" means "not signalled" rather than "unknown".
             row(L("Color"), stats.colorLabel ?? "—")
-            row(L("Connection"), "Tailscale")
+            // "Tailscale" is a brand noun (unlocalized); the guest label is
+            // ordinary UI copy.
+            row(L("Connection"), model.isGuestSession ? L("Guest link") : "Tailscale")
             chartSection
         }
         .font(.system(size: 13, weight: .semibold, design: .monospaced))

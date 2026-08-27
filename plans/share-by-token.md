@@ -321,6 +321,25 @@ with guest, routing pick, token/URL parse+display formatting).
 settings, URL scheme, notifications copy. *Gate*: `make test-l10n` green;
 hand-run of the full flow on two Macs across different networks (one
 CGNAT'd), confirming direct-path upgrade and the relayed indicator.
+*(status: macOS UI landed. Sharer: SharingCard "Share via Link" section
+(toggle → `GuestServerNode` + mid-share `attachGuestPacketListener`, token
+with Copy Link / Copy Token / New Link rotation, guest count, failure
+copy), Settings → Link sharing (feature gate default-on + DERP relay
+override), guest rows badged with the node-key fingerprint
+(`ShareLinkFormat.keyFingerprint` over `GuestServerNode.peers()`), guest
+pending rows offer plain Accept/Deny (remembered variants are
+StableNodeID-keyed, which guests never have; Deny tunnel-denylists the key
+via `onGuestViewerDenied` → `removePeer`). Viewer: Join-a-Share sheet in
+the hub (header action + signed-out welcome pane), `tailscreen://join`
+URL scheme (Info.plist rides `app-macos.yml`; `.onOpenURL` pre-fills the
+sheet), `connectGuest` on the mac client (annotations/remote-control
+affordances stay off — no guest TCP yet), Reconnect redials by token, and
+a "Guest link" connection row in the stats overlay. The link/token
+formats live in portable `ShareLinkFormat` (TailscreenProtocol), pinned by
+`ShareLinkFormatTests`. Deviations: guest naming in *notifications* still
+falls back to the tunnel IP (fingerprint polish pending); the per-guest
+relay/direct indicator is deferred with the risk-section stretch item.
+Remaining for the gate: the two-Mac hand-run.)*
 
 **Phase 5 — Cross-platform viewer + docs.** HubUI join entry (lights up
 Linux+Windows viewers nearly for free via `GuestTransport`), platform matrix

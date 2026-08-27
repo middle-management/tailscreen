@@ -35,12 +35,79 @@ struct MainWindowView: View {
         // header like Tailscale's app.
         .ignoresSafeArea(edges: .top)
         .background(TitlebarConfigurator())
+        .sheet(isPresented: $appState.joinSheetPresented) {
+            JoinShareSheet()
+        }
+        // `tailscreen:` links (Copy Link on another machine) land here and
+        // open the join sheet with the token pre-filled.
+        .onOpenURL { url in
+            appState.handleOpenURL(url)
+        }
         .onAppear {
             // Environment actions are only reachable from view context, so
             // stash the scene-opening closure where AppKit callers (menu
             // items, the menubar popover) can invoke it.
             appState.openMainWindowAction = { openWindow(id: TailscreenApp.mainWindowID) }
         }
+    }
+}
+
+/// The Join-a-Share sheet: one paste field that accepts a bare token or a
+/// `tailscreen:` link, the guest-consent line, and Join. Reachable signed
+/// in or out — joining by token is exactly the path that needs no
+/// Tailscale account. Errors before the dial (non-token input) render
+/// inline; errors after it (unreachable relay, dead token) surface through
+/// the normal connect-failure alert, and a live sharer's approval gate
+/// shows the standard waiting placard.
+private struct JoinShareSheet: View {
+    @EnvironmentObject var appState: AppState
+    @State private var inputRejected = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L("Join a shared screen"))
+                .font(.headline)
+            Text(L("Paste a share link or token from the person sharing their screen."))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField(L("tailscreen: link or token"), text: $appState.joinSheetInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.body.monospaced())
+                .onSubmit { join() }
+            if inputRejected {
+                Text(L("That doesn't look like a share link or token."))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            Text(
+                L(
+                    "You'll join as a guest over an encrypted tunnel; the sharer has to approve you before you see anything."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button(L("Cancel")) {
+                    appState.joinSheetPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(L("Join")) {
+                    join()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    appState.joinSheetInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private func join() {
+        inputRejected = !appState.joinShare(input: appState.joinSheetInput)
     }
 }
 
@@ -114,6 +181,21 @@ private struct HubHeader: View {
             }
 
             Spacer(minLength: 8)
+
+            // Outside the signed-in gate on purpose: joining by token is
+            // exactly the path that needs no Tailscale account.
+            Button {
+                appState.joinSheetPresented = true
+            } label: {
+                Image(systemName: "link.badge.plus")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(L("Join a Share…"))
+            .accessibilityLabel(L("Join a shared screen with a link or token"))
 
             if appState.tailscaleAuth.isAuthenticated {
                 PeerFilterMenu()
@@ -452,6 +534,15 @@ private struct WelcomePane: View {
                 }
             }
             .padding(.top, 4)
+
+            // The no-account path: watching a share by link needs no
+            // Tailscale sign-in, so the empty state must offer it too.
+            Button(L("Join a Share…")) {
+                appState.joinSheetPresented = true
+            }
+            .buttonStyle(.link)
+            .font(.callout)
+            .accessibilityHint(L("Joins a shared screen with a link or token, without signing in"))
 
             Spacer(minLength: 0)
         }
