@@ -187,15 +187,22 @@ The consent model survives intact (request-to-share already exists as the "let
 me in" flow), but the hub UI is built around enumerating peers and would need a
 genuinely different surface.
 
-**Two Go c-archives cannot share one binary.** This repo already knows this —
-it is why `Packages/TailscreenDifferential` is a separate package. tailcat is a
-Go library importing `tailscale.com`, so `libtailscale.a` plus a `libtailcat.a`
-in one app binary hits exactly that wall. The fix is one c-archive exporting
-both bridges from a single Go module, which is feasible because they share the
-`tailscale.com` dependency tree — but it is real surgery on how TailscaleKit is
-built, and it is the largest single line item in this use case. (tailcat #5,
-"Add C bindings", is upstream reaching for the same thing from the other side;
-worth watching or contributing to rather than solving privately.)
+**The c-archive question — smaller than it first looks.** The rule that two Go
+c-archives cannot share one binary is real (it is why
+`Packages/TailscreenDifferential` is a separate package), but it only bites if
+tailcat is built as *its own* archive alongside `libtailscale.a`. Nothing forces
+that: as an ordinary Go module dependency of whichever module already builds an
+archive, tailcat is just more Go in the same archive, and the collision never
+happens. They share the `tailscale.com` dependency tree, so there is not even a
+version conflict to resolve.
+
+What that exposes is the actual question, which is not about tailcat at all:
+**who owns the module that builds our archive.** Today it is upstream
+libtailscale, consumed as a submodule with symlinked `Sources/` and 26 files in
+`Patches/`. Adding anything to that archive means adding a patch. See
+[Who owns the archive](#who-owns-the-archive) below — it is the decision
+everything else in this document turns out to hang off. (tailcat #5, "Add C
+bindings", is upstream reaching at the same problem from the other side.)
 
 **Toolchain floor — a CI-image problem, not a contributor problem.** tailcat's
 `go.mod` says `go 1.26.5` against our documented Go 1.21+ floor, but on a stock
@@ -274,27 +281,115 @@ Pages will not compress `application/wasm` itself
 `sdk/go/tailscreen`. That is a real first-load cost to design around, not a
 rounding error.
 
+## Who owns the archive
+
+tailcat is thin. It is ~2,050 lines of non-test Go outside its SSH server
+(`tailcat.go` 1818, `wire.go` 111, `disco.go` 67, `pickregion.go` 55; the
+436-line `tailcat_ssh.go` we would never want), sitting on 25 `tailscale.com`
+packages — `wgengine`, `magicsock` via `wgengine`, `netstack`, `filter`,
+`tsd`, `netmap`, `netcheck`, `tsdial`, `disco`, `tailcfg` and friends. Every
+one of them is publicly importable, and every one is already inside the
+dependency tree we ship in `libtailscale.a`.
+
+So "port the parts we need" is a fair description of the size of the thing. It
+also dissolves both problems this document has been circling: there is no
+upstream to patch for UDP, because we would be writing the `filter.Match`
+ourselves and can simply put `ipproto.UDP` in it; and there is no second
+archive, because our code compiles into whichever archive we already build.
+
+The novel parts are small and legible. The entire rendezvous protocol that
+replaces the control plane is `disco.go`, 67 lines: a 4-byte `meow` magic, a
+one-byte type, and two raw public keys, sent as unframed DERP packets.
+`wire.go` is a CBOR token with deliberately short field names, upstream noting
+they "are the wire format: do not change or reuse them" and pinning them with
+`TestWireFieldNames` — the same discipline as our `WireByteRegistryTests`. And
+the one genuinely cursed thing in tailcat, the `reflect`+`unsafe` reach into
+netstack's unexported `ipstack` field, turns out to be load-bearing for exactly
+one function: `DrainTCP`, a graceful-shutdown nicety (`tailcat.go:545`). A port
+that skips `DrainTCP` inherits none of it.
+
+### Why vendor rather than rewrite
+
+All of which argues for taking the code, not retyping it.
+
+The ~2,050 lines are not 2,050 lines of *our* problem domain. The bulk of
+`tailcat.go` is assembling a working `wgengine` + `magicsock` + `netstack` with
+a **synthesised netmap** — no control plane ever hands it one — with addresses
+derived from key hashes, a hand-built packet filter, disco key plumbing and
+endpoint advertisement over DERP. That is the part most likely to be subtly
+wrong in a rewrite, in ways that present as "works on my LAN, fails behind
+CGNAT", and it is written by the people who own magicsock.
+
+The cost of taking it is that `tailscale.com`'s non-tsnet packages carry no API
+stability promise. But we do not escape that by rewriting — a port depends on
+exactly the same 25 packages and breaks on exactly the same churn, except then
+nobody upstream is running CI against our version of it. Vendoring keeps a git
+history to rebase and a `TestWireFieldNames` that fails loudly; a rewrite keeps
+neither.
+
+The honest summary: porting buys us nothing that vendoring under our own module
+does not, and costs us the provenance.
+
+### The decision underneath
+
+`Patches/` is 26 files, and reading the list is the argument. Patches 013
+through 020 are one feature — `ListenPacket`, which is to say **UDP** — added
+across a tsnet Go file, a C header, C glue, a close path, and a Swift wrapper.
+Five patches to get a datagram out of a library that did not want to give us
+one. That is precisely the shape of the tailcat UDP work, and we have already
+paid for it once and are still carrying it.
+
+So the fork-in-the-road is not "tailcat or a port". It is:
+
+- **Keep the archive upstream's.** Everything new arrives as patch 027, 028,
+  029. Cheap today, and the series only grows.
+- **Own a first-party Go module that builds the archive**, importing
+  `tailscale.com/tsnet`, a vendored tailcat, and eventually `sdk/go`, exporting
+  the C surface we actually want. Then the UDP change is a line of our own
+  code, the browser viewer's wasm build is a second target of the same module,
+  and `Patches/` stops growing — the 26 that encode real upstream fixes stay
+  until they are upstreamed or absorbed.
+
+The second is more work up front and is the direction every item in this
+document points at. It is also a much larger change than either use case here
+justifies on its own, so it should be decided on its own merits, not smuggled
+in under a screen-sharing feature.
+
 ## Recommendation
 
-In order, and the first two do not depend on each other:
+In order. The first two do not depend on each other, and neither depends on
+resolving the archive question.
 
-1. **File the UDP issue upstream on tailcat**, framed as the netcat gap. Both
-   use cases sit behind it, the patch is small, and it is plausibly something
-   they want independent of us. Open the fork commit alongside it.
+1. **File the UDP issue upstream on tailcat**, framed as the netcat gap. It
+   costs an issue, the patch is small, and it is plausibly something they want
+   independent of us. If it lands, whatever we vendor needs no local change at
+   all — so this is worth doing first precisely because it might make later
+   steps cheaper.
 
 2. **Specify the reliable-transport profile** in `docs/spec.md` with a
    conformance vector. This is the actual prerequisite for a browser viewer,
-   it is useful without tailcat at all as a UDP-blocked fallback, and it is
-   the piece nobody else can do for us.
+   it is useful with no tailcat involvement at all as a fallback for viewers on
+   UDP-blocking networks, and it is the one piece nobody upstream can do for us.
 
-3. **Browser viewer** is the better prize. `sdk/go` doing the hard part
-   changes the estimate substantially — most of the work is the profile in (2),
-   a WebCodecs shim, and the wasm size budget.
+3. **Browser viewer** is the better prize. `sdk/go` doing the hard part changes
+   the estimate substantially — most of the remaining work is the profile in
+   (2), a WebCodecs shim, and the wasm size budget.
 
 4. **No-sign-in share** is architecturally the cleanest match to what tailcat
-   is, but it is the bigger lift: the c-archive collision and a token-shaped
-   entry path in a hub built around peer enumeration are both larger than
-   anything in (3).
+   is. Its real cost is not the transport but the hub: a token-shaped entry
+   path in a UI built around enumerating peers.
 
-If a fork happens, it lives under a `replace` directive as commits, not as a
-`Patches/` series. That distinction is the main portable finding here.
+Two findings that outlive whichever of those we do:
+
+**Vendor, do not rewrite.** A port depends on the same 25 unstable
+`tailscale.com` packages as the vendored original and breaks on the same churn,
+minus the provenance and minus upstream's CI. If tailcat source ends up in our
+tree it should arrive as commits on a fork under a `replace` directive — Go has
+first-class support for the thing `Patches/` exists to work around, and that
+series is a SwiftPM scar, not a house style.
+
+**The archive question is the real one.** UDP, the browser wasm target and the
+patch series are three faces of "libtailscale's module builds our archive, so
+everything we add is a patch to somebody else's library." That is worth
+deciding deliberately and on its own merits — not as a rider on a screen-sharing
+feature.
