@@ -13,6 +13,59 @@ Two things we want map onto it: **sharing to somebody who is not on your
 tailnet**, and **a viewer that is just a web page**. This is what each would
 actually cost.
 
+## Verdict on share-by-token: yes, buildable — one unknown, one blocker
+
+The mechanism is **proven working on the version we would bump to**. Running
+tailcat's own end-to-end test against `tailscale.com v1.102.3` exercises the
+whole control-plane-free path and passes: DERP bootstrap, disco handshake,
+upgrade to a direct path, WireGuard handshake between server and client, and a
+TCP payload delivered through the tunnel. No control plane anywhere in it.
+
+What is now established, by running it rather than reading it:
+
+| | |
+| :- | :- |
+| Control-plane-free tunnel on v1.102.3 | ✅ tailcat's e2e passes |
+| tailcat builds on v1.102.3 | ✅ (a forward bump for tailcat too) |
+| libtailscale bumped to v1.102.3 | ✅ build, vet, test, c-archive all green |
+| Our UDP exports survive the bump | ✅ `tailscale_listen_packet` still exported |
+| The seams callable from our module | ✅ probe compiles |
+| One token → N viewers, individually addressed | ✅ by construction |
+
+Two things stand between that and a shipped feature.
+
+**The unknown: UDP through a control-plane-free backend has never been run.**
+Everything above moves TCP. We know the filter match compiles and we know
+nothing upstream forbids it — building the backend ourselves means we write the
+`filter.Match` — but no datagram has gone through one. Our entire media path
+depends on that working, so it is the first thing to find out and the only
+result here that could still turn the answer to "no".
+
+**The blocker: the bump has nowhere to live.** 93 lines of `go.mod` and 199 of
+`go.sum` that our repository cannot hold, because the submodule pins an upstream
+commit and `ignore = dirty` hides everything inside it. Either a patch carrying
+a generated lockfile, or a fork. See
+[Where it actually breaks](#where-it-actually-breaks-there-is-nowhere-to-commit-it).
+
+### The spike that decides it
+
+Smallest thing that retires the real risk, before any product work:
+
+1. Stand up a tailcat-style server in a Go test inside our own module, on
+   v1.102.3, with a `filter.Match` admitting `ipproto.UDP` alongside TCP.
+2. Push RTP-shaped datagrams through it both ways and assert they arrive.
+3. Run it once relayed and once on a direct path.
+
+If that passes, share-by-token is an engineering schedule rather than a
+question, and what remains is known work: the archive decision, a token entry
+path in a hub built around peer enumeration, and an eviction story the tunnel
+layer does not provide.
+
+Still unverified either way: the **Swift half** of the bump — no Swift toolchain
+was available here, so `make test-protocol` and `make build` have not been run
+against v1.102.3 — and NAT traversal on the **public internet**, since the e2e
+test uses a local test DERP and STUN.
+
 ## The blocker both sit behind: tailcat carries TCP and nothing else
 
 The tunnel is UDP. The traffic you may put *through* the tunnel is not.
