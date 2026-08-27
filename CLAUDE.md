@@ -10,7 +10,7 @@ Guidance for Claude (and other AI assistants) working in this repo. Keep it accu
 
 - **Swift 6** with strict concurrency (`@MainActor`, `Sendable`).
 - **macOS 15.2 (Sequoia)** deployment target. Not iOS. The 15.2 floor (vs. 15.0) is dictated by the `SCContentFilter.includedDisplays` / `includedWindows` / `includedApplications` getters the picker-helper uses to extract primitives.
-- **Go 1.21+** required at build time to compile `libtailscale.a` (the C archive that TailscaleKit wraps).
+- **Go** required at build time to compile `libtailscale.a` (the C archive that TailscaleKit wraps). The submodule's `go.mod` pins the floor (currently a `go 1.26.x` directive); any reasonably recent Go works because `GOTOOLCHAIN=auto` downloads the required toolchain — except Debian/Ubuntu's apt Go, which patches that default off, so CI provisions Go via `actions/setup-go` reading the submodule's `go.mod`.
 - **libopus** required at build time: the app links it (via `./Packages/OpusKit`'s `COpus` systemLibrary) for the Opus audio path. Install with `brew install opus` (macOS) / `apt install libopus-dev` (Linux); pkg-config resolves it.
 - **SwiftUI** (`Window` main scene + `MenuBarExtra` sharer tool; the app runs at `.regular` activation policy — Dock icon, always-reachable menu bar), **ScreenCaptureKit**, **VideoToolbox**, **Metal** (`CAMetalLayer`).
 - **TailscaleKit** consumed as a local SwiftPM package (`./Packages/TailscaleKit`); **OpusKit** likewise (`./Packages/OpusKit`).
@@ -19,7 +19,7 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 
 ## Repository layout
 
-One directory is not Swift at all: **`sdk/go`** is the public Go implementation of the wire protocol (plus a `-buildmode=c-archive` build of it as `libtailscreen.a`), which `conformance/` runs the vectors against. Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (submodule + patches); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps; **TailscreenL10n** is the string catalog all three apps share. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`TailscreenSharerPortal`/`XTestInjectKit`/`X11HotkeyKit`/`GNotifyKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WinHotkeyKit`/`WinNotifyKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
+One directory is not Swift at all: **`sdk/go`** is the public Go implementation of the wire protocol (plus a `-buildmode=c-archive` build of it as `libtailscreen.a`), which `conformance/` runs the vectors against. Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (a submodule of [our fork](https://github.com/middle-management/libtailscale), branch `tailscreen-main`, which carries our changes as commits on top of upstream); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps; **TailscreenL10n** is the string catalog all three apps share. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`TailscreenSharerPortal`/`XTestInjectKit`/`X11HotkeyKit`/`GNotifyKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WinHotkeyKit`/`WinNotifyKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
 
 **TailscreenL10n** is the string catalog — one `.lproj` set plus a portable
 `L(_:)` — that all three apps and TailscreenHubUI read, so a string translated
@@ -69,7 +69,7 @@ The **normative** definition — RFC 2119 MUST/SHOULD/MAY with stable requiremen
 
 - **`swift build` fails with linker errors** — you skipped `make tailscale`. The Go build emits `libtailscale.a`; without it nothing links. (And "no Package.swift" at the repo root means you forgot to `cd Apps/macOS` first.)
 - **Two local instances see no peers** — both processes are sharing one Tailscale state dir. Use `./test-local.sh` (or set `TAILSCREEN_INSTANCE` manually).
-- **Editing `Packages/TailscaleKit/Sources/` directly** — those paths are symlinks into the upstream submodule. Add a patch under `Packages/TailscaleKit/Patches/` instead.
+- **Editing `Packages/TailscaleKit/Sources/` directly** — those paths are symlinks into the fork submodule. Fine to edit, but the change must be committed *in the submodule* on the fork's `tailscreen-main` branch, pushed to `middle-management/libtailscale`, and the submodule pointer bumped here — an uncommitted submodule edit vanishes for everyone else.
 - **Port 7447 lives in `NetworkConfig.tailscreenPort`** (TailscreenProtocol/NetworkConfig.swift) — the discovery, server, client, and metadata paths all read it from there. Route any new listener or dial through it rather than writing the literal.
 - **Auth flow needs an active node** — interactive login only works after `Start Sharing` or `Connect to…` has initialized the tsnet node.
 - **CI uses submodules.** Workflows already pass `submodules: recursive`; if you add a new workflow that builds, do the same.
@@ -89,7 +89,7 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 | `.claude/rules/localization.md` | `L(_:)`, the shared catalog, call-site conventions per UI toolkit, what not to localize | all three apps' sources, TailscreenHubUI, TailscreenL10n |
 | `.claude/rules/linux.md` | GTK app, X11/portal capture, ALSA, XTEST injection + their pitfalls | `Apps/linux`, Linux backend packages |
 | `.claude/rules/windows.md` | WinUI app, WGC capture, SendInput, layered-window overlay, DPI awareness | `Apps/windows`, Windows backend packages |
-| `.claude/rules/tailscalekit.md` | Submodule, patch series, the Windows Go↔C bridge and runtime-start patches | `Packages/TailscaleKit/**` |
+| `.claude/rules/tailscalekit.md` | The fork submodule, how to change it, the Windows Go↔C bridge and runtime-start commits | `Packages/TailscaleKit/**` |
 | `.claude/rules/ci.md` | Shared build definitions, the linux-packages matrix, release/soak workflows | `.github/**` |
 
 One skill loads on demand rather than by path: **`test-catalog`** — the extracted pure-decision suites, the test-only seams, and which package a new suite belongs in. Invoke it when adding or moving a test.
@@ -100,6 +100,6 @@ Longer-form design docs (published site) live in `docs/`: `architecture.md`, `pr
 
 ## Git workflow notes
 
-- The libtailscale submodule is pinned with `ignore = dirty`, so a dirty upstream tree never shows up in `git status` — check it explicitly when a patch misbehaves.
+- The libtailscale submodule points at our fork (`middle-management/libtailscale`, branch `tailscreen-main`). A dirty submodule now shows in `git status` (the old `ignore = dirty` is gone with the patch series) — if you edited it, commit and push in the submodule first, then bump the pointer.
 - AI sessions develop on a designated `claude/...` branch — **do not push to `main`**. The active branch is named in the per-session prompt.
 - License: MIT; upstream `libtailscale` is BSD-3-Clause.

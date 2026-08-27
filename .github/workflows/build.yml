@@ -70,7 +70,7 @@ jobs:
           # PR's base (origin/main).
           fetch-depth: 0
 
-      # Patches + Go + libtailscale.a. `make build` below re-enters
+      # Go + libtailscale.a. `make build` below re-enters
       # `make tailscale`, which is a no-op once the archive is in place.
       - name: Bootstrap libtailscale
         uses: ./.github/actions/bootstrap

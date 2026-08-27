@@ -43,8 +43,7 @@ test: tailscale ## Run the unit test suite (swift test)
 # linux-protocol job runs exactly this. Compiling still needs only the
 # patched header, but the test bundle LINKS libtailscale.a — the
 # Tests/TailscreenSharerTests executable links TailscreenSharer, which
-# names TailscaleKit — hence the full `tailscale` prerequisite (which
-# also applies the patches).
+# names TailscaleKit — hence the full `tailscale` prerequisite.
 test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit package
 	swift test --package-path Packages/TailscreenKit
 
@@ -201,8 +200,8 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 #     listing a Sources tree that also holds a shim target is safe.
 #   • Packages/TailscaleKit/Sources — Sources/TailscaleKit is a SYMLINK into
 #     the libtailscale submodule. Formatting it would rewrite upstream
-#     BSD-licensed files through the symlink and make the patch series in
-#     Packages/TailscaleKit/Patches/ stop applying. (Its sibling
+#     BSD-licensed files through the symlink, dirtying the fork submodule
+#     with unreviewed churn. (Its sibling
 #     Sources/CGoRuntimeInit is ours but is C-only, so the whole tree can go.
 #     Packages/TailscaleKit/Tests is ours and stays in.)
 #   • Package.swift manifests — they sit at package roots, not under any
