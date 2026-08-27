@@ -419,6 +419,86 @@ noble's apt Go — so the situation the earlier toolchain note worried about is
 one we are already in and have already solved with `go: setup-go`. tailcat's
 `go 1.26.5` changes nothing.
 
+### The bump, actually attempted
+
+Run on this branch against the pinned submodule (`5e89501`), Linux, no Swift
+toolchain available. Result: **the Go half bumps clean; the blocker is not
+compilation, it is that we have nowhere to put the result.**
+
+Baseline first — all 26 patches applied to a pristine v1.94.1 tree with `-F0`
+(no fuzz tolerated), and `make c-archive` produced a 66,635,994-byte
+`libtailscale.a`. Then:
+
+```
+go get tailscale.com@v1.102.3   # also pulls gvisor 2025-02 → 2026-02,
+                                # and the whole golang.org/x set forward
+go mod tidy
+```
+
+| Step | Result |
+| :- | :- |
+| `go get tailscale.com@v1.102.3` | clean |
+| first `go build ./...` | **fails** — 5 missing `go.sum` entries |
+| `go mod tidy` | fixes all 5 |
+| `go build ./...` | clean |
+| `go vet ./...` | clean |
+| `go test ./...` | pass |
+| `make c-archive` | clean — 65,230,594 bytes, 1.4 MB *smaller* than baseline |
+
+The five `go.sum` failures are pure bookkeeping, not API drift — new transitive
+imports (`go4org/hashtriemap` via `derp/derpserver`, `gliderssh` via
+`ssh/tailssh`, two AWS SDK packages) that `tidy` resolves. Nothing in
+libtailscale's own Go needed editing.
+
+**Our patches survive.** The UDP feature we carry is still exported from the
+archive built against v1.102.3:
+
+```
+$ nm -g --defined-only libtailscale.a | grep listen_packet
+T tailscale_listen_packet
+T tailscale_listen_packet_close
+```
+
+**And the payoff is real.** A throwaway probe compiled inside the bumped module
+— calling `e.SetPeerConfigFunc(...)` and `e.SetPeerByIPPacketFunc(...)` on a
+`wgengine.Engine`, and constructing a `filter.Match` for `ipproto.UDP` —
+builds. Those are the exact seams a control-plane-free backend needs and the
+exact ones absent at v1.94.1. The probe was deleted; it existed to answer the
+question, not to be kept.
+
+**Not verified: the Swift half.** This container has no Swift toolchain, so
+`make test-protocol` and the TailscaleKit build were not run. Risk looks low —
+23 of the 26 patches are against libtailscale's *Swift* sources, which a
+`tailscale.com` bump does not touch, and the three Go-side ones compile — but
+"looks low" is not "checked". Anyone landing this should run `make
+test-protocol` and `make build` on a machine with Swift before believing it.
+
+### Where it actually breaks: there is nowhere to commit it
+
+The bump is 93 changed lines of `go.mod` and 199 of `go.sum`, and **our
+repository cannot hold any of them.** The submodule pins an upstream commit;
+changes inside it are invisible to us (`ignore = dirty` in `.gitmodules`
+guarantees they never even show in `git status`). So landing this means one of:
+
+- **A patch 027 carrying a `go.mod` + `go.sum` diff.** Technically works. But
+  `go.sum` is machine-generated content with no stable context, applied by
+  `patch -F0`; any later dependency change anywhere regenerates it and the
+  patch stops applying. The Makefile's own comment already records patch 021
+  silently fuzz-fitting itself into duplicate Go functions for months. A
+  292-line generated-content patch is that failure mode with a bigger target.
+- **A fork of libtailscale** we point the submodule at, where the bump is a
+  commit.
+
+This is the sharpest form of the argument the rest of this document has been
+making. The bump is not hard — it is four commands and everything passes. What
+is hard is that our dependency arrangement has no way to express "the same
+library, one version forward", and the workaround on offer is to encode a
+lockfile as a patch file.
+
+I reverted the submodule to its pinned state afterwards, since nothing here can
+be committed and a silently-bumped submodule under `ignore = dirty` is a trap.
+Reproduce with the four commands above.
+
 ### Why vendor rather than rewrite
 
 All of which argues for taking the code, not retyping it.
