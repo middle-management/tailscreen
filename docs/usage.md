@@ -178,9 +178,11 @@ Everything above assumes both machines are on your tailnet. **Share via
 Link** is the way in for someone who isn't — no Tailscale account, no
 install ceremony beyond Tailscreen itself.
 
-While sharing on macOS, flip **Share via Link** in the menubar's sharing
-card. Tailscreen mints a one-off link (a `tailscreen:` URL wrapping a
-`tc…` token) and shows it with three buttons:
+While sharing, flip **Share via Link** in the sharing card (the menubar
+card on macOS; the hub's share card on Linux and Windows, where the link
+appears as selectable text to copy). Tailscreen mints a one-off link (a
+`tailscreen:` URL wrapping a `tc…` token). On macOS it comes with three
+buttons:
 
 - **Copy Link** — the `tailscreen:` URL. On a machine with Tailscreen
   installed, opening it lands in the join screen with the token filled in.
@@ -225,8 +227,8 @@ would leave a share running that nobody can reach).
 You join as a guest over an encrypted tunnel; the sharer has to approve
 you before you see anything, so expect the waiting placard first. Guest
 sessions carry video and voice; annotations and remote control aren't
-available to guests yet. Creating a link (the sharer side) is
-macOS-only today — see the
+available to guests yet. Sharing *without signing in at all* (a
+link-only share) is macOS-only today — see the
 [platform matrix]({{ site.baseurl }}{% link platform-support.md %}).
 
 ## Asking someone to share

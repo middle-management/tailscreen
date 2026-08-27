@@ -37,6 +37,9 @@ public struct HubViewerRowView: View {
                 Text(viewer.label)
                     .fontWeight(.bold)
                     .lineLimit(1)
+                if viewer.isGuest {
+                    HubGuestChip()
+                }
                 Spacer()
             }
             // Spelled out, never colour alone — and only when there is
@@ -87,6 +90,9 @@ public struct HubViewerRowView: View {
 
     /// The standing decision, or the fact that one is waiting to be recorded.
     ///
+    /// Guests never show one: the store is StableNodeID-keyed and hosts pass
+    /// the remember-actions as nil for them, so there is nothing to report.
+    ///
     /// The deferred case exists because the persistent store is keyed by
     /// Tailscale StableNodeID, which arrives from the sharer's own netmap
     /// lookup a moment after the connection does. Saying so beats a button
@@ -101,5 +107,23 @@ public struct HubViewerRowView: View {
         case .allowed: return L("Always allowed")
         case .blocked: return L("Blocked")
         }
+    }
+}
+
+/// The share-by-token guest badge — a small purple capsule beside the name,
+/// on roster rows and approval prompts alike, so the sharer can tell at a
+/// glance which kind of viewer they are deciding about. Matches the macOS
+/// roster's badge (and reuses its catalog keys).
+public struct HubGuestChip: View {
+    public init() {}
+
+    public var body: some View {
+        Text(L("Guest"))
+            .font(.caption)
+            .fontWeight(.bold)
+            .foregroundColor(HubStyle.guestChipText)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(HubStyle.guestChipFill))
     }
 }

@@ -985,28 +985,7 @@ struct ViewerApp: App {
             }(),
             // The roster: who is watching, and what can be done about them.
             // `notes` is now free for statistics; a person is not a note.
-            viewers: sharer.viewers.map { viewer in
-                let stableID = viewer.stableID
-                let remembered = gSharer.remembered(stableID: stableID)
-                return HubViewerRow(
-                    id: viewer.id,
-                    label: viewer.label,
-                    health: Self.hubHealth(viewer.health),
-                    remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
-                    rememberIsDeferred: gSharer.isDeferred(rowID: viewer.id),
-                    onKick: { gSharer.disconnect(viewer.id) },
-                    onAlwaysAllow: {
-                        gSharer.remember(
-                            rowID: viewer.id, stableID: stableID, label: viewer.label,
-                            policy: .allow)
-                    },
-                    onDenyAndBlock: {
-                        gSharer.remember(
-                            rowID: viewer.id, stableID: stableID, label: viewer.label,
-                            policy: .deny)
-                    },
-                    onForget: { gSharer.forget(rowID: viewer.id, stableID: stableID) })
-            },
+            viewers: sharer.viewers.map { Self.hubViewerRow($0) },
             // Viewers parked at the approval gate. The shared card renders
             // these exactly like the Windows app's control requests, because
             // they are the same interaction and this window is the only place
@@ -1016,7 +995,8 @@ struct ViewerApp: App {
                 // approve/deny take; the label is only what the row says.
                 HubPrompt(
                     id: $0.id, message: L("\($0.label) wants to watch"),
-                    acceptLabel: L("Accept"), declineLabel: L("Deny"))
+                    acceptLabel: L("Accept"), declineLabel: L("Deny"),
+                    isGuest: $0.isGuest)
             }
                 // Somebody already watching, asking to drive. Second, because
                 // a viewer at the gate has nothing on screen at all while this
@@ -1099,10 +1079,71 @@ struct ViewerApp: App {
                     HubPreview(width: $0.width, height: $0.height, rgba: $0.rgba)
                 }
                 : nil,
+            linkSharing: hubLinkSharing,
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { Self.answerPrompt($0, accept: true) },
             onDecline: { Self.answerPrompt($0, accept: false) })
+    }
+
+    /// One roster row. A method rather than an inline closure in the
+    /// `ShareCard` call for the usual result-builder-typechecker reason —
+    /// and because the guest branch (badge on, remember-actions off: those
+    /// persist under a StableNodeID a guest never has, and Deny already
+    /// denylists the guest's node key at the tunnel) doubles the ternaries.
+    @MainActor
+    private static func hubViewerRow(_ viewer: ConnectedViewer) -> HubViewerRow {
+        let stableID = viewer.stableID
+        if viewer.isGuest {
+            return HubViewerRow(
+                id: viewer.id,
+                label: viewer.label,
+                health: hubHealth(viewer.health),
+                onKick: { gSharer.disconnect(viewer.id) },
+                isGuest: true)
+        }
+        let remembered = gSharer.remembered(stableID: stableID)
+        return HubViewerRow(
+            id: viewer.id,
+            label: viewer.label,
+            health: hubHealth(viewer.health),
+            remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
+            rememberIsDeferred: gSharer.isDeferred(rowID: viewer.id),
+            onKick: { gSharer.disconnect(viewer.id) },
+            onAlwaysAllow: {
+                gSharer.remember(
+                    rowID: viewer.id, stableID: stableID, label: viewer.label,
+                    policy: .allow)
+            },
+            onDenyAndBlock: {
+                gSharer.remember(
+                    rowID: viewer.id, stableID: stableID, label: viewer.label,
+                    policy: .deny)
+            },
+            onForget: { gSharer.forget(rowID: viewer.id, stableID: stableID) })
+    }
+
+    /// The card's share-by-token half, live only while sharing. A computed
+    /// property with an explicit type for the usual result-builder reason.
+    private var hubLinkSharing: HubLinkSharing? {
+        guard sharer.phase == .sharing else { return nil }
+        let guests =
+            sharer.viewers.filter(\.isGuest).count
+            + sharer.pendingViewers.filter(\.isGuest).count
+        // Hoisted with explicit types: closure literals needing @MainActor
+        // @Sendable inference inside one init call (plus the conditional
+        // optional) sink the Swift 6 typechecker outright on Linux.
+        let toggle: @MainActor @Sendable (Bool) -> Void = { gSharer.setLinkSharing($0) }
+        var newLink: (@MainActor @Sendable () -> Void)?
+        if sharer.linkToken != nil {
+            newLink = { gSharer.rotateLink() }
+        }
+        return HubLinkSharing(
+            token: sharer.linkToken,
+            busy: sharer.linkBusy,
+            guestCount: guests,
+            onToggle: toggle,
+            onNewLink: newLink)
     }
 
     /// Route a card prompt back to whichever feature raised it.

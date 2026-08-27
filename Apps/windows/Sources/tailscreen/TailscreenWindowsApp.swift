@@ -887,30 +887,7 @@ final class AppUIState: ObservableObject {
             notes: shareNotes,
             // The roster: who is watching, and what can be done about them.
             // `notes` stays for statistics — a person is not a note.
-            viewers: sharing.viewers.map { viewer in
-                let stableID = viewer.stableID
-                let remembered = shareSession.remembered(stableID: stableID)
-                return HubViewerRow(
-                    id: viewer.id,
-                    label: viewer.displayName,
-                    health: hubHealth(viewer.health),
-                    remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
-                    rememberIsDeferred: shareSession.isDeferred(rowID: viewer.id),
-                    onKick: { [weak self] in self?.shareSession.disconnectViewer(viewer.id) },
-                    onAlwaysAllow: { [weak self] in
-                        self?.shareSession.remember(
-                            rowID: viewer.id, stableID: stableID,
-                            displayName: viewer.displayName, policy: .allow)
-                    },
-                    onDenyAndBlock: { [weak self] in
-                        self?.shareSession.remember(
-                            rowID: viewer.id, stableID: stableID,
-                            displayName: viewer.displayName, policy: .deny)
-                    },
-                    onForget: { [weak self] in
-                        self?.shareSession.forget(rowID: viewer.id, stableID: stableID)
-                    })
-            },
+            viewers: sharing.viewers.map { self.hubViewerRow($0) },
             // Control requests and viewer approvals are the same interaction —
             // a sentence and two buttons — so they go through the one prompt
             // shape the shared card renders. This window is the only surface
@@ -924,7 +901,8 @@ final class AppUIState: ObservableObject {
             prompts: sharing.pendingViewers.map {
                 HubPrompt(
                     id: $0.id, message: L("\($0.displayName) wants to watch"),
-                    acceptLabel: L("Accept"), declineLabel: L("Deny"))
+                    acceptLabel: L("Accept"), declineLabel: L("Deny"),
+                    isGuest: $0.isGuest)
             }
                 + sharing.controlRequests.map {
                     HubPrompt(
@@ -1002,10 +980,74 @@ final class AppUIState: ObservableObject {
                     HubPreview(width: $0.width, height: $0.height, rgba: $0.rgba)
                 }
                 : nil,
+            linkSharing: hubLinkSharing,
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
             onAccept: { [weak self] id in self?.answerPrompt(id, accept: true) },
             onDecline: { [weak self] id in self?.answerPrompt(id, accept: false) })
+    }
+
+    /// One roster row. A method rather than an inline closure in the
+    /// `ShareCard` call for the usual result-builder-typechecker reason —
+    /// and because the guest branch (badge on, remember-actions off: those
+    /// persist under a StableNodeID a guest never has, and Deny already
+    /// denylists the guest's node key at the tunnel) doubles the ternaries.
+    private func hubViewerRow(_ viewer: WindowsShareSession.ConnectedViewer) -> HubViewerRow {
+        let stableID = viewer.stableID
+        if viewer.isGuest {
+            return HubViewerRow(
+                id: viewer.id,
+                label: viewer.displayName,
+                health: hubHealth(viewer.health),
+                onKick: { [weak self] in self?.shareSession.disconnectViewer(viewer.id) },
+                isGuest: true)
+        }
+        let remembered = shareSession.remembered(stableID: stableID)
+        return HubViewerRow(
+            id: viewer.id,
+            label: viewer.displayName,
+            health: hubHealth(viewer.health),
+            remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
+            rememberIsDeferred: shareSession.isDeferred(rowID: viewer.id),
+            onKick: { [weak self] in self?.shareSession.disconnectViewer(viewer.id) },
+            onAlwaysAllow: { [weak self] in
+                self?.shareSession.remember(
+                    rowID: viewer.id, stableID: stableID,
+                    displayName: viewer.displayName, policy: .allow)
+            },
+            onDenyAndBlock: { [weak self] in
+                self?.shareSession.remember(
+                    rowID: viewer.id, stableID: stableID,
+                    displayName: viewer.displayName, policy: .deny)
+            },
+            onForget: { [weak self] in
+                self?.shareSession.forget(rowID: viewer.id, stableID: stableID)
+            })
+    }
+
+    /// The card's share-by-token half, live only while sharing. A computed
+    /// property with an explicit type for the usual result-builder reason.
+    private var hubLinkSharing: HubLinkSharing? {
+        guard sharing.isSharing else { return nil }
+        let guests =
+            sharing.viewers.filter(\.isGuest).count
+            + sharing.pendingViewers.filter(\.isGuest).count
+        // Hoisted with explicit types: closure literals needing @MainActor
+        // @Sendable inference inside one init call (plus the conditional
+        // optional) sink the Swift 6 typechecker outright on Linux.
+        let toggle: @MainActor @Sendable (Bool) -> Void = { [weak self] on in
+            self?.shareSession.setLinkSharing(on)
+        }
+        var newLink: (@MainActor @Sendable () -> Void)?
+        if sharing.linkToken != nil {
+            newLink = { [weak self] in self?.shareSession.rotateLink() }
+        }
+        return HubLinkSharing(
+            token: sharing.linkToken,
+            busy: sharing.linkBusy,
+            guestCount: guests,
+            onToggle: toggle,
+            onNewLink: newLink)
     }
 
     /// Take a share-status snapshot, and reconcile the notifications with it.

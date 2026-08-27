@@ -395,6 +395,27 @@ runs. Docs: usage/security link-only sections, matrix row (macOS-only —
 the GTK/WinUI sharer side stays with their sharer-port work). Remaining
 for the gate: a hand-run signed-out share on a real Mac.)*
 
+**Phase 7 — Sharer-side link sharing on Linux and Windows.** The matrix
+gap phase 5 tracked, closed for signed-in shares.
+*(status: landed. The lifecycle is written once as `SharerLinkSession`
+(TailscreenSharer, an actor so neither engine's isolation model has to
+adapt): guest node up → listener attached via
+`attachGuestPacketListener` → token; disable detaches first so guests
+get HELLO_DENY + SERVER_BYE through the still-open socket; rotate;
+`evict(ip:)` behind `onGuestViewerDenied`; teardown with the share. Both
+engines (`LinuxShareSession` @MainActor, `WindowsShareSession`
+lock-guarded) hold one and expose setLinkSharing/rotateLink + link state;
+their roster rows carry `isGuest`. The shared card gains
+`HubLinkSharing` (toggle, the link as SELECTABLE text — these toolkits
+have no clipboard affordance, the `HubLoginCard` lesson — guest count,
+New Link, consent caption) and `HubGuestChip` badges on roster rows and
+approval prompts, with the remember-actions withheld for guests (nothing
+StableNodeID-keyed applies; Deny tunnel-denylists the key). Zero new
+catalog keys — every string reuses phase 4's. Deviations: guest rows are
+named by tunnel IP, not key fingerprint (the resolve is async and the
+row mapping isn't; same polish bucket as the macOS notification labels);
+link-only (signed-out) sharing stays macOS-only, tracked in the matrix.)*
+
 Each phase is a separate PR; 0 and 1 can proceed in parallel (1 targets the
 fork directly). Docs ship with their phases per the repo rule, safe under the
 /next preview channel.
