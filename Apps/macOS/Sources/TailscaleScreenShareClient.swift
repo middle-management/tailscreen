@@ -54,9 +54,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// opened with `connectGuest` instead of a tailnet dial. Owned like a
     /// self-created node: torn down in `disconnect()`.
     private var guestClient: GuestClientNode?
-    /// True for share-by-token sessions. Read by the receive loop to keep the
-    /// TCP-backed affordances (annotations, remote control) off — guests have
-    /// no back-channel yet, so offering either would produce silent no-ops.
+    /// True for share-by-token sessions. Picks the guest tunnel's dial for
+    /// the TCP back-channel (annotations, remote control) and labels the
+    /// stats overlay; the affordances themselves are gated by the sharer's
+    /// advertised caps, same as tailnet sessions.
     private(set) var isGuestSession = false
     private let renderer: MetalViewerRenderer
     private var decoder: VideoDecoder?
@@ -116,8 +117,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// TCP back-channel for annotation ops. Separate from the UDP video
     /// stream because strokes need reliable, ordered delivery — a dropped
     /// UDP datagram would leave a visual gap mid-stroke. Goes to the same
-    /// host:port as the peer-discovery probe.
-    private var annotationChannel: OutgoingConnection?
+    /// host:port as the peer-discovery probe. Existential over
+    /// `FramedControlChannel` because two tunnels can carry it: a tailnet
+    /// dial (`OutgoingConnection`) or a guest tunnel dial
+    /// (`GuestClientNode.dial`, an `IncomingConnection`).
+    private var annotationChannel: (any FramedControlChannel)?
 
     /// Serializes writes on `annotationChannel` so concurrent
     /// `sendAnnotationOp` calls (e.g. rapid stroke segments) don't
@@ -221,7 +225,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// server relays). Runs until the connection closes or `disconnect()`
     /// cancels the task. Failures here only kill the inbound channel;
     /// outbound `sendAnnotationOp` still works until the conn errors too.
-    private func receiveAnnotationLoop(over connection: OutgoingConnection) async {
+    private func receiveAnnotationLoop(over connection: any FramedControlChannel) async {
         var parser = ScreenShareMessageParser()
         while !Task.isCancelled {
             do {
@@ -261,13 +265,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// flowing. `initial` is the connection `connect()` already dialed (nil if
     /// that first dial failed). Best-effort; runs until `disconnect()` cancels
     /// `annotationReceiveTask`.
-    private func runAnnotationChannel(initial: OutgoingConnection?, host: String, port: UInt16) async {
-        let target = "\(host):\(port)"
+    private func runAnnotationChannel(
+        initial: (any FramedControlChannel)?,
+        redial: @escaping () async -> (any FramedControlChannel)?
+    ) async {
         var conn = initial
         var reconnectAttempts = 0
         while !Task.isCancelled && isConnected {
             if conn == nil {
-                conn = await dialAnnotation(to: target)
+                conn = await redial()
                 guard conn != nil else {
                     if Task.isCancelled || !isConnected { break }
                     reconnectAttempts += 1
@@ -293,9 +299,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         self.annotationChannel = nil
     }
 
-    /// Dial the annotation back-channel once, publishing it to
-    /// `annotationChannel` on success. Returns nil (logged) on failure.
-    private func dialAnnotation(to target: String) async -> OutgoingConnection? {
+    /// Dial the annotation back-channel once over the tailnet, publishing it
+    /// to `annotationChannel` on success. Returns nil (logged) on failure.
+    private func dialAnnotation(to target: String) async -> (any FramedControlChannel)? {
         guard let node = self.node, let tailscale = await node.tailscale else { return nil }
         do {
             let conn = try await OutgoingConnection(
@@ -306,6 +312,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             return conn
         } catch {
             logger.log("Annotation back-channel reconnect failed: \(error) — retrying")
+            return nil
+        }
+    }
+
+    /// The guest twin of `dialAnnotation`: dial the sharer's framed TCP
+    /// channel through the guest tunnel. Same publish-on-success contract.
+    private func dialGuestAnnotation() async -> (any FramedControlChannel)? {
+        guard let guest = guestClient else { return nil }
+        do {
+            let conn = try await guest.dial(port: NetworkConfig.tailscreenPort)
+            self.annotationChannel = conn
+            logger.log("Annotation back-channel open through the guest tunnel")
+            return conn
+        } catch {
+            logger.log("Guest annotation back-channel dial failed: \(error) — retrying")
             return nil
         }
     }
@@ -465,7 +486,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // and reconnects with backoff if it drops mid-session. Best-effort — a
         // failure here never breaks video. Spawned after isConnected=true so
         // the reconnect loop's `isConnected` guard doesn't trip immediately.
-        var initialAnnotationConn: OutgoingConnection?
+        var initialAnnotationConn: (any FramedControlChannel)?
         do {
             let conn = try await OutgoingConnection(
                 tailscale: tailscaleHandle, to: "\(hostname):\(port)", proto: .tcp, logger: logger)
@@ -476,8 +497,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         } catch {
             logger.log("Annotation back-channel initial dial failed: \(error) — retrying in background")
         }
+        let target = "\(hostname):\(port)"
         annotationReceiveTask = Task { [weak self] in
-            await self?.runAnnotationChannel(initial: initialAnnotationConn, host: hostname, port: port)
+            await self?.runAnnotationChannel(initial: initialAnnotationConn) { [weak self] in
+                await self?.dialAnnotation(to: target)
+            }
         }
     }
 
@@ -488,9 +512,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// awaiting-approval placard is the expected first state). The dial
     /// blocks for the tunnel bring-up (relay connect, handshake, NAT
     /// traversal in the background). Everything downstream — the
-    /// `ViewerSession` data plane, keepalives, voice — is the tailnet
-    /// path's; only the socket and the missing TCP back-channel differ
-    /// (annotations/remote control stay off for guest sessions).
+    /// `ViewerSession` data plane, keepalives, voice, and the framed TCP
+    /// back-channel (annotations, remote control) — is the tailnet path's;
+    /// only the dials differ.
     func connectGuest(token: String) async throws {
         guard !isConnected else { return }
 
@@ -523,9 +547,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         keepaliveTask = Task { [weak self] in
             await self?.keepaliveLoop()
         }
-        // No annotation back-channel: the guest TCP control channel is a
-        // tracked follow-up, and dialing the tailnet address over a tunnel
-        // that doesn't carry it would just burn a connect timeout.
+
+        // The annotation/control back-channel, through the guest tunnel —
+        // same framed protocol, same reconnect loop as the tailnet path;
+        // only the dial differs. Best-effort: a sharer that predates the
+        // guest TCP channel simply never accepts, the redial loop keeps
+        // retrying quietly, and its advertised caps still gate the UI.
+        var initialConn: (any FramedControlChannel)?
+        do {
+            let conn = try await guest.dial(port: NetworkConfig.tailscreenPort)
+            self.annotationChannel = conn
+            initialConn = conn
+            logger.log("Annotation back-channel open through the guest tunnel")
+        } catch {
+            logger.log("Guest annotation back-channel initial dial failed: \(error) — retrying in background")
+        }
+        annotationReceiveTask = Task { [weak self] in
+            await self?.runAnnotationChannel(initial: initialConn) { [weak self] in
+                await self?.dialGuestAnnotation()
+            }
+        }
     }
 
     /// IPv6 literals must be bracketed: "[::1]:7447", not "::1:7447". IPv4
@@ -716,15 +757,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 awaitingApproval = false
                 assignedAudioSSRC = ssrc
                 onAudioSSRCAssigned?(ssrc)
-                // Guest sessions have no TCP back-channel yet, so the
-                // sharer's advertised annotation/remote-control support is
-                // moot — keep both affordances off rather than offering
-                // controls whose messages have nowhere to go.
-                let backChannelUsable = !isGuestSession
-                onRemoteControlSupportChanged?(
-                    backChannelUsable && session.serverCaps.contains(.remoteControl))
-                onAnnotationSupportChanged?(
-                    backChannelUsable && session.serverCaps.contains(.annotations))
+                // The sharer's caps decide, guest or tailnet: the guest
+                // tunnel carries the framed TCP channel now, and a sharer
+                // that predates it (or whose guest TCP bind failed) simply
+                // doesn't advertise — its HELLO_ACK caps come from the
+                // same build that would or wouldn't accept the dial.
+                onRemoteControlSupportChanged?(session.serverCaps.contains(.remoteControl))
+                onAnnotationSupportChanged?(session.serverCaps.contains(.annotations))
             }
             if session.isStopped {
                 logger.log("Receive(VS): sharer stopped")
@@ -945,11 +984,11 @@ extension Notification.Name {
     static let tailscreenViewerVideoStalled = Notification.Name("tailscreen.viewer.videoStalled")
 }
 
-/// Serializes `send(_:)` calls on an `OutgoingConnection`. Two concurrent
-/// sends would interleave framed-message bytes on the wire and desync the
-/// peer's parser.
+/// Serializes `send(_:)` calls on a control-channel connection. Two
+/// concurrent sends would interleave framed-message bytes on the wire and
+/// desync the peer's parser.
 private actor ConnectionWriter {
-    func send(_ data: Data, over connection: OutgoingConnection) async throws {
+    func send(_ data: Data, over connection: any FramedControlChannel) async throws {
         try await connection.send(data)
     }
 }

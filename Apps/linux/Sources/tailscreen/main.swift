@@ -508,18 +508,13 @@ if gSelfTest {
                         gAnnoForwarder.attach(channel)
                     },
                     onAdmitted: { caps in
-                        // A guest session has no TCP back-channel yet
-                        // (`onBackChannelReady` never fires — see
-                        // `ViewerConfig.guestToken`), so the sharer's
-                        // advertised annotation/remote-control support is
-                        // moot: keep both affordances hidden rather than
-                        // offering controls whose messages have nowhere to go.
-                        let usable =
-                            guestToken == nil
-                            ? caps : caps.subtracting([.remoteControl, .annotations])
+                        // The sharer's caps decide, guest or tailnet: the
+                        // back-channel rides the guest tunnel too now, and a
+                        // sharer that predates it doesn't advertise these
+                        // bits over a link in the first place.
                         gUIState.setCaps(
-                            remoteControl: usable.contains(.remoteControl),
-                            annotations: usable.contains(.annotations))
+                            remoteControl: caps.contains(.remoteControl),
+                            annotations: caps.contains(.annotations))
                     },
                     onAwaitingApproval: { gUIState.post(sessionPhase: .awaitingApproval) },
                     onEnded: { reason, wasAdmitted in

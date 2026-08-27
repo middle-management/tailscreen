@@ -106,6 +106,23 @@ public final class TailscreenControlListener: @unchecked Sendable {
         Task { [weak self] in await self?.acceptLoop() }
     }
 
+    /// Adopt an already-bound TCP listener and start the accept loop over it.
+    ///
+    /// The share-by-token path: a guest node binds its own TCP listener
+    /// through the tunnel (`GuestServerNode.listen(port:)`) — same `Listener`
+    /// type, guest fds being bit-compatible with tsnet fds — and everything
+    /// from accept through framed dispatch is identical, so the whole class
+    /// is reused rather than the guest side growing a second copy of the
+    /// receive loop. Idempotent like `start(node:)`; `stop()` closes the
+    /// adopted listener the same as an owned one.
+    public func start(adopting bound: Listener) {
+        guard !isRunning else { return }
+        self.listener = bound
+        self.isRunning = true
+        logger.log("Control listener adopted a bound guest listener on :\(port)")
+        Task { [weak self] in await self?.acceptLoop() }
+    }
+
     /// Close the listener and any in-flight connections. After `stop()`,
     /// `start(node:)` can be called again with a fresh node.
     public func stop() async {

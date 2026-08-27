@@ -231,8 +231,11 @@ MSIX install), and pasting always works:
 
 You join as a guest over an encrypted tunnel; the sharer has to approve
 you before you see anything, so expect the waiting placard first. Guest
-sessions carry video and voice; annotations and remote control aren't
-available to guests yet. Sharing *without signing in at all* (a
+sessions carry the full feature set: video, voice, **annotations, and
+remote control** — the same capability gates apply as for tailnet
+viewers (a sharer that can't render strokes or inject input simply
+doesn't offer those tools), and remote control still takes the sharer's
+explicit per-request grant. Sharing *without signing in at all* (a
 link-only share) is macOS-only today — see the
 [platform matrix]({{ site.baseurl }}{% link platform-support.md %}).
 
