@@ -85,6 +85,21 @@
           Wide310x150Logo="Assets\Wide310x150Logo.png"
           Square310x310Logo="Assets\Square310x310Logo.png" />
       </uap:VisualElements>
+      <Extensions>
+        <!--
+          The `tailscreen:` join-link scheme (share-by-token). Registration is
+          the manifest's half; the app reads the URI at launch via the
+          AppLifecycle activation args (ProtocolActivation.swift). A link
+          click starts a NEW process each time — packaged Win32 apps are
+          multi-instance and nothing here redirects — which is fine because a
+          link launch runs a guest viewer session and touches no tsnet state.
+        -->
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="tailscreen">
+            <uap:DisplayName>Tailscreen share link</uap:DisplayName>
+          </uap:Protocol>
+        </uap:Extension>
+      </Extensions>
     </Application>
   </Applications>
 

@@ -215,14 +215,19 @@ mandatory for every guest, and Stop Sharing is the way to end it (a
 link-only share has no link-off toggle: turning off its only transport
 would leave a share running that nobody can reach).
 
-**Joining** works on all three platforms:
+**Joining** works on all three platforms — clicking a `tailscreen:` link
+opens the app straight into the guest session wherever the scheme is
+registered (macOS; Linux via an installed `.desktop` entry — Flatpak does
+this at install, an AppImage after desktop integration; Windows via the
+MSIX install), and pasting always works:
 
-- **macOS** — click a `tailscreen:` link, or **Join a Share…** (the link
-  icon in the hub header, also offered on the sign-in screen), and paste
-  the link or token.
-- **Linux and Windows** — **Join a Share…** in the hub (offered before
-  sign-in too — joining needs no account). The Linux app also takes
-  `tailscreen --join <token-or-link>` on the command line.
+- **macOS** — click the link, or **Join a Share…** (the link icon in the
+  hub header, also offered on the sign-in screen) and paste the link or
+  token.
+- **Linux and Windows** — click the link, or **Join a Share…** in the hub
+  (offered before sign-in too — joining needs no account). The Linux app
+  also takes `tailscreen --join <token-or-link>` — or the link as a bare
+  argument — on the command line.
 
 You join as a guest over an encrypted tunnel; the sharer has to approve
 you before you see anything, so expect the waiting placard first. Guest

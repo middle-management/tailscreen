@@ -29,6 +29,7 @@ import struct TailscreenProtocol.PendingShareRequest
 import class TailscreenProtocol.PortableMuteHotkey
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
+import enum TailscreenProtocol.ShareLinkFormat
 import enum TailscreenProtocol.TailscreenInstance
 import struct TailscreenProtocol.TailscreenMetadata
 import enum TailscreenProtocol.ViewerApprovalPreference
@@ -691,11 +692,36 @@ final class AppUIState: ObservableObject {
         }
         muteHotkey?.start()
         syncAccounts()
+        // Protocol activations delivered to a RUNNING instance. Nothing
+        // redirects today — each link click is a fresh process — but the
+        // subscription costs nothing installed, same reasoning as the
+        // notification observer above.
+        ProtocolActivation.observe { [weak self] link in
+            guard let token = ShareLinkFormat.token(fromUserInput: link) else { return }
+            self?.joinShare(token: token)
+        }
         if Self.isUIPreview {
             seedUIPreview()
+        } else if let launchToken = Self.launchJoinToken() {
+            // Launched by a `tailscreen:` link click: straight into the
+            // guest session, and deliberately NO sign-in auto-resume — a
+            // click while another instance runs starts a second process,
+            // and two tsnet nodes on one state directory is the known
+            // pitfall. The guest tunnel needs no node, so this instance
+            // simply never brings one up; the sign-in card is still there
+            // when the session ends.
+            joinShare(token: launchToken)
         } else if hasPreviousLogin() {
             signIn()
         }
+    }
+
+    /// The share token this process was protocol-launched with, if any. A
+    /// link that turns out not to carry a plausible token falls through to
+    /// an ordinary launch rather than a dead screen.
+    private static func launchJoinToken() -> String? {
+        guard let link = ProtocolActivation.launchJoinLink() else { return nil }
+        return ShareLinkFormat.token(fromUserInput: link)
     }
 
     /// True when launched with `--ui-preview`: the hub renders a seeded,

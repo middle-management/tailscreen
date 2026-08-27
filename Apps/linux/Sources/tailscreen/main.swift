@@ -17,7 +17,8 @@ import enum TailscreenSharer.ViewerHealth
 
 // tailscreen — native GTK desktop viewer.
 //
-//   tailscreen [<sharer-host>] [--join TOKEN] [--port N] [--state-dir PATH] [--control-url URL]
+//   tailscreen [<sharer-host> | tailscreen://join?token=…] [--join TOKEN] [--port N]
+//              [--state-dir PATH] [--control-url URL]
 //   tailscreen --render-self-test | --overlay-self-test | --overlay-input-self-test
 //   tailscreen --outline-self-test
 //   tailscreen --capture-backend-report
@@ -95,7 +96,8 @@ var gPickerMode = false
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))
     let usage =
-        "usage: tailscreen [<sharer-host>] [--join TOKEN] [--port N] [--no-audio] [--state-dir PATH] [--control-url URL]\n"
+        "usage: tailscreen [<sharer-host> | tailscreen://join?token=…] [--join TOKEN]\n"
+        + "       [--port N] [--no-audio] [--state-dir PATH] [--control-url URL]\n"
     FileHandle.standardError.write(Data(usage.utf8))
     exit(2)
 }
@@ -190,8 +192,19 @@ func parseConfig() -> (
         case let other where other.hasPrefix("--"):
             fail("unknown option \(other)")
         default:
-            guard host == nil else { fail("unexpected extra argument \(arg)") }
-            host = arg
+            // A scheme-handler launch: the .desktop's `Exec=tailscreen %u`
+            // hands the clicked link over as a positional argument, so a
+            // `tailscreen:` URL is join input, never a hostname.
+            if arg.lowercased().hasPrefix("\(ShareLinkFormat.scheme):") {
+                guard joinToken == nil else { fail("more than one join link — pass one") }
+                guard let token = ShareLinkFormat.token(fromUserInput: arg) else {
+                    fail("that doesn't look like a tailscreen: share link: \(arg)")
+                }
+                joinToken = token
+            } else {
+                guard host == nil else { fail("unexpected extra argument \(arg)") }
+                host = arg
+            }
         }
     }
 
