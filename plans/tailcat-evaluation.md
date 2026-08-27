@@ -1,6 +1,7 @@
 # Tailcat evaluation — no-sign-in share and a browser viewer
 
-> Status: evaluation only, no code committed to either use case. Read against
+> Status: evaluation; concluded. The implementation plan that came out of it
+> is `plans/share-by-token.md`. Read against
 > tailcat at `c04c5af`. Line references are to that commit; they will drift.
 
 [Tailcat](https://github.com/tailscale/tailcat) is Tailscale's "Tailscale
