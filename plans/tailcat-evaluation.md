@@ -240,7 +240,7 @@ version conflict to resolve.
 
 What that exposes is the actual question, which is not about tailcat at all:
 **who owns the module that builds our archive.** Today it is upstream
-libtailscale, consumed as a submodule with symlinked `Sources/` and 26 files in
+libtailscale, consumed as a submodule with symlinked `Sources/` and 23 files in
 `Patches/`. Adding anything to that archive means adding a patch. See
 [Who owns the archive](#who-owns-the-archive) below — it is the decision
 everything else in this document turns out to hang off. (tailcat #5, "Add C
@@ -425,7 +425,7 @@ Run on this branch against the pinned submodule (`5e89501`), Linux, no Swift
 toolchain available. Result: **the Go half bumps clean; the blocker is not
 compilation, it is that we have nowhere to put the result.**
 
-Baseline first — all 26 patches applied to a pristine v1.94.1 tree with `-F0`
+Baseline first — all 23 patches applied to a pristine v1.94.1 tree with `-F0`
 (no fuzz tolerated), and `make c-archive` produced a 66,635,994-byte
 `libtailscale.a`. Then:
 
@@ -468,10 +468,47 @@ question, not to be kept.
 
 **Not verified: the Swift half.** This container has no Swift toolchain, so
 `make test-protocol` and the TailscaleKit build were not run. Risk looks low —
-23 of the 26 patches are against libtailscale's *Swift* sources, which a
+20 of the 23 patches are against libtailscale's *Swift* sources, which a
 `tailscale.com` bump does not touch, and the three Go-side ones compile — but
 "looks low" is not "checked". Anyone landing this should run `make
 test-protocol` and `make build` on a machine with Swift before believing it.
+
+### Does the bump retire any patches? No — and the reason matters
+
+Worth testing rather than assuming, since a shorter series would change the
+calculus. A patch whose change is already present upstream reverse-applies
+cleanly, so running `patch -R --dry-run -F0` for each against a pristine tree
+answers it directly.
+
+**All 23 report "needed". None is redundant.** Nor does the bump make any
+redundant: they patch libtailscale's own sources, which moving `tailscale.com`
+underneath does not touch, and `go build ./...` passed with all 23 applied at
+v1.102.3 — no duplicate symbols, nothing already-present.
+
+The reason is the interesting part: **upstream libtailscale is dormant.** We
+are pinned at `5e89501` and upstream's head is `8077131` — *one* commit ahead,
+and it is purely additive (`tailscale_status_json`, +99 lines, no deletions).
+Upstream is also still on `tailscale.com v1.94.1`. So there is no free bump to
+inherit and no fix of ours to reclaim. That single commit also touches
+`TailscaleNode.swift`, which patch 026 patches, so even taking it risks a
+conflict for a feature we do not use.
+
+Nor is our UDP work the kind of thing a bump retires. `tsnet.Server.ListenPacket`
+exists in *both* v1.94.1 and v1.102.3 — patch 013 is not reimplementing a
+missing API, it is bridging tsnet's `net.PacketConn` to a C-visible socketpair
+fd with a `[1B addr_len][addr][payload]` framing, because the socketpair cannot
+carry what `recvfrom` would. That glue is inherently ours.
+
+The conclusion is uncomfortable but clear: **waiting does not shrink the
+series.** Upstream is not absorbing our work, so the patch count only ever goes
+up, and every future need — the `tailscale.com` bump, UDP through a
+control-plane-free backend — adds to it.
+
+The one thing that *would* shrink it is upstreaming, and a good share of the
+series looks upstreamable on its face: 001-005 are missing imports, 012 is a
+poll-timeout bug, 021 is an fd race, 022 is Linux portability, 024-026 are
+Windows support. Those are fixes and portability work, not local policy. That
+is worth doing on its own merits and is independent of everything else here.
 
 ### Where it actually breaks: there is nowhere to commit it
 
