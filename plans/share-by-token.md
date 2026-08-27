@@ -282,6 +282,15 @@ never called — all under `-race`.)*
 fork; `GuestNode` Swift wrapper + unit tests in TailscaleKit. *Gate*: a
 headless Swift test (linux-runnable, `test-protocol`-adjacent) does
 token → connect → datagram echo → evict.
+*(status: eviction (`RemoveClient`: denylist, closed flows, monotonic IDs),
+the full `guest_*` C surface, and the Swift `GuestServerNode`/`GuestClientNode`
+wrappers are on the fork's `guest` branch. The token → connect → 1200-byte
+echo → evict → silence gate runs at the C layer — `TestGuestCAPI` drives the
+real exported symbols against a local DERP harness, tsnetctest-style — since
+a Swift-side full-tunnel test needs a relay harness Swift tests don't have;
+the Swift leg's gate is compile+link on `linux-tailscalekit`. Guest fds are
+bit-compatible with tsnet fds, so the wrappers vend the ordinary
+`PacketListener`/`Listener`/`IncomingConnection` types.)*
 
 **Phase 3 — Core integration.** Server dual-listener routing,
 `ViewerIdentity`, admission rule, viewer `Destination.token` +
