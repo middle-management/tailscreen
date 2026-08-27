@@ -3837,16 +3837,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // once the slot is nil every sender — broadcast, NACK service,
         // audio fan-out, denial datagrams — snapshots nil and no-ops
         // instead of racing the close.
-        let (packetListenerToClose, guestListenerToClose) = lifecycle.withLock {
-            lc -> (PacketListener?, PacketListener?) in
-            let pl = lc.packetListener
-            let gl = lc.guestPacketListener
+        let socketsToClose = lifecycle.withLock { lc in
+            let sockets = (lc.packetListener, lc.guestPacketListener)
             lc.packetListener = nil
             lc.guestPacketListener = nil
-            return (pl, gl)
+            return sockets
         }
-        await packetListenerToClose?.close()
-        await guestListenerToClose?.close()
+        await socketsToClose.0?.close()
+        await socketsToClose.1?.close()
         guestAddrs.withLock { $0.removeAll() }
         logger.log("Server stop: packet listener closed")
 

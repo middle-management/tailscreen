@@ -55,7 +55,7 @@ public struct ViewerConfig: Sendable {
     /// mandatory on the sharer side). The TCP back-channel (annotations /
     /// remote control) is not yet wired for guests: `onBackChannelReady`
     /// never fires, and hosts should gate that chrome accordingly.
-    public var guestToken: String? = nil
+    public var guestToken: String?
 
     public init(
         hostname: String,
@@ -591,14 +591,19 @@ public final class TsnetTransport {
             let dest = Self.formatAddr(host: try await client.serverAddr(), port: config.port)
             logger.log("Guest tunnel up; dialing \(dest) (share-by-token)")
             return try await runSession(
-                config: config, listener: listener, dest: dest,
-                backChannel: nil, tailnetNode: nil, guestClient: client,
-                decoder: decoder, videoSink: videoSink, audioSink: audioSink,
-                shouldClose: shouldClose, microphone: microphone,
-                onVoiceReady: onVoiceReady, onAdmitted: onAdmitted,
-                onAwaitingApproval: onAwaitingApproval, onDeclined: onDeclined,
-                onEnded: onEnded, onDecoderResetNeeded: onDecoderResetNeeded,
-                onDecodeFatal: onDecodeFatal)
+                config: config,
+                wiring: SessionWiring(
+                    listener: listener, dest: dest, backChannel: nil,
+                    tailnetNode: nil, guestClient: client),
+                endpoints: SessionAV(
+                    decoder: decoder, videoSink: videoSink, audioSink: audioSink,
+                    microphone: microphone),
+                shouldClose: shouldClose,
+                callbacks: SessionCallbacks(
+                    onVoiceReady: onVoiceReady, onAdmitted: onAdmitted,
+                    onAwaitingApproval: onAwaitingApproval, onDeclined: onDeclined,
+                    onEnded: onEnded, onDecoderResetNeeded: onDecoderResetNeeded,
+                    onDecodeFatal: onDecodeFatal))
         }
         // Bring the node up if a caller skipped `prepare` (the direct-host
         // path); a picker host that already called `prepare` + `discoverPeers` reuses
@@ -668,14 +673,19 @@ public final class TsnetTransport {
         onBackChannelReady?(backChannel)
 
         return try await runSession(
-            config: config, listener: listener, dest: dest,
-            backChannel: backChannel, tailnetNode: node, guestClient: nil,
-            decoder: decoder, videoSink: videoSink, audioSink: audioSink,
-            shouldClose: shouldClose, microphone: microphone,
-            onVoiceReady: onVoiceReady, onAdmitted: onAdmitted,
-            onAwaitingApproval: onAwaitingApproval, onDeclined: onDeclined,
-            onEnded: onEnded, onDecoderResetNeeded: onDecoderResetNeeded,
-            onDecodeFatal: onDecodeFatal)
+            config: config,
+            wiring: SessionWiring(
+                listener: listener, dest: dest, backChannel: backChannel,
+                tailnetNode: node, guestClient: nil),
+            endpoints: SessionAV(
+                decoder: decoder, videoSink: videoSink, audioSink: audioSink,
+                microphone: microphone),
+            shouldClose: shouldClose,
+            callbacks: SessionCallbacks(
+                onVoiceReady: onVoiceReady, onAdmitted: onAdmitted,
+                onAwaitingApproval: onAwaitingApproval, onDeclined: onDeclined,
+                onEnded: onEnded, onDecoderResetNeeded: onDecoderResetNeeded,
+                onDecodeFatal: onDecodeFatal))
     }
 
     /// The transport-agnostic half of a viewing session: everything after a
@@ -685,26 +695,57 @@ public final class TsnetTransport {
     /// back-channel) and the guest one (share-by-token tunnel, no node, no
     /// back-channel yet). Exactly one of `tailnetNode` / `guestClient` is
     /// non-nil and is torn down at exit.
+    /// The socket-and-node half of a session — what `run`'s two paths
+    /// differ in. Exactly one of `tailnetNode` / `guestClient` is non-nil.
+    fileprivate struct SessionWiring {
+        let listener: PacketListener
+        let dest: String
+        let backChannel: ViewerBackChannel?
+        let tailnetNode: TailscaleNode?
+        let guestClient: GuestClientNode?
+    }
+
+    /// The media endpoints a session decodes into and captures from.
+    fileprivate struct SessionAV {
+        let decoder: VideoDecoding
+        let videoSink: VideoSink
+        let audioSink: AudioSink?
+        let microphone: MicrophoneCapturing?
+    }
+
+    /// The host-facing callbacks a session fires (the subset of `run`'s
+    /// that outlives transport setup).
+    fileprivate struct SessionCallbacks {
+        let onVoiceReady: (@MainActor @Sendable (VoiceUplink) -> Void)?
+        let onAdmitted: (@Sendable (ScreenShareCaps) -> Void)?
+        let onAwaitingApproval: (@Sendable () -> Void)?
+        let onDeclined: (@Sendable () -> Void)?
+        let onEnded: (@Sendable (ViewerCloseReason, _ wasAdmitted: Bool) -> Void)?
+        let onDecoderResetNeeded: (@MainActor () -> Void)?
+        let onDecodeFatal: (@MainActor () -> Void)?
+    }
+
     private func runSession(
         config: ViewerConfig,
-        listener: PacketListener,
-        dest: String,
-        backChannel: ViewerBackChannel?,
-        tailnetNode: TailscaleNode?,
-        guestClient: GuestClientNode?,
-        decoder: VideoDecoding,
-        videoSink: VideoSink,
-        audioSink: AudioSink?,
+        wiring: SessionWiring,
+        endpoints: SessionAV,
         shouldClose: @escaping () -> Bool,
-        microphone: MicrophoneCapturing?,
-        onVoiceReady: (@MainActor @Sendable (VoiceUplink) -> Void)?,
-        onAdmitted: (@Sendable (ScreenShareCaps) -> Void)?,
-        onAwaitingApproval: (@Sendable () -> Void)?,
-        onDeclined: (@Sendable () -> Void)?,
-        onEnded: (@Sendable (ViewerCloseReason, _ wasAdmitted: Bool) -> Void)?,
-        onDecoderResetNeeded: (@MainActor () -> Void)?,
-        onDecodeFatal: (@MainActor () -> Void)?
+        callbacks: SessionCallbacks
     ) async throws {
+        let listener = wiring.listener
+        let dest = wiring.dest
+        let backChannel = wiring.backChannel
+        let decoder = endpoints.decoder
+        let videoSink = endpoints.videoSink
+        let audioSink = endpoints.audioSink
+        let microphone = endpoints.microphone
+        let onVoiceReady = callbacks.onVoiceReady
+        let onAdmitted = callbacks.onAdmitted
+        let onAwaitingApproval = callbacks.onAwaitingApproval
+        let onDeclined = callbacks.onDeclined
+        let onEnded = callbacks.onEnded
+        let onDecoderResetNeeded = callbacks.onDecoderResetNeeded
+        let onDecodeFatal = callbacks.onDecodeFatal
         // Teardown backstop for every exit path (incl. a throw before the
         // normal end): cancel the back-channel's loop + close its socket. Kept
         // fire-and-forget on purpose — `stop()` can park up to the receive
@@ -1053,10 +1094,10 @@ public final class TsnetTransport {
         // When retaining, `teardown()` is the only thing that takes the node
         // down — `retainedNode` was claimed at entry, so nothing to do here.
         // (`preparedNode` bookkeeping is `run`'s defer, on the tailnet path.)
-        if let tailnetNode, !retainsNodeAcrossSessions {
+        if let tailnetNode = wiring.tailnetNode, !retainsNodeAcrossSessions {
             try? await tailnetNode.down()
         }
-        await guestClient?.close()
+        await wiring.guestClient?.close()
     }
 
     /// Surface an interactive-login URL: print it prominently on stderr, so it
