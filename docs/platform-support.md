@@ -48,8 +48,8 @@ what the partial case *is*, because that is the part a reader can act on.
 | Wide gamut / 10-bit / HDR (sharing) | ✅ | ❌ | ❌ |
 | Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ |
 | Share via Link (guests without a Tailscale account) | ✅ | ❌ | ❌ |
-| Join a share by link/token as a guest | ✅ | ❌ | ❌ |
-| `tailscreen:` link opens the join screen | ✅ | ❌ | ❌ |
+| Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ |
+| `tailscreen:` link opens the join screen | ✅ | ❌ paste it instead | ❌ paste it instead |
 
 The two colour rows are independent, and the viewing one is why a mac
 sharer's 10-bit setting can quietly do nothing: viewers advertise whether

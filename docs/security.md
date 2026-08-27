@@ -119,6 +119,45 @@ capture filter is rebuilt to include it, and cloaking is a
 tidy-screen/anti-oops measure for display shares — if you explicitly pick
 a cloaked app to share, your deliberate choice wins.
 
+## Guests: sharing outside the tailnet
+
+**Share via Link** admits viewers who aren't on your tailnet at all, so
+it deserves its own accounting. The design principle: **a link is
+capability to knock, never capability to watch.**
+
+- **The tunnel is the same cryptography.** A guest connects over
+  WireGuard, keyed by a handshake the token authenticates — the token
+  embeds the share's public key and relay details, and the guest proves
+  possession of its own key. End-to-end encryption and integrity are
+  exactly the tailnet path's; a relay (DERP) that carries the bootstrap
+  or the session sees only ciphertext.
+- **Approval is mandatory for guests, every join.** The three-check
+  admission above deliberately collapses for guests: there is no
+  remembered allow (nothing durable to key it on that you've verified),
+  the open-door toggle doesn't apply, and accepting a request-to-share
+  doesn't pre-approve them. A link gets forwarded; whoever holds it still
+  waits at your prompt, seeing nothing, every time.
+- **A guest's identity is its key.** Guests have no Tailscale node ID and
+  no hostname worth trusting, so rows identify them by a fingerprint of
+  their WireGuard node key — the thing the tunnel actually authenticates.
+  Denying a guest denylists that key at the tunnel for the life of the
+  link, so a denied guest is silenced, not just declined.
+- **Links are ephemeral by construction.** The share's guest key is
+  generated fresh per link and never persisted: stopping the share,
+  flipping the toggle off, or **New Link** destroys it, and with it every
+  outstanding copy of the link. There is no revocation list to maintain
+  because there is nothing durable to revoke.
+- **Guests bypass tailnet ACLs — knowingly.** That's the feature: the
+  tunnel doesn't traverse your tailnet, so network-layer ACLs don't see
+  it. The compensating controls are the mandatory approval, the
+  per-link ephemeral key, and the tunnel-level deny above. If that
+  trade is never acceptable in your deployment, **Settings → Link
+  sharing** turns the feature off entirely.
+- **The token is a secret while the share runs.** Treat the link like a
+  meeting link: anyone holding it can put a knock on your screen (though
+  nothing more). The worst a leaked token enables is approval-prompt
+  noise until you press New Link or stop sharing.
+
 ## Who can control your machine
 
 Remote control is off until granted, per session, per viewer:

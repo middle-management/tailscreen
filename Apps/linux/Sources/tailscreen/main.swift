@@ -17,7 +17,7 @@ import enum TailscreenSharer.ViewerHealth
 
 // tailscreen — native GTK desktop viewer.
 //
-//   tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
+//   tailscreen [<sharer-host>] [--join TOKEN] [--port N] [--state-dir PATH] [--control-url URL]
 //   tailscreen --render-self-test | --overlay-self-test | --overlay-input-self-test
 //   tailscreen --outline-self-test
 //   tailscreen --capture-backend-report
@@ -66,6 +66,13 @@ var gLastDial: (ip: String, name: String)?
 // `startSession`, whose captures (the FFmpeg decoder, the audio sink) are not
 // Sendable — and it is only ever called from the main actor anyway.
 var gReconnect: (@MainActor () -> Void)?
+// Join a share-by-token session with a parsed token (the hub's join card).
+// Same non-`@Sendable` reasoning as `gReconnect`: it captures `startSession`.
+var gJoinShare: (@MainActor (String) -> Void)?
+// The token of the current / most recent guest session, nil for tailnet ones.
+// Reconnect redials through the guest path when set — `gLastDial.ip` is empty
+// then, and dialing "" would otherwise be the redial.
+var gLastGuestToken: String?
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
 // Headless SHARER gate: draw a known stroke on the annotation overlay and read
@@ -87,8 +94,9 @@ var gPickerMode = false
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))
-    FileHandle.standardError.write(
-        Data("usage: tailscreen [<sharer-host>] [--port N] [--no-audio] [--state-dir PATH] [--control-url URL]\n".utf8))
+    let usage =
+        "usage: tailscreen [<sharer-host>] [--join TOKEN] [--port N] [--no-audio] [--state-dir PATH] [--control-url URL]\n"
+    FileHandle.standardError.write(Data(usage.utf8))
     exit(2)
 }
 
@@ -135,13 +143,17 @@ final class SharerVoiceSink {
     }
 }
 
-func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, explicitStateDir: Bool) {
+func parseConfig() -> (
+    config: ViewerConfig, host: String?, wantAudio: Bool, explicitStateDir: Bool,
+    joinToken: String?
+) {
     var args = gArgs
     var host: String?
     var port: UInt16 = NetworkConfig.tailscreenPort
     var wantAudio = true
     var explicitStateDir = false
     var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-state"
+    var joinToken: String?
     let env = ProcessInfo.processInfo.environment
     var controlURL = env["TAILSCREEN_TS_CONTROL_URL"]
     let authKey = env["TAILSCREEN_TS_AUTHKEY"]
@@ -149,6 +161,17 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, exp
     while !args.isEmpty {
         let arg = args.removeFirst()
         switch arg {
+        case "--join":
+            // A share-by-token session from the command line — accepts the
+            // same inputs as the hub's join card (bare token or a
+            // `tailscreen:` link). Mutually exclusive with a host: each names
+            // a different way to reach one sharer.
+            guard let value = args.first else { fail("--join needs a token or tailscreen: link") }
+            guard let token = ShareLinkFormat.token(fromUserInput: value) else {
+                fail("--join: that doesn't look like a share token or tailscreen: link")
+            }
+            joinToken = token
+            args.removeFirst()
         case "--port":
             guard let raw = args.first, let value = UInt16(raw) else { fail("--port needs a number") }
             port = value
@@ -172,9 +195,12 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, exp
         }
     }
 
+    if joinToken != nil, host != nil {
+        fail("--join and a host argument name two different sessions — pass one")
+    }
     var config = ViewerConfig(hostname: host ?? "", port: port, authKey: authKey, statePath: statePath)
     if let controlURL { config.controlURL = controlURL }
-    return (config, host, wantAudio, explicitStateDir)
+    return (config, host, wantAudio, explicitStateDir, joinToken)
 }
 
 /// The transport's close reason as the UI's end reason. The wire carries ONE
@@ -326,7 +352,7 @@ if gSelfTest {
     // shared store. The transport is @MainActor; started as a Task here, it
     // runs interleaved with the GTK loop (swift-cross-ui ticks RunLoop.main),
     // so `present` — and thus the GLArea repaint — happens on the main thread.
-    let (baseConfig, host, wantAudio, explicitStateDir) = parseConfig()
+    let (baseConfig, host, wantAudio, explicitStateDir, joinToken) = parseConfig()
     // Picker mode is decided by the command line (no host argument), so decide
     // it HERE, before anything reads it. It used to be set where the picker
     // block starts — below `transport.retainsNodeAcrossSessions = gPickerMode`,
@@ -334,7 +360,9 @@ if gSelfTest {
     // took the sharer's borrowed node down with it, so "Share my screen" then
     // failed with "Tailscale isn't up yet" while the peer list sat silently
     // stale (quietRefresh swallows discovery failures by design).
-    gPickerMode = host == nil
+    // `--join` is the guest twin of the direct-host path: one named session,
+    // no picker.
+    gPickerMode = host == nil && joinToken == nil
     let sink = GtkVideoSink(store: gStore, uiState: gUIState)
     let transport = TsnetTransport()
     // Audio out: an ALSA sink fronted by a background thread so its blocking
@@ -419,9 +447,17 @@ if gSelfTest {
     // OUT of an ended session is the placard's own Reconnect / Back buttons —
     // no timed auto-return, because a sentence that explains why a session
     // ended must stay readable until the person acts on it.
-    func startSession(host dialHost: String, displayName: String) {
+    func startSession(host dialHost: String, displayName: String, guestToken: String? = nil) {
         var config = baseConfig
-        config.hostname = dialHost
+        if let guestToken {
+            // Share-by-token: the token names the relay and the sharer, so
+            // everything tailnet-related in `baseConfig` is inert — the
+            // transport skips node bring-up entirely.
+            config = ViewerConfig(guestToken: guestToken)
+        } else {
+            config.hostname = dialHost
+        }
+        gLastGuestToken = guestToken
         gLastDial = (ip: dialHost, name: displayName)
         sink.resetForNewSession()  // the sink outlives one session
         gAnnotations.resetForNewSession()
@@ -459,9 +495,18 @@ if gSelfTest {
                         gAnnoForwarder.attach(channel)
                     },
                     onAdmitted: { caps in
+                        // A guest session has no TCP back-channel yet
+                        // (`onBackChannelReady` never fires — see
+                        // `ViewerConfig.guestToken`), so the sharer's
+                        // advertised annotation/remote-control support is
+                        // moot: keep both affordances hidden rather than
+                        // offering controls whose messages have nowhere to go.
+                        let usable =
+                            guestToken == nil
+                            ? caps : caps.subtracting([.remoteControl, .annotations])
                         gUIState.setCaps(
-                            remoteControl: caps.contains(.remoteControl),
-                            annotations: caps.contains(.annotations))
+                            remoteControl: usable.contains(.remoteControl),
+                            annotations: usable.contains(.annotations))
                     },
                     onAwaitingApproval: { gUIState.post(sessionPhase: .awaitingApproval) },
                     onEnded: { reason, wasAdmitted in
@@ -512,12 +557,22 @@ if gSelfTest {
     // merely restarted.
     gReconnect = {
         guard let dial = gLastDial else { return }
-        startSession(host: dial.ip, displayName: dial.name)
+        // A guest session redials by token — its dial IP is empty, and the
+        // token stays valid as long as the sharer's link is up.
+        startSession(host: dial.ip, displayName: dial.name, guestToken: gLastGuestToken)
+    }
+
+    // The hub's join card (and `--join`): a guest session by parsed token.
+    gJoinShare = { token in
+        startSession(host: "", displayName: L("Shared screen"), guestToken: token)
     }
 
     if let host {
         // Direct connect — a host was named on the command line.
         startSession(host: host, displayName: host)
+    } else if let joinToken {
+        // Direct guest connect — a token was named on the command line.
+        startSession(host: "", displayName: L("Shared screen"), guestToken: joinToken)
     } else {
         // Picker mode (gPickerMode, set above): bring the node up, discover
         // sharers, and let the user choose. Dialing the chosen sharer's tailnet
@@ -1098,6 +1153,14 @@ struct ViewerApp: App {
         }
     }
 
+    /// The share-by-token way in, when the live block wired it (nil in
+    /// previews/self-tests, which hides the card). A computed property with an
+    /// explicit type for the usual result-builder reason.
+    private var hubJoinCard: HubJoinCard? {
+        guard gJoinShare != nil else { return nil }
+        return HubJoinCard(onJoin: { token in gJoinShare?(token) })
+    }
+
     @ViewBuilder private var rootView: some View {
         if gSelfTest {
             GtkVideoView(store: gStore, selfTest: true)
@@ -1266,7 +1329,8 @@ struct ViewerApp: App {
                             gPicker.askToShare(chosen)
                         },
                         onOpenLogin: gOpenLogin,
-                        shareCard: shareCard)
+                        shareCard: shareCard,
+                        joinCard: hubJoinCard)
                 } else {
                     HubStatusPane(status: ui.status)
                 }
