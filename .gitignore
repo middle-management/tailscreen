@@ -50,3 +50,4 @@ e2e/.native-bin/
 # a build product with a compiler and a platform baked into it, so it is built
 # per machine rather than committed — `make libtailscreen`.
 sdk/go/build/
+cert/
