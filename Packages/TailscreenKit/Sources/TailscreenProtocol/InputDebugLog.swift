@@ -60,7 +60,11 @@ public enum InputDebugLog {
         public static let windowNs: UInt64 = 1_000_000_000
 
         private var windowStartNs: UInt64?
-        private var count = 0
+        /// Named `sampleCount` rather than `count` on purpose: this is a
+        /// scalar tally, and a property called `count` makes swiftlint's
+        /// `empty_count` rule read every comparison against it as a collection
+        /// emptiness check.
+        private var sampleCount = 0
         private var totalNs: UInt64 = 0
         private var maxNs: UInt64 = 0
 
@@ -76,22 +80,26 @@ public enum InputDebugLog {
         public mutating func note(_ sampleNs: UInt64, nowNs: UInt64) -> String? {
             guard let start = windowStartNs else {
                 windowStartNs = nowNs
-                count = 1
+                sampleCount = 1
                 totalNs = sampleNs
                 maxNs = sampleNs
                 return nil
             }
-            count += 1
+            sampleCount += 1
             totalNs &+= sampleNs
             maxNs = max(maxNs, sampleNs)
             // `&-` and the ordering guard: a clock that appears to go backwards
             // must not wrap into an enormous elapsed and suppress every future
             // summary for the rest of the run.
             guard nowNs >= start, nowNs &- start >= Self.windowNs else { return nil }
-            let mean = count > 0 ? totalNs / UInt64(count) : 0
-            let summary = "n=\(count) mean=\(InputDebugLog.ms(mean)) max=\(InputDebugLog.ms(maxNs))"
+            // At least two by construction: an open window means a previous
+            // call set the tally to one, and this call incremented it. So the
+            // divide needs no zero guard.
+            let mean = totalNs / UInt64(sampleCount)
+            let summary =
+                "n=\(sampleCount) mean=\(InputDebugLog.ms(mean)) max=\(InputDebugLog.ms(maxNs))"
             windowStartNs = nil
-            count = 0
+            sampleCount = 0
             totalNs = 0
             maxNs = 0
             return summary
