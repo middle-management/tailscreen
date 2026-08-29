@@ -310,7 +310,20 @@ final class RemoteControlInjector: @unchecked Sendable {
         // gesture, which is scrolling that does nothing at all. The
         // accumulator also absorbs NaN / infinity / out-of-range, so nothing
         // here can trap on the Int conversion.
-        guard let wheel = scrollAccumulator.take(deltaX: deltaX, deltaY: deltaY) else { return }
+        guard let wheel = scrollAccumulator.take(deltaX: deltaX, deltaY: deltaY) else {
+            // The only place that distinguishes "no scroll arrived" from "a
+            // scroll arrived and moved nothing yet" — the two look identical
+            // on screen, and telling them apart is the whole diagnosis.
+            InputDebugLog.log(
+                String(
+                    format: "sharer scroll wire dx=%.3f dy=%.3f → banked, nothing injected",
+                    deltaX, deltaY))
+            return
+        }
+        InputDebugLog.log(
+            String(
+                format: "sharer scroll wire dx=%.3f dy=%.3f → wheel x=%d y=%d",
+                deltaX, deltaY, wheel.wheelX, wheel.wheelY))
         if let hook = onInjectForTesting {
             hook(
                 .scroll(

@@ -127,6 +127,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// `sendAnnotationOp` calls (e.g. rapid stroke segments) don't
     /// interleave framed-message bytes on the wire.
     private let annotationWriter = ConnectionWriter()
+    /// `TAILSCREEN_DEBUG_INPUT=1` send-duration statistics. Touched only from
+    /// `sendInputEvent`, which the viewer feeds from one serial outbox.
+    private var inputSendSampler = InputDebugLog.Sampler()
     /// Background task draining inbound annotation ops fanned out by the
     /// server (sharer-painted strokes, other viewers' strokes). Cancelled
     /// in `disconnect()`.
@@ -201,12 +204,39 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// isn't open.
     func sendInputEvent(_ event: InputEvent) async {
         guard let conn = annotationChannel, isConnected else { return }
+        let startNs = DispatchTime.now().uptimeNanoseconds
         do {
             try await annotationWriter.send(ScreenShareMessage.inputEvent(event).encode(), over: conn)
         } catch {
             logger.log("Client: sendInputEvent failed: \(error)")
         }
+        noteInputSend(startNs: startNs)
     }
+
+    /// `TAILSCREEN_DEBUG_INPUT=1` readout: how long the framed write above
+    /// actually took. This is the measurement that separates "the sharer is
+    /// slow" from "our own send is queued behind something on this
+    /// connection" — the latter being the multi-second stall patch 027 fixed,
+    /// and it shows up here as a single four-figure millisecond line.
+    ///
+    /// Timed at this call site rather than inside the writer actor so the
+    /// number includes the wait FOR the actor, which is the whole point.
+    private func noteInputSend(startNs: UInt64) {
+        guard InputDebugLog.isEnabled else { return }
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let elapsedNs = nowNs &- startNs
+        if elapsedNs >= Self.slowInputSendNs {
+            InputDebugLog.log("viewer send BLOCKED \(InputDebugLog.ms(elapsedNs))")
+        }
+        if let summary = inputSendSampler.note(elapsedNs, nowNs: nowNs) {
+            InputDebugLog.log("viewer sends \(summary)")
+        }
+    }
+
+    /// A send slower than this is called out on its own line. 100 ms is well
+    /// past any healthy framed write on a tailnet and well short of the
+    /// multi-second stall, so a healthy run prints only the 1 Hz summary.
+    private static let slowInputSendNs: UInt64 = 100_000_000
 
     /// Tell the sharer we're done controlling (`.controlReleased`) so it
     /// revokes the grant — keeping the sharer UI + gate in step with the

@@ -409,6 +409,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// new viewer implicitly revokes the old.
     private let controlGrant = Mutex<GrantState>(GrantState())
 
+    /// `TAILSCREEN_DEBUG_INPUT=1` arrival statistics: the gap since the
+    /// previous input event, and a 1 Hz summary. The far end of the viewer's
+    /// send-duration readout — steady small gaps are a healthy path, while one
+    /// long gap followed by a burst of near-zero ones is a stalled sender seen
+    /// from here. Behind the same lock discipline as the rest of this file
+    /// because the gate fires on each connection's receive task.
+    private struct InputArrivalState {
+        var lastNs: UInt64?
+        var sampler = InputDebugLog.Sampler()
+    }
+    private let inputArrival = Mutex<InputArrivalState>(InputArrivalState())
+
     /// Grant + a monotonic mutation counter, mutated under one lock so
     /// `notifyControlGrantChanged` can hand callbacks a `(generation,
     /// snapshot)` pair that is consistent by construction. The generation is
@@ -1862,6 +1874,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             let nowNs = DispatchTime.now().uptimeNanoseconds
             let allowed = self.inputRateLimiter.withLock { $0.allow(nowNs: nowNs) }
             guard allowed else { return }
+            self.noteInputArrival(nowNs: nowNs)
             self.onInputEventForTesting?(event)
             self.remoteControlInjector?.apply(event)
         }
@@ -1942,6 +1955,31 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             await channel.broadcast(.annotation(op), excluding: excludingConnection)
         }
     }
+
+    /// `TAILSCREEN_DEBUG_INPUT=1`: record how long it has been since the
+    /// previous admitted input event. A gap far larger than the viewer's
+    /// capture cadence means the events were held up on the way here rather
+    /// than never sent — the same stall the viewer's own send timer reports,
+    /// measured independently at the receiving end.
+    private func noteInputArrival(nowNs: UInt64) {
+        guard InputDebugLog.isEnabled else { return }
+        let (gapNs, summary) = inputArrival.withLock { state -> (UInt64?, String?) in
+            let gap = state.lastNs.map { nowNs &- $0 }
+            state.lastNs = nowNs
+            return (gap, state.sampler.note(gap ?? 0, nowNs: nowNs))
+        }
+        if let gapNs, gapNs >= Self.longInputGapNs {
+            InputDebugLog.log("sharer arrival GAP \(InputDebugLog.ms(gapNs))")
+        }
+        if let summary {
+            InputDebugLog.log("sharer arrivals \(summary) (gap between events)")
+        }
+    }
+
+    /// A gap larger than this gets its own line. A controlling viewer emits
+    /// moves at ~90 Hz, so a quarter second of silence mid-gesture is already
+    /// far outside anything the capture side produces.
+    private static let longInputGapNs: UInt64 = 250_000_000
 
     /// Update the per-connection annotation-UUID set in response to an
     /// inbound op. `.add` registers the UUID (idempotent for mid-drag
