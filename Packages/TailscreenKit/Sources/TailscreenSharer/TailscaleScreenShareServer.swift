@@ -1592,7 +1592,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// tailnet IP but a different ephemeral port, so we match on IP). This
     /// is the trust anchor for the inbound-annotation gate.
     private func isAdmittedViewerIP(_ ip: String) -> Bool {
-        viewers.withLock { state in state.keys.contains { ipFromAddr($0) == ip } }
+        viewers.withLock { state in state.keys.contains { Self.ipFromAddr($0) == ip } }
     }
 
     /// Log a dropped (ungated) annotation at most once per share so a peer
@@ -1816,7 +1816,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // (present in `viewers`). A pending/denied/blocked/expelled peer
             // is not in that set, so its ops are dropped — never applied to
             // the sharer's overlay and never fanned out.
-            let peerIP = peerAddress.map { self.ipFromAddr($0) }
+            let peerIP = peerAddress.map { Self.ipFromAddr($0) }
             guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
                 self.logDroppedAnnotation(peerAddress: peerAddress)
                 return
@@ -1844,7 +1844,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // Only an admitted viewer may even ask for control — the TCP
             // channel accepts a dial from any peer, so gate on the same
             // admitted-viewer-IP anchor the annotation path uses.
-            let peerIP = peerAddress.map { self.ipFromAddr($0) }
+            let peerIP = peerAddress.map { Self.ipFromAddr($0) }
             guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
                 self.logger.log("Dropped control request from non-admitted peer \(peerAddress ?? "unknown")")
                 return
@@ -2570,7 +2570,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
         let approvalRequired = requireApproval.withLock { $0 }
         let alreadyKnown = viewers.withLock { $0[addr] != nil }
-        let ip = ipFromAddr(addr)
+        let ip = Self.ipFromAddr(addr)
 
         // Consult the remembered allow/deny policy when this IP's
         // StableNodeID is already cached (a re-HELLO from a peer we've
@@ -2793,7 +2793,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `registerOrRefresh`'s add path and `approveViewer` so the
     /// build → insert → notify → resolve-if-uncached shape lives once.
     private func publishAddedViewer(addr: String) {
-        let ip = ipFromAddr(addr)
+        let ip = Self.ipFromAddr(addr)
         let cachedName = peerNameCache.withLock { $0[ip] }
         let cachedStableID = peerStableIDCache.withLock { $0[ip] }
         let info = ViewerInfo(
@@ -2870,7 +2870,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Viewer denied \(addr)")
         sendDenialDatagrams(to: addr)
         if isGuestAddr(addr) {
-            onGuestViewerDenied?(ipFromAddr(addr))
+            onGuestViewerDenied?(Self.ipFromAddr(addr))
         }
     }
 
@@ -2994,8 +2994,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         viewerCaps.withLock { _ = $0.removeValue(forKey: addr) }
         retransmitBuffer.removeViewer(addr: addr)
         fecGatedAddrs.withLock { _ = $0.remove(addr) }
-        closeAnnotationChannels(forIP: ipFromAddr(addr))
-        revokeControlIfHeld(byIP: ipFromAddr(addr), reason: reason)
+        closeAnnotationChannels(forIP: Self.ipFromAddr(addr))
+        revokeControlIfHeld(byIP: Self.ipFromAddr(addr), reason: reason)
         notifyViewersChanged()
         logger.log("Viewer expelled (\(reason)) \(addr)")
         sendDenialDatagrams(to: addr)
@@ -3003,7 +3003,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // tunnel too. A one-time disconnect is not — the guest may knock
         // again through the approval gate.
         if reason == "remembered deny", isGuestAddr(addr) {
-            onGuestViewerDenied?(ipFromAddr(addr))
+            onGuestViewerDenied?(Self.ipFromAddr(addr))
         }
     }
 
@@ -3068,7 +3068,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // A viewer that BYE'd/left surrenders any control grant. The TCP
             // close usually beats this via `revokeControlIfHeld(byConnection:)`;
             // this covers a UDP BYE that outruns the TCP FIN.
-            revokeControlIfHeld(byIP: ipFromAddr(addr), reason: "viewer disconnected")
+            revokeControlIfHeld(byIP: Self.ipFromAddr(addr), reason: "viewer disconnected")
             logger.log("Viewer disconnected \(addr)")
         }
     }
@@ -3094,17 +3094,40 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         cb(snapshot)
     }
 
-    /// Strip the trailing `:port` from a UDP source address. Splits on the
-    /// last `:` so IPv6 literals like `[fd7a::1]:54321` stay intact (the
-    /// brackets get included in the IP part — fine, the netmap match
-    /// handles both forms via prefix comparison).
-    private func ipFromAddr(_ addr: String) -> String {
-        guard let lastColon = addr.lastIndex(of: ":") else { return addr }
-        var ip = String(addr[..<lastColon])
-        if ip.hasPrefix("["), ip.hasSuffix("]") {
-            ip = String(ip.dropFirst().dropLast())
+    /// Reduce a peer address to the bare IP the admission gates compare on.
+    ///
+    /// Two producers feed this and they disagree about format, which is the
+    /// whole reason it is a named function rather than a `split`. A viewer's
+    /// UDP source arrives as `ip:port` — that is the `viewers` dictionary key.
+    /// A TCP control-channel peer address comes back through
+    /// `tailscale_getremoteaddr`, whose Go side runs it through `extractIP`:
+    /// that strips the port and, for IPv6, **keeps the brackets**. So one peer
+    /// is `[fd7a::1]:33509` on the UDP path and `[fd7a::1]` on the TCP one, and
+    /// `isAdmittedViewerIP` compares with `==`, so both must reduce identically
+    /// or an admitted viewer's control requests and annotations are all dropped
+    /// as "non-admitted".
+    ///
+    /// Brackets are therefore matched FIRST, and the port is only stripped when
+    /// there is exactly one colon. Splitting on the last colon — which this did
+    /// — eats the final hextet of a portless IPv6 literal and leaves the `[`
+    /// behind, since the unwrap guard then no longer sees a trailing `]`. IPv4
+    /// survived that (`extractIP` emits it bare, so the early return fired) and
+    /// tailnets hand out `100.64.0.0/10`, which is why it held up in everyday
+    /// use and failed only where addressing is IPv6-only: the guest tunnel, and
+    /// tailnets running without IPv4.
+    public static func ipFromAddr(_ addr: String) -> String {
+        // Bracketed IPv6, with or without a `:port`. The colons before `]`
+        // belong to the address, so stop there rather than scanning for a port.
+        if addr.hasPrefix("["), let close = addr.firstIndex(of: "]") {
+            return String(addr[addr.index(after: addr.startIndex)..<close])
         }
-        return ip
+        // IPv4 or a bare host: one colon is a port separator. Several mean an
+        // unbracketed IPv6 literal, which carries no port to strip — and
+        // chopping at its last colon is exactly the bug above.
+        guard let lastColon = addr.lastIndex(of: ":"),
+            addr.firstIndex(of: ":") == lastColon
+        else { return addr }
+        return String(addr[..<lastColon])
     }
 
     // MARK: - Identity resolution
@@ -3337,7 +3360,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             for entry in dropped {
                 let idleMs = Int(entry.idleNs / 1_000_000)
                 // An idled-out viewer surrenders any control grant.
-                revokeControlIfHeld(byIP: ipFromAddr(entry.addr), reason: "viewer idle timeout")
+                revokeControlIfHeld(byIP: Self.ipFromAddr(entry.addr), reason: "viewer idle timeout")
                 logger.log("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
             }
 
