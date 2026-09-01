@@ -19,8 +19,11 @@ import XCTest
 /// UDP key would silently hijack that UDP viewer's media onto a stranger's
 /// TCP connection.
 final class StreamViewerDecisionTests: XCTestCase {
-    private let connA = UUID(uuidString: "AAAAAAAA-1111-2222-3333-444444444444")!
-    private let connB = UUID(uuidString: "BBBBBBBB-1111-2222-3333-444444444444")!
+    // Fresh per run on purpose: every assertion is about relationships
+    // between derivations (round-trip, distinctness, stability), none about
+    // a literal addr string, so pinned UUIDs would only invite one.
+    private let connA = UUID()
+    private let connB = UUID()
 
     // MARK: - streamViewerAddr
 
