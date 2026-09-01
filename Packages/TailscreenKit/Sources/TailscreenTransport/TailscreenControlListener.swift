@@ -77,6 +77,18 @@ public final class TailscreenControlListener: @unchecked Sendable {
     /// dial-back, like `.shareResponse`).
     public var onMetadataRequest: ((UUID) -> Void)?
 
+    /// Fires for every `.mediaDatagram` message (spec §2.2, the
+    /// reliable-transport profile): one raw UDP-shaped datagram carried over
+    /// the framed channel by a viewer without usable UDP. Arguments are the
+    /// datagram bytes (never empty — the parser drops empty payloads), the
+    /// connection's stable `UUID` (the sharer's send route back — the
+    /// connection IS this viewer's media transport), and the remote address.
+    /// The handler runs the same first-byte demultiplex the UDP receive
+    /// loop does; a host with no share running leaves this nil and the
+    /// frames are dropped, which is the profile's degraded mode (the
+    /// electing viewer's HELLO simply goes unanswered).
+    public var onMediaDatagram: ((Data, UUID, String?) -> Void)?
+
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
     /// per-viewer annotation state.
@@ -250,6 +262,8 @@ public final class TailscreenControlListener: @unchecked Sendable {
             onControlReleased?(connectionID)
         case .metadataRequest:
             onMetadataRequest?(connectionID)
+        case .mediaDatagram(let datagram):
+            onMediaDatagram?(datagram, connectionID, peerAddress)
         case .shareResponse, .controlGranted, .controlRevoked, .metadataResponse:
             // `.shareResponse` / `.metadataResponse` ride the requester's own
             // outgoing connection, read inline (see

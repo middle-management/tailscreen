@@ -16,6 +16,13 @@ const (
 	MsgControlReleased  MessageType = 0x0A
 	MsgMetadataRequest  MessageType = 0x0B
 	MsgMetadataResponse MessageType = 0x0C
+
+	// MsgMediaDatagram carries one raw UDP datagram over the framed channel
+	// (spec §2.2, the reliable-transport profile). Unlike every other type
+	// its payload is not JSON: hand it to the datagram demultiplexer
+	// (Classify) exactly as if it had arrived on the UDP socket, and
+	// discard an empty payload (TS-STM-001).
+	MsgMediaDatagram MessageType = 0x0D
 )
 
 const (
@@ -27,7 +34,7 @@ var knownMessageTypes = map[MessageType]bool{
 	MsgAnnotation: true, MsgRequestToShare: true, MsgShareResponse: true,
 	MsgControlRequest: true, MsgControlGranted: true, MsgControlRevoked: true,
 	MsgInputEvent: true, MsgControlReleased: true, MsgMetadataRequest: true,
-	MsgMetadataResponse: true,
+	MsgMetadataResponse: true, MsgMediaDatagram: true,
 }
 
 // IsKnownMessageType reports whether a type byte is assigned. An unassigned

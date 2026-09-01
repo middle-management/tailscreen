@@ -470,4 +470,41 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())
         XCTAssertFalse(parser.isCorrupt, "a decode failure is not a framing error")
     }
+
+    // MARK: - .mediaDatagram (spec §2.2, the reliable-transport profile)
+
+    func testMediaDatagramRoundTripsRawBytes() throws {
+        // The one non-JSON payload on the channel: raw datagram bytes, byte
+        // for byte. An RTP-shaped payload (first byte 0x80–0xBF) is the
+        // interesting case, because everything else on this channel starts
+        // with a low type byte — the payload must reach the demultiplexer
+        // untouched, not be inspected here.
+        let datagram = Data([0x80, 0xE0, 0x12, 0x34, 0x00, 0x01, 0x02, 0x03, 0xAB, 0xCD])
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.mediaDatagram(datagram).encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .mediaDatagram(let payload) = decoded else {
+            return XCTFail("expected .mediaDatagram, got \(decoded)")
+        }
+        XCTAssertEqual(payload, datagram)
+    }
+
+    func testEmptyMediaDatagramIsDroppedWithoutStallingTheStream() throws {
+        // TS-STM-001: an empty payload is no datagram at all (the frame
+        // shape of TS-GEN-022's empty-UDP-datagram discard). Dropped like an
+        // undecodable payload — and, like one, it must not stall a frame
+        // buffered behind it.
+        var parser = ScreenShareMessageParser()
+        parser.append(
+            ScreenShareMessage.mediaDatagram(Data()).encode()
+                + ScreenShareMessage.mediaDatagram(Data([0x00])).encode())
+        let decoded = try XCTUnwrap(
+            parser.next(), "the datagram behind the empty one must be delivered")
+        guard case .mediaDatagram(let payload) = decoded else {
+            return XCTFail("expected .mediaDatagram, got \(decoded)")
+        }
+        XCTAssertEqual(payload, Data([0x00]), "a one-byte HELLO is the smallest real datagram")
+        XCTAssertNil(parser.next())
+        XCTAssertFalse(parser.isCorrupt, "an empty datagram is not a framing error")
+    }
 }

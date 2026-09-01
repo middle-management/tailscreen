@@ -100,7 +100,9 @@ they appear in all capitals.
   implementations MUST NOT be deployed on an unprotected network path.
 - **TS-GEN-012**: A sharer MUST listen on UDP/7447 for control datagrams and
   MUST send media to the source address and port from which it received an
-  admitted viewer's `HELLO`.
+  admitted viewer's `HELLO`. (For a viewer whose `HELLO` arrived framed over
+  TCP, [§2.2](#22-stream-carriage-of-the-datagram-plane-reliable-transport-profile)'s
+  TS-STM-002 substitutes that connection as the destination.)
 - **TS-GEN-013**: A peer that can be asked to share (§13) MUST accept TCP
   connections on port 7447 for as long as its node is up, not only while a
   share is running. A peer that only ever views MAY omit the listener.
@@ -146,6 +148,86 @@ The channels multiplexed onto these two sockets are:
 | Annotations | TCP/7447, framed | [§11](#11-annotations) |
 | Remote control | TCP/7447, framed | [§12](#12-remote-control) |
 | Metadata, request-to-share | TCP/7447, framed | [§13](#13-metadata-and-request-to-share) |
+| The whole datagram plane, framed (stream carriage) | TCP/7447, `mediaDatagram` frames | [§2.2](#22-stream-carriage-of-the-datagram-plane-reliable-transport-profile) |
+
+### 2.2 Stream carriage of the datagram plane (reliable-transport profile)
+
+The datagram plane — session control ([§4](#4-udp-control-plane)), RTP media
+([§7](#7-video), [§8](#8-audio)) and loss recovery
+([§9](#9-loss-recovery)) — normally rides UDP. This profile carries the
+same datagrams over the framed TCP channel ([§10](#10-the-framed-tcp-channel))
+for a viewer that cannot use UDP: a network that blocks it, or a runtime
+with no datagram socket at all (a browser). Nothing above the datagram
+layer changes — admission ([§6](#6-viewer-admission)), capability
+negotiation ([§5](#5-capability-negotiation)), annotations, remote control
+and metadata apply to a stream viewer exactly as to a UDP one.
+
+- **TS-STM-001**: A `mediaDatagram` frame (type `0x0D`,
+  [§10.1](#101-message-type-registry)) carries exactly the bytes of one UDP
+  datagram as its payload. A receiver MUST process that payload as it would
+  a datagram received on the UDP socket: classify it by its first byte
+  (TS-GEN-020) and dispatch it accordingly. An empty payload MUST be
+  discarded (the frame equivalent of TS-GEN-022).
+- **TS-STM-002**: A viewer elects this profile by sending its `HELLO`
+  ([§4.2](#42-session-establishment)) as a `mediaDatagram` frame on its
+  framed TCP connection. There is no other negotiation: where the `HELLO`
+  arrived is the election. A sharer that implements the profile MUST answer
+  on the same connection — `HELLO_ACK`, `HELLO_PENDING` or `HELLO_DENY` as
+  `mediaDatagram` frames — and MUST thereafter carry that viewer's entire
+  datagram plane (media, control, `PING`) as `mediaDatagram` frames on that
+  connection. For a stream viewer this connection replaces TS-GEN-012's
+  "source address of the `HELLO`" as the media destination.
+- **TS-STM-003**: Wherever this specification keys on a viewer's transport
+  address — admission ([§6](#6-viewer-admission)), the admitted-viewer
+  gates of [§11](#11-annotations)–[§12](#12-remote-control) — a stream
+  viewer's address is the remote address of its framed TCP connection.
+- **TS-STM-004**: The sharer MUST treat an orderly close of a stream
+  viewer's framed TCP connection as that viewer's `BYE`, and the viewer
+  MUST treat it as `SERVER_BYE`. `KEEPALIVE` and the idle timeouts
+  (TS-CTL-015, TS-CTL-016, TS-CTL-017) apply unchanged — a stream viewer
+  MUST still send `KEEPALIVE` datagrams, so liveness detection stays
+  uniform and a half-open connection cannot hold a viewer slot.
+- **TS-STM-005**: A stream viewer MUST NOT advertise the `nack` (bit 0) or
+  `fec` (bit 2) capabilities, and a sharer MUST NOT send retransmissions or
+  `FEC` datagrams ([§9.1](#91-nack), [§9.3](#93-fec--xor-parity)) to a
+  stream viewer regardless of what was advertised: the transport under the
+  profile does not lose packets, so retransmission and parity are dead
+  weight. `receiverReport` (bit 1) SHOULD be advertised — loss will read as
+  zero, but the report's jitter, RTT echo and cadence still feed the sharer
+  ([§9.2](#92-receiver-reports-and-rtt)). `PLI` keeps its full role
+  ([§4.3](#43-keyframe-requests-and-codec-fallback)).
+- **TS-STM-006**: A sharer MAY omit video from a stream viewer under
+  backpressure — a send queue for that connection that is not draining —
+  but MUST omit only whole access units. An omission SHOULD be
+  sequence-contiguous (per-viewer sequence rewriting makes the omitted
+  access unit invisible — the shape TS-VID-004 already demands of a
+  throttled viewer's stream), and after a contiguous omission of a
+  non-keyframe access unit the sharer MUST NOT resume inter-frame video
+  before the next keyframe, so what the viewer decodes stays a well-formed
+  keyframe-anchored stream. An omission MAY instead leave a sequence gap —
+  an emergency shed from an already-reserved range — which the viewer
+  recovers through the normal keyframe-request path
+  ([§4.3](#43-keyframe-requests-and-codec-fallback)); on this transport a
+  gap can only ever mean sender-side omission, never network loss. Audio
+  datagrams MAY be omitted individually; the receiver's audio machinery
+  ([§8](#8-audio)) already treats a sequence gap as loss.
+- **TS-STM-007**: A sharer that does not implement this profile skips the
+  unknown frame type (TS-TCP-003); the electing viewer's `HELLO` is simply
+  never answered, and the viewer MUST give up after the same retry budget
+  it applies to an unresponsive sharer. This is the profile's degraded mode
+  under TS-EXT-002 — in both directions, since a sharer never sends
+  `mediaDatagram` frames to a viewer that did not elect the profile.
+
+*Informative.* Media datagrams are at most ~1.1 KB (Appendix B), so
+framing each datagram individually keeps the connection interleavable: a
+control frame queued behind media waits for at most one media frame, not a
+keyframe. On a reliable transport congestion presents as delay rather than
+loss, so the sharer's useful signal is its own send-queue depth per
+viewer, feeding the same bitrate / frame-rate / keyframe-only levers the
+loss-driven controller uses. A stream viewer's reorder buffer sees only
+in-order arrival; the profile deliberately reduces the viewer to the
+legacy PLI-only recovery mode that predates NACK and FEC, which every
+sharer already serves.
 
 ---
 
@@ -759,6 +841,7 @@ connection and one framing.
 | `0x0A` | `controlReleased` | viewer → sharer | empty |
 | `0x0B` | `metadataRequest` | peer → peer | empty |
 | `0x0C` | `metadataResponse` | responder → requester | `TailscreenMetadata` |
+| `0x0D` | `mediaDatagram` | both | raw datagram bytes ([§2.2](#22-stream-carriage-of-the-datagram-plane-reliable-transport-profile)) |
 
 - **TS-TCP-001**: An implementation MUST encode each message with the type
   byte above. These values are permanent and MUST NOT be renumbered.
@@ -783,9 +866,13 @@ connection and one framing.
 - **TS-TCP-008**: A frame whose payload fails to decode MUST be discarded
   without disturbing the framing; the parser MUST continue with the next
   frame.
-- **TS-TCP-009**: Payloads are JSON, encoded as UTF-8, with no trailing
-  NUL and no length prefix of their own — the frame header carries the
-  length.
+- **TS-TCP-009**: Payloads of the message types defined in
+  [§10.2](#102-payload-encodings) are JSON, encoded as UTF-8, with no
+  trailing NUL and no length prefix of their own — the frame header carries
+  the length. `mediaDatagram` is the one exception: its payload is raw
+  datagram bytes
+  ([§2.2](#22-stream-carriage-of-the-datagram-plane-reliable-transport-profile)),
+  interpreted by the datagram demultiplexer, never as JSON.
 
 ### 10.2 Payload encodings
 
@@ -1173,7 +1260,8 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | `0x0A` | `controlReleased` | 1 |
 | `0x0B` | `metadataRequest` | 1 |
 | `0x0C` | `metadataResponse` | 1 |
-| `0x0D`–`0xFF` | unassigned | — |
+| `0x0D` | `mediaDatagram` | 2 |
+| `0x0E`–`0xFF` | unassigned | — |
 
 ### A.3 Capability bits
 
@@ -1250,6 +1338,7 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | 1 | Initial specification, describing the protocol as shipped. |
 | 1 | Stated the substrate as a **tailnet** with four named properties (TS-GEN-017 … TS-GEN-019) rather than as Tailscale specifically, so that headscale — already supported and exercised by the end-to-end harness — is inside the specification rather than outside it. A widening: everything conforming before still conforms. |
 | 1 | Added **Appendix D** (informative): transport bootstrap via connection token (guest mode). No wire values added, no normative requirements changed — the appendix records how a token-bootstrapped tunnel relates to TS-GEN-017 and where the sharer compensates at the admission layer. |
+| 2 | Added **§2.2**, the reliable-transport profile (TS-STM-001 … TS-STM-007): the datagram plane carried as `mediaDatagram` frames over the framed TCP channel, for viewers without usable UDP. One wire value added — TCP message type `0x0D` `mediaDatagram` (Appendix A.2). TS-TCP-009 narrowed to the JSON payload types, since `mediaDatagram`'s payload is raw datagram bytes. Degrades cleanly both ways: a sharer without the profile skips the unknown frame (TS-TCP-003) and the viewer's `HELLO` times out. |
 
 ---
 

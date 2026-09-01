@@ -59,8 +59,8 @@ func normalize(t *testing.T, v any) any {
 
 func TestVectors(t *testing.T) {
 	idx := loadIndex(t)
-	if idx.SpecVersion != 1 {
-		t.Fatalf("vectors declare spec version %d, this runner implements 1", idx.SpecVersion)
+	if idx.SpecVersion != 2 {
+		t.Fatalf("vectors declare spec version %d, this runner implements 2", idx.SpecVersion)
 	}
 	if len(idx.Suites) == 0 {
 		t.Fatal("vector index lists no suites")
@@ -200,7 +200,7 @@ func TestVectorsCoverEveryWireValue(t *testing.T) {
 		}
 	}
 	// The assigned TCP message-type range — spec Appendix A.2.
-	for typ := 0x03; typ <= 0x0C; typ++ {
+	for typ := 0x03; typ <= 0x0D; typ++ {
 		if !seenTCP[typ] {
 			t.Errorf("no vector exercises TCP message type %#02x", typ)
 		}
