@@ -39,7 +39,8 @@ speaking the unmodified 7447 wire protocol inside the tunnel.
 
 ## Non-goals (v1)
 
-- Browser viewer (needs the reliable-transport profile; separate plan).
+- Browser viewer (needs the reliable-transport profile; separate plan —
+  now `plans/browser-viewer.md`).
 - Guest *sharers* — tokens let people watch/control your screen, not share
   theirs. Request-to-share over the guest channel is out.
 - Voice/system audio to guests (PT 98/99 fan-out works mechanically, but mic
