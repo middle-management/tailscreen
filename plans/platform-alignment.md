@@ -118,7 +118,14 @@ call.
     handlers.
   - **Ctrl+wheel zooms; plain wheel scrolls the sharer** while a grant is held.
     Without the split, zooming is unreachable while controlling and scrolling is
-    unreachable while not.
+    unreachable while not. **Amended:** the GTK viewer had the other half of
+    that trade — it consumed every scroll locally, so a controlling Linux
+    viewer could not scroll the sharer's content at all. It now makes the
+    identical split, through the pure `ViewerInputMapping.scrollDisposition`
+    (which also converts GDK's "down is positive" to the wire's "up is
+    positive"). Worth noting as a parity lesson: the gap was invisible because
+    scroll capture and input capture were wired by two different features, and
+    neither one was wrong on its own.
 - **1.4 · Linux sharer: render annotations.** ✅ **Done.** Closes 0.1 properly:
   `Apps/linux/Sources/CGtkOverlay` is the click-through window — override-redirect
   (GTK4 has neither placement nor keep-above, and an overlay needs both), empty

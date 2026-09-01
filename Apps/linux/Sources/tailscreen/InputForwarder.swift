@@ -6,17 +6,14 @@ import TailscreenViewerTsnet
 /// Bridges captured GTK input (`GtkVideoView.onInputEvent`, fired on the GTK
 /// main thread) to the sharer over the `ViewerBackChannel`, applying two rules:
 ///
-///  1. **Gate.** Events are forwarded only while remote control is *granted-
-///     active* (`ViewerUIState.controlState == .active`) AND no annotation
-///     tool is armed (`activeTool == nil`). Before a grant — or after a
-///     revoke/release — captured input is dropped, so moving the mouse over
-///     the video never leaks input to the sharer. Drawing wins over
-///     controlling: with a pen armed a drag is a stroke, not a click — GTK
-///     fans each event to every attached controller, so without this clause a
-///     controlling viewer who armed the pen would draw on the overlay AND
-///     drag on the sharer's desktop at once. (The Windows viewer's
-///     `forwardsInput` is the same rule; the precedence is load-bearing, see
-///     plans/platform-alignment.md.)
+///  1. **Gate.** Events are forwarded only while `ViewerUIState.forwardsRemoteInput`
+///     — a grant is live and no annotation tool is armed. Before a grant, or
+///     after a revoke/release, captured input is dropped, so moving the mouse
+///     over the video never leaks input to the sharer. That property is also
+///     what the video view's wheel handler asks before scrolling the sharer
+///     instead of zooming locally, which is why the rule is spelled there
+///     rather than here. (The Windows viewer's `forwardsInput` is the same
+///     rule; the precedence is load-bearing, see plans/platform-alignment.md.)
 ///
 ///  2. **Order.** The `ViewerBackChannel` actor preserves order only for calls
 ///     that reach it in order (see its `sendInputEvent` ORDERING CONTRACT). So
@@ -66,7 +63,7 @@ final class InputForwarder {
     /// main thread, so it never races the state machine's writes.
     nonisolated func submit(_ event: InputEvent) {
         MainActor.assumeIsolated {
-            guard ui.controlState == .active, ui.activeTool == nil else { return }
+            guard ui.forwardsRemoteInput else { return }
             continuation.yield(event)
         }
     }

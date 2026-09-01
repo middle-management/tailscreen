@@ -171,7 +171,13 @@ guarantee the SDL path never had.
 - **Zoom/pan (done).** Scroll zooms about the cursor, Shift+scroll pans, double-
   click smart-magnifies — geometry via the CI-tested `ViewerZoomMath`, scroll
   captured through a `cgtkvideo_attach_scroll` C shim (swift-cross-ui has no
-  `EventControllerScroll` binding).
+  `EventControllerScroll` binding). That single shim also carries the REMOTE
+  half: while a grant is live the wheel forwards as an `InputEvent.scroll` and
+  only Ctrl+wheel zooms locally, matching the WinUI viewer. It has to be one
+  place — there is one scroll callback to attach, so two controllers cannot
+  split it — hence the pure `ViewerInputMapping.scrollDisposition`, which also
+  owns the GDK→wire sign flip (GDK calls down positive, the wire calls up
+  positive).
 - **Annotations (done, both directions).** A freehand **pen** draws strokes over
   the video (a bottom `AnnotationToolbar`: pen toggle, color swatches, undo,
   clear, caps-gated on `ScreenShareCaps.annotations`). Strokes render in GL via a

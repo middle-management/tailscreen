@@ -1034,8 +1034,10 @@ public final class WindowsShareSession: @unchecked Sendable {
     ) {
         drawing.resetForNewSession()
         drawing.onLocalOp = { [weak server] op in
-            guard let server else { return }
-            Task { await server.broadcastAnnotation(op) }
+            // Queued, never one task per op — see `enqueueAnnotationBroadcast`:
+            // a `.undo` that overtakes its `.add` is dropped as an unknown id
+            // and strands the stroke on every viewer's canvas.
+            server?.enqueueAnnotationBroadcast(op)
         }
         // Every change, including mid-drag — see `setLocalStrokes`. Bound to
         // the overlay instance rather than read back through `self.overlay`,

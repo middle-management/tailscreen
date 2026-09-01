@@ -367,6 +367,39 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// back-channel by IP.
     private let annotationConnectionIP = Mutex<[UUID: String]>([:])
 
+    /// One annotation fan-out, and the ordered outbox in front of it.
+    ///
+    /// Annotation ops are a SEQUENCE about one stroke, not independent
+    /// events: `.undo(X)` only means anything to a peer that already has
+    /// `.add(X)`, and `.clearAll` only clears what arrived before it. Every
+    /// fan-out site used to be its own `Task { await broadcastAnnotation(…) }`
+    /// — one per relayed viewer op, one per disconnect-cleanup undo, one per
+    /// sharer stroke on each of the three hosts — and separately-created
+    /// tasks reach a shared await point in whatever order the runtime picks.
+    /// Invert one `add`/`undo` pair and the undo lands on an id the peer has
+    /// never seen, is dropped as unknown, and the stroke stays on every other
+    /// viewer's screen for the rest of the share with nothing left to remove
+    /// it.
+    ///
+    /// So ordering is established where it can be: `enqueueAnnotationBroadcast`
+    /// is **synchronous**, so the order calls reach it in IS the order, and
+    /// one consumer drains the outbox awaiting each fan-out in turn. Hosts
+    /// call that instead of spawning a task per op.
+    private struct AnnotationBroadcast: Sendable {
+        let op: AnnotationOp
+        let excludingConnection: UUID?
+    }
+    private let annotationOutbox: AsyncStream<AnnotationBroadcast>
+    private let annotationOutboxContinuation: AsyncStream<AnnotationBroadcast>.Continuation
+    private let annotationDrain = Mutex<Task<Void, Never>?>(nil)
+
+    /// Test-only: fires for each op as the drain takes it, in fan-out order,
+    /// before the (listener-less, and so no-op) broadcast. Lets a test assert
+    /// the outbox's ordering guarantee with no tsnet node — which is the only
+    /// way to catch a reintroduced `Task { await broadcastAnnotation(…) }`,
+    /// since that bug is a race that passes most runs.
+    var onAnnotationBroadcastForTesting: ((AnnotationOp) -> Void)?
+
     // MARK: - Remote control
 
     /// The single live remote-control grant, or nil when nobody holds control.
@@ -375,6 +408,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// and a non-grantee can't inject. At most one grant exists — granting a
     /// new viewer implicitly revokes the old.
     private let controlGrant = Mutex<GrantState>(GrantState())
+
+    /// `TAILSCREEN_DEBUG_INPUT=1` arrival statistics: the gap since the
+    /// previous input event, and a 1 Hz summary. The far end of the viewer's
+    /// send-duration readout — steady small gaps are a healthy path, while one
+    /// long gap followed by a burst of near-zero ones is a stalled sender seen
+    /// from here. Behind the same lock discipline as the rest of this file
+    /// because the gate fires on each connection's receive task.
+    private struct InputArrivalState {
+        var lastNs: UInt64?
+        var sampler = InputDebugLog.Sampler()
+    }
+    private let inputArrival = Mutex<InputArrivalState>(InputArrivalState())
 
     /// Grant + a monotonic mutation counter, mutated under one lock so
     /// `notifyControlGrantChanged` can hand callbacks a `(generation,
@@ -956,6 +1001,41 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         self.rendersAnnotations = rendersAnnotations
         self.logger = PrintLogSink(prefix: "Tailscale", dropListeningNoise: true)
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
+        // Unbounded: dropping the oldest could drop the `.add` a later `.undo`
+        // refers to, which is the exact failure the outbox exists to prevent.
+        // Annotation ops are drag-paced and tiny, so the queue stays short.
+        let (outbox, outboxContinuation) = AsyncStream<AnnotationBroadcast>.makeStream(
+            bufferingPolicy: .unbounded)
+        self.annotationOutbox = outbox
+        self.annotationOutboxContinuation = outboxContinuation
+        startAnnotationDrain()
+    }
+
+    /// Start the outbox's single consumer. `[weak self]` so a server that is
+    /// built and dropped without ever starting isn't kept alive by its own
+    /// drain; `deinit` finishes the stream, which ends the loop.
+    private func startAnnotationDrain() {
+        let outbox = annotationOutbox
+        let task = Task { [weak self] in
+            for await item in outbox {
+                self?.onAnnotationBroadcastForTesting?(item.op)
+                await self?.broadcastAnnotation(item.op, excludingConnection: item.excludingConnection)
+            }
+        }
+        annotationDrain.withLock { $0 = task }
+    }
+
+    /// Queue an annotation op for fan-out, preserving the order of these
+    /// calls on the wire. Synchronous by design — see ``annotationOutbox``;
+    /// wrapping it in a `Task` would reintroduce exactly the race it exists
+    /// to close.
+    ///
+    /// Safe before `start()` and after `stop()`: the fan-out no-ops without a
+    /// control listener, and `stop()` drops whatever is still queued (the
+    /// share is over, and so is every canvas it fed).
+    public func enqueueAnnotationBroadcast(_ op: AnnotationOp, excludingConnection: UUID? = nil) {
+        annotationOutboxContinuation.yield(
+            AnnotationBroadcast(op: op, excludingConnection: excludingConnection))
     }
 
     // MARK: - Start
@@ -1512,7 +1592,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// tailnet IP but a different ephemeral port, so we match on IP). This
     /// is the trust anchor for the inbound-annotation gate.
     private func isAdmittedViewerIP(_ ip: String) -> Bool {
-        viewers.withLock { state in state.keys.contains { ipFromAddr($0) == ip } }
+        viewers.withLock { state in state.keys.contains { Self.ipFromAddr($0) == ip } }
     }
 
     /// Log a dropped (ungated) annotation at most once per share so a peer
@@ -1736,7 +1816,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // (present in `viewers`). A pending/denied/blocked/expelled peer
             // is not in that set, so its ops are dropped — never applied to
             // the sharer's overlay and never fanned out.
-            let peerIP = peerAddress.map { self.ipFromAddr($0) }
+            let peerIP = peerAddress.map { Self.ipFromAddr($0) }
             guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
                 self.logDroppedAnnotation(peerAddress: peerAddress)
                 return
@@ -1754,17 +1834,17 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             self.onAnnotationReceived?(op)
             // Fan out to every OTHER viewer so window / application share
             // modes can carry annotations peer-to-peer instead of relying
-            // on SCStream catching the sharer's overlay panel.
-            Task { [weak self] in
-                await self?.broadcastAnnotation(op, excludingConnection: connectionID)
-            }
+            // on SCStream catching the sharer's overlay panel. Queued rather
+            // than spawned: this viewer's ops must reach the others in the
+            // order it drew them.
+            self.enqueueAnnotationBroadcast(op, excludingConnection: connectionID)
         }
         listener.onControlRequest = { [weak self] connectionID, peerAddress in
             guard let self else { return }
             // Only an admitted viewer may even ask for control — the TCP
             // channel accepts a dial from any peer, so gate on the same
             // admitted-viewer-IP anchor the annotation path uses.
-            let peerIP = peerAddress.map { self.ipFromAddr($0) }
+            let peerIP = peerAddress.map { Self.ipFromAddr($0) }
             guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
                 self.logger.log("Dropped control request from non-admitted peer \(peerAddress ?? "unknown")")
                 return
@@ -1794,6 +1874,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             let nowNs = DispatchTime.now().uptimeNanoseconds
             let allowed = self.inputRateLimiter.withLock { $0.allow(nowNs: nowNs) }
             guard allowed else { return }
+            self.noteInputArrival(nowNs: nowNs)
             self.onInputEventForTesting?(event)
             self.remoteControlInjector?.apply(event)
         }
@@ -1823,9 +1904,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             for uuid in outstanding {
                 let op: AnnotationOp = .undo(uuid)
                 cb?(op)
-                Task { [weak self] in
-                    await self?.broadcastAnnotation(op, excludingConnection: connectionID)
-                }
+                // Same outbox as the relay above, and that is the point: a
+                // departing viewer's last `.add` may still be queued, and an
+                // undo that overtakes it strands the stroke it was meant to
+                // remove.
+                self.enqueueAnnotationBroadcast(op, excludingConnection: connectionID)
             }
         }
     }
@@ -1872,6 +1955,31 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             await channel.broadcast(.annotation(op), excluding: excludingConnection)
         }
     }
+
+    /// `TAILSCREEN_DEBUG_INPUT=1`: record how long it has been since the
+    /// previous admitted input event. A gap far larger than the viewer's
+    /// capture cadence means the events were held up on the way here rather
+    /// than never sent — the same stall the viewer's own send timer reports,
+    /// measured independently at the receiving end.
+    private func noteInputArrival(nowNs: UInt64) {
+        guard InputDebugLog.isEnabled else { return }
+        let (gapNs, summary) = inputArrival.withLock { state -> (UInt64?, String?) in
+            let gap = state.lastNs.map { nowNs &- $0 }
+            state.lastNs = nowNs
+            return (gap, state.sampler.note(gap ?? 0, nowNs: nowNs))
+        }
+        if let gapNs, gapNs >= Self.longInputGapNs {
+            InputDebugLog.log("sharer arrival GAP \(InputDebugLog.ms(gapNs))")
+        }
+        if let summary {
+            InputDebugLog.log("sharer arrivals \(summary) (gap between events)")
+        }
+    }
+
+    /// A gap larger than this gets its own line. A controlling viewer emits
+    /// moves at ~90 Hz, so a quarter second of silence mid-gesture is already
+    /// far outside anything the capture side produces.
+    private static let longInputGapNs: UInt64 = 250_000_000
 
     /// Update the per-connection annotation-UUID set in response to an
     /// inbound op. `.add` registers the UUID (idempotent for mid-drag
@@ -2462,7 +2570,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
         let approvalRequired = requireApproval.withLock { $0 }
         let alreadyKnown = viewers.withLock { $0[addr] != nil }
-        let ip = ipFromAddr(addr)
+        let ip = Self.ipFromAddr(addr)
 
         // Consult the remembered allow/deny policy when this IP's
         // StableNodeID is already cached (a re-HELLO from a peer we've
@@ -2685,7 +2793,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `registerOrRefresh`'s add path and `approveViewer` so the
     /// build → insert → notify → resolve-if-uncached shape lives once.
     private func publishAddedViewer(addr: String) {
-        let ip = ipFromAddr(addr)
+        let ip = Self.ipFromAddr(addr)
         let cachedName = peerNameCache.withLock { $0[ip] }
         let cachedStableID = peerStableIDCache.withLock { $0[ip] }
         let info = ViewerInfo(
@@ -2762,7 +2870,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Viewer denied \(addr)")
         sendDenialDatagrams(to: addr)
         if isGuestAddr(addr) {
-            onGuestViewerDenied?(ipFromAddr(addr))
+            onGuestViewerDenied?(Self.ipFromAddr(addr))
         }
     }
 
@@ -2886,8 +2994,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         viewerCaps.withLock { _ = $0.removeValue(forKey: addr) }
         retransmitBuffer.removeViewer(addr: addr)
         fecGatedAddrs.withLock { _ = $0.remove(addr) }
-        closeAnnotationChannels(forIP: ipFromAddr(addr))
-        revokeControlIfHeld(byIP: ipFromAddr(addr), reason: reason)
+        closeAnnotationChannels(forIP: Self.ipFromAddr(addr))
+        revokeControlIfHeld(byIP: Self.ipFromAddr(addr), reason: reason)
         notifyViewersChanged()
         logger.log("Viewer expelled (\(reason)) \(addr)")
         sendDenialDatagrams(to: addr)
@@ -2895,7 +3003,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // tunnel too. A one-time disconnect is not — the guest may knock
         // again through the approval gate.
         if reason == "remembered deny", isGuestAddr(addr) {
-            onGuestViewerDenied?(ipFromAddr(addr))
+            onGuestViewerDenied?(Self.ipFromAddr(addr))
         }
     }
 
@@ -2960,7 +3068,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // A viewer that BYE'd/left surrenders any control grant. The TCP
             // close usually beats this via `revokeControlIfHeld(byConnection:)`;
             // this covers a UDP BYE that outruns the TCP FIN.
-            revokeControlIfHeld(byIP: ipFromAddr(addr), reason: "viewer disconnected")
+            revokeControlIfHeld(byIP: Self.ipFromAddr(addr), reason: "viewer disconnected")
             logger.log("Viewer disconnected \(addr)")
         }
     }
@@ -2986,17 +3094,40 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         cb(snapshot)
     }
 
-    /// Strip the trailing `:port` from a UDP source address. Splits on the
-    /// last `:` so IPv6 literals like `[fd7a::1]:54321` stay intact (the
-    /// brackets get included in the IP part — fine, the netmap match
-    /// handles both forms via prefix comparison).
-    private func ipFromAddr(_ addr: String) -> String {
-        guard let lastColon = addr.lastIndex(of: ":") else { return addr }
-        var ip = String(addr[..<lastColon])
-        if ip.hasPrefix("["), ip.hasSuffix("]") {
-            ip = String(ip.dropFirst().dropLast())
+    /// Reduce a peer address to the bare IP the admission gates compare on.
+    ///
+    /// Two producers feed this and they disagree about format, which is the
+    /// whole reason it is a named function rather than a `split`. A viewer's
+    /// UDP source arrives as `ip:port` — that is the `viewers` dictionary key.
+    /// A TCP control-channel peer address comes back through
+    /// `tailscale_getremoteaddr`, whose Go side runs it through `extractIP`:
+    /// that strips the port and, for IPv6, **keeps the brackets**. So one peer
+    /// is `[fd7a::1]:33509` on the UDP path and `[fd7a::1]` on the TCP one, and
+    /// `isAdmittedViewerIP` compares with `==`, so both must reduce identically
+    /// or an admitted viewer's control requests and annotations are all dropped
+    /// as "non-admitted".
+    ///
+    /// Brackets are therefore matched FIRST, and the port is only stripped when
+    /// there is exactly one colon. Splitting on the last colon — which this did
+    /// — eats the final hextet of a portless IPv6 literal and leaves the `[`
+    /// behind, since the unwrap guard then no longer sees a trailing `]`. IPv4
+    /// survived that (`extractIP` emits it bare, so the early return fired) and
+    /// tailnets hand out `100.64.0.0/10`, which is why it held up in everyday
+    /// use and failed only where addressing is IPv6-only: the guest tunnel, and
+    /// tailnets running without IPv4.
+    public static func ipFromAddr(_ addr: String) -> String {
+        // Bracketed IPv6, with or without a `:port`. The colons before `]`
+        // belong to the address, so stop there rather than scanning for a port.
+        if addr.hasPrefix("["), let close = addr.firstIndex(of: "]") {
+            return String(addr[addr.index(after: addr.startIndex)..<close])
         }
-        return ip
+        // IPv4 or a bare host: one colon is a port separator. Several mean an
+        // unbracketed IPv6 literal, which carries no port to strip — and
+        // chopping at its last colon is exactly the bug above.
+        guard let lastColon = addr.lastIndex(of: ":"),
+            addr.firstIndex(of: ":") == lastColon
+        else { return addr }
+        return String(addr[..<lastColon])
     }
 
     // MARK: - Identity resolution
@@ -3229,7 +3360,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             for entry in dropped {
                 let idleMs = Int(entry.idleNs / 1_000_000)
                 // An idled-out viewer surrenders any control grant.
-                revokeControlIfHeld(byIP: ipFromAddr(entry.addr), reason: "viewer idle timeout")
+                revokeControlIfHeld(byIP: Self.ipFromAddr(entry.addr), reason: "viewer idle timeout")
                 logger.log("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
             }
 
@@ -3928,6 +4059,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // function touches the capture backend.
         lifecycle.withLock { $0.isRunning = false }
 
+        // Drop anything still queued for annotation fan-out: every viewer is
+        // about to get SERVER_BYE, so there is no canvas left to correct.
+        annotationOutboxContinuation.finish()
+        annotationDrain.withLock { $0?.cancel() }
+
         // End any remote-control session. Viewers are torn down by SERVER_BYE
         // below, so there's no need to send a per-connection revoke — just
         // clear the grant/request state, drop queued input, and notify the UI.
@@ -4096,6 +4232,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
     deinit {
         lifecycle.withLock { $0.isRunning = false }
+        // Synchronous only. Finishing the stream is what ends the drain loop
+        // for a server that is dropped without a `stop()`; the loop holds
+        // `self` weakly, which is what lets this run at all.
+        annotationOutboxContinuation.finish()
     }
 
     // MARK: - Test-only entrypoints

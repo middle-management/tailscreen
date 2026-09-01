@@ -24,12 +24,27 @@ import TailscreenViewerCore
 /// double-click toggles smart-magnify — all geometry via the CI-tested pure
 /// `ViewerZoomMath`. Scroll capture goes through the `CGtkVideo` C shim
 /// (`cgtkvideo_attach_scroll`) because swift-cross-ui exposes no
-/// `EventControllerScroll` binding; scroll only zooms/pans the local view and is
-/// never forwarded as remote input.
+/// `EventControllerScroll` binding. That single shim serves BOTH uses: while a
+/// grant is live the wheel scrolls the sharer's content and Ctrl+wheel still
+/// zooms locally (`ViewerInputMapping.scrollDisposition` owns the split and the
+/// GDK→wire sign conversion), and with no grant every scroll is local. There is
+/// only one scroll callback to attach, so the two cannot be wired
+/// independently — which is why the decision lives in one pure function rather
+/// than in two controllers racing for the same event.
 public struct GtkVideoView: View {
     let store: FrameStore
     let selfTest: Bool
     let onInputEvent: ((InputEvent) -> Void)?
+    /// Whether captured input is currently being forwarded to the sharer —
+    /// i.e. a grant is live and no annotation tool is armed. Read at event
+    /// time (never cached) from the GTK main thread, the same thread the
+    /// state machine writes it on.
+    ///
+    /// The scroll path needs this and the other input paths do not, because
+    /// scroll is the one event with a meaningful LOCAL behaviour to fall back
+    /// to: `emit` can gate itself, but it cannot tell the wheel handler
+    /// whether to zoom instead.
+    let forwardsInput: (() -> Bool)?
     let annotations: AnnotationStore?
     /// Height of sibling chrome (e.g. the annotation toolbar row) stacked above
     /// this view. Added to the window size requested on the first frame so the
@@ -40,12 +55,14 @@ public struct GtkVideoView: View {
         store: FrameStore,
         selfTest: Bool = false,
         onInputEvent: ((InputEvent) -> Void)? = nil,
+        forwardsInput: (() -> Bool)? = nil,
         annotations: AnnotationStore? = nil,
         chromeHeight: Int = 0
     ) {
         self.store = store
         self.selfTest = selfTest
         self.onInputEvent = onInputEvent
+        self.forwardsInput = forwardsInput
         self.annotations = annotations
         self.chromeHeight = chromeHeight
     }
@@ -179,9 +196,13 @@ public struct GtkVideoView: View {
             Self.attachInputCapture(to: area, store: store, emit: onInputEvent)
         }
         // Zoom/pan is a view-transform concern independent of remote-control input
-        // capture, and must be a no-op in the headless render self-test.
+        // capture, and must be a no-op in the headless render self-test. It owns
+        // the only scroll callback, so it also carries the remote-scroll half —
+        // see `attachZoomPan`.
         if !selfTest {
-            Self.attachZoomPan(to: area, store: store, zoom: zoom)
+            Self.attachZoomPan(
+                to: area, store: store, zoom: zoom, emit: onInputEvent,
+                forwardsInput: self.forwardsInput)
         }
         if let annotations, !selfTest {
             Self.attachAnnotationDrawing(to: area, store: store, annotations: annotations)
@@ -293,14 +314,7 @@ public struct GtkVideoView: View {
         // Normalize a widget-space pointer position to [0,1] over the video
         // content rect. Reads the live widget + frame sizes at event time.
         func normalize(_ px: Double, _ py: Double) -> (x: Double, y: Double) {
-            var w: Int32 = 0
-            var h: Int32 = 0
-            cgtkvideo_widget_size(widget, &w, &h)
-            let frame = store.current()
-            return ViewerInputMapping.normalizePointer(
-                px: px, py: py,
-                widgetW: Double(w), widgetH: Double(h),
-                videoW: frame?.width ?? 0, videoH: frame?.height ?? 0)
+            Self.normalized(CGPoint(x: px, y: py), widget: widget, store: store)
         }
 
         // Pointer motion.
@@ -402,7 +416,9 @@ public struct GtkVideoView: View {
     private static func attachZoomPan(
         to area: Gtk.GLArea,
         store: FrameStore,
-        zoom: ViewZoom
+        zoom: ViewZoom,
+        emit: ((InputEvent) -> Void)? = nil,
+        forwardsInput: (() -> Bool)? = nil
     ) {
         let widget = UnsafeMutableRawPointer(area.widgetPointer)
 
@@ -437,6 +453,25 @@ public struct GtkVideoView: View {
         // the context-free C callback can reach them.
         zoom.onScroll = { [weak area] dx, dy, mods in
             guard area != nil else { return }
+            // Remote control takes the wheel while a grant is live: the sharer's
+            // content scrolls, exactly as it would if the user were sitting at
+            // that machine. Ctrl+wheel stays local so zoom is still reachable
+            // while controlling. Decided (and sign-converted) by the pure
+            // mapper; see `ViewerInputMapping.ScrollDisposition`.
+            let disposition = ViewerInputMapping.scrollDisposition(
+                dx: dx, dy: dy, gdkState: UInt(mods),
+                isControlling: forwardsInput?() ?? false)
+            if case .forward(let deltaX, let deltaY, let modifiers) = disposition, let emit {
+                // GDK's scroll signal carries no pointer position, so the
+                // event is anchored at the last motion — the same anchor the
+                // zoom path uses, and the position the user is pointing at.
+                let anchor = zoom.lastPointer ?? CGPoint(x: 0, y: 0)
+                let p = normalized(anchor, widget: widget, store: store)
+                emit(
+                    .scroll(
+                        x: p.x, y: p.y, deltaX: deltaX, deltaY: deltaY, modifiers: modifiers))
+                return
+            }
             guard let fit = fitRect(widget: widget, store: store) else { return }
             if mods & gdkShiftMask != 0 {
                 // Pan: horizontal from dx, vertical from dy. Positive scroll moves
@@ -454,6 +489,25 @@ public struct GtkVideoView: View {
             }
             applyView(zoom, widget: widget, store: store)
         }
+    }
+
+    /// Widget-space point → normalized `[0, 1]` over the video content rect,
+    /// reading the live widget + frame sizes. The same arithmetic
+    /// `attachInputCapture` applies to pointer events, shared so the scroll
+    /// path cannot drift from the click path about where a coordinate is.
+    private static func normalized(
+        _ point: CGPoint,
+        widget: UnsafeMutableRawPointer,
+        store: FrameStore
+    ) -> (x: Double, y: Double) {
+        var w: Int32 = 0
+        var h: Int32 = 0
+        cgtkvideo_widget_size(widget, &w, &h)
+        let frame = store.current()
+        return ViewerInputMapping.normalizePointer(
+            px: Double(point.x), py: Double(point.y),
+            widgetW: Double(w), widgetH: Double(h),
+            videoW: frame?.width ?? 0, videoH: frame?.height ?? 0)
     }
 
     /// The aspect-fit rect the video occupies inside the live widget, in

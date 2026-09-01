@@ -21,7 +21,7 @@ enum RemoteControlMapping {
     /// decoder two layers away already rejects non-conforming floats (see
     /// `decodeInputEvent`), but the clamp must not depend on a decoder
     /// default it can't see. Same policy as `RemoteControlInjector`'s
-    /// `clampToInt32`.
+    /// `MacPointerMapping.ScrollLineAccumulator`.
     static func globalPoint(nx: Double, ny: Double, captureRect: CGRect) -> CGPoint {
         let fx = nx.isFinite ? nx : 0
         let fy = ny.isFinite ? ny : 0

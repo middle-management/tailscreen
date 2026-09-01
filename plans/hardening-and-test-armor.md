@@ -208,8 +208,9 @@ Existing conventions to reuse: `SeededRNG` (SplitMix64, seedable —
    (`Sources/ScreenShareProtocol.swift:220-225`), whose default
    `nonConformingFloatDecodingStrategy = .throw` rejects `NaN`/`Infinity` tokens and
    out-of-range literals like `1e999`. That's a load-bearing default with zero tests pinning
-   it. (The scroll path already defends itself: `clampToInt32`'s `isFinite` guard,
-   `Sources/RemoteControlInjector.swift:280-288`. Mouse coordinates have no such guard.)
+   it. (The scroll path already defends itself: the `isFinite` guard inside
+   `MacPointerMapping.ScrollLineAccumulator.step` — formerly `clampToInt32` in the
+   injector. Mouse coordinates have no such guard.)
 5. **Panic hotkey registered process-wide regardless of role.** `revokeControlHotkey` (⌃⌥.) is
    created unconditionally in `AppState.init` (`Sources/AppState.swift:523-529`, beside the mic
    hotkey :511-518) and lives for the process lifetime; `GlobalHotkey` registers in `init` and
@@ -387,7 +388,7 @@ if the wrap tests surface a real defect, fixing it is in scope.
   still parses.
 - Defense-in-depth: make `RemoteControlMapping.globalPoint`
   (`Sources/RemoteControlMapping.swift:18-19`) NaN-safe — non-finite input maps as 0 (the same
-  policy as `clampToInt32`, `Sources/RemoteControlInjector.swift:280-288`) — so the clamp no
+  policy as `MacPointerMapping.ScrollLineAccumulator`) — so the clamp no
   longer depends on a decoder default two layers away. Pin in `RemoteControlMappingTests`.
 - A comment on `decodeInputEvent` naming the invariant, so nobody "improves" the decoder with
   `.convertFromString` without tripping over the tests.

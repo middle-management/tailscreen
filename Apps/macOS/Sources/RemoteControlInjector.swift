@@ -47,6 +47,11 @@ final class RemoteControlInjector: @unchecked Sendable {
     /// Last global point we posted a mouse event at — where a synthesized
     /// button-up lands on revoke. Queue-confined.
     private var lastPoint: CGPoint = .zero
+    /// Sub-line scroll remainder. Queue-confined like the button state, and
+    /// cleared on revoke so one controller's half-line never rides into the
+    /// next one's first scroll. See ``MacPointerMapping`` for why a plain
+    /// per-event round would drop most of a trackpad gesture on the floor.
+    private var scrollAccumulator = MacPointerMapping.ScrollLineAccumulator()
 
     /// Translate the wire's neutral ``KeyModifiers`` into `CGEventFlags` for
     /// injection. Constructive (only the five known bits produce flags, and
@@ -75,7 +80,11 @@ final class RemoteControlInjector: @unchecked Sendable {
         case mouseUp(Side, flags: UInt64)
         case mouseMoved
         case drag(Side)
-        case scroll(flags: UInt64)
+        /// `wheelY`/`wheelX` are the accumulated WHOLE-LINE counts actually
+        /// handed to `CGEvent` — not the wire deltas — so a test can pin the
+        /// sub-line accumulation (`MacPointerMapping.ScrollLineAccumulator`)
+        /// rather than only the flags.
+        case scroll(wheelY: Int32, wheelX: Int32, flags: UInt64)
         /// `keyCode` is the translated **mac virtual keycode** (post
         /// HID-usage reverse-mapping); `flags` the translated
         /// `CGEventFlags` raw value.
@@ -178,6 +187,7 @@ final class RemoteControlInjector: @unchecked Sendable {
     /// Queue-confined: post a button-up for any button still held, so a revoke
     /// mid-drag doesn't strand a pressed button on the sharer's machine.
     private func releaseHeldButtons() {
+        scrollAccumulator.reset()
         if leftDown {
             leftDown = false
             postMouse(type: .leftMouseUp, at: lastPoint, button: .left)
@@ -294,33 +304,42 @@ final class RemoteControlInjector: @unchecked Sendable {
     }
 
     private func postScroll(deltaX: Double, deltaY: Double, modifiers: KeyModifiers) {
-        if let hook = onInjectForTesting {
-            hook(.scroll(flags: Self.eventFlags(modifiers).rawValue))
+        // Wire deltas are viewer-controlled and usually a FRACTION of a line
+        // (a trackpad viewer scales points to lines), so they are banked
+        // rather than rounded per event — rounding drops every sub-line
+        // gesture, which is scrolling that does nothing at all. The
+        // accumulator also absorbs NaN / infinity / out-of-range, so nothing
+        // here can trap on the Int conversion.
+        guard let wheel = scrollAccumulator.take(deltaX: deltaX, deltaY: deltaY) else {
+            // The only place that distinguishes "no scroll arrived" from "a
+            // scroll arrived and moved nothing yet" — the two look identical
+            // on screen, and telling them apart is the whole diagnosis.
+            InputDebugLog.log(
+                String(
+                    format: "sharer scroll wire dx=%.3f dy=%.3f → banked, nothing injected",
+                    deltaX, deltaY))
             return
         }
-        // Wire deltas are viewer-controlled: guard against NaN / infinity /
-        // out-of-range before the Int conversion (which would otherwise trap).
-        let wheel1 = Self.clampToInt32(deltaY)
-        let wheel2 = Self.clampToInt32(deltaX)
+        InputDebugLog.log(
+            String(
+                format: "sharer scroll wire dx=%.3f dy=%.3f → wheel x=%d y=%d",
+                deltaX, deltaY, wheel.wheelX, wheel.wheelY))
+        if let hook = onInjectForTesting {
+            hook(
+                .scroll(
+                    wheelY: wheel.wheelY, wheelX: wheel.wheelX,
+                    flags: Self.eventFlags(modifiers).rawValue))
+            return
+        }
         guard
             let event = CGEvent(
-                scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: wheel1, wheel2: wheel2,
-                wheel3: 0)
+                scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: wheel.wheelY,
+                wheel2: wheel.wheelX, wheel3: 0)
         else { return }
         // Shift-scroll (horizontal-scroll convention) and friends are
         // interpreted app-side from the event flags.
         event.flags = Self.eventFlags(modifiers)
         event.post(tap: .cghidEventTap)
-    }
-
-    /// Safe Double → Int32 for wire-supplied scroll deltas: NaN/±∞ → 0, and
-    /// out-of-range values saturate rather than trapping.
-    private static func clampToInt32(_ value: Double) -> Int32 {
-        guard value.isFinite else { return 0 }
-        let rounded = value.rounded()
-        if rounded >= Double(Int32.max) { return Int32.max }
-        if rounded <= Double(Int32.min) { return Int32.min }
-        return Int32(rounded)
     }
 
     private func postKey(hidUsage: UInt16, modifiers: KeyModifiers, keyDown: Bool) {

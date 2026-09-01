@@ -117,6 +117,58 @@ final class ViewerInputMappingTests: XCTestCase {
         XCTAssertEqual(usages.count, Set(usages).count, "duplicate HID usage in evdev→HID table")
     }
 
+    // MARK: scrollDisposition
+
+    /// The headline regression: this viewer used to consume every scroll
+    /// locally, so a controlling viewer's wheel zoomed their own window and
+    /// the sharer's content never moved.
+    func testScrollForwardsToTheSharerWhileControlling() {
+        let d = ViewerInputMapping.scrollDisposition(
+            dx: 0, dy: 1, gdkState: 0, isControlling: true)
+        // GDK `dy > 0` is scrolling DOWN; the wire calls that negative.
+        XCTAssertEqual(d, .forward(deltaX: 0, deltaY: -1, modifiers: []))
+    }
+
+    func testHorizontalAxisIsNotFlipped() {
+        // Both conventions call rightward positive, so a sign flip here would
+        // scroll the sharer's document the wrong way.
+        let d = ViewerInputMapping.scrollDisposition(
+            dx: 2, dy: 0, gdkState: 0, isControlling: true)
+        XCTAssertEqual(d, .forward(deltaX: 2, deltaY: 0, modifiers: []))
+    }
+
+    func testScrollStaysLocalWithNoGrant() {
+        XCTAssertEqual(
+            ViewerInputMapping.scrollDisposition(dx: 0, dy: -1, gdkState: 0, isControlling: false),
+            .local)
+    }
+
+    /// Zoom has to stay reachable while controlling, or the split trades one
+    /// missing feature for another.
+    func testControlWheelKeepsZoomingLocallyWhileControlling() {
+        XCTAssertEqual(
+            ViewerInputMapping.scrollDisposition(
+                dx: 0, dy: -1, gdkState: ViewerInputMapping.gdkControlMask, isControlling: true),
+            .local)
+    }
+
+    /// Shift+scroll is the horizontal-scroll convention on the sharer, so it
+    /// forwards (carrying the modifier) rather than panning the local view —
+    /// panning is what you do when you are NOT driving the other machine.
+    func testShiftScrollForwardsWithTheModifier() {
+        let d = ViewerInputMapping.scrollDisposition(
+            dx: 0, dy: 1, gdkState: ViewerInputMapping.gdkShiftMask, isControlling: true)
+        XCTAssertEqual(d, .forward(deltaX: 0, deltaY: -1, modifiers: [.shift]))
+    }
+
+    /// Smooth (touchpad) scrolling reports fractions of a notch, and they must
+    /// survive to the wire — every injector handles sub-line deltas.
+    func testFractionalTouchpadDeltasAreNotRounded() {
+        let d = ViewerInputMapping.scrollDisposition(
+            dx: 0, dy: 0.25, gdkState: 0, isControlling: true)
+        XCTAssertEqual(d, .forward(deltaX: 0, deltaY: -0.25, modifiers: []))
+    }
+
     // MARK: isModifierUsage
 
     func testIsModifierUsage() {

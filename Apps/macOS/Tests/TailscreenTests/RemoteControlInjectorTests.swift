@@ -179,8 +179,56 @@ final class RemoteControlInjectorTests: XCTestCase {
             [
                 .mouseDown(.left, flags: CGEventFlags.maskCommand.rawValue),
                 .mouseUp(.left, flags: CGEventFlags.maskCommand.rawValue),
-                .scroll(flags: CGEventFlags.maskShift.rawValue)
+                .scroll(wheelY: -2, wheelX: 0, flags: CGEventFlags.maskShift.rawValue)
             ])
+    }
+
+    /// A trackpad viewer sends a stream of sub-line deltas (it scales points to
+    /// lines), and rounding each one on its own injected nothing at all — the
+    /// "scrolling does nothing on the sharer" bug. The remainder is banked
+    /// instead, so the fractions add up to real scrolls.
+    func testSubLineScrollDeltasAccumulateInsteadOfVanishing() {
+        let (injector, recorder) = makeInjector()
+        injector.activate(selection: displaySelection)
+        // Four 0.3-line events: the first three bank, the fourth crosses a
+        // whole line and injects it.
+        for _ in 0..<4 {
+            injector.apply(.scroll(x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.3, modifiers: []))
+        }
+        injector.drainSyncForTesting()
+        XCTAssertEqual(recorder.all, [.scroll(wheelY: 1, wheelX: 0, flags: 0)])
+    }
+
+    /// The remainder belongs to the gesture that produced it, not to whoever
+    /// holds the grant next.
+    func testRevokeClearsTheScrollRemainder() {
+        let (injector, recorder) = makeInjector()
+        injector.activate(selection: displaySelection)
+        injector.apply(.scroll(x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.9, modifiers: []))
+        injector.drainSyncForTesting()
+        XCTAssertEqual(recorder.all, [], "0.9 of a line is not yet a line")
+
+        injector.deactivate()
+        injector.drainSyncForTesting()
+        injector.activate(selection: displaySelection)
+        // Without the reset the banked 0.9 would make this 0.2 scroll a full
+        // line the new controller never asked for.
+        injector.apply(.scroll(x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.2, modifiers: []))
+        injector.drainSyncForTesting()
+        XCTAssertEqual(recorder.all, [])
+    }
+
+    /// A granted-but-hostile viewer's absurd delta is one clamped scroll, not a
+    /// clamped scroll on every event from there on.
+    func testHostileScrollDeltaIsClampedAndNotBanked() {
+        let (injector, recorder) = makeInjector()
+        injector.activate(selection: displaySelection)
+        injector.apply(.scroll(x: 0.5, y: 0.5, deltaX: 0, deltaY: 1e9, modifiers: []))
+        injector.apply(.scroll(x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.1, modifiers: []))
+        injector.drainSyncForTesting()
+        XCTAssertEqual(
+            recorder.all,
+            [.scroll(wheelY: MacPointerMapping.maxLinesPerEvent, wheelX: 0, flags: 0)])
     }
 
     func testMiddleButtonDragAndRevokeRelease() {
