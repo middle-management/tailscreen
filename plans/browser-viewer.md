@@ -115,27 +115,29 @@ with "sharer doesn't support stream viewing"; a legacy viewer never sends
 ### Sender-side drop replaces network loss
 
 On UDP the network drops packets; on a stream nobody does, so the sharer
-must be allowed to, or a slow viewer's queue grows without bound. Two
-existing mechanisms make this cheap and legal:
+must be allowed to, or a slow viewer's queue grows without bound.
+Implementation (and the spec's TS-STM-006) turned out to need **nothing
+new**: the shipped fan-out already is the backpressure machinery.
 
-- Every viewer already has its **own sequence space** — the fan-out rewrites
-  seq+SSRC per viewer (`rewriteRTPHeader`, `RTPFanOut.swift`). A sharer that
-  skips content for a stream viewer renumbers contiguously, so the viewer
-  never sees a sequence gap and needs no gap logic at all: the reorder
-  buffer degrades to pass-through.
-- Drops happen only at **access-unit boundaries**, and once a non-keyframe
-  AU is dropped the viewer stays keyframe-only until the next keyframe —
-  which is exactly the semantics of the existing per-viewer fairness
-  throttle (`fairnessDecision`, `CongestionControl.swift`). The stream
-  profile's backpressure response *is* that throttle, triggered by a new
-  signal.
+- Each viewer has its own **send chain** with a queued-frames cap
+  (`videoSendTails` / `maxQueuedVideoFramesPerViewer`): a stream viewer's
+  blocking TCP write backs up only its own chain, and frames past the cap
+  are shed whole. A shed keeps its reserved seq range, so the viewer sees a
+  gap and PLIs — which on this transport can only mean sender-side
+  omission, and the keyframe request recovers it (the legacy PLI-only path
+  every sharer serves).
+- Sustained pressure then rides the existing fairness loop: the PLIs mark
+  the viewer `.isolated`, and the keyframe-only throttle
+  (`shouldSendFrame`) skips inter frames **contiguously** — the throttle
+  deliberately doesn't reserve seqs for skipped frames, so the slideshow
+  is gap-free. Spec'd as SHOULD-contiguous with the gap-shed explicitly
+  permitted (TS-STM-006).
 
-The new signal is **send-queue depth**: the sharer's congestion input for a
-stream viewer is its outbox (bytes queued / drain rate) rather than RR loss.
-That is one new pure decision function beside `nextCongestionDecision`,
-feeding the existing arms (bitrate ±, fps ladder, keyframe-only throttle),
-with its own decision-suite tests. Informative spec guidance says as much;
-the normative surface stays small.
+So the "new backpressure decision function" this plan originally called
+for dissolved on contact with the code: TCP write blocking → chain backlog
+→ shed → PLI → fairness throttle is the same response path a slow UDP
+viewer gets today, signal included. What stream mode adds is only the
+route (datagrams framed onto the connection) and the caps mask.
 
 ### Spec, registry, vectors
 
