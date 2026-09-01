@@ -254,7 +254,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             return MediaSockets(
                 primary: lc.packetListener,
                 guest: lc.guestPacketListener,
-                isGuestAddr: { [weak self] addr in self?.isGuestAddr(addr) ?? false })
+                isGuestAddr: { [weak self] addr in self?.isGuestAddr(addr) ?? false },
+                sendViaStream: { [weak self] data, addr in
+                    await self?.sendStreamDatagram(data, to: addr) ?? false
+                })
         }
     }
     private var helperCapture: (any CaptureEncoding)? { lifecycle.withLock { $0.helperCapture } }
@@ -565,6 +568,24 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     private func isGuestAddr(_ addr: String) -> Bool {
         guestAddrs.withLock { $0.contains(addr) }
     }
+
+    /// One stream (reliable-transport, spec §2.2) viewer's send route: the
+    /// framed TCP connection its HELLO arrived on IS its media transport
+    /// (TS-STM-002), so every datagram the send sites address to its
+    /// synthetic addr is wrapped in a `.mediaDatagram` frame on this
+    /// connection instead of hitting a UDP socket.
+    private struct StreamRoute {
+        let listener: TailscreenControlListener
+        let connectionID: UUID
+    }
+
+    /// Synthetic viewer addr (`Self.streamViewerAddr`) → its framed route.
+    /// Populated on the first `.mediaDatagram` frame of a connection,
+    /// cleared when that connection closes (TS-STM-004: close is BYE) and
+    /// by `stop()`.
+    private let streamRoutes = Mutex<[String: StreamRoute]>([:])
+    /// Reverse index for the close path: connection UUID → synthetic addr.
+    private let streamAddrByConnection = Mutex<[UUID: String]>([:])
 
     /// Fired (with the guest's tunnel IP, no port) when a guest viewer is
     /// denied or expelled by remembered-deny — the moments the rejection
@@ -1886,8 +1907,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             self.removeControlRequest(connectionID: connectionID)
             self.revokeControlIfHeld(byConnection: connectionID, reason: "viewer released")
         }
+        listener.onMediaDatagram = { [weak self, weak listener] datagram, connectionID, peerAddress in
+            guard let self, let listener else { return }
+            self.handleStreamDatagram(
+                datagram, connectionID: connectionID, peerAddress: peerAddress, listener: listener)
+        }
         listener.onConnectionClosed = { [weak self] connectionID in
             guard let self else { return }
+            // A stream (reliable-transport) viewer's connection closing IS
+            // its BYE (TS-STM-004): drop the route first so no send site
+            // re-routes to a dead connection, then retire the viewer like
+            // any BYE would.
+            if let streamAddr = self.streamAddrByConnection.withLock({ $0.removeValue(forKey: connectionID) }) {
+                self.streamRoutes.withLock { _ = $0.removeValue(forKey: streamAddr) }
+                self.removeViewer(addr: streamAddr)
+                self.removePendingViewer(addr: streamAddr)
+            }
             self.annotationConnectionIP.withLock { _ = $0.removeValue(forKey: connectionID) }
             // A closed connection can't hold a grant or a pending request.
             self.removeControlRequest(connectionID: connectionID)
@@ -1924,7 +1959,60 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             channel.onControlRequest = nil
             channel.onInputEvent = nil
             channel.onControlReleased = nil
+            channel.onMediaDatagram = nil
         }
+    }
+
+    /// Inbound half of the stream (reliable-transport, spec §2.2) profile:
+    /// one `.mediaDatagram` frame's payload, processed exactly as the UDP
+    /// receive loop would process a datagram (TS-STM-001). The first frame
+    /// of a connection mints the viewer's synthetic addr and installs its
+    /// send route, so the HELLO's answer — and everything after it — rides
+    /// the connection it arrived on (TS-STM-002).
+    private func handleStreamDatagram(
+        _ datagram: Data, connectionID: UUID, peerAddress: String?, listener: TailscreenControlListener
+    ) {
+        // No share running: drop. The electing viewer's HELLO goes
+        // unanswered and it gives up on its retry budget (TS-STM-007) —
+        // the same silence a UDP HELLO meets when nothing listens.
+        guard isRunning else { return }
+        let peerIP = peerAddress.map { Self.ipFromAddr($0) }
+        let addr = streamAddrByConnection.withLock { state -> String in
+            if let existing = state[connectionID] { return existing }
+            let minted = Self.streamViewerAddr(peerIP: peerIP, connectionID: connectionID)
+            state[connectionID] = minted
+            return minted
+        }
+        streamRoutes.withLock {
+            $0[addr] = StreamRoute(listener: listener, connectionID: connectionID)
+        }
+        // Guest classification mirrors the guest UDP receive loop: an addr
+        // is a guest iff its datagrams arrive through the guest tunnel —
+        // here, on the guest control listener. Recorded BEFORE
+        // handleIncoming so the admission gate sees the guest class
+        // (mandatory per-join approval) on the very first HELLO.
+        let isGuestChannel = lifecycle.withLock { $0.guestControlListener === listener }
+        if isGuestChannel {
+            guestAddrs.withLock { _ = $0.insert(addr) }
+        }
+        // Register the connection's IP so `expelViewer`'s
+        // `closeAnnotationChannels(forIP:)` severs the media connection
+        // along with everything else — for a stream viewer they are the
+        // same connection.
+        if let peerIP {
+            annotationConnectionIP.withLock { $0[connectionID] = peerIP }
+        }
+        handleIncoming(data: datagram, from: addr, transport: .stream)
+    }
+
+    /// Outbound half: `MediaSockets.send` calls this first for every
+    /// datagram. True means addr is a stream viewer and the datagram was
+    /// handed to its framed connection; false lets the send fall through
+    /// to the UDP listeners.
+    private func sendStreamDatagram(_ data: Data, to addr: String) async -> Bool {
+        guard let route = streamRoutes.withLock({ $0[addr] }) else { return false }
+        await route.listener.send(.mediaDatagram(data), to: route.connectionID)
+        return true
     }
 
     /// Broadcast a framed `AnnotationOp` to every connection on the shared
@@ -2135,7 +2223,16 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    private func handleIncoming(data: Data, from addr: String) {
+    /// How a datagram reached the server: its own UDP socket, or framed
+    /// over a stream viewer's TCP connection (spec §2.2). Everything
+    /// downstream is transport-agnostic; the one divergence is the HELLO
+    /// caps mask below (TS-STM-005).
+    enum DatagramTransport {
+        case udp
+        case stream
+    }
+
+    private func handleIncoming(data: Data, from addr: String, transport: DatagramTransport = .udp) {
         guard !data.isEmpty else { return }
         if !ScreenShareControlMessage.looksLikeControl(data) {
             // RTP from a viewer is only allowed for audio (PT=98). Anything
@@ -2162,7 +2259,16 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // until `approveViewer` or `denyViewer` resolves them.
             // Record the viewer's advertised capabilities (extended HELLO);
             // a legacy 1-byte HELLO decodes to `[]` and stays on the PLI path.
-            let caps = ScreenShareControlMessage.decodeHelloCaps(data)
+            var caps = ScreenShareControlMessage.decodeHelloCaps(data)
+            if transport == .stream {
+                // TS-STM-005: NACK retransmission and FEC parity are dead
+                // weight on a transport that never loses packets, and a
+                // spec-conforming stream viewer never advertises them.
+                // Masking here makes that true for a NON-conforming one
+                // too — the retransmit ring and FEC gate key on these caps,
+                // so nothing downstream needs to know about transports.
+                caps = Self.streamHelloCaps(caps)
+            }
             viewerCaps.withLock { $0[addr] = caps }
             registerOrRefresh(addr: addr, isNew: true)
             if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
@@ -4167,6 +4273,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         await socketsToClose.0?.close()
         await socketsToClose.1?.close()
         guestAddrs.withLock { $0.removeAll() }
+        // Stream (reliable-transport) viewers already got their SERVER_BYE
+        // through the routes above; drop the routes so any straggling send
+        // no-ops. The connections themselves belong to the host-owned
+        // control listener and may outlive the share (ask-to-share rides
+        // them); a fresh HELLO frame on one simply re-runs admission on the
+        // next share.
+        streamRoutes.withLock { $0.removeAll() }
+        streamAddrByConnection.withLock { $0.removeAll() }
         logger.log("Server stop: packet listener closed")
 
         let receiveErrors = receiveLoopErrorTotal.withLock { count -> Int in
