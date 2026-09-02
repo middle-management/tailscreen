@@ -960,6 +960,19 @@ jobs:
         with:
           go: setup-go
           libtailscale: host
+      # Bootstrap skips setup-go whenever libtailscale.a comes from the cache,
+      # on the premise that nothing after it needs a Go toolchain — true for
+      # every other job, false here: `make test-web-spike` builds the wasm and
+      # localderp with Go. Without this step the leg is green exactly once per
+      # submodule bump (the cache miss) and `go: not found` on every run after.
+      # A no-op when bootstrap already provisioned it; the same shape as
+      # pages.yml's viewer build.
+      - name: Set up Go for the wasm build
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
+          cache: true
+          cache-dependency-path: web/viewer/go.sum
       - name: Install Playwright + Google Chrome
         # Pinned to the version the harness was written against; the global
         # install is what `NODE_PATH=$(npm root -g)` in the Makefile resolves.
