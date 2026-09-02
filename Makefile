@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer test-web-spike icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -127,7 +127,11 @@ web-viewer: ## Build the browser viewer's wasm (web/viewer/dist) and print its s
 		&& ls -l dist/viewer.wasm dist/viewer.wasm.gz dist/viewer.wasm.br 2>/dev/null
 	python3 web/viewer/tools/export_strings.py
 
+web-viewer-bundle: web-viewer ## One self-contained HTML file of the browser viewer (web/viewer/dist/tailscreen-viewer.html)
+	python3 web/viewer/tools/bundle.py
+
 test-web-spike: web-viewer ## Browser↔sharer transport spike: localderp + Xvfb + sharer --link + Chromium (Linux)
+	node web/viewer/e2e/wire.test.mjs
 	cd web/viewer && go build -o dist/localderp ./cmd/localderp
 	cd Packages/TailscreenLinuxBackends && PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit swift build --product tailscreen-sharer-linux
 	NODE_PATH="$$(npm root -g)" node web/viewer/e2e/spike.mjs

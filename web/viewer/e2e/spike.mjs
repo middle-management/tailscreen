@@ -31,7 +31,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE ?? "playwright");
+const pw = require(process.env.PLAYWRIGHT_MODULE ?? "playwright");
+// PW_BROWSER=firefox runs the same assertions on Firefox (Playwright's build
+// decodes H.264 via WebCodecs too); default is Chromium-family, Chrome first.
+const engine = process.env.PW_BROWSER ?? "chromium";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const viewerDir = path.resolve(here, "..");
@@ -134,7 +137,7 @@ async function main() {
   const sharer = run(
     "sharer",
     sharerBin,
-    ["--link", "--link-relay-map-url", derpMapURL, "--approve-guests", "--fps", fps, "--display", display],
+    ["--link", "--link-relay-map-url", derpMapURL, "--approve-guests", "--allow-control", "--grant-control", "--fps", fps, "--display", display],
     { env: { ...process.env, DISPLAY: display } },
   );
   const tokenLine = await waitForLine(sharer, /E2E_MARKER shareLink token=(tc\S+)/, 90_000, "sharer");
@@ -150,8 +153,16 @@ async function main() {
   // via the node's InsecureForTests flag). --no-proxy-server: a CI or sandbox
   // container often exports HTTP(S)_PROXY, which Chromium would honour for the
   // wss:// relay dial too; nothing here leaves the loopback interface.
-  log(`launching ${channel ?? "playwright chromium"}`);
-  const browser = await chromium.launch({ headless: true, channel, args: ["--no-proxy-server"] });
+  log(`launching ${engine === "chromium" ? channel ?? "playwright chromium" : engine}`);
+  // Nothing here leaves the loopback interface: strip any proxy the
+  // environment exports so no engine routes the wss:// relay dial through it.
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (/^(https?|all|no)_proxy$/i.test(k)) delete env[k];
+  const browser = await pw[engine].launch({
+    headless: true,
+    env,
+    ...(engine === "chromium" ? { channel, args: ["--no-proxy-server"] } : {}),
+  });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
   page.on("console", (m) => log("page:", m.text()));
@@ -203,6 +214,39 @@ async function main() {
         `${s.rtpVideo} video datagrams, ${s.videoAUs} access units assembled, state ${s.state}`);
   }
   if (s.lastError) throw new Error(s.lastError);
+
+  // Remote control, end to end: the page asks, the sharer (auto-)grants, a
+  // real pointer move over the stage becomes an XTEST move on the sharer's
+  // display — read back with xdotool. Needs the sharer to have advertised
+  // remoteControl (XTEST present on the Xvfb; it is) and xdotool installed.
+  let xdotool = true;
+  try {
+    execFileSync("xdotool", ["--version"], { stdio: "ignore" });
+  } catch {
+    xdotool = false;
+  }
+  const offersControl = await page.evaluate(() => !document.getElementById("btn-control").hidden);
+  if (offersControl && xdotool) {
+    await page.click("#btn-control");
+    await page.waitForFunction(() => window.__viewer.controlling === true, null, { timeout: 30_000 });
+    const box = await page.locator("#stage").boundingBox();
+    const fx = 0.25, fy = 0.25;
+    await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy);
+    await new Promise((r) => setTimeout(r, 800));
+    const out = execFileSync("xdotool", ["getmouselocation", "--shell"], { env: { ...process.env, DISPLAY: display } }).toString();
+    const px = Number(/X=(\d+)/.exec(out)?.[1]), py = Number(/Y=(\d+)/.exec(out)?.[1]);
+    const ex = Math.round(1280 * fx), ey = Math.round(720 * fy);
+    log(`remote control: pointer moved to (${px}, ${py}) on the sharer's display, expected (${ex}, ${ey})`);
+    if (Math.abs(px - ex) > 4 || Math.abs(py - ey) > 4) throw new Error("remote control: pointer did not land where the page pointed");
+    await page.click("#btn-control"); // release (TS-RMT-006)
+    await page.waitForFunction(() => window.__viewer.controlling === false, null, { timeout: 10_000 });
+  } else {
+    log(`NOTE: remote-control leg skipped (offersControl=${offersControl}, xdotool=${xdotool})`);
+  }
+  // Annotations: the headless sharer renders nothing, so it must not have
+  // advertised the capability, and the page must not offer the tools.
+  const offersDrawing = await page.evaluate(() => !document.getElementById("btn-draw").hidden);
+  if (offersDrawing) throw new Error("drawing tools offered by a sharer that advertised no annotations capability");
 
   const sizes = ["viewer.wasm", "viewer.wasm.gz", "viewer.wasm.br"]
     .map((f) => path.join(viewerDir, "dist", f))

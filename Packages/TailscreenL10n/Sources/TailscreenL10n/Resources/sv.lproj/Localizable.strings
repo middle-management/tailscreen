@@ -632,6 +632,8 @@
 "Copy Link" = "Kopiera länk";
 "Copies a tailscreen: link that opens the join screen" = "Kopierar en tailscreen:-länk som öppnar anslutningsvyn";
 "Copy Token" = "Kopiera kod";
+"Copy Web Link" = "Kopiera webblänk";
+"Copies an https: link that opens the share in a browser — no app needed" = "Kopierar en https-länk som öppnar delningen i en webbläsare — ingen app behövs";
 "Copies the bare token, for pasting into the join screen" = "Kopierar den råa koden, för att klistra in i anslutningsvyn";
 "New Link" = "Ny länk";
 "Replaces the link — the old one stops working and current guests are dropped" = "Ersätter länken — den gamla slutar fungera och nuvarande gäster kopplas bort";

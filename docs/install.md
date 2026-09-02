@@ -166,6 +166,14 @@ with a certificate that chains to a trusted root (SignPath's free
 open-source code signing — in progress), which is also what unlocks
 `winget install`.
 
+## Browser (viewing only)
+
+There is nothing to install to *watch* a share: open the **web link** a
+sharer gives you (`https://tailscreen.dev/view/#tc…`) in Chrome, Edge or
+Firefox. It is a page that speaks the same protocol as the apps over the
+same guest tunnel — see [Usage]({{ site.baseurl }}{% link usage.md %}) for
+what it can and cannot do. Sharing still needs an app.
+
 ## From source
 
 This section builds the **macOS** app. For Linux, see `Apps/linux` and

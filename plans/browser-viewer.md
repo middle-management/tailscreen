@@ -324,17 +324,76 @@ both, and it is the first thing to check when they are.
 
 ## Phase 4 — chrome and shipping
 
-- Annotations and remote control from the page: framed JSON over the same
-  connection, already in the SDK; the drawing surface is a canvas overlay.
-  Remote control needs nothing new from the sharer (the grant gate is
-  connection-scoped already).
-- Hosting: a static page under the published site (the wasm-on-Pages gzip
-  caveat from the eval applies — serve pre-compressed), plus a downloadable
-  single-file build for air-gapped deployments.
-- `docs/platform-support.md` gains the Browser column **in the same PR** as
-  the page ships; `install.md`/`usage.md` get the link-click flow.
-- Size budget work as measurement dictates: dead-code elimination flags,
-  brotli, lazy instantiation.
+> Status: **done** (this branch). Remote control and drawing from the page,
+> the page hosted on the site, the web form of a share link in all three
+> apps, and the docs — with the browser as a fourth column of the platform
+> matrix, honestly filled.
+
+**Remote control and annotations** turned out to be what the plan said:
+framed JSON on the connection the page already holds. `wire.js` is the pure
+half — the W3C `KeyboardEvent.code` → USB HID usage table (TS-RMT-022),
+the modifier bit field (TS-RMT-023), the §12.2 and §11 JSON builders, and a
+small store that renders received annotations — checked without a browser
+by `e2e/wire.test.mjs` against the spec's own examples. `viewer.js` puts an
+overlay canvas over the stage that serves one mode at a time: **control**
+(pointer moves throttled to the sharer's rate ceiling, buttons, wheel in
+line units, keys — never the modifier keys themselves, TS-RMT-025) or
+**draw** (pen strokes sent as one `add` per stroke, undo of your own,
+clear-all, five colours), and renders whatever `annotation` frames the
+sharer relays. Both are gated the way the apps gate them: on the sharer's
+advertised `remoteControl` and `annotations` bits, hidden rather than
+disabled. Nothing on the sharer changed — the grant gate was already
+connection-scoped, and a stream viewer's connection is exactly the one its
+framed JSON arrives on.
+
+The e2e now drives remote control **end to end**: the sharer runs
+`--allow-control --grant-control` (the new auto-grant twin of
+`--approve-guests`), the page presses Request control, a real pointer move
+over the stage becomes an XTEST move on the Xvfb, and `xdotool` reads the
+pointer back within a few pixels of where the page pointed. It also asserts
+the drawing tools stay hidden — a headless sharer renders nothing, so it
+advertises nothing (TS-ANN-008 is a MUST, and a test sharer that lied to
+get a stroke through would be testing the wrong thing).
+
+**Hosting.** GitHub Pages will not compress `application/wasm`, and 34 MB
+raw is not a first load anyone should pay for 7.8 MB of content. So the
+page fetches the pre-compressed `viewer.wasm.gz` and inflates it with
+`DecompressionStream` (Chrome 80+, Firefox 113+, Safari 16.4+), falling
+back to the raw file only where that API is missing. `pages.yml` builds the
+wasm (setup-go from the fork's `go.mod`, submodule checked out) and
+publishes the page under `/next/view/` always and `/view/` once the latest
+stable release carries it — the same channel rule as the docs. For a
+network with no web access, `make web-viewer-bundle` inlines everything,
+the gzipped wasm as base64, into one HTML file that the same loader
+recognises.
+
+**Links.** `ShareLinkFormat.webLink(token:)` is
+`https://tailscreen.dev/view/#tc…` — the token in the **fragment**, so the
+host of the page never sees it — and `token(fromUserInput:)` now accepts
+that form from any host (the page is static and self-hostable, so the host
+proves nothing; the fragment or a `token` query item is what a join
+needs). macOS gained **Copy Web Link** beside Copy Link; the Linux and
+Windows share card shows the web form as a second selectable line.
+`ShareLinkFormatTests` pin both directions.
+
+**Docs.** `platform-support.md` has the Browser column across every table,
+with the honest ⚠️/❌: viewing only, guests only, relayed always, no
+microphone, no zoom, cancel-while-waiting is closing the tab, Safari
+untested. `usage.md` describes the browser as the third way to join,
+`install.md` says there is nothing to install to watch, the landing page
+mentions it.
+
+**Firefox.** Playwright's Firefox build decodes H.264 and Opus via
+WebCodecs (the probe: every H.264 profile supported, HEVC not, Opus yes),
+so `PW_BROWSER=firefox make test-web-spike` runs the same assertions on a
+second engine. Safari remains unrun: no headless WebKit with WebCodecs
+here. "avc" + avcC is the format WebKit accepts, so it is the first thing
+to check on a Mac.
+
+**Size** stayed where Phase 2 measured it (34 MB raw, 7.8 MB gzip, 5.4 MB
+brotli). The `guest` package's server half rides along because it is one
+package; splitting it behind a build tag would be a fork change for a few
+megabytes of raw size that the gzip transfer mostly hides. Deferred.
 
 ## Non-goals
 
