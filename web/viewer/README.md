@@ -1,6 +1,6 @@
 # Browser viewer — `web/viewer`
 
-The browser viewer's Go module (`plans/browser-viewer.md`, Phases 2–3): a
+The browser viewer's Go module (`plans/browser-viewer.md`, Phases 2–4): a
 browser dials a share by its `tc…` token through the guest tunnel
 (WireGuard over a DERP WebSocket), elects the stream profile, and decodes
 and renders it with WebCodecs — against the real sharer, with no internet.

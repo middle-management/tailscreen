@@ -67,6 +67,8 @@ target (`.DEFAULT_GOAL := help`). The highlights:
 | `make test`         | `swift test` (after rebuilding `libtailscale`).                    |
 | `make test-protocol`| Test the portable TailscreenKit package — no Apple frameworks, no built `libtailscale.a`; also runs on Linux. |
 | `make test-l10n`    | Test the shared string catalog; its suites scan all four source trees for `L("…")` keys the catalog is missing. |
+| `make web-viewer`   | Build the browser viewer's wasm (`web/viewer/dist`); Go only. `make web-viewer-bundle` folds it into one HTML file. |
+| `make test-web-spike` | The browser↔sharer end-to-end (Linux): a local relay, an Xvfb share, the page in Google Chrome. Needs Node, Playwright + Chrome, Xvfb, xdotool. |
 | `make test-tsan`    | `swift test` under ThreadSanitizer — catches data races strict concurrency can't. ~3x slower, so not part of `make test`. |
 | `make lint`         | Run SwiftLint (baseline-gated; only new violations fail).          |
 | `make format`       | Run `swift-format` in-place over the app + TailscreenKit sources.          |

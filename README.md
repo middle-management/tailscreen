@@ -30,6 +30,9 @@ You choose what to share, the other person clicks your machine in their
 - Viewer approval by default, remembered allow/deny, and per-session
   remote-control grants with an instant revoke.
 - Two-way annotations, voice chat, and (from a Mac) system-audio sharing.
+- **Share via Link** for people outside your tailnet — an encrypted
+  per-link tunnel with mandatory approval on every join. They can watch
+  from the app, or from a **browser** with nothing installed.
 - Ephemeral tsnet nodes: each session's node vanishes when you stop, so
   your admin console doesn't fill up with ghosts.
 
@@ -37,6 +40,8 @@ You choose what to share, the other person clicks your machine in their
 
 - macOS 15.2 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland),
   or Windows 10/11 (x64 or arm64) — in any combination on the two ends.
+  To *only watch* a share someone sent you a link to, Chrome, Edge or
+  Firefox is enough.
 - A Tailscale account (the free personal tier is fine), or a
   [self-hosted control plane](https://tailscreen.dev/self-hosted/) like
   [headscale](https://github.com/juanfont/headscale).
