@@ -11,7 +11,10 @@ permalink: /platform-support/
 {:toc}
 
 What works where. macOS is the reference implementation; Linux and Windows are
-newer and deliberately incomplete in places.
+newer and deliberately incomplete in places. **Browser** is the fourth
+column: a page, not an app — it only *views*, only as a guest (by the web
+form of a share link), and every byte to it is relayed, since a browser
+cannot hole-punch. The mechanics are in `plans/browser-viewer.md`.
 
 This page doubles as the **alignment scoreboard**: every ⚠️ and ❌ below is
 either a gap worth closing or a decision worth writing down. The order to
@@ -34,25 +37,33 @@ what the partial case *is*, because that is the part a reader can act on.
 
 ## The session
 
-| | macOS | Linux | Windows |
-| :--- | :---: | :---: | :---: |
-| View a shared screen | ✅ | ✅ | ✅ |
-| Share your screen | ✅ | ✅ | ✅ |
-| Share a single window | ✅ | ✅ portal | ✅ |
-| Share a single app / several apps | ✅ | ⚠️ single, via portal | ❌ |
-| Change source mid-share | ✅ | ✅ | ✅ |
-| Preview thumbnail of what you're sharing | ✅ | ✅ | ✅ |
-| Capture backend | ScreenCaptureKit | X11 (`libxcb`) / ScreenCast portal | Windows.Graphics.Capture |
-| Hardware encode | ✅ VideoToolbox | ❌ software libavcodec | ❌ software libavcodec |
-| HEVC ⇄ H.264 negotiation | ✅ | ✅ | ✅ |
-| Wide gamut / 10-bit / HDR (sharing) | ✅ | ❌ | ❌ |
-| Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ |
-| Share via Link (guests without a Tailscale account) | ✅ | ✅ | ✅ |
-| Copy Link / Copy Token buttons | ✅ | ⚠️ select the link text | ⚠️ select the link text |
-| Start a share without signing in (link-only) | ✅ | ❌ | ❌ |
-| Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ |
-| Guests draw + request control (same capability gates as tailnet viewers) | ✅ | ✅ | ✅ |
-| `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² |
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| View a shared screen | ✅ | ✅ | ✅ | ✅ Chrome, Edge, Firefox; Safari untested |
+| Share your screen | ✅ | ✅ | ✅ | — |
+| Share a single window | ✅ | ✅ portal | ✅ | — |
+| Share a single app / several apps | ✅ | ⚠️ single, via portal | ❌ | — |
+| Change source mid-share | ✅ | ✅ | ✅ | — |
+| Preview thumbnail of what you're sharing | ✅ | ✅ | ✅ | — |
+| Capture backend | ScreenCaptureKit | X11 (`libxcb`) / ScreenCast portal | Windows.Graphics.Capture | — |
+| Hardware encode | ✅ VideoToolbox | ❌ software libavcodec | ❌ software libavcodec | — |
+| HEVC ⇄ H.264 negotiation | ✅ | ✅ | ✅ | ✅ asks for H.264 where HEVC can't decode |
+| Wide gamut / 10-bit / HDR (sharing) | ✅ | ❌ | ❌ | — |
+| Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ | ❌ |
+| Share via Link (guests without a Tailscale account) | ✅ | ✅ | ✅ | — |
+| Copy Link / Copy Token buttons | ✅ | ⚠️ select the link text | ⚠️ select the link text | — |
+| Start a share without signing in (link-only) | ✅ | ❌ | ❌ | — |
+| Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ | ✅ the only way in: the **web link** |
+| Guests draw + request control (same capability gates as tailnet viewers) | ✅ | ✅ | ✅ | ✅ |
+| `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² | ⚠️ the web link opens the page; `tailscreen:` needs an app |
+
+³ Browsers refuse to play audio until the page has been clicked; the
+**Enable audio** button is that click. ⁴ In a browser, **Join** means opening
+the **web link** (`https://tailscreen.dev/view/#tc…`, from **Copy Web
+Link** on macOS or the second line of the Linux/Windows share card): the
+token rides the URL fragment, so it never reaches the server hosting the
+page. Everything the browser receives is DERP-relayed — fine on a
+self-hosted relay, not on the free ones at screen-share bitrate.
 
 ¹ Link clicks reach the Linux app once a `.desktop` entry registering the
 `tailscreen` scheme is installed — the Flatpak exports one at install, an
@@ -93,13 +104,13 @@ Wayland-native equivalents are future work.
 
 ## Audio
 
-| | macOS | Linux | Windows |
-| :--- | :---: | :---: | :---: |
-| Hear the sharer's voice / other viewers | ✅ | ✅ | ✅ |
-| Speak (microphone) | ✅ | ✅ | ✅ |
-| Share computer audio | ✅ | ❌ | ❌ |
-| Playback backend | AVAudioEngine | ALSA | WASAPI |
-| Capture backend | VoiceProcessingIO | ALSA | WASAPI |
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| Hear the sharer's voice / other viewers | ✅ | ✅ | ✅ | ✅ after a click³ |
+| Speak (microphone) | ✅ | ✅ | ✅ | ❌ |
+| Share computer audio | ✅ | ❌ | ❌ | — |
+| Playback backend | AVAudioEngine | ALSA | WASAPI | WebCodecs + Web Audio |
+| Capture backend | VoiceProcessingIO | ALSA | WASAPI | — |
 
 Voice now runs both directions on every platform: one portable voice path
 (`ThreadedMicrophone` + `BlockingPCMSource` over the shared Opus
@@ -110,20 +121,20 @@ system's own output; viewers on every platform play it back.
 
 ## Interaction
 
-| | macOS | Linux | Windows |
-| :--- | :---: | :---: | :---: |
-| Draw annotations as a viewer | ✅ | ✅ | ✅ |
-| Pick your annotation color | ✅ | ✅ | ✅ |
-| Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
-| Draw on your own screen as a sharer | ✅ | ✅ | ✅ |
-| Request remote control as a viewer | ✅ | ✅ | ✅ |
-| Visible "you are controlling" indicator | ✅ border + title | ✅ | ✅ |
-| Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
-| Revoke hotkey / panic key | ✅ | ❌ | ❌ |
-| Zoom + pan the viewer | ✅ | ✅ | ✅ |
-| Told why a session ended, with Reconnect | ✅ | ✅ | ✅ |
-| Detects a vanished sharer (timeout / dead socket) | ✅ | ✅ | ✅ |
-| Cancel while waiting for approval | ✅ | ✅ | ✅ |
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| Draw annotations as a viewer | ✅ | ✅ | ✅ | ✅ pen |
+| Pick your annotation color | ✅ | ✅ | ✅ | ✅ |
+| Render viewers' annotations as a sharer | ✅ | ✅ | ✅ | — |
+| Draw on your own screen as a sharer | ✅ | ✅ | ✅ | — |
+| Request remote control as a viewer | ✅ | ✅ | ✅ | ✅ |
+| Visible "you are controlling" indicator | ✅ border + title | ✅ | ✅ | ✅ outline |
+| Grant + inject remote control as a sharer | ✅ | ✅ | ✅ | — |
+| Revoke hotkey / panic key | ✅ | ❌ | ❌ | — |
+| Zoom + pan the viewer | ✅ | ✅ | ✅ | ❌ |
+| Told why a session ended, with Reconnect | ✅ | ✅ | ✅ | ✅ |
+| Detects a vanished sharer (timeout / dead socket) | ✅ | ✅ | ✅ | ⚠️ on connection close only |
+| Cancel while waiting for approval | ✅ | ✅ | ✅ | ⚠️ close the tab |
 
 Every row except the revoke hotkey is closed on all three platforms.
 Closing them was mostly wiring: the protocol, the grant gate, the
@@ -157,12 +168,12 @@ Three specifics worth knowing:
 
 ## Access control
 
-| | macOS | Linux | Windows |
-| :--- | :---: | :---: | :---: |
-| Require approval for new viewers | ✅ | ✅ | ✅ |
-| Remembered allow / "Deny & Block" | ✅ | ✅ | ✅ |
-| Kick a connected viewer | ✅ | ✅ | ✅ |
-| Ask a peer to share their screen | ✅ | ✅ | ✅ |
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| Require approval for new viewers | ✅ | ✅ | ✅ | — |
+| Remembered allow / "Deny & Block" | ✅ | ✅ | ✅ | — |
+| Kick a connected viewer | ✅ | ✅ | ✅ | — |
+| Ask a peer to share their screen | ✅ | ✅ | ✅ | — |
 
 All of it comes from shared code: the approval gate, the decision logic and
 the StableNodeID-keyed intent queue live in the portable tier
@@ -187,25 +198,25 @@ Two things behind the ✅s are worth knowing:
 
 ## The hub
 
-| | macOS | Linux | Windows |
-| :--- | :---: | :---: | :---: |
-| Peer discovery + online status | ✅ | ✅ | ✅ |
-| Multiple accounts | ✅ | ✅ | ✅ |
-| Peer list filter (offline / sharing / tags) | ✅ | ✅ | ✅ |
-| Peer detail: route, latency, ACL tags | ✅ | ✅ | ✅ |
-| Quality settings UI | ✅ | ✅ | ✅ |
-| Connection stats overlay | ✅ | ✅ | ✅ |
-| Localized strings | ✅ | ✅ | ✅ |
-| **Notified when a viewer is waiting for approval** | ✅ | ✅ | ⚠️ MSIX; the zip degrades |
-| Answer that prompt from the notification | ✅ | ✅ | ⚠️ MSIX; the zip degrades |
-| Told when notifications are switched off | ✅ | ✅ | ✅ |
-| Notified when a viewer joins / leaves | ✅ | ✅ | ⚠️ MSIX; the zip degrades |
-| **Outline around what's being captured** | ✅ | ⚠️ X11 display shares | ⚠️ WGC's own, unconfirmed |
-| Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
-| Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey |
-| Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
-| Global hotkeys (mute, revoke control) | ✅ remappable | ⚠️ mute only | ⚠️ mute only |
-| Told when a hotkey couldn't be registered | ✅ Settings | ✅ share card | ✅ share card |
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| Peer discovery + online status | ✅ | ✅ | ✅ | — |
+| Multiple accounts | ✅ | ✅ | ✅ | — |
+| Peer list filter (offline / sharing / tags) | ✅ | ✅ | ✅ | — |
+| Peer detail: route, latency, ACL tags | ✅ | ✅ | ✅ | — |
+| Quality settings UI | ✅ | ✅ | ✅ | ❌ |
+| Connection stats overlay | ✅ | ✅ | ✅ | ✅ |
+| Localized strings | ✅ | ✅ | ✅ | ⚠️ placards only |
+| **Notified when a viewer is waiting for approval** | ✅ | ✅ | ⚠️ MSIX; the zip degrades | — |
+| Answer that prompt from the notification | ✅ | ✅ | ⚠️ MSIX; the zip degrades | — |
+| Told when notifications are switched off | ✅ | ✅ | ✅ | — |
+| Notified when a viewer joins / leaves | ✅ | ✅ | ⚠️ MSIX; the zip degrades | — |
+| **Outline around what's being captured** | ✅ | ⚠️ X11 display shares | ⚠️ WGC's own, unconfirmed | — |
+| Sharing controls outside the main window | ✅ menubar | ❌ | ❌ | — |
+| Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey | — |
+| Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ | — |
+| Global hotkeys (mute, revoke control) | ✅ remappable | ⚠️ mute only | ⚠️ mute only | — |
+| Told when a hotkey couldn't be registered | ✅ Settings | ✅ share card | ✅ share card | — |
 
 Linux and Windows share their chrome (`Packages/TailscreenHubUI`), so hub work
 lands on both at once — which is why that block is the most aligned of the five.
@@ -298,12 +309,12 @@ audio I/O and input injection.
 
 ## Distribution
 
-| | macOS | Linux | Windows |
-| :--- | :---: | :---: | :---: |
-| Architectures | universal (arm64 + x86_64) | x86_64, aarch64 | x64, arm64 |
-| Signed by a trusted authority | ✅ notarized | — | ❌ self-signed MSIX |
-| Package manager | Homebrew cask | ❌ (casks are macOS-only; Flatpak unpublished) | ❌ winget pending |
-| Formats | `.app` zip | AppImage, tarball | zip, MSIX |
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| Architectures | universal (arm64 + x86_64) | x86_64, aarch64 | x64, arm64 | any (wasm) |
+| Signed by a trusted authority | ✅ notarized | — | ❌ self-signed MSIX | — served over https |
+| Package manager | Homebrew cask | ❌ (casks are macOS-only; Flatpak unpublished) | ❌ winget pending | — |
+| Formats | `.app` zip | AppImage, tarball | zip, MSIX | hosted page, single-file HTML |
 
 Windows signing is blocked on registering with SignPath's free OSS tier; until
 then the MSIX installs only after its certificate is trusted — each release

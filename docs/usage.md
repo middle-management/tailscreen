@@ -181,11 +181,13 @@ install ceremony beyond Tailscreen itself.
 While sharing, flip **Share via Link** in the sharing card (the menubar
 card on macOS; the hub's share card on Linux and Windows, where the link
 appears as selectable text to copy). Tailscreen mints a one-off link (a
-`tailscreen:` URL wrapping a `tc…` token). On macOS it comes with three
+`tailscreen:` URL wrapping a `tc…` token). On macOS it comes with four
 buttons:
 
 - **Copy Link** — the `tailscreen:` URL. On a machine with Tailscreen
   installed, opening it lands in the join screen with the token filled in.
+- **Copy Web Link** — the `https:` form, which opens the share in a browser
+  with nothing installed (see *Joining* below).
 - **Copy Token** — the bare token, for pasting into the join screen by
   hand.
 - **New Link** — replaces the link with a fresh one. The old link stops
@@ -228,6 +230,23 @@ MSIX install), and pasting always works:
   (offered before sign-in too — joining needs no account). The Linux app
   also takes `tailscreen --join <token-or-link>` — or the link as a bare
   argument — on the command line.
+- **A browser, nothing installed** — open the **web link**
+  (`https://tailscreen.dev/view/#tc…`). On macOS the sharing card's
+  **Copy Web Link** puts it on the clipboard; on Linux and Windows it is the
+  second line under the link toggle. Chrome, Edge and Firefox decode the
+  share; Safari has not been checked yet. The page waits at the same
+  approval placard, then shows the screen, plays audio once you click
+  **Enable audio** (browsers insist on a click), lets you **draw** when the
+  sharer renders annotations and **request control** when the sharer can
+  inject — the same capability gates as the apps. No microphone from a
+  browser, and no zoom. Two things to know: the token stays in the URL
+  *fragment*, so the site hosting the page never sees it; and a browser
+  cannot hole-punch, so everything it receives comes through the relay — at
+  screen-share bitrate that wants a
+  [self-hosted relay]({{ site.baseurl }}{% link self-hosted.md %}) rather
+  than the free ones. The page is static and self-hostable, and
+  `make web-viewer-bundle` folds it into one HTML file for a network with no
+  web access at all: open the file, add `#tc…` to its URL.
 
 You join as a guest over an encrypted tunnel; the sharer has to approve
 you before you see anything, so expect the waiting placard first. Guest

@@ -18,6 +18,8 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'web/viewer/**'
+      - 'sdk/go/**'
       - '.github/workflows/pages.yml'
   release:
     types: [published]
@@ -41,8 +43,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # Full history so the release tags are present to resolve.
+          # Full history so the release tags are present to resolve; the
+          # submodule for the browser viewer's wasm build (the fork's `guest`
+          # package is what the page dials with).
           fetch-depth: 0
+          submodules: recursive
 
       - name: Resolve the latest release tag
         id: tag
@@ -133,6 +138,43 @@ jobs:
           cd docs
           bundle exec jekyll build -d "$GITHUB_WORKSPACE/_site/next" \
             --config _config.yml,_config_next.yml
+
+      # The browser viewer (web/viewer) rides the same site: /next/view always
+      # tracks main, and the root /view exists only once the latest stable
+      # release carries the page — the same channel rule as the docs, so the
+      # root never serves something no release ships. One wasm build from
+      # main serves both channels: the wire is compatible in both directions
+      # (unknown frames are skipped), so the newest viewer is the right one.
+      #
+      # GitHub Pages does not gzip application/wasm on the fly, so the page
+      # fetches the pre-compressed viewer.wasm.gz (7.8 MB rather than 34) and
+      # inflates it with DecompressionStream; both files are published.
+      - name: Set up Go for the browser viewer
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
+          cache-dependency-path: web/viewer/go.sum
+
+      - name: Build the browser viewer
+        run: |
+          sudo apt-get install -y --no-install-recommends brotli >/dev/null 2>&1 || true
+          make web-viewer
+
+      - name: Publish the browser viewer
+        run: |
+          publish() {
+            mkdir -p "$1/dist"
+            cp web/viewer/index.html web/viewer/viewer.js web/viewer/wire.js "$1/"
+            cp web/viewer/dist/viewer.wasm web/viewer/dist/viewer.wasm.gz web/viewer/dist/wasm_exec.js web/viewer/dist/strings.json "$1/dist/"
+          }
+          publish _site/next/view
+          if [ "${{ steps.tag.outputs.has_site }}" = "true" ] \
+             && git cat-file -e "${{ steps.tag.outputs.tag }}:web/viewer/index.html" 2>/dev/null; then
+            publish _site/view
+            echo "root /view: published (release ${{ steps.tag.outputs.tag }} carries the viewer)"
+          else
+            echo "root /view: skipped (no stable release carries the viewer yet)"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

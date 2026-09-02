@@ -115,9 +115,11 @@ Curious what&rsquo;s underneath?
     sign up for? Flip <strong>Share via Link</strong> and send them a one-off
     link. They knock over an encrypted tunnel, wait at your approval prompt
     like everyone else, and once you let them in they get the full seat:
-    video, voice, drawing, even requesting the mouse. The link dies the
-    moment you stop sharing, rotate it, or flip the toggle off &mdash;
-    there&rsquo;s nothing to revoke later.</p>
+    video, voice, drawing, even requesting the mouse &mdash; and if they
+    have nothing installed, the web form of the same link opens the share
+    in their browser. The link dies the moment you stop sharing, rotate it,
+    or flip the toggle off &mdash; there&rsquo;s nothing to revoke
+    later.</p>
   </div>
 </div>
 </div>
