@@ -268,32 +268,59 @@ the page (it advertises no caps yet), and any UI beyond a status readout.
 
 ## Phase 3 — the page
 
-`sdk/go/tailscreen` compiled into the same wasm binary does the protocol:
-it was written clock-injected and socketless ("owns no socket, no goroutine
-and no clock"), which is WASM-shaped by construction, and the conformance
-vectors validate this third consumer the same way they validate the other
-two. The page supplies what the SDK's excluded column lists:
+> Status: **done** (this branch). Chrome watches a live share: the wasm
+> session hands access units to WebCodecs, frames land on a canvas, Opus
+> plays through an AudioContext, and the placards come from the shared
+> catalog. `make test-web-spike` now asserts decoded frames and a non-flat
+> canvas; CI's `linux-web-spike` runs it on Google Chrome.
 
-- **Video**: WebCodecs `VideoDecoder`. H.264 decodes everywhere; HEVC only
-  where the platform provides it, and the existing escape hatch is exactly
-  right — a browser that can't HEVC sends CODEC_NO (`0x07`) and the share
-  falls back to H.264, no new wire needed. Likewise 10-bit: the page never
-  advertises `tenBit`, so an HDR share latches `force8bit` by the existing
-  rule (TS-CAP-006). Rendering is `VideoFrame` → canvas; WebGPU only if
-  profiling says so.
-- **Audio**: WebCodecs `AudioDecoder` (Opus) + an AudioWorklet for playback;
-  PT 98/99 demux comes from the SDK. Listen-only — no mic uplink in this
-  phase.
-- **UI**: token in the URL **fragment** (never sent to any server), the
-  approval-pending placard, viewer placards/stats, and the localized strings
-  the page needs — which are TailscreenL10n keys rendered to JSON at build
-  time, not a fourth hand-written string set.
-- **The keepalive/tick loop**: JS `setInterval` driving `tick(nowNs)` — the
-  host-supplied clock the SDK already demands.
+What the page is, as built:
 
-**Gate**: a person clicks a link, waits in the approval queue, and watches a
-live share in Chromium, Firefox and Safari; a Playwright e2e pins the
-Chromium path in CI.
+- **The session, in the wasm.** `sdk/go`'s reorder buffer, depacketizers
+  and receiver-report accounting, driven by the page's clock exactly the
+  way the SDK asks — `ingest(datagram, nowNs)` yields access units and
+  audio frames, `tick(nowNs)` yields what to send: HELLO until answered,
+  KEEPALIVE at the spec cadence, receiver reports with the PING echo
+  (`receiverReport` is the one capability advertised, per TS-STM-005), a
+  rate-limited PLI for the first keyframe and after decode failures, and
+  CODEC_NO once when asked. Each AU carries its in-band parameter sets and
+  an RFC 6381 codec string, so the page never parses a bitstream.
+- **Video: WebCodecs → canvas.** H.264 in "avc" form — the depacketizer's
+  AVCC as-is, with an avcC description built from the SPS/PPS, the format
+  every engine accepts; HEVC as Annex B with an `hev1.…` string derived
+  from its SPS. A decoder that reports the config unsupported takes the
+  existing escape hatch: CODEC_NO latches the share to H.264. Decode
+  errors reset the decoder and ask for a keyframe; a decode queue that
+  backs up sheds to the next keyframe rather than build latency.
+- **Audio: Opus → AudioContext**, one `AudioDecoder` per SSRC (voice and
+  system audio share the path), scheduled with a small lead and re-anchored
+  when it drifts, behind the click the browser requires. Listen-only.
+- **Chrome and strings.** Approval / declined / ended placards, a stats HUD
+  (`s`), full screen, a log pane; the share's name in the title via a
+  `metadataRequest` on the same connection. Placard text is the shared
+  TailscreenL10n catalog, exported to `dist/strings.json` at build time by
+  `tools/export_strings.py` from the keys in `tools/strings.txt` — a
+  string translated once (English and Swedish today) is translated in the
+  browser too; keys the catalog lacks degrade to English.
+
+**One measurement worth knowing.** Playwright's own Chromium ships without
+the proprietary codecs: WebCodecs is present but reports every H.264 and
+HEVC configuration unsupported (VP8, AV1 and Opus are fine). Google Chrome
+decodes H.264 in every profile, Annex B included, and Opus — HEVC not on
+Linux, which is exactly the CODEC_NO case. So the harness prefers Chrome
+when present (`PW_CHANNEL` overrides), degrades to transport-only
+assertions otherwise, and CI installs Chrome. The gate run here:
+
+```
+decoded 34 frames (avc1.42C01F, 1280×720, 15 fps); AUs 33, dropped 0, errors 0; canvas luma spread 18.5
+PASS — viewer.wasm=34.01MB viewer.wasm.gz=7.78MB viewer.wasm.br=5.46MB
+```
+
+**Not done here, deliberately:** annotations and remote control from the
+page, the microphone, hosting, and the docs-site pages — Phase 4. Safari
+and Firefox have not been run against a live share yet (no headless
+build of either here); the "avc" + avcC choice is the compatible one for
+both, and it is the first thing to check when they are.
 
 ## Phase 4 — chrome and shipping
 
@@ -328,6 +355,6 @@ Chromium path in CI.
 | `guest` client under `GOOS=js` | **Retired** (Phase 2): compiles unchanged and bootstraps in Chromium; `linux-web-spike` pins it. |
 | Relay bandwidth | Every browser viewer is DERP-relayed. Self-hosted derper guidance ships with Phase 4 docs; the sharer's per-viewer fairness already isolates a slow relay path. |
 | wasm size (~27 MB class) | **Measured** (Phase 2): 33.9 MB raw, 7.8 MB gzip, 5.4 MB brotli. Budget decisions are Phase 4's, now with a real number. |
-| WebCodecs variance (HEVC, Safari) | CODEC_NO fallback covers codec; Phase 3 gate lists all three engines so variance surfaces before shipping. |
+| WebCodecs variance (HEVC, Safari) | **Measured on Chrome** (Phase 3): H.264 every profile ✓, HEVC ✗ on Linux → the CODEC_NO path; Playwright's Chromium has no H.264 at all, so the gate runs on Chrome. Safari/Firefox live runs still owed (Phase 4). |
 | Double-reliable stacking (our stream inside WG inside WebSocket/TCP) | Loss on the physical path recovers in the outer TCP; the inner plane sees it as delay, which is what the backpressure controller keys on. Latency under loss will be worse than native UDP — inherent, documented, and the reason native apps stay the recommendation. |
 | Ordering vs. the annotation invariant | Media and annotations share one connection; frames are sent from one prioritized outbox, so the annotation-ordering rule (synchronous enqueue, one drain) carries over unchanged — the outbox must preserve enqueue order within each priority class. |
