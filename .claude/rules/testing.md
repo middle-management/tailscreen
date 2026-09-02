@@ -43,6 +43,8 @@ Two paths:
 
 Connectivity tests skip or fail without an auth key — that's expected.
 
+**Browser ↔ sharer, no internet** (`make test-web-spike`, Linux; CI's `linux-web-spike`): the browser viewer's transport spike (`plans/browser-viewer.md`, Phase 2). `web/viewer/e2e/spike.mjs` boots `web/viewer/cmd/localderp` (a DERP+STUN+`/derpmap` stand-in for the relay fleet, self-signed TLS with `InsecureForTests`), an Xvfb display with a gradient on it, `tailscreen-sharer-linux --link --link-relay-map-url … --approve-guests` (a link-only share: no tsnet, no headscale), and headless Chromium (Playwright, `ignoreHTTPSErrors` for the relay's cert, `--no-proxy-server` so a container's `HTTPS_PROXY` never captures the loopback `wss://`). It asserts the page reaches `acked` — HELLO as a `mediaDatagram` frame, parked, auto-approved, `HELLO_ACK` — and then counts ≥ 50 video datagrams over the stream, and prints the wasm sizes. Knobs: `TAILSCREEN_SHARER_BIN`, `TAILSCREEN_E2E_DISPLAY` (default `:99`), `TAILSCREEN_E2E_FPS`, `TAILSCREEN_E2E_MIN_VIDEO`. Needs Node with the global `playwright` module (`NODE_PATH=$(npm root -g)`, which the Makefile sets) and its Chromium. `--approve-guests` is the guest-side twin of `TAILSCREEN_OPEN_DOOR` — never for a share with a person in front of it.
+
 ## Local screen-share E2E (LOCAL ONLY)
 
 These test surfaces exercise the screen-share pipeline beyond what GitHub Actions can run — its macOS runners can't grant Screen Recording TCC, can't host a real display, and `replayd`/`SCStream` won't come up. Most run over local-headscale tsnet with the server in `filterData: nil` mode (no capture-helper), so they're headless and need no Screen Recording permission.

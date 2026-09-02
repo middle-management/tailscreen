@@ -931,6 +931,44 @@ jobs:
   # swift-cross-ui.
   #
   # `linux-app` pairs it with the `linux-app-arm64` sibling below.
+  # The browser viewer's transport, end to end and offline: real Chromium,
+  # the fork's `guest` client compiled to js/wasm, a local DERP stand-in, and
+  # the REAL Linux sharer in link-only mode — asserted as HELLO over the
+  # stream profile → approved → HELLO_ACK → video datagrams arriving
+  # (plans/browser-viewer.md, Phase 2; .claude/rules/testing.md). Standalone
+  # like linux-viewer because it needs the same A/V + Xvfb set plus Node and
+  # a browser. `go: setup-go`, not the container's apt Go: the wasm module's
+  # `go` directive follows the fork's (1.26.x), and Debian's Go never
+  # downloads a toolchain (see the linux-app-arm64 note).
+  linux-web-spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: swift:6.3-noble
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install build tools, A/V dev libraries, Xvfb, Node
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            make gcc libc6-dev pkg-config ca-certificates curl \
+            libavcodec-dev libavutil-dev libasound2-dev libopus-dev \
+            libxcb1-dev libxcb-shm0-dev libxtst-dev xvfb imagemagick \
+            nodejs npm brotli
+      - name: Build libtailscale (patched) on Linux
+        uses: ./.github/actions/bootstrap
+        with:
+          go: setup-go
+          libtailscale: host
+      - name: Install Playwright + Chromium
+        # Pinned to the version the harness was written against; the global
+        # install is what `NODE_PATH=$(npm root -g)` in the Makefile resolves.
+        run: |
+          npm install -g playwright@1.56.1
+          playwright install --with-deps chromium
+      - name: Browser ↔ sharer transport spike
+        run: make test-web-spike
+
   linux-app:
     # The native GTK desktop viewer (Apps/linux) — a separate package from
     # the Packages/TailscreenLinuxBackends core so swift-cross-ui + GTK4 don't burden the linux-viewer job.

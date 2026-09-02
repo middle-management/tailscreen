@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tailscreen browser viewer — transport spike</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 2rem; max-width: 60rem; color: #222; }
+  h1 { font-size: 1.2rem; }
+  #state { font-weight: 600; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
+  pre { background: #f4f4f4; padding: .75rem; overflow: auto; max-height: 24rem; font-size: 12px; }
+  .warn { color: #a33; }
+</style>
+<h1>Tailscreen browser viewer — transport spike (Phase 2)</h1>
+<p>Dials the share whose <code>tc…</code> token is in this page's URL fragment, through the guest
+tunnel (WireGuard over a DERP WebSocket), elects the stream profile by sending its HELLO as a
+<code>mediaDatagram</code> frame, and counts what comes back. No decoding yet — that is Phase 3.</p>
+<dl>
+  <dt>State</dt><dd id="state">loading wasm…</dd>
+  <dt>Server</dt><dd id="server">—</dd>
+  <dt>Assigned SSRC</dt><dd id="ssrc">—</dd>
+  <dt>RTP datagrams</dt><dd id="rtp">0 (video 0, audio 0), 0 bytes</dd>
+  <dt>Control datagrams</dt><dd id="control">—</dd>
+</dl>
+<pre id="log"></pre>
+<p class="warn" id="notoken" hidden>No token: open this page as <code>index.html#tc…</code> (the token a
+sharer mints for <em>Share via Link</em>).</p>
+<script src="dist/wasm_exec.js"></script>
+<script src="viewer.js"></script>

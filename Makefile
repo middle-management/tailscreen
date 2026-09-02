@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer test-web-spike icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -119,6 +119,18 @@ libtailscreen: ## Build sdk/go/build/libtailscreen.{a,h} (C static library)
 # check is that the header's signatures match, that the archive links, that a
 # returned buffer is really malloc'd memory it can free, and that a rejected
 # datagram arrives as a NULL pointer rather than as a crash.
+web-viewer: ## Build the browser viewer's wasm (web/viewer/dist) and print its sizes
+	cd web/viewer && GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o dist/viewer.wasm . \
+		&& cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" dist/ \
+		&& gzip -9 -k -f dist/viewer.wasm \
+		&& (command -v brotli >/dev/null 2>&1 && brotli -f -k -q 11 dist/viewer.wasm || true) \
+		&& ls -l dist/viewer.wasm dist/viewer.wasm.gz dist/viewer.wasm.br 2>/dev/null
+
+test-web-spike: web-viewer ## Browser↔sharer transport spike: localderp + Xvfb + sharer --link + Chromium (Linux)
+	cd web/viewer && go build -o dist/localderp ./cmd/localderp
+	cd Packages/TailscreenLinuxBackends && PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit swift build --product tailscreen-sharer-linux
+	NODE_PATH="$$(npm root -g)" node web/viewer/e2e/spike.mjs
+
 libtailscreen-check: libtailscreen ## Build + run the C smoke test against the archive
 	cc -Wall -Wextra -Isdk/go/build sdk/go/ctest/smoke.c sdk/go/build/libtailscreen.a \
 		-lpthread -o sdk/go/build/smoke

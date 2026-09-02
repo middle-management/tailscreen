@@ -193,32 +193,78 @@ sharer hosts serve it, `make test-protocol` / `test-conformance` /
 
 ## Phase 2 — the wasm transport spike
 
-The one genuinely unproven piece, so it comes before any product work
-(the same discipline as the eval's UDP spike, which retired its risk):
+> Status: **done** (this branch). The gate is met end to end with no
+> internet: real Chromium → the fork's `guest` client compiled to wasm →
+> DERP over WebSocket → WireGuard → the real Linux sharer in link-only mode,
+> a framed HELLO electing the stream profile, parked → approved → HELLO_ACK,
+> then video RTP arriving over the stream. `make test-web-spike` runs it;
+> CI's `linux-web-spike` leg pins it.
 
-- Build the fork's `guest` package client side for `GOOS=js GOARCH=wasm` —
-  upstream `tailscale.com` carries js/wasm support in magicsock and
-  DERP-over-WebSocket in derphttp (it is how tsconnect exists), but whether
-  `GuestClientNode`'s Go core compiles and bootstraps under js is unverified.
-- A throwaway page: wasm exports `guestDial(token)`, dials a native
-  link-only sharer, moves framed-TCP bytes both ways in Chromium (Playwright
-  is pre-installed in the CI/session environment; a headless X11 sharer is
-  the existing e2e shape).
-- Measure the `.wasm` size gzipped and brotli'd. The eval's reference point
-  is ~27 MB for tailcat's demo; ours adds `sdk/go/tailscreen` (small) but
-  can drop the server half of `guest`.
+The one genuinely unproven piece came first, on the eval's own discipline,
+and it retired in a single command: **the `guest` package compiles for
+`GOOS=js GOARCH=wasm` unchanged** — magicsock's js support and derphttp's
+WebSocket dial (the tsconnect lineage) carry it, and the package's
+`pickregion_js.go` was already there from tailcat. Nothing landed in the
+fork; the submodule pointer is untouched.
 
-Where the module lives is a real decision recorded here rather than made
-implicitly: a new Go module (working name `web/viewer`) that `require`s the
-fork — via a `replace` onto the submodule path
-(`Packages/TailscaleKit/upstream/libtailscale`) so the wasm build and the
-archive build pin the same commit — plus `sdk/go`. The two-c-archives rule
-does not apply (wasm is its own binary), and nothing lands in the fork
-except, if needed, build tags on `guest` files that pull in something
-js-hostile.
+What the spike built, all under `web/viewer`:
 
-**Gate**: bytes flow browser↔sharer through the tunnel; sizes known; any
-fork changes are committed on `tailscreen-main` and the pointer bumped.
+- **The module** (`web/viewer/go.mod`): `replace`s onto the submodule path
+  for the fork and onto `../../sdk/go` for the SDK, so the wasm build and
+  the c-archive build pin the same fork commit. `main_js.go` exports a
+  deliberately small surface — `tailscreenGuestDial(token)` returning a
+  conn with `read`/`write`/`close`, plus `tailscreenFrameEncode` /
+  `tailscreenNewFrameParser` / `tailscreenHello` / `tailscreenControl` /
+  `tailscreenClassify` — every byte of which is sdk/go, so the page never
+  re-implements a wire format. `sdk/go` compiles to wasm as-is, as
+  predicted: it was written socketless and clock-injected.
+- **`cmd/localderp`**: the relay fleet stood in by one process — a DERP
+  server over TLS with a throwaway self-signed certificate and WebSocket
+  support (the only way a browser reaches DERP), a STUN responder, and a
+  plain-HTTP `/derpmap` pointing back at itself with `InsecureForTests`.
+  That flag is what makes the self-signed cert workable on both ends: the
+  native side skips verification for such a node, the browser is launched
+  with certificate errors ignored.
+- **`index.html` + `viewer.js`**: the loop — token from the URL fragment
+  (never sent to any server), dial, HELLO as a `mediaDatagram` frame (the
+  election, TS-STM-002; legacy one-byte HELLO so no NACK/FEC per
+  TS-STM-005), HELLO re-sent on the keepalive cadence until answered, then
+  KEEPALIVE (TS-STM-004), and every returning frame classified and counted.
+  `window.__spike` is what the harness asserts on.
+- **`e2e/spike.mjs`** (Playwright): boots localderp, Xvfb with a gradient
+  on it, the sharer, then Chromium, and asserts `acked` followed by ≥ 50
+  video datagrams. One run here: admitted with an assigned SSRC, 180 video
+  datagrams over the stream in the first seconds, no corrupt frames.
+- **`tailscreen-sharer-linux --link`**: the headless sharer gains the
+  link-only share (`startGuestOnly`, no tsnet, no headscale) with
+  `--link-relay-map-url` for a local relay and `--approve-guests` as the
+  unattended twin of `TAILSCREEN_OPEN_DOOR`; it prints the same
+  `E2E_MARKER shareLink token=…` the macOS app prints under
+  `TAILSCREEN_AUTOSHARE_LINK`.
+
+**Measured sizes** (`-trimpath -ldflags="-s -w"`, Go 1.26.6):
+
+| | |
+| :- | :- |
+| `viewer.wasm` | 33.9 MB |
+| gzip -9 | 7.8 MB |
+| brotli -q 11 | 5.4 MB |
+
+The eval's ~27 MB reference was tailcat's demo; ours carries the whole
+`guest` package (server half included — it is one package) and sdk/go. The
+number that matters for first load is the brotli one, and it is the Phase 4
+size-budget input rather than something to optimise here.
+
+**The one bug worth recording.** The first run failed with the sharer's
+relay connection closing "age 0s" right after the token was minted, and
+every browser handshake going unanswered: the CLI let its `GuestServerNode`
+go out of scope after `token()`, and the node closes on deinit — the server
+adopts only its *listeners*. `SharerLinkSession` holds the node in a
+property for exactly this reason; the CLI now does too, and the comment on
+`linkNode` says why.
+
+**Not done here, deliberately:** decoding (Phase 3), receiver reports from
+the page (it advertises no caps yet), and any UI beyond a status readout.
 
 ## Phase 3 — the page
 
@@ -279,9 +325,9 @@ Chromium path in CI.
 
 | Risk | Standing |
 | :- | :- |
-| `guest` client under `GOOS=js` | The Phase 2 spike exists to answer it; magicsock/derphttp js support upstream is the reason to expect yes. |
+| `guest` client under `GOOS=js` | **Retired** (Phase 2): compiles unchanged and bootstraps in Chromium; `linux-web-spike` pins it. |
 | Relay bandwidth | Every browser viewer is DERP-relayed. Self-hosted derper guidance ships with Phase 4 docs; the sharer's per-viewer fairness already isolates a slow relay path. |
-| wasm size (~27 MB class) | Measured at Phase 2; budget decisions deferred until the number is real. |
+| wasm size (~27 MB class) | **Measured** (Phase 2): 33.9 MB raw, 7.8 MB gzip, 5.4 MB brotli. Budget decisions are Phase 4's, now with a real number. |
 | WebCodecs variance (HEVC, Safari) | CODEC_NO fallback covers codec; Phase 3 gate lists all three engines so variance surfaces before shipping. |
 | Double-reliable stacking (our stream inside WG inside WebSocket/TCP) | Loss on the physical path recovers in the outer TCP; the inner plane sees it as delay, which is what the backpressure controller keys on. Latency under loss will be worse than native UDP — inherent, documented, and the reason native apps stay the recommendation. |
 | Ordering vs. the annotation invariant | Media and annotations share one connection; frames are sent from one prioritized outbox, so the annotation-ordering rule (synchronous enqueue, one drain) carries over unchanged — the outbox must preserve enqueue order within each priority class. |

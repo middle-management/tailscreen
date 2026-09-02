@@ -118,6 +118,8 @@ let package = Package(
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 .product(name: "TailscaleKit", package: "TailscaleKit"),
+                // `--link` builds the guest TCP control channel itself.
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
             ],
             path: "Sources/tailscreen-sharer-linux",
             linkerSettings: [
