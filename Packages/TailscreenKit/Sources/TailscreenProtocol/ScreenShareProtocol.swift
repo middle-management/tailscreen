@@ -48,6 +48,12 @@ import Foundation
 ///         resolution, `isSharing`). Exposes nothing the tailnet can't
 ///         already see (the hostname is in the netmap) plus the share
 ///         state a viewer would learn by connecting.
+///     .mediaDatagram  (0x0D)  — both directions
+///         one raw UDP datagram carried over the stream (spec §2.2, the
+///         reliable-transport profile for viewers without usable UDP).
+///         The ONE non-JSON payload on this channel: hand it to the
+///         datagram demultiplexer exactly as if it had arrived on the
+///         UDP socket (first-byte classification, TS-GEN-020).
 public enum ScreenShareMessage {
     case annotation(AnnotationOp)
     case requestToShare(fromHostname: String)
@@ -59,6 +65,7 @@ public enum ScreenShareMessage {
     case controlReleased
     case metadataRequest
     case metadataResponse(TailscreenMetadata)
+    case mediaDatagram(Data)
 
     public static let headerSize = 5
 
@@ -90,6 +97,7 @@ public enum ScreenShareMessage {
         case controlReleased = 0x0A
         case metadataRequest = 0x0B
         case metadataResponse = 0x0C
+        case mediaDatagram = 0x0D
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -125,6 +133,8 @@ public enum ScreenShareMessage {
         case .metadataResponse(let metadata):
             let payload = (try? JSONEncoder().encode(metadata)) ?? Data()
             return Self.frame(type: .metadataResponse, payload: payload)
+        case .mediaDatagram(let datagram):
+            return Self.frame(type: .mediaDatagram, payload: datagram)
         }
     }
 
@@ -212,6 +222,13 @@ public struct ScreenShareMessageParser {
                 message = .metadataRequest
             case .metadataResponse:
                 message = decodeMetadataResponse(payload)
+            case .mediaDatagram:
+                // Raw datagram bytes, deliberately not decoded here — the
+                // consumer runs the first-byte demultiplex (TS-GEN-020).
+                // An empty payload is no datagram at all (TS-STM-001, the
+                // frame shape of TS-GEN-022): drop it like any payload
+                // that fails to decode (TS-TCP-008).
+                message = payload.isEmpty ? nil : .mediaDatagram(Data(payload))
             }
             if let message {
                 return message

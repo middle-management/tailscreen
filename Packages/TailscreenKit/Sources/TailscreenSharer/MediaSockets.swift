@@ -24,6 +24,13 @@ struct MediaSockets: Sendable {
     let guest: PacketListener?
     /// Reports whether addr was first seen on the guest listener.
     let isGuestAddr: @Sendable (String) -> Bool
+    /// Route for stream (reliable-transport, spec §2.2) viewers: wraps the
+    /// datagram in a `.mediaDatagram` frame on the viewer's own framed TCP
+    /// connection and reports true. False means addr has no stream route
+    /// and the datagram falls through to the UDP listeners below. Checked
+    /// FIRST because a stream addr is synthetic (`ip:tcp-…`) — it never
+    /// names a real UDP flow, and sending it there would silently vanish.
+    let sendViaStream: @Sendable (Data, String) async -> Bool
 
     /// Send one datagram to addr via the listener its flows live on.
     /// Matches `PacketListener.send`'s signature so existing call sites
@@ -31,6 +38,7 @@ struct MediaSockets: Sendable {
     /// With no primary every addr is a guest addr by construction, so the
     /// guest socket carries everything.
     func send(_ data: Data, to addr: String) async throws {
+        if await sendViaStream(data, addr) { return }
         if let guest, primary == nil || isGuestAddr(addr) {
             try await guest.send(data, to: addr)
         } else if let primary {

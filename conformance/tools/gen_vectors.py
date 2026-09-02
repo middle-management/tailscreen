@@ -90,6 +90,7 @@ TCP_TYPES = {
     "controlReleased": 0x0A,
     "metadataRequest": 0x0B,
     "metadataResponse": 0x0C,
+    "mediaDatagram": 0x0D,
 }
 
 
@@ -1058,6 +1059,15 @@ def suite_tcp_framing():
     f_unknown = frame(0xFF, b"whatever")
     f_reserved = frame(0x01, b"historical")
 
+    # §2.2 stream carriage: a mediaDatagram frame's payload is one raw UDP
+    # datagram — here a stream viewer's extended HELLO (caps = receiverReport
+    # only, per TS-STM-005) and an RTP-shaped media packet (TS-GEN-020's
+    # first-byte classification applies to the payload, not the frame).
+    dgram_hello = bytes([CONTROL["hello"], 0x02])
+    dgram_rtp = rtp_header(True, H264_PT, 7, 90_000, 42) + filler(24, salt=13)
+    f_media_hello = frame(TCP_TYPES["mediaDatagram"], dgram_hello)
+    f_media_rtp = frame(TCP_TYPES["mediaDatagram"], dgram_rtp)
+
     stream = f_ann + f_req + f_ctlreq
     oversize = bytes([TCP_TYPES["annotation"]]) + be32(1048577) + b"\x00" * 8
     at_limit_header = bytes([TCP_TYPES["annotation"]]) + be32(1048576)
@@ -1203,6 +1213,37 @@ def suite_tcp_framing():
                 "frames": [
                     {"type": 0x03, "payload": h(ann)},
                     {"type": 0x04, "payload": h(req)},
+                ],
+                "corrupt": False,
+            },
+        ),
+        case(
+            "tcp/encode-media-datagram-hello-frame",
+            ["TS-TCP-001", "TS-STM-001", "TS-STM-002", "TS-CNF-002"],
+            "frame.encode",
+            {"type": 0x0D, "payload": h(dgram_hello)},
+            {"bytes": h(f_media_hello)},
+        ),
+        case(
+            "tcp/parse-media-datagram-rtp-payload-raw",
+            ["TS-STM-001", "TS-TCP-009"],
+            "frame.parse",
+            {"chunks": [h(f_media_rtp)]},
+            {
+                "frames": [{"type": 0x0D, "payload": h(dgram_rtp)}],
+                "corrupt": False,
+            },
+        ),
+        case(
+            "tcp/parse-media-datagram-interleaved-with-control",
+            ["TS-STM-001", "TS-TCP-007"],
+            "frame.parse",
+            {"chunks": [h(f_media_hello + f_ann + f_media_rtp)]},
+            {
+                "frames": [
+                    {"type": 0x0D, "payload": h(dgram_hello)},
+                    {"type": 0x03, "payload": h(ann)},
+                    {"type": 0x0D, "payload": h(dgram_rtp)},
                 ],
                 "corrupt": False,
             },
@@ -1568,7 +1609,7 @@ def main():
     with open(os.path.join(OUT, "index.json"), "w") as f:
         json.dump(
             {
-                "specVersion": 1,
+                "specVersion": 2,
                 "spec": "docs/spec.md",
                 "generator": "conformance/tools/gen_vectors.py",
                 "suites": index,

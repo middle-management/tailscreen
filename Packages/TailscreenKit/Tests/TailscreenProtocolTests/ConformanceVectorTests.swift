@@ -63,7 +63,7 @@ final class ConformanceVectorTests: XCTestCase {
     func testConformanceVectors() throws {
         let index = try loadJSON("index.json")
         XCTAssertEqual(
-            index["specVersion"] as? Int, 1,
+            index["specVersion"] as? Int, 2,
             "vectors declare a spec version this runner does not implement")
 
         guard let suites = index["suites"] as? [[String: Any]], !suites.isEmpty else {

@@ -34,15 +34,24 @@ public actor ViewerBackChannel {
         public var onControlGranted: (@Sendable () -> Void)?
         /// The sharer revoked (or declined) control, with a short reason.
         public var onControlRevoked: (@Sendable (String) -> Void)?
+        /// One raw datagram of the sharer's media/control plane, carried as a
+        /// `.mediaDatagram` frame (spec §2.2, the reliable-transport
+        /// profile). Set by `TsnetTransport` itself when the session runs in
+        /// stream mode — it feeds the same inbox the UDP socket would — and
+        /// nil otherwise, in which case a frame from a confused sharer is
+        /// dropped here like any other unexpected type.
+        public var onMediaDatagram: (@Sendable (Data) -> Void)?
 
         public init(
             onAnnotation: (@Sendable (AnnotationOp) -> Void)? = nil,
             onControlGranted: (@Sendable () -> Void)? = nil,
-            onControlRevoked: (@Sendable (String) -> Void)? = nil
+            onControlRevoked: (@Sendable (String) -> Void)? = nil,
+            onMediaDatagram: (@Sendable (Data) -> Void)? = nil
         ) {
             self.onAnnotation = onAnnotation
             self.onControlGranted = onControlGranted
             self.onControlRevoked = onControlRevoked
+            self.onMediaDatagram = onMediaDatagram
         }
     }
 
@@ -155,6 +164,15 @@ public actor ViewerBackChannel {
         await send(.controlReleased, label: "controlReleased")
     }
 
+    /// Send one raw datagram of this viewer's control plane (HELLO,
+    /// KEEPALIVE, PLI, receiver reports …) as a `.mediaDatagram` frame —
+    /// the outbound half of stream mode (spec §2.2). Same ordering contract
+    /// as `sendInputEvent`: callers must feed this from one serial producer
+    /// (`TsnetTransport`'s outbound queue does).
+    public func sendMediaDatagram(_ datagram: Data) async {
+        await send(.mediaDatagram(datagram), label: "mediaDatagram")
+    }
+
     /// Serialize on the actor: `OutgoingConnection.send` is synchronous, so a
     /// single actor-isolated call site keeps writes ordered without a separate
     /// writer type (the mac client needs `ConnectionWriter` only because it
@@ -257,6 +275,8 @@ public actor ViewerBackChannel {
                         handlers.onControlGranted?()
                     case .controlRevoked(let reason):
                         handlers.onControlRevoked?(reason)
+                    case .mediaDatagram(let datagram):
+                        handlers.onMediaDatagram?(datagram)
                     default:
                         break
                     }

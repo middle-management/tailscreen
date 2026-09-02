@@ -19,7 +19,7 @@ import XCTest
 ///      the failure names both claimants.
 ///
 /// Uniqueness is deliberately scoped *per channel*: the TCP message-type
-/// space (0x03–0x0C) and the UDP control-byte space (0x03–0x0D) overlap by
+/// space (0x03–0x0D) and the UDP control-byte space (0x03–0x0D) overlap by
 /// design, and the helper wire's `OutType`/`InType` ride different
 /// pipes (both use 0x01–0x05 and 0xFF). Asserting cross-channel uniqueness
 /// would institutionalize a false invariant — see
@@ -121,7 +121,8 @@ final class WireByteRegistryTests: XCTestCase {
                 WireRow("inputEvent", 0x09),
                 WireRow("controlReleased", 0x0A),
                 WireRow("metadataRequest", 0x0B),
-                WireRow("metadataResponse", 0x0C)
+                WireRow("metadataResponse", 0x0C),
+                WireRow("mediaDatagram", 0x0D)
             ])
     }
 
@@ -360,6 +361,8 @@ final class WireByteRegistryTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.receiverReport.rawValue, 0x0B)
         XCTAssertEqual(ScreenShareMessage.MessageType.metadataResponse.rawValue, 0x0C)
         XCTAssertEqual(ScreenShareControlMessage.ping.rawValue, 0x0C)
+        XCTAssertEqual(ScreenShareMessage.MessageType.mediaDatagram.rawValue, 0x0D)
+        XCTAssertEqual(ScreenShareControlMessage.fec.rawValue, 0x0D)
     }
 
     /// Registry: the neutral `KeyModifiers` wire bits carried in

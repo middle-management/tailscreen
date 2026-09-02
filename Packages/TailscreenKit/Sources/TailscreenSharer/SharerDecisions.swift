@@ -19,6 +19,41 @@ extension TailscaleScreenShareServer {
         isExisting || currentCount < cap
     }
 
+    /// Pure synthetic-addr derivation for a stream (reliable-transport,
+    /// spec §2.2) viewer. The viewer roster, the send routing, and every
+    /// per-viewer map key on an addr string; a UDP viewer's is its real
+    /// `ip:port` source. A stream viewer has no UDP flow — its transport is
+    /// a framed TCP connection whose peer address carries **no port**
+    /// (`tailscale_getremoteaddr` strips it), so two viewers on one machine
+    /// would collide on bare IP. The synthetic addr appends a
+    /// connection-derived `tcp-…` suffix in the port position, chosen
+    /// non-numeric ON PURPOSE: it can never equal a real UDP `ip:port` key,
+    /// so the stream route lookup can be checked first without ever
+    /// shadowing a UDP viewer.
+    ///
+    /// Two invariants, pinned by `StreamViewerDecisionTests`:
+    /// `ipFromAddr(streamViewerAddr(ip, _)) == ip` for both IPv4 and
+    /// bracketed IPv6 (the admitted-viewer gates anchor on that reduction),
+    /// and distinct connections from one IP yield distinct addrs.
+    public static func streamViewerAddr(peerIP: String?, connectionID: UUID) -> String {
+        let suffix = "tcp-" + connectionID.uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
+        guard let peerIP, !peerIP.isEmpty else { return suffix }
+        // Re-bracket IPv6 so the addr round-trips through `ipFromAddr`'s
+        // bracket-first rule; `peerIP` arrives bare (already reduced).
+        let host = peerIP.contains(":") ? "[\(peerIP)]" : peerIP
+        return "\(host):\(suffix)"
+    }
+
+    /// TS-STM-005: the capabilities a stream viewer is allowed to hold.
+    /// NACK retransmission and FEC parity recover *lost* datagrams, and the
+    /// stream transport loses none — on it they are pure overhead (and the
+    /// retransmit budget is charged for nothing). The receiver-report and
+    /// tenBit bits pass through untouched; RR still carries RTT/jitter and
+    /// liveness, and bit depth has nothing to do with the transport.
+    public static func streamHelloCaps(_ advertised: ScreenShareCaps) -> ScreenShareCaps {
+        advertised.subtracting([.nack, .fec])
+    }
+
     /// What to do about a helper process that exited without being asked to.
     public enum HelperExitDisposition: Equatable {
         /// replayd refused the capture slot (another same-bundle process

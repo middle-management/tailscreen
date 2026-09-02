@@ -377,6 +377,75 @@
         ],
         "corrupt": false
       }
+    },
+    {
+      "id": "tcp/encode-media-datagram-hello-frame",
+      "requirements": [
+        "TS-TCP-001",
+        "TS-STM-001",
+        "TS-STM-002",
+        "TS-CNF-002"
+      ],
+      "op": "frame.encode",
+      "in": {
+        "type": 13,
+        "payload": "0002"
+      },
+      "out": {
+        "bytes": "0d000000020002"
+      }
+    },
+    {
+      "id": "tcp/parse-media-datagram-rtp-payload-raw",
+      "requirements": [
+        "TS-STM-001",
+        "TS-TCP-009"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "0d0000002480e0000700015f900000002a969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b22293037"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 13,
+            "payload": "80e0000700015f900000002a969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b22293037"
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-media-datagram-interleaved-with-control",
+      "requirements": [
+        "TS-STM-001",
+        "TS-TCP-007"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "0d00000002000203000000137b2274797065223a22636c656172416c6c227d0d0000002480e0000700015f900000002a969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b22293037"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 13,
+            "payload": "0002"
+          },
+          {
+            "type": 3,
+            "payload": "7b2274797065223a22636c656172416c6c227d"
+          },
+          {
+            "type": 13,
+            "payload": "80e0000700015f900000002a969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b22293037"
+          }
+        ],
+        "corrupt": false
+      }
     }
   ]
 }

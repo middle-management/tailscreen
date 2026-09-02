@@ -47,6 +47,21 @@ public struct ViewerConfig: Sendable {
     }
     public var nodeRole: NodeRole = .viewerOnly
 
+    /// Run the session over the **stream profile** (spec §2.2): the whole
+    /// datagram plane — HELLO, media, control — rides the framed TCP
+    /// back-channel as `.mediaDatagram` frames instead of UDP, for paths
+    /// where UDP is blocked or unavailable. NACK and FEC are dropped from
+    /// the advertised caps (TS-STM-005 — the transport loses nothing, so
+    /// they are dead weight); receiver reports stay. Against a sharer that
+    /// predates the profile the HELLO frames are silently skipped and the
+    /// session times out exactly as against an unreachable sharer
+    /// (TS-STM-007).
+    ///
+    /// Defaults to the `TAILSCREEN_FORCE_STREAM=1` environment override —
+    /// the testing affordance — so any host picks it up with no wiring.
+    public var useStreamTransport: Bool =
+        ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_STREAM"] == "1"
+
     /// A share-by-token connection token. When set, the session runs over
     /// the guest (control-plane-free) tunnel instead of the tailnet: no
     /// tsnet node, no sign-in — `hostname`, `authKey`, `controlURL`,
@@ -594,16 +609,21 @@ public final class TsnetTransport {
             // its own reconnect loop: a sharer that predates the guest TCP
             // channel never accepts, the redial keeps retrying quietly, and
             // its advertised caps still gate the host's affordances.
+            let inbox = DatagramInbox()
             let backChannel = ViewerBackChannel(
                 guest: client, port: config.port,
-                handlers: backChannelHandlers, logger: logger)
+                handlers: Self.wiredHandlers(
+                    backChannelHandlers, streamMode: config.useStreamTransport,
+                    inbox: inbox, dest: dest),
+                logger: logger)
             await backChannel.start()
             onBackChannelReady?(backChannel)
             return try await runSession(
                 config: config,
                 wiring: SessionWiring(
                     listener: listener, dest: dest, backChannel: backChannel,
-                    tailnetNode: nil, guestClient: client),
+                    tailnetNode: nil, guestClient: client,
+                    inbox: inbox, streamMode: config.useStreamTransport),
                 endpoints: SessionAV(
                     decoder: decoder, videoSink: videoSink, audioSink: audioSink,
                     microphone: microphone),
@@ -675,9 +695,13 @@ public final class TsnetTransport {
         // node handle. It dials + reconnects on its own task, so failure here
         // never blocks the video path — a viewer with a dead back-channel still
         // watches. Handed to the host so its chrome can send strokes/requests.
+        let inbox = DatagramInbox()
         let backChannel = ViewerBackChannel(
             tailscale: tailscale, host: config.hostname, port: config.port,
-            handlers: backChannelHandlers, logger: logger)
+            handlers: Self.wiredHandlers(
+                backChannelHandlers, streamMode: config.useStreamTransport,
+                inbox: inbox, dest: dest),
+            logger: logger)
         await backChannel.start()
         onBackChannelReady?(backChannel)
 
@@ -685,7 +709,8 @@ public final class TsnetTransport {
             config: config,
             wiring: SessionWiring(
                 listener: listener, dest: dest, backChannel: backChannel,
-                tailnetNode: node, guestClient: nil),
+                tailnetNode: node, guestClient: nil,
+                inbox: inbox, streamMode: config.useStreamTransport),
             endpoints: SessionAV(
                 decoder: decoder, videoSink: videoSink, audioSink: audioSink,
                 microphone: microphone),
@@ -712,6 +737,31 @@ public final class TsnetTransport {
         let backChannel: ViewerBackChannel?
         let tailnetNode: TailscaleNode?
         let guestClient: GuestClientNode?
+        /// Where inbound datagrams land, whichever transport carried them.
+        /// Created in `run` (rather than `runSession`) because in stream
+        /// mode the back-channel's `.mediaDatagram` handler must feed it,
+        /// and the handlers are fixed at the channel's construction.
+        let inbox: DatagramInbox
+        /// Stream (reliable-transport, spec §2.2) mode: the outbound queue
+        /// goes to the back-channel as `.mediaDatagram` frames instead of
+        /// the UDP socket, and the advertised caps drop NACK/FEC.
+        let streamMode: Bool
+    }
+
+    /// The host's handlers, plus — in stream mode — this transport's own
+    /// `.mediaDatagram` tap feeding the session inbox. Datagrams arrive
+    /// tagged with `dest` so the loop's expected-sender guard passes: on
+    /// the stream there is exactly one possible sender, the connection's
+    /// far end.
+    private nonisolated static func wiredHandlers(
+        _ base: ViewerBackChannel.Handlers, streamMode: Bool, inbox: DatagramInbox, dest: String
+    ) -> ViewerBackChannel.Handlers {
+        guard streamMode else { return base }
+        var handlers = base
+        handlers.onMediaDatagram = { datagram in
+            inbox.push(DatagramInbox.Datagram(payload: datagram, from: dest))
+        }
+        return handlers
     }
 
     /// The media endpoints a session decodes into and captures from.
@@ -775,8 +825,15 @@ public final class TsnetTransport {
         // resolution change) is announced — the "am I actually receiving
         // video?" signal.
         let loggingSink = StatusVideoSink(inner: videoSink, logger: logger)
+        // TS-STM-005: on the stream profile the transport never loses a
+        // packet, so NACK retransmission and FEC parity are dead weight —
+        // a stream viewer must not advertise them. Receiver reports stay
+        // (RTT, jitter, liveness), and any other bit (`.tenBit`) is about
+        // the decoder, not the transport.
+        let effectiveCaps =
+            wiring.streamMode ? config.caps.subtracting([.nack, .fec]) : config.caps
         let pipeline = ViewerPipeline(
-            caps: config.caps,
+            caps: effectiveCaps,
             decoder: decoder,
             videoSink: loggingSink,
             audioSink: audioSink,
@@ -798,9 +855,19 @@ public final class TsnetTransport {
         }
 
         let sendLogger = logger
+        let streamMode = wiring.streamMode
+        let streamChannel = backChannel
         let senderTask = Task {
             var loggedSendError = false
             for await datagram in outbound {
+                // Stream mode: the whole outbound datagram plane (HELLO,
+                // KEEPALIVE, PLI, RRs, voice RTP) rides the back-channel as
+                // `.mediaDatagram` frames (TS-STM-002). One serial consumer,
+                // so the channel's ordering contract holds.
+                if streamMode, let streamChannel {
+                    await streamChannel.sendMediaDatagram(datagram)
+                    continue
+                }
                 do {
                     try await listener.send(datagram, to: dest)
                 } catch {
@@ -841,7 +908,7 @@ public final class TsnetTransport {
         // Sendable`, not actor-isolated — which captures its `PacketListener`
         // in a bare `Task { }` and sends from it. That closure is `@Sendable`,
         // so the type must be `Sendable` for shipped code to compile.
-        let inbox = DatagramInbox()
+        let inbox = wiring.inbox
         let receiveFailure = ReceiveFailureFlag()
         let receiveLogger = logger
         let receiverTask = Task.detached {
@@ -925,7 +992,10 @@ public final class TsnetTransport {
 
         // Advertise our caps; the sharer replies with a HELLO_ACK.
         pipeline.start()
-        logger.log("HELLO queued to \(dest) (caps=\(config.caps.rawValue)) — awaiting HELLO_ACK…")
+        let transportLabel = wiring.streamMode ? "stream (framed TCP, §2.2)" : "UDP"
+        logger.log(
+            "HELLO queued to \(dest) via \(transportLabel) (caps=\(effectiveCaps.rawValue)) — awaiting HELLO_ACK…"
+        )
 
         // Receive + tick loop. `recv`'s timeout gives a steady tick cadence
         // (NACK/PLI aging) even with no inbound traffic; real datagrams return

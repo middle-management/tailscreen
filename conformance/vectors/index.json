@@ -1,5 +1,5 @@
 {
-  "specVersion": 1,
+  "specVersion": 2,
   "spec": "docs/spec.md",
   "generator": "conformance/tools/gen_vectors.py",
   "suites": [
@@ -26,7 +26,7 @@
     {
       "suite": "tcp-framing",
       "file": "tcp-framing.json",
-      "cases": 15
+      "cases": 18
     },
     {
       "suite": "json-payloads",
