@@ -22,6 +22,18 @@ public enum ShareLinkFormat {
         "\(scheme)://join?token=\(token)"
     }
 
+    /// Where the browser viewer is published (`web/viewer`, deployed by the
+    /// Pages workflow). A web link is this plus the token in the URL
+    /// **fragment**, so the token never reaches the server that hosts the
+    /// page: `https://tailscreen.dev/view/#tc…`.
+    public static let webViewerURL = "https://tailscreen.dev/view/"
+
+    /// The web-viewer URL for a token — what "Copy Web Link" puts on the
+    /// clipboard: opens the share in a browser, no app, no account.
+    public static func webLink(token: String) -> String {
+        "\(webViewerURL)#\(token)"
+    }
+
     /// Extract a share token from whatever a user pasted: a bare token, a
     /// join URL (with or without the `//`), or either with surrounding
     /// whitespace. Returns nil when the input holds no plausible token —
@@ -32,12 +44,24 @@ public enum ShareLinkFormat {
         if isPlausibleToken(trimmed) { return trimmed }
         // URL forms. `URLComponents` handles both `tailscreen://join?…`
         // (host "join") and `tailscreen:join?…` (path "join").
-        guard let components = URLComponents(string: trimmed),
-            components.scheme?.lowercased() == scheme
-        else { return nil }
-        let token = components.queryItems?.first { $0.name == "token" }?.value
-        guard let token, isPlausibleToken(token) else { return nil }
-        return token
+        guard let components = URLComponents(string: trimmed) else { return nil }
+        switch components.scheme?.lowercased() {
+        case scheme:
+            let token = components.queryItems?.first { $0.name == "token" }?.value
+            guard let token, isPlausibleToken(token) else { return nil }
+            return token
+        case "https", "http":
+            // A web-viewer link, from ANY host: the page is static and
+            // self-hostable, so the host proves nothing — the token in the
+            // fragment (or, for a hand-typed form, a `token` query item) is
+            // what the join needs.
+            if let fragment = components.fragment, isPlausibleToken(fragment) { return fragment }
+            let token = components.queryItems?.first { $0.name == "token" }?.value
+            guard let token, isPlausibleToken(token) else { return nil }
+            return token
+        default:
+            return nil
+        }
     }
 
     /// A token is "tc" + base64url — checked shallowly (prefix, charset,

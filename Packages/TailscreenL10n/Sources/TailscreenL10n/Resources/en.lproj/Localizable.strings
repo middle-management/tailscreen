@@ -647,6 +647,8 @@
 "Copy Link" = "Copy Link";
 "Copies a tailscreen: link that opens the join screen" = "Copies a tailscreen: link that opens the join screen";
 "Copy Token" = "Copy Token";
+"Copy Web Link" = "Copy Web Link";
+"Copies an https: link that opens the share in a browser — no app needed" = "Copies an https: link that opens the share in a browser — no app needed";
 "Copies the bare token, for pasting into the join screen" = "Copies the bare token, for pasting into the join screen";
 "New Link" = "New Link";
 "Replaces the link — the old one stops working and current guests are dropped" = "Replaces the link — the old one stops working and current guests are dropped";

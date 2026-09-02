@@ -449,6 +449,10 @@ public struct ShareCard: View {
                 Text(ShareLinkFormat.link(token: token))
                     .font(.caption)
                     .textSelectionEnabled()
+                // The browser form: same token, opens in any browser, no app.
+                Text(ShareLinkFormat.webLink(token: token))
+                    .font(.caption)
+                    .textSelectionEnabled()
                 Text(guestCountLine)
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)

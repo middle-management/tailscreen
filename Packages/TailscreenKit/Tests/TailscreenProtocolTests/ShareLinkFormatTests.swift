@@ -32,14 +32,36 @@ final class ShareLinkFormatTests: XCTestCase {
     func testNonTokensRejected() {
         XCTAssertNil(ShareLinkFormat.token(fromUserInput: ""))
         XCTAssertNil(ShareLinkFormat.token(fromUserInput: "hello world"))
-        // Wrong scheme: never treat arbitrary URLs as tokens.
-        XCTAssertNil(ShareLinkFormat.token(fromUserInput: "https://example.com?token=\(token)"))
+        // Wrong scheme: never treat arbitrary URLs as tokens. (An http(s) URL
+        // carrying a token IS a web link — see testWebLinkFromAnyHostAndQueryFormAccepted.)
+        XCTAssertNil(ShareLinkFormat.token(fromUserInput: "ftp://example.com?token=\(token)"))
+        XCTAssertNil(ShareLinkFormat.token(fromUserInput: "mailto:someone@example.com?token=\(token)"))
+        // A web URL with no token in it is not a link either.
+        XCTAssertNil(ShareLinkFormat.token(fromUserInput: "https://example.com/?ref=\(token)"))
         // Token-shaped but too short to be one.
         XCTAssertNil(ShareLinkFormat.token(fromUserInput: "tcabc"))
         // Right prefix, illegal charset (base64url has no "+").
         XCTAssertNil(ShareLinkFormat.token(fromUserInput: "tcabcdef+ghijklmn"))
         // A join URL carrying a non-token.
         XCTAssertNil(ShareLinkFormat.token(fromUserInput: "tailscreen://join?token=nope"))
+    }
+
+    func testWebLinkRoundTripsThroughParser() {
+        let token = "tcomFwWCAkZttNC8pzkXTrWzFv4N3sLGmOQF4jaVRlXtm3A2vqSGFyg"
+        let link = ShareLinkFormat.webLink(token: token)
+        XCTAssertEqual(link, "https://tailscreen.dev/view/#\(token)")
+        XCTAssertEqual(ShareLinkFormat.token(fromUserInput: link), token)
+        // The token rides the fragment so it never reaches the page's host.
+        XCTAssertFalse(link.contains("?"))
+    }
+
+    func testWebLinkFromAnyHostAndQueryFormAccepted() {
+        let token = "tcomFwWCAkZttNC8pzkXTrWzFv4N3sLGmOQF4jaVRlXtm3A2vqSGFyg"
+        XCTAssertEqual(ShareLinkFormat.token(fromUserInput: "https://screens.example/viewer/#\(token)"), token)
+        XCTAssertEqual(ShareLinkFormat.token(fromUserInput: "http://localhost:8080/index.html?token=\(token)"), token)
+        XCTAssertEqual(ShareLinkFormat.token(fromUserInput: "  https://tailscreen.dev/view/#\(token)\n"), token)
+        XCTAssertNil(ShareLinkFormat.token(fromUserInput: "https://tailscreen.dev/view/#not-a-token"))
+        XCTAssertNil(ShareLinkFormat.token(fromUserInput: "https://tailscreen.dev/view/"))
     }
 
     func testKeyFingerprint() {

@@ -624,6 +624,12 @@ private struct ShareViaLinkSection: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
                     .help(L("Copies a tailscreen: link that opens the join screen"))
+                    Button(L("Copy Web Link")) {
+                        copyToPasteboard(ShareLinkFormat.webLink(token: token))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help(L("Copies an https: link that opens the share in a browser — no app needed"))
                     Button(L("Copy Token")) {
                         copyToPasteboard(token)
                     }
