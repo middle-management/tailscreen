@@ -248,6 +248,31 @@ async function main() {
   const offersDrawing = await page.evaluate(() => !document.getElementById("btn-draw").hidden);
   if (offersDrawing) throw new Error("drawing tools offered by a sharer that advertised no annotations capability");
 
+  // The join field: the page opened with NO token shows the apps' join sheet.
+  // A non-token is refused in place; the real token, pasted as the web link,
+  // moves into the fragment and dials — a second session on the same sharer,
+  // the first having ended when the page navigated away.
+  await page.goto(`http://127.0.0.1:${port}/index.html`);
+  await page.waitForFunction(() => window.__viewer?.state === "no-token", null, { timeout: 60_000 });
+  if (await page.locator("#join").isHidden()) throw new Error("join field: form not shown on a token-less URL");
+  await page.fill("#join-input", "https://example.com/?ref=not-a-token");
+  await page.click("#join-submit");
+  await page.waitForFunction(() => !document.getElementById("join-error").hidden, null, { timeout: 5_000 });
+  const refused = await page.evaluate(() => window.__viewer.state);
+  if (refused !== "no-token") throw new Error(`join field: a non-token moved the page to state ${refused}`);
+  await page.fill("#join-input", `https://tailscreen.dev/view/#${token}`);
+  await page.click("#join-submit");
+  await page.waitForFunction(
+    () => ["acked", "denied", "error", "ended", "closed"].includes(window.__viewer?.state),
+    null,
+    { timeout: 90_000 },
+  );
+  const s2 = await state();
+  if (s2.state !== "acked") throw new Error(`join field: page ended in state ${s2.state}: ${s2.lastError ?? ""}\n${s2.log.join("\n")}`);
+  const hash = await page.evaluate(() => location.hash);
+  if (hash !== `#${token}`) throw new Error(`join field: token not moved into the fragment (${hash})`);
+  log("join field: refused a non-token, accepted the pasted web link, reached acked");
+
   const sizes = ["viewer.wasm", "viewer.wasm.gz", "viewer.wasm.br"]
     .map((f) => path.join(viewerDir, "dist", f))
     .filter(existsSync)

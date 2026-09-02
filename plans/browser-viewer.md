@@ -410,6 +410,15 @@ brotli). The `guest` package's server half rides along because it is one
 package; splitting it behind a build tag would be a fork change for a few
 megabytes of raw size that the gzip transfer mostly hides. Deferred.
 
+**Post-ship: the join field.** Opened without a token, the page now shows
+the apps' join sheet — paste a web link, a `tailscreen:` link or the bare
+token — instead of a dead-end placard. `wire.js` carries the parser
+(`tokenFromInput`, the mirror of `ShareLinkFormat.token(fromUserInput:)`,
+pinned by `wire.test.mjs` on the same cases as `ShareLinkFormatTests`),
+the submitted token moves into the fragment, and the e2e's last leg opens
+the bare page, gets a non-token refused, pastes the web link and reaches
+`acked` a second time.
+
 ## Follow-ups
 
 What shipping left open, roughly in the order it will matter:

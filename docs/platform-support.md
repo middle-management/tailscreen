@@ -60,7 +60,9 @@ what the partial case *is*, because that is the part a reader can act on.
 ³ Browsers refuse to play audio until the page has been clicked; the
 **Enable audio** button is that click. ⁴ In a browser, **Join** means opening
 the **web link** (`https://tailscreen.dev/view/#tc…`, from **Copy Web
-Link** on macOS or the second line of the Linux/Windows share card): the
+Link** on macOS or the second line of the Linux/Windows share card) — or
+opening the page bare and pasting any form of the link, or the bare
+token, into its join field, the apps' join sheet as a page. Either way the
 token rides the URL fragment, so it never reaches the server hosting the
 page. Everything the browser receives is DERP-relayed — fine on a
 self-hosted relay, not on the free ones at screen-share bitrate.

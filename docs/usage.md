@@ -233,8 +233,10 @@ MSIX install), and pasting always works:
 - **A browser, nothing installed** — open the **web link**
   (`https://tailscreen.dev/view/#tc…`). On macOS the sharing card's
   **Copy Web Link** puts it on the clipboard; on Linux and Windows it is the
-  second line under the link toggle. Chrome, Edge and Firefox decode the
-  share; Safari has not been checked yet. The page waits at the same
+  second line under the link toggle. Opened *without* a token, the page
+  shows the same join field as the apps — paste the web link, the
+  `tailscreen:` link or the bare token into it. Chrome, Edge and Firefox
+  decode the share; Safari has not been checked yet. The page waits at the same
   approval placard, then shows the screen, plays audio once you click
   **Enable audio** (browsers insist on a click), lets you **draw** when the
   sharer renders annotations and **request control** when the sharer can

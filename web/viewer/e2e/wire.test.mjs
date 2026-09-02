@@ -10,7 +10,7 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const sandbox = { globalThis: null, crypto: { randomUUID: () => "6C84FB90-12C4-11E1-840D-7B25C5EE775A" } };
+const sandbox = { globalThis: null, URL, crypto: { randomUUID: () => "6C84FB90-12C4-11E1-840D-7B25C5EE775A" } };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(readFileSync(path.join(here, "..", "wire.js"), "utf8"), sandbox);
 const W = sandbox.TailscreenWire;
@@ -73,5 +73,21 @@ assert.ok(store.apply(add));
 assert.ok(store.apply(W.annotation.clearAll()));
 assert.equal(store.items.size, 0);
 assert.equal(store.apply({ type: "bogus" }), false);
+
+// The join field's parser — the same cases ShareLinkFormatTests pins for
+// ShareLinkFormat.token(fromUserInput:), so the two sides cannot drift.
+const tok = "tc" + "A".repeat(20);
+assert.equal(W.isPlausibleToken(tok), true);
+assert.equal(W.tokenFromInput(tok), tok, "bare token");
+assert.equal(W.tokenFromInput(`  ${tok}\n`), tok, "whitespace trimmed");
+assert.equal(W.tokenFromInput(`tailscreen://join?token=${tok}`), tok, "app link");
+assert.equal(W.tokenFromInput(`tailscreen:join?token=${tok}`), tok, "app link, path form");
+assert.equal(W.tokenFromInput(`https://tailscreen.dev/view/#${tok}`), tok, "web link");
+assert.equal(W.tokenFromInput(`https://example.com/anything/#${tok}`), tok, "web link from any host");
+assert.equal(W.tokenFromInput(`http://127.0.0.1:8080/index.html?token=${tok}`), tok, "query form");
+for (const bad of [
+  "", "   ", "tcshort", "tc" + "A".repeat(10) + "!", "xx" + "A".repeat(20),
+  `ftp://example.com/?token=${tok}`, `mailto:${tok}`, `https://example.com/?ref=${tok}`, "https://example.com/#nottoken",
+]) assert.equal(W.tokenFromInput(bad), null, JSON.stringify(bad));
 
 console.log("wire.test: ok");

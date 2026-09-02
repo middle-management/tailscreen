@@ -19,6 +19,15 @@
   #placard button, #bar button, #bar select { font: inherit; padding: .4rem .9rem; border-radius: .4rem; border: 1px solid #3a3a40; background: #1b1b20; color: inherit; cursor: pointer; }
   #bar button.active { background: #ff8c1a; color: #111; border-color: #ff8c1a; }
   #placard button { margin: .75rem auto 0; }
+  #join { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; gap: .5rem; padding: 2rem; background: rgba(11,11,13,.95); }
+  #join[hidden] { display: none; }
+  #join h1 { font-size: 1.25rem; margin: 0; }
+  #join p { margin: 0; color: #b8b8bd; max-width: 34rem; }
+  #join input { font: inherit; padding: .5rem .7rem; border-radius: .4rem; border: 1px solid #3a3a40; background: #141418; color: inherit; width: min(34rem, 80vw); margin-top: .5rem; }
+  #join button { font: inherit; padding: .4rem .9rem; border-radius: .4rem; border: 1px solid #3a3a40; background: #1b1b20; color: inherit; cursor: pointer; margin-top: .25rem; }
+  #join .error { color: #ff7a7a; }
+  #join .error[hidden] { display: none; }
+  #join .caption { font-size: 12px; color: #8a8a90; margin-top: .75rem; }
   #bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: .5rem; padding: .5rem; background: linear-gradient(transparent, rgba(0,0,0,.6)); opacity: 0; transition: opacity .2s; }
   body:hover #bar, #bar:focus-within, body.drawing #bar { opacity: 1; }
   #bar [hidden] { display: none; }
@@ -30,6 +39,14 @@
 <canvas id="stage" width="16" height="9"></canvas>
 <canvas id="ink" width="16" height="9"></canvas>
 <div id="placard"><h1 id="placard-title">…</h1><p id="placard-body"></p><button id="placard-action" hidden></button></div>
+<form id="join" hidden autocomplete="off">
+  <h1 id="join-title">Join a shared screen</h1>
+  <p id="join-body">Paste a share link or token from the person sharing their screen.</p>
+  <input id="join-input" type="text" placeholder="tailscreen: link or token" spellcheck="false" autocapitalize="off" autocorrect="off" required>
+  <p id="join-error" class="error" hidden></p>
+  <button id="join-submit" type="submit">Join</button>
+  <p id="join-caption" class="caption"></p>
+</form>
 <pre id="hud" hidden></pre>
 <pre id="log" hidden></pre>
 <div id="bar">
