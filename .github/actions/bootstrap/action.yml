@@ -35,7 +35,10 @@ inputs:
       'preinstalled' uses whatever is on PATH (the Linux containers take Go
       from apt, where setup-go's tool cache does not apply); 'none' skips it.
       Skipped entirely on a libtailscale cache hit — nothing downstream of this
-      action needs a Go toolchain, only the archive.
+      action needs a Go toolchain, only the archive. A job that DOES need Go
+      after the archive (the browser viewer's wasm build in linux-web-spike)
+      runs its own setup-go step after this action rather than relying on
+      this one, which is skipped on every cache hit.
     required: false
     default: 'setup-go'
   libtailscale:
