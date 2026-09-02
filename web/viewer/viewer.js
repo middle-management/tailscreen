@@ -1,53 +1,97 @@
-// The Phase 2 spike loop. Everything wire-shaped comes from the wasm exports
-// (sdk/go under the hood); this file only sequences them:
+// The browser viewer (plans/browser-viewer.md, Phase 3). The wasm owns the
+// protocol — guest tunnel, framing, the receive pipeline, the cadences —
+// and this file owns what a browser has that Go does not: WebCodecs, a
+// canvas, an AudioContext, and the person in front of them.
 //
-//   load wasm → dial by token → HELLO as a mediaDatagram frame → keep HELLO
-//   going until answered, then KEEPALIVE at the spec cadence → classify every
-//   frame that comes back and count it.
+//   load wasm → dial by token → session (HELLO over the stream profile) →
+//   every returning frame → session.ingest → access units → VideoDecoder →
+//   canvas; Opus frames → AudioDecoder → AudioContext (behind a gesture).
 //
-// `window.__spike` is the observable state the Playwright harness asserts on.
+// `window.__viewer` is the observable state the e2e asserts on.
 
 "use strict";
 
-const spike = (window.__spike = {
+const viewer = (window.__viewer = {
   state: "loading",
   serverAddr: null,
   ssrc: null,
-  rtpPackets: 0,
-  rtpBytes: 0,
-  video: 0,
-  audio: 0,
-  control: {},
-  otherFrames: {},
+  hostname: null,
+  shareName: null,
+  codec: null,
+  codecString: null,
+  width: 0,
+  height: 0,
+  decodedFrames: 0,
+  decodeErrors: 0,
+  droppedAUs: 0,
+  videoAUs: 0,
+  keyframes: 0,
+  rtpVideo: 0,
+  audioFrames: 0,
+  fps: 0,
+  kbps: 0,
+  unsupported: false,
   lastError: null,
   log: [],
 });
 
 const $ = (id) => document.getElementById(id);
+const K = () => tailscreenConstants;
+const nowNs = () => performance.now() * 1e6;
+
+// --- strings: the shared catalog, exported at build time -----------------------
+
+let STR = {};
+async function loadStrings() {
+  try {
+    const all = await (await fetch("dist/strings.json")).json();
+    for (const l of navigator.languages ?? [navigator.language]) {
+      const lang = String(l).toLowerCase().split("-")[0];
+      if (all[lang]) {
+        STR = all[lang];
+        return;
+      }
+    }
+    STR = all.en ?? {};
+  } catch {
+    STR = {};
+  }
+}
+// The key IS the English text, so a missing catalog degrades to English.
+const t = (key, arg) => (STR[key] ?? key).replace("%@", arg ?? "");
+
+// --- small UI ----------------------------------------------------------------------------
 
 function log(line) {
-  spike.log.push(line);
+  viewer.log.push(line);
+  if (viewer.log.length > 200) viewer.log.shift();
   console.log(line);
   const el = $("log");
-  if (el) el.textContent += line + "\n";
+  if (el) el.textContent = viewer.log.join("\n");
 }
 
-function render() {
-  $("state").textContent = spike.state + (spike.lastError ? ` — ${spike.lastError}` : "");
-  $("server").textContent = spike.serverAddr ?? "—";
-  $("ssrc").textContent = spike.ssrc ?? "—";
-  $("rtp").textContent = `${spike.rtpPackets} (video ${spike.video}, audio ${spike.audio}), ${spike.rtpBytes} bytes`;
-  $("control").textContent =
-    Object.entries(spike.control)
-      .map(([k, v]) => `${k}×${v}`)
-      .join(", ") || "—";
+function placard(title, body = "", action = null) {
+  const p = $("placard");
+  if (title === null) {
+    p.hidden = true;
+    return;
+  }
+  p.hidden = false;
+  $("placard-title").textContent = title;
+  $("placard-body").textContent = body;
+  const b = $("placard-action");
+  b.hidden = !action;
+  if (action) {
+    b.textContent = action.label;
+    b.onclick = action.onClick;
+  }
 }
 
 function fail(err) {
-  spike.lastError = String(err?.message ?? err);
-  spike.state = "error";
-  log("ERROR " + spike.lastError);
-  render();
+  viewer.lastError = String(err?.message ?? err);
+  viewer.state = "error";
+  log("ERROR " + viewer.lastError);
+  placard(t("Session Ended"), viewer.lastError, { label: t("Reconnect"), onClick: () => location.reload() });
 }
 
 function waitFor(pred, timeoutMs = 20_000) {
@@ -65,9 +109,7 @@ function waitFor(pred, timeoutMs = 20_000) {
 async function loadWasm() {
   const go = new Go();
   const result = await WebAssembly.instantiateStreaming(fetch("dist/viewer.wasm"), go.importObject);
-  // main() installs the exports and then parks, so this promise never
-  // settles while the module is useful; don't await it.
-  go.run(result.instance).catch(fail);
+  go.run(result.instance).catch(fail); // main() parks; never settles while useful
   await waitFor(() => globalThis.tailscreenReady === true);
 }
 
@@ -78,100 +120,330 @@ function tokenFromLocation() {
   return q && q.startsWith("tc") ? q : null;
 }
 
+const rtpToMicros = (ts, clock) => Math.round((ts * 1e6) / clock);
+const hex = (u8) => (u8 ? Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("") : "");
+
+// avcC (ISO 14496-15) from the in-band SPS/PPS — WebCodecs' "avc" format,
+// the one every engine accepts, fed with the depacketizer's AVCC as-is.
+function avcC(sps, pps) {
+  const out = new Uint8Array(11 + sps.length + pps.length);
+  out.set([1, sps[1], sps[2], sps[3], 0xff, 0xe1, sps.length >> 8, sps.length & 0xff], 0);
+  out.set(sps, 8);
+  let i = 8 + sps.length;
+  out.set([1, pps.length >> 8, pps.length & 0xff], i);
+  out.set(pps, i + 3);
+  return out;
+}
+
+// --- video: WebCodecs → canvas --------------------------------------------------------------
+
+class VideoPath {
+  constructor(session, canvas) {
+    this.session = session;
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.decoder = null;
+    this.configKey = null;
+    this.awaitingKeyframe = true;
+    this.queue = Promise.resolve(); // AUs are handled strictly in order
+    this.framesThisSecond = 0;
+  }
+
+  handle(au) {
+    this.queue = this.queue.then(() => this.handleNow(au)).catch((e) => this.onError(e));
+  }
+
+  async handleNow(au) {
+    if (viewer.unsupported) return;
+    if (au.keyframe && au.sps && (au.codec === "hevc" || au.pps)) {
+      const key = `${au.codec}:${au.codecString}:${hex(au.sps)}:${hex(au.pps)}:${hex(au.vps)}`;
+      if (key !== this.configKey) {
+        if (!(await this.configure(au))) return;
+        this.configKey = key;
+      }
+    }
+    if (!this.decoder || this.decoder.state !== "configured") {
+      viewer.droppedAUs++;
+      return; // a keyframe with parameter sets will configure us; the session asks for one
+    }
+    if (this.awaitingKeyframe && !au.keyframe) {
+      viewer.droppedAUs++;
+      return;
+    }
+    if (this.decoder.decodeQueueSize > 12 && !au.keyframe) {
+      // Falling behind: shed to the next keyframe rather than build latency.
+      viewer.droppedAUs++;
+      this.awaitingKeyframe = true;
+      this.session.requestKeyframe();
+      return;
+    }
+    const data = au.codec === "hevc" ? au.annexb : au.avcc;
+    this.decoder.decode(
+      new EncodedVideoChunk({ type: au.keyframe ? "key" : "delta", timestamp: rtpToMicros(au.timestamp, 90_000), data }),
+    );
+    this.awaitingKeyframe = false;
+  }
+
+  async configure(au) {
+    const config =
+      au.codec === "hevc"
+        ? { codec: au.codecString || "hev1.1.6.L93.B0", optimizeForLatency: true }
+        : { codec: au.codecString, description: avcC(au.sps, au.pps), optimizeForLatency: true };
+    let supported = false;
+    try {
+      supported = (await VideoDecoder.isConfigSupported(config)).supported;
+    } catch {
+      supported = false;
+    }
+    if (!supported) {
+      if (au.codec === "hevc") {
+        // The existing escape hatch: CODEC_NO latches the share to H.264.
+        log(`HEVC (${config.codec}) is not decodable here — asking the sharer for H.264`);
+        this.session.codecUnsupported();
+        return false;
+      }
+      viewer.unsupported = true;
+      viewer.state = "unsupported";
+      log(`this browser cannot decode ${config.codec}`);
+      placard(t("Session Ended"), `This browser cannot decode ${config.codec}. Chrome, Edge, Safari and Firefox can.`);
+      return false;
+    }
+    this.close();
+    this.decoder = new VideoDecoder({ output: (f) => this.onFrame(f), error: (e) => this.onError(e) });
+    this.decoder.configure(config);
+    this.awaitingKeyframe = true;
+    viewer.codec = au.codec;
+    viewer.codecString = config.codec;
+    log(`decoder configured: ${config.codec}`);
+    return true;
+  }
+
+  onFrame(frame) {
+    try {
+      if (this.canvas.width !== frame.displayWidth || this.canvas.height !== frame.displayHeight) {
+        this.canvas.width = frame.displayWidth;
+        this.canvas.height = frame.displayHeight;
+        viewer.width = frame.displayWidth;
+        viewer.height = frame.displayHeight;
+      }
+      this.ctx.drawImage(frame, 0, 0);
+      viewer.decodedFrames++;
+      this.framesThisSecond++;
+    } finally {
+      frame.close();
+    }
+  }
+
+  onError(err) {
+    viewer.decodeErrors++;
+    log("decode error: " + (err?.message ?? err));
+    this.close();
+    this.configKey = null;
+    this.awaitingKeyframe = true;
+    this.session.requestKeyframe();
+  }
+
+  close() {
+    try {
+      this.decoder?.close();
+    } catch {}
+    this.decoder = null;
+  }
+}
+
+// --- audio: Opus → AudioContext, behind a gesture ---------------------------------------------
+
+class AudioPath {
+  constructor() {
+    this.ctx = null;
+    this.decoders = new Map(); // ssrc → AudioDecoder
+    this.next = new Map(); // ssrc → next scheduled start time
+    this.enabled = false;
+    this.muted = false;
+  }
+
+  enable() {
+    if (!this.ctx) this.ctx = new AudioContext({ sampleRate: 48_000 });
+    this.ctx.resume();
+    this.enabled = true;
+  }
+
+  handle(fr) {
+    if (!this.enabled || this.muted) return;
+    let d = this.decoders.get(fr.ssrc);
+    if (!d) {
+      d = new AudioDecoder({
+        output: (data) => this.play(fr.ssrc, data),
+        error: (e) => {
+          log(`audio decode error (ssrc ${fr.ssrc}): ${e.message}`);
+          this.decoders.delete(fr.ssrc);
+        },
+      });
+      d.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 1 });
+      this.decoders.set(fr.ssrc, d);
+    }
+    try {
+      d.decode(new EncodedAudioChunk({ type: "key", timestamp: rtpToMicros(fr.timestamp, 48_000), data: fr.payload }));
+      viewer.audioFrames++;
+    } catch (e) {
+      log("audio chunk rejected: " + e.message);
+    }
+  }
+
+  play(ssrc, data) {
+    try {
+      const n = data.numberOfFrames;
+      const buf = this.ctx.createBuffer(1, n, data.sampleRate);
+      const f32 = new Float32Array(n);
+      data.copyTo(f32, { planeIndex: 0, format: "f32-planar" });
+      buf.copyToChannel(f32, 0);
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(this.ctx.destination);
+      const now = this.ctx.currentTime;
+      let at = this.next.get(ssrc) ?? 0;
+      if (at < now + 0.02 || at > now + 0.5) at = now + 0.06; // (re)anchor with a small lead
+      src.start(at);
+      this.next.set(ssrc, at + buf.duration);
+    } finally {
+      data.close();
+    }
+  }
+}
+
+// --- the session ---------------------------------------------------------------------------------
+
 async function run(token) {
-  const K = tailscreenConstants;
-  const MD = K.mediaDatagramType;
+  const Kc = K();
+  const MD = Kc.mediaDatagramType;
+  placard(t("Connecting…"));
+  viewer.state = "dialing";
 
-  spike.state = "dialing";
-  render();
-  const conn = await tailscreenGuestDial(token, K.port);
-  spike.serverAddr = conn.serverAddr;
-  spike.state = "connected";
+  const conn = await tailscreenGuestDial(token, Kc.port);
+  viewer.serverAddr = conn.serverAddr;
   log(`tunnel up: sharer at ${conn.serverAddr}, our node key ${conn.publicKey}`);
-  render();
 
-  const send = (dgram) => conn.write(tailscreenFrameEncode(MD, dgram));
+  const session = tailscreenNewSession({});
+  const video = new VideoPath(session, $("stage"));
+  const audio = new AudioPath();
+  const send = (dgram) => conn.write(tailscreenFrameEncode(MD, dgram)).catch(() => {});
 
-  // TS-STM-002: the HELLO rides the framed connection — that IS the election.
-  // Legacy one-byte HELLO for the spike (no caps ⇒ no NACK/FEC, TS-STM-005;
-  // RR comes with Phase 3). Re-sent on the keepalive cadence until the sharer
-  // answers, then KEEPALIVE keeps the idle sweep at bay (TS-STM-004).
-  await send(tailscreenHello(0));
-  spike.state = "hello-sent";
-  render();
-  const cadence = setInterval(() => {
-    const answered = spike.state === "acked" || spike.state === "pending";
-    send(answered ? tailscreenControl("keepalive") : tailscreenHello(0)).catch(() => {});
-  }, K.keepaliveMs);
+  // Who are we watching? Same connection, answered on it (§13.2).
+  conn.write(tailscreenFrameEncode(Kc.metadataRequestType)).catch(() => {});
+
+  $("btn-audio").onclick = () => {
+    if (!audio.enabled) {
+      audio.enable();
+      $("btn-audio").textContent = t("Mute System Audio");
+    } else {
+      audio.muted = !audio.muted;
+      $("btn-audio").textContent = audio.muted ? "Unmute audio" : t("Mute System Audio");
+    }
+  };
+  $("btn-stats").onclick = () => ($("hud").hidden = !$("hud").hidden);
+  $("btn-log").onclick = () => ($("log").hidden = !$("log").hidden);
+  $("btn-full").onclick = () => document.documentElement.requestFullscreen?.().catch(() => {});
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "s") $("hud").hidden = !$("hud").hidden;
+  });
+
+  let lastBytes = 0;
+  let ticks = 0;
+  const syncState = () => {
+    const s = session.state();
+    viewer.ssrc = s.ssrc || viewer.ssrc;
+    viewer.videoAUs = s.stats.videoAUs;
+    viewer.keyframes = s.stats.keyframes;
+    viewer.rtpVideo = s.stats.rtpVideo;
+    if (!viewer.unsupported && viewer.state !== "error") {
+      const prev = viewer.state;
+      viewer.state = s.state === "acked" ? "acked" : s.state === "connecting" ? "hello-sent" : s.state;
+      if (viewer.state !== prev) {
+        switch (viewer.state) {
+          case "pending":
+            placard(t("Waiting for approval"), t("The sharer needs to accept you as a viewer."));
+            break;
+          case "acked":
+            log(`admitted: ssrc=${s.ssrc} serverCaps=${s.serverCaps}`);
+            placard(null);
+            break;
+          case "denied":
+            placard(t("Declined"), t("The sharer declined your request to view their screen."));
+            break;
+          case "ended":
+            placard(t("Sharing Stopped"), "", { label: t("Reconnect"), onClick: () => location.reload() });
+            break;
+        }
+      }
+    }
+    if (++ticks % 10 === 0) {
+      viewer.fps = video.framesThisSecond;
+      video.framesThisSecond = 0;
+      viewer.kbps = Math.round(((s.stats.rtpBytes - lastBytes) * 8) / 1000);
+      lastBytes = s.stats.rtpBytes;
+      $("hud").textContent =
+        `${viewer.state}  ${viewer.codecString ?? "—"}  ${viewer.width}×${viewer.height}\n` +
+        `${viewer.fps} fps  ${viewer.kbps} kbps  decoded ${viewer.decodedFrames}  dropped ${viewer.droppedAUs}  errors ${viewer.decodeErrors}\n` +
+        `AUs ${s.stats.videoAUs}  key ${s.stats.keyframes}  torn ${s.stats.tornAUs}  gaps ${s.stats.skippedGaps}  ` +
+        `PLI ${s.stats.pliSent}  RR ${s.stats.reports}  audio ${viewer.audioFrames}`;
+    }
+  };
+  const ticker = setInterval(() => {
+    for (const d of session.tick(nowNs())) send(d);
+    syncState();
+  }, 100);
 
   const parser = tailscreenNewFrameParser();
   try {
     for (;;) {
       const chunk = await conn.read();
       if (chunk === null) {
-        log("connection closed by the sharer (SERVER_BYE equivalent, TS-STM-004)");
+        log("connection closed by the sharer");
         break;
       }
       parser.append(chunk);
       let frame;
       while ((frame = parser.next()) !== null) {
-        if (frame.type !== MD) {
-          spike.otherFrames[frame.type] = (spike.otherFrames[frame.type] ?? 0) + 1;
+        if (frame.type === MD) {
+          const r = session.ingest(frame.payload, nowNs());
+          for (const au of r.video) video.handle(au);
+          for (const fr of r.audio) audio.handle(fr);
           continue;
         }
-        const c = tailscreenClassify(frame.payload);
-        if (c.class === "rtp") {
-          spike.rtpPackets++;
-          spike.rtpBytes += frame.payload.byteLength;
-          if (c.pt === K.pt.h264 || c.pt === K.pt.hevc) spike.video++;
-          else spike.audio++;
-          continue;
-        }
-        if (c.class !== "control") continue;
-        const name = c.name ?? `0x${c.kind.toString(16)}`;
-        spike.control[name] = (spike.control[name] ?? 0) + 1;
-        switch (c.name) {
-          case "helloAck":
-            if (spike.state !== "acked") log(`admitted: HELLO_ACK ssrc=${c.ssrc} serverCaps=${c.serverCaps ?? 0}`);
-            spike.state = "acked";
-            spike.ssrc = c.ssrc;
-            break;
-          case "helloPending":
-            if (spike.state !== "acked" && spike.state !== "pending") log("parked: HELLO_PENDING (waiting for the sharer to approve)");
-            if (spike.state !== "acked") spike.state = "pending";
-            break;
-          case "helloDenied":
-            log("declined: HELLO_DENY");
-            spike.state = "denied";
-            break;
-          case "serverBye":
-            log("sharer stopped: SERVER_BYE");
-            spike.state = "ended";
-            break;
+        if (frame.type === Kc.metadataResponseType) {
+          const m = tailscreenDecodeMetadata(frame.payload);
+          if (m) {
+            viewer.hostname = m.hostname;
+            viewer.shareName = m.shareName;
+            const who = m.shareName || m.hostname || t("Shared screen");
+            document.title = t("Watching %@", who);
+            log(`sharer: ${who} (${m.width}×${m.height}, ${m.videoCodec || "h264"})`);
+          }
         }
       }
-      if (parser.corrupt()) {
-        spike.lastError = "corrupt frame stream (oversized length)";
-        break;
-      }
-      render();
+      if (parser.corrupt()) throw new Error("corrupt frame stream (oversized length)");
     }
   } finally {
-    clearInterval(cadence);
-    if (spike.state !== "ended" && spike.state !== "denied" && spike.state !== "error") spike.state = "closed";
-    render();
+    clearInterval(ticker);
+    syncState();
+    if (!["denied", "ended", "error", "unsupported"].includes(viewer.state)) {
+      viewer.state = "closed";
+      placard(t("Session Ended"), "", { label: t("Reconnect"), onClick: () => location.reload() });
+    }
+    video.close();
     conn.close().catch(() => {});
   }
 }
 
 (async () => {
   try {
+    await loadStrings();
+    placard("Tailscreen", "Loading…");
     await loadWasm();
     const token = tokenFromLocation();
     if (!token) {
-      spike.state = "no-token";
-      $("notoken").hidden = false;
-      render();
+      viewer.state = "no-token";
+      placard("Tailscreen", "Open the link a sharer gave you — this page needs a tc… token in its URL.");
       return;
     }
     await run(token);

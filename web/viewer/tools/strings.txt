@@ -1,0 +1,16 @@
+# Catalog keys the browser viewer renders (see export_strings.py). Keys are
+# the English source text, exactly as the apps pass to L(...).
+Connecting…
+Waiting for approval
+The sharer needs to accept you as a viewer.
+Declined
+The sharer declined your request to view their screen.
+Disconnected by Sharer
+The sharer disconnected you from their screen share.
+Session Ended
+Sharing Stopped
+Reconnect
+Watching %@
+Shared screen
+Stats
+Mute System Audio

@@ -125,6 +125,7 @@ web-viewer: ## Build the browser viewer's wasm (web/viewer/dist) and print its s
 		&& gzip -9 -k -f dist/viewer.wasm \
 		&& (command -v brotli >/dev/null 2>&1 && brotli -f -k -q 11 dist/viewer.wasm || true) \
 		&& ls -l dist/viewer.wasm dist/viewer.wasm.gz dist/viewer.wasm.br 2>/dev/null
+	python3 web/viewer/tools/export_strings.py
 
 test-web-spike: web-viewer ## Browser↔sharer transport spike: localderp + Xvfb + sharer --link + Chromium (Linux)
 	cd web/viewer && go build -o dist/localderp ./cmd/localderp

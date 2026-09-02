@@ -1,18 +1,19 @@
 # Browser viewer — `web/viewer`
 
-The browser viewer's Go module. Phase 2 of `plans/browser-viewer.md`: the
-transport only. It proves a browser can dial a share by its `tc…` token
-through the guest tunnel (WireGuard over a DERP WebSocket) and move the
-stream profile's framed datagrams both ways — against the real sharer, with
-no internet.
+The browser viewer's Go module (`plans/browser-viewer.md`, Phases 2–3): a
+browser dials a share by its `tc…` token through the guest tunnel
+(WireGuard over a DERP WebSocket), elects the stream profile, and decodes
+and renders it with WebCodecs — against the real sharer, with no internet.
 
 ```
 main_js.go        the wasm core: the fork's `guest` client + sdk/go, exported to JS
+session_js.go     the receive pipeline (reorder → depacketize → AUs; keepalive/RR/PLI cadences)
 index.html
-viewer.js         the spike page: dial → HELLO as a mediaDatagram frame → count what comes back
+viewer.js         the viewer: WebCodecs video → canvas, Opus audio, placards, stats HUD
+tools/            export_strings.py: the catalog keys in strings.txt → dist/strings.json
 cmd/localderp/    a DERP+STUN+/derpmap stand-in for the relay fleet (self-signed TLS)
-e2e/spike.mjs     Playwright: localderp + Xvfb + `tailscreen-sharer-linux --link` + Chromium
-dist/             build output (gitignored): viewer.wasm, wasm_exec.js, localderp
+e2e/spike.mjs     Playwright: localderp + Xvfb + `tailscreen-sharer-linux --link` + Chrome
+dist/             build output (gitignored): viewer.wasm, wasm_exec.js, strings.json, localderp
 ```
 
 ```bash
@@ -26,5 +27,8 @@ commits. The JS surface is deliberately tiny and documented at the top of
 `main_js.go`; every wire byte comes from sdk/go, so the page never
 re-implements a format the conformance vectors already pin.
 
-What is *not* here yet: decoding (WebCodecs — Phase 3), receiver reports
-from the page, any UI beyond a status readout.
+The e2e wants Google Chrome (`playwright install chrome`): Playwright's own
+Chromium has no H.264, so there it verifies the transport only.
+
+What is *not* here yet: annotations and remote control from the page, the
+microphone, hosting — Phase 4.

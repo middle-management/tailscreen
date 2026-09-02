@@ -960,12 +960,15 @@ jobs:
         with:
           go: setup-go
           libtailscale: host
-      - name: Install Playwright + Chromium
+      - name: Install Playwright + Google Chrome
         # Pinned to the version the harness was written against; the global
         # install is what `NODE_PATH=$(npm root -g)` in the Makefile resolves.
+        # Chrome rather than Playwright's Chromium: the latter ships without
+        # the proprietary codecs, so WebCodecs reports H.264 unsupported and
+        # the decode half of the spike could never run there.
         run: |
           npm install -g playwright@1.56.1
-          playwright install --with-deps chromium
+          playwright install --with-deps chrome
       - name: Browser ↔ sharer transport spike
         run: make test-web-spike
 

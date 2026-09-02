@@ -46,11 +46,15 @@ func main() {
 	g.Set("tailscreenHello", js.FuncOf(helloJS))
 	g.Set("tailscreenControl", js.FuncOf(controlJS))
 	g.Set("tailscreenClassify", js.FuncOf(classifyJS))
+	g.Set("tailscreenNewSession", js.FuncOf(newSessionJS))
+	g.Set("tailscreenDecodeMetadata", js.FuncOf(decodeMetadataJS))
 	g.Set("tailscreenConstants", js.ValueOf(map[string]any{
-		"port":              tailscreen.Port,
-		"mediaDatagramType": int(tailscreen.MsgMediaDatagram),
-		"keepaliveMs":       int(tailscreen.KeepaliveInterval / time.Millisecond),
-		"idleTimeoutMs":     int(tailscreen.IdleTimeout / time.Millisecond),
+		"port":                 tailscreen.Port,
+		"mediaDatagramType":    int(tailscreen.MsgMediaDatagram),
+		"metadataRequestType":  int(tailscreen.MsgMetadataRequest),
+		"metadataResponseType": int(tailscreen.MsgMetadataResponse),
+		"keepaliveMs":          int(tailscreen.KeepaliveInterval / time.Millisecond),
+		"idleTimeoutMs":        int(tailscreen.IdleTimeout / time.Millisecond),
 		"pt": map[string]any{
 			"h264":        tailscreen.PTH264,
 			"hevc":        tailscreen.PTHEVC,
@@ -262,5 +266,25 @@ func classifyJS(this js.Value, args []js.Value) any {
 			}
 		}
 		return out
+	}
+}
+
+// decodeMetadataJS parses a metadataResponse payload (§13.2) — the share
+// name and hostname the page puts in its title.
+func decodeMetadataJS(this js.Value, args []js.Value) any {
+	if len(args) < 1 {
+		return js.Null()
+	}
+	m, err := tailscreen.DecodeMetadata(toBytes(args[0]))
+	if err != nil {
+		return js.Null()
+	}
+	codec := ""
+	if m.VideoCodec != nil {
+		codec = *m.VideoCodec
+	}
+	return map[string]any{
+		"shareName": m.ShareName, "hostname": m.Hostname, "width": m.Width, "height": m.Height,
+		"isSharing": m.IsSharing, "videoCodec": codec,
 	}
 }
