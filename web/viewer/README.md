@@ -11,8 +11,10 @@ session_js.go     the receive pipeline over sdk/go: reorder → depacketize → 
                   HELLO/KEEPALIVE/receiver-report/PLI cadences on the page's clock
 index.html
 viewer.js         the page: WebCodecs video → canvas, Opus → Web Audio, placards, HUD,
-                  remote control and drawing on an overlay, the gzip-inflating loader
-wire.js           the pure wire half: HID key map, input/annotation JSON, annotation store
+                  remote control and drawing on an overlay, the gzip-inflating loader,
+                  and the join field shown when the URL carries no token
+wire.js           the pure wire half: HID key map, input/annotation JSON, annotation store,
+                  and the join field's link/token parser (mirrors ShareLinkFormat)
 cmd/localderp/    a DERP+STUN+/derpmap stand-in for the relay fleet (self-signed TLS)
 e2e/spike.mjs     Playwright: localderp + Xvfb + `tailscreen-sharer-linux --link` + Chrome
 e2e/wire.test.mjs wire.js against the spec's own examples, no browser
@@ -31,7 +33,9 @@ tracks main; the root appears once a stable release carries the page). The
 page fetches `viewer.wasm.gz` and inflates it itself — GitHub Pages does not
 compress wasm — so first load is the gzip size, not the raw one. A share's
 **web link** is that URL with the token in the fragment
-(`ShareLinkFormat.webLink`), so the token never reaches the host.
+(`ShareLinkFormat.webLink`), so the token never reaches the host. Opened
+without one, the page shows the apps' join sheet: paste a web link, a
+`tailscreen:` link or the bare token, and it moves into the fragment.
 
 The module `replace`s the fork onto the submodule checkout and the SDK onto
 `../../sdk/go`, so the wasm build and the c-archive build pin the same

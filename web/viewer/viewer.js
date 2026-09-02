@@ -141,10 +141,30 @@ async function loadWasm() {
 }
 
 function tokenFromLocation() {
+  const W = TailscreenWire;
   const hash = location.hash.replace(/^#/, "");
-  if (hash.startsWith("tc")) return hash;
+  if (W.isPlausibleToken(hash)) return hash;
   const q = new URLSearchParams(location.search).get("token");
-  return q && q.startsWith("tc") ? q : null;
+  return W.isPlausibleToken(q) ? q : null;
+}
+
+// The apps' join sheet, as a page: shown when the URL carries no token, so
+// a guest who was handed the bare token (or the tailscreen: link, or a web
+// link they'd rather not click) can paste it here. Same strings as the apps.
+function showJoin(error = "", prefill = "") {
+  placard(null);
+  const j = $("join");
+  j.hidden = false;
+  $("join-title").textContent = t("Join a shared screen");
+  $("join-body").textContent = t("Paste a share link or token from the person sharing their screen.");
+  $("join-input").placeholder = t("tailscreen: link or token");
+  $("join-submit").textContent = t("Join");
+  $("join-caption").textContent = t("You'll join as a guest over an encrypted tunnel; the sharer has to approve you before you see anything.");
+  const e = $("join-error");
+  e.textContent = error;
+  e.hidden = !error;
+  if (prefill) $("join-input").value = prefill;
+  $("join-input").focus();
 }
 
 const rtpToMicros = (ts, clock) => Math.round((ts * 1e6) / clock);
@@ -641,12 +661,35 @@ async function run(token) {
     placard("Tailscreen", "Loading…");
     await loadWasm();
     const token = tokenFromLocation();
-    if (!token) {
-      viewer.state = "no-token";
-      placard("Tailscreen", "Open the link a sharer gave you — this page needs a tc… token in its URL.");
+    if (token) {
+      await run(token);
       return;
     }
-    await run(token);
+    viewer.state = "no-token";
+    showJoin();
+    $("join").onsubmit = (e) => {
+      e.preventDefault();
+      const raw = $("join-input").value;
+      const tok = TailscreenWire.tokenFromInput(raw);
+      if (!tok) {
+        showJoin(t("That doesn't look like a share link or token."), raw);
+        return;
+      }
+      // Into the fragment — never sent to the host, and Reconnect (a reload)
+      // then reconnects to the same share.
+      history.replaceState(null, "", "#" + tok);
+      $("join").hidden = true;
+      run(tok).catch((err) => {
+        // A token that never dialled (mangled in transit, share gone) goes
+        // back to the field with the reason; anything later is a session end.
+        if (viewer.state === "dialing") {
+          viewer.state = "no-token";
+          showJoin(String(err?.message ?? err), raw);
+        } else {
+          fail(err);
+        }
+      });
+    };
   } catch (err) {
     fail(err);
   }

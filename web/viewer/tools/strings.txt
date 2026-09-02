@@ -14,3 +14,9 @@ Watching %@
 Shared screen
 Stats
 Mute System Audio
+Join a shared screen
+Paste a share link or token from the person sharing their screen.
+tailscreen: link or token
+Join
+That doesn't look like a share link or token.
+You'll join as a guest over an encrypted tunnel; the sharer has to approve you before you see anything.

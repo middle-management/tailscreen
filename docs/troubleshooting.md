@@ -238,7 +238,8 @@ and its failure modes are mostly the browser's:
   **Copy Web Link** produces — only exists once a stable release ships the
   page; until then the same page is served from
   `https://tailscreen.dev/next/view/`. Keep the `#tc…` fragment when you
-  change the path; the token lives there.
+  change the path — the token lives there — or open that page bare and
+  paste the whole link into its join field.
 - **"Waiting for approval" and nothing happens.** Same as any guest: the
   sharer has to press Accept, every join. Nothing is stuck.
 - **The stage stays blank, or the page says the codec is unsupported.**

@@ -161,5 +161,44 @@
     ctx.restore();
   }
 
-  root.TailscreenWire = { HID, input, annotation, AnnotationStore, modifiers };
+  // --- the join field's parser -------------------------------------------------
+  //
+  // The same rules as ShareLinkFormat.token(fromUserInput:) in the apps —
+  // change both or neither (ShareLinkFormatTests and e2e/wire.test.mjs pin
+  // the same cases). A token is "tc" + base64url, checked shallowly; the
+  // guest node's decode is the real validation. Accepted wrappers: the
+  // apps' `tailscreen://join?token=…` (and `tailscreen:join?token=…`), and
+  // a web link from ANY host — the page is static and self-hostable, so the
+  // host proves nothing; the fragment (or a `token` query item) is what a
+  // join needs.
+  const TOKEN_BODY = /^[A-Za-z0-9_-]+$/;
+  function isPlausibleToken(s) {
+    return typeof s === "string" && s.length > 10 && s.startsWith("tc") && TOKEN_BODY.test(s.slice(2));
+  }
+  function tokenFromInput(text) {
+    const trimmed = String(text ?? "").trim();
+    if (!trimmed) return null;
+    if (isPlausibleToken(trimmed)) return trimmed;
+    let url;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return null;
+    }
+    const query = url.searchParams.get("token");
+    switch (url.protocol) {
+      case "tailscreen:":
+        return isPlausibleToken(query) ? query : null;
+      case "https:":
+      case "http:": {
+        const fragment = url.hash.replace(/^#/, "");
+        if (isPlausibleToken(fragment)) return fragment;
+        return isPlausibleToken(query) ? query : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  root.TailscreenWire = { HID, input, annotation, AnnotationStore, modifiers, isPlausibleToken, tokenFromInput };
 })(typeof window !== "undefined" ? window : globalThis);
