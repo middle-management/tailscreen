@@ -3,6 +3,7 @@ import TailscaleKit
 import TailscreenProtocol
 import TailscreenSharer
 import TailscreenSharerLinux
+import TailscreenTransport
 
 // A headless Linux sharer: the portable `TailscaleScreenShareServer` driven by
 // the X11 `CaptureEncoding` backend, with no UI.
@@ -19,9 +20,17 @@ import TailscreenSharerLinux
 //                           [--control-url URL] [--auth-key KEY]
 //                           [--display :N] [--fps N] [--seconds N]
 //                           [--allow-control]
+//   tailscreen-sharer-linux --link [--link-relay-map-url URL] [--approve-guests]
+//                           [--display :N] [--fps N] [--seconds N]
 //
 // TAILSCREEN_TS_AUTHKEY / TAILSCREEN_TS_CONTROL_URL are honoured as defaults,
 // matching the rest of the repo's e2e tooling.
+//
+// `--link` is the share-by-token path with no tailnet at all: no tsnet node,
+// no sign-in, no control plane. A guest node bootstraps off a relay, the
+// share runs over that tunnel alone (`startGuestOnly`), and the minted token
+// is printed as `E2E_MARKER shareLink token=…` for a harness to hand to a
+// viewer — the browser spike (plans/browser-viewer.md, Phase 2) is the first.
 
 struct Config: Sendable {
     var hostname = "tailscreen-sharer"
@@ -44,6 +53,18 @@ struct Config: Sendable {
     /// Run for this long then stop. 0 = until killed. A bounded default keeps
     /// an automated harness from leaking a sharer if the viewer never arrives.
     var seconds = 0
+    /// Share by link only (see the header): a guest node instead of tsnet.
+    var link = false
+    /// Where the guest node fetches its DERP map when linking. Nil = the
+    /// guest package's default (Tailscale's relays); a harness points it at a
+    /// local relay so the run needs no internet.
+    var linkRelayMapURL: String?
+    /// Approve every guest the moment it parks. Guest approval is mandatory
+    /// and per-join by policy (nothing StableNodeID-shaped exists to remember),
+    /// and an unattended harness has nobody to click Accept — so this is the
+    /// automation escape hatch, the guest-side twin of TAILSCREEN_OPEN_DOOR.
+    /// Never on by default.
+    var approveGuests = false
 
     static func parse() -> Config {
         var c = Config()
@@ -61,6 +82,9 @@ struct Config: Sendable {
             case "--fps": c.fps = Int(it.next() ?? "") ?? c.fps
             case "--allow-control": c.allowControl = true
             case "--seconds": c.seconds = Int(it.next() ?? "") ?? c.seconds
+            case "--link": c.link = true
+            case "--link-relay-map-url": c.linkRelayMapURL = it.next()
+            case "--approve-guests": c.approveGuests = true
             default: FileHandle.standardError.write(Data("unknown argument \(a)\n".utf8))
             }
         }
@@ -120,22 +144,72 @@ server.onCaptureStopped = { error in
 var quality = QualitySettings.default
 quality.fpsCap = config.fps
 
-do {
-    try await server.start(
-        hostname: config.hostname,
-        authKey: config.authKey,
-        path: config.stateDir,
-        controlURL: config.controlURL ?? kDefaultControlURL,
-        filterData: selectionData,
-        quality: quality
-    )
-} catch {
-    log("failed to start: \(error)")
-    exit(1)
+if config.approveGuests {
+    // Hop off the callback before approving: it fires from inside the
+    // server's own notification path, and `approveViewer` re-enters the
+    // same state. Guests never auto-admit otherwise (mandatory per-join
+    // approval), so without this every viewer would park forever.
+    server.onPendingViewersChanged = { pending in
+        for viewer in pending {
+            log("auto-approving guest \(viewer.id)")
+            Task { server.approveViewer(addr: viewer.id) }
+        }
+    }
 }
 
-let ips = try? await server.getIPAddresses()
-log("READY hostname=\(config.hostname) ip4=\(ips?.ip4 ?? "?") fps=\(config.fps)")
+/// The link's guest node, held for the life of the process. It must be
+/// retained somewhere: the server adopts only the node's *listeners*, and the
+/// node itself closes on deinit — releasing it after minting the token tears
+/// down the relay connection ("closing connection to derp-1, age 0s") and
+/// every guest's handshake then goes unanswered. `SharerLinkSession` keeps it
+/// in a property for the same reason.
+var linkNode: GuestServerNode?
+
+if config.link {
+    // Link-only share: guest node up, both listeners through the tunnel,
+    // then the server with those as its ONLY sockets. The same shape as
+    // `SharerLinkSession.enable`, minus a running tailnet share to attach to.
+    let port = NetworkConfig.tailscreenPort
+    do {
+        let guestNode = try GuestServerNode(derpMapURL: config.linkRelayMapURL)
+        linkNode = guestNode
+        try await guestNode.start()
+        let packets = try await guestNode.listenPacket(port: port)
+        let control = TailscreenControlListener(port: port)
+        control.start(adopting: try await guestNode.listen(port: port))
+        try await server.startGuestOnly(
+            filterData: selectionData,
+            quality: quality,
+            guestPacketListener: packets,
+            guestControlListener: control
+        )
+        let token = try await guestNode.token()
+        log("READY link-only fps=\(config.fps)")
+        // The one line a harness parses; same marker the macOS app prints
+        // under TAILSCREEN_AUTOSHARE_LINK.
+        log("E2E_MARKER shareLink token=\(token)")
+    } catch {
+        log("failed to start link-only: \(error)")
+        exit(1)
+    }
+} else {
+    do {
+        try await server.start(
+            hostname: config.hostname,
+            authKey: config.authKey,
+            path: config.stateDir,
+            controlURL: config.controlURL ?? kDefaultControlURL,
+            filterData: selectionData,
+            quality: quality
+        )
+    } catch {
+        log("failed to start: \(error)")
+        exit(1)
+    }
+
+    let ips = try? await server.getIPAddresses()
+    log("READY hostname=\(config.hostname) ip4=\(ips?.ip4 ?? "?") fps=\(config.fps)")
+}
 
 if config.seconds > 0 {
     try? await Task.sleep(for: .seconds(config.seconds))
