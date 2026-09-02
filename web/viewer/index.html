@@ -1,34 +1,54 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tailscreen</title>
 <link rel="icon" href="data:,">
+<title>Tailscreen</title>
 <style>
   :root { color-scheme: dark; }
   html, body { height: 100%; margin: 0; background: #0b0b0d; color: #e8e8ea; font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
-  #stage { position: absolute; inset: 0; margin: auto; max-width: 100vw; max-height: 100vh; background: #000; }
+  #stage, #ink { position: absolute; inset: 0; margin: auto; max-width: 100vw; max-height: 100vh; }
+  #stage { background: #000; }
+  #ink { pointer-events: none; touch-action: none; }
+  body.controlling #ink, body.drawing #ink { pointer-events: auto; }
+  body.controlling #stage { outline: 3px solid #ff8c1a; outline-offset: -3px; }
+  body.drawing #ink { cursor: crosshair; }
   #placard { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: .5rem; padding: 2rem; background: rgba(11,11,13,.85); }
   #placard[hidden] { display: none; }
   #placard h1 { font-size: 1.25rem; margin: 0; }
   #placard p { margin: 0; color: #b8b8bd; max-width: 34rem; }
-  #placard button, #bar button { font: inherit; padding: .4rem .9rem; border-radius: .4rem; border: 1px solid #3a3a40; background: #1b1b20; color: inherit; cursor: pointer; }
+  #placard button, #bar button, #bar select { font: inherit; padding: .4rem .9rem; border-radius: .4rem; border: 1px solid #3a3a40; background: #1b1b20; color: inherit; cursor: pointer; }
+  #bar button.active { background: #ff8c1a; color: #111; border-color: #ff8c1a; }
   #placard button { margin: .75rem auto 0; }
-  #bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: .5rem; padding: .5rem; background: linear-gradient(transparent, rgba(0,0,0,.6)); opacity: 0; transition: opacity .2s; }
-  body:hover #bar, #bar:focus-within { opacity: 1; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: .5rem; padding: .5rem; background: linear-gradient(transparent, rgba(0,0,0,.6)); opacity: 0; transition: opacity .2s; }
+  body:hover #bar, #bar:focus-within, body.drawing #bar { opacity: 1; }
+  #bar [hidden] { display: none; }
   #hud { position: absolute; top: .5rem; left: .5rem; margin: 0; padding: .5rem .75rem; background: rgba(0,0,0,.6); border-radius: .4rem; font: 12px/1.35 ui-monospace, monospace; white-space: pre; }
   #hud[hidden] { display: none; }
   #log { position: absolute; right: .5rem; top: .5rem; max-width: 40vw; max-height: 40vh; overflow: auto; margin: 0; font: 11px/1.3 ui-monospace, monospace; color: #8a8a90; white-space: pre-wrap; }
   #log[hidden] { display: none; }
 </style>
 <canvas id="stage" width="16" height="9"></canvas>
+<canvas id="ink" width="16" height="9"></canvas>
 <div id="placard"><h1 id="placard-title">…</h1><p id="placard-body"></p><button id="placard-action" hidden></button></div>
 <pre id="hud" hidden></pre>
 <pre id="log" hidden></pre>
 <div id="bar">
   <button id="btn-audio" type="button">Enable audio</button>
+  <button id="btn-control" type="button" hidden>Request control</button>
+  <button id="btn-draw" type="button" hidden>Draw</button>
+  <select id="sel-color" hidden aria-label="Drawing color">
+    <option value="1,0.2,0.2">Red</option>
+    <option value="1,0.85,0.2">Yellow</option>
+    <option value="0.3,0.9,0.4">Green</option>
+    <option value="0.35,0.6,1">Blue</option>
+    <option value="1,1,1">White</option>
+  </select>
+  <button id="btn-undo" type="button" hidden>Undo</button>
+  <button id="btn-clear" type="button" hidden>Clear</button>
   <button id="btn-stats" type="button">Stats</button>
   <button id="btn-full" type="button">Full screen</button>
   <button id="btn-log" type="button">Log</button>
 </div>
 <script src="dist/wasm_exec.js"></script>
+<script src="wire.js"></script>
 <script src="viewer.js"></script>

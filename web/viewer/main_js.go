@@ -53,6 +53,12 @@ func main() {
 		"mediaDatagramType":    int(tailscreen.MsgMediaDatagram),
 		"metadataRequestType":  int(tailscreen.MsgMetadataRequest),
 		"metadataResponseType": int(tailscreen.MsgMetadataResponse),
+		"annotationType":       int(tailscreen.MsgAnnotation),
+		"controlRequestType":   int(tailscreen.MsgControlRequest),
+		"controlGrantedType":   int(tailscreen.MsgControlGranted),
+		"controlRevokedType":   int(tailscreen.MsgControlRevoked),
+		"inputEventType":       int(tailscreen.MsgInputEvent),
+		"controlReleasedType":  int(tailscreen.MsgControlReleased),
 		"keepaliveMs":          int(tailscreen.KeepaliveInterval / time.Millisecond),
 		"idleTimeoutMs":        int(tailscreen.IdleTimeout / time.Millisecond),
 		"pt": map[string]any{

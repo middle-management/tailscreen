@@ -31,6 +31,9 @@ const viewer = (window.__viewer = {
   fps: 0,
   kbps: 0,
   unsupported: false,
+  serverCaps: 0,
+  controlling: false,
+  annotationsReceived: 0,
   lastError: null,
   log: [],
 });
@@ -44,7 +47,7 @@ const nowNs = () => performance.now() * 1e6;
 let STR = {};
 async function loadStrings() {
   try {
-    const all = await (await fetch("dist/strings.json")).json();
+    const all = window.__tailscreenInlineStrings ?? (await (await fetch("dist/strings.json")).json());
     for (const l of navigator.languages ?? [navigator.language]) {
       const lang = String(l).toLowerCase().split("-")[0];
       if (all[lang]) {
@@ -106,9 +109,33 @@ function waitFor(pred, timeoutMs = 20_000) {
   });
 }
 
+// The wasm is 34 MB raw and 7.8 MB gzipped, and static hosts (GitHub Pages
+// among them) will not compress application/wasm on the fly — so the page
+// fetches the pre-compressed .gz and inflates it itself, falling back to the
+// raw file only where DecompressionStream is missing. The single-file bundle
+// (tools/bundle.py) inlines the same .gz as base64 and takes the same path.
+async function wasmResponse() {
+  const inline = window.__tailscreenInlineWasmGzB64;
+  const canInflate = typeof DecompressionStream === "function";
+  if (inline) {
+    if (!canInflate) throw new Error("this browser cannot inflate the bundled viewer (no DecompressionStream)");
+    const bytes = Uint8Array.from(atob(inline), (c) => c.charCodeAt(0));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Response(stream, { headers: { "Content-Type": "application/wasm" } });
+  }
+  if (canInflate) {
+    const gz = await fetch("dist/viewer.wasm.gz");
+    if (gz.ok && gz.body) {
+      const stream = gz.body.pipeThrough(new DecompressionStream("gzip"));
+      return new Response(stream, { headers: { "Content-Type": "application/wasm" } });
+    }
+  }
+  return fetch("dist/viewer.wasm");
+}
+
 async function loadWasm() {
   const go = new Go();
-  const result = await WebAssembly.instantiateStreaming(fetch("dist/viewer.wasm"), go.importObject);
+  const result = await WebAssembly.instantiateStreaming(wasmResponse(), go.importObject);
   go.run(result.instance).catch(fail); // main() parks; never settles while useful
   await waitFor(() => globalThis.tailscreenReady === true);
 }
@@ -225,6 +252,7 @@ class VideoPath {
         this.canvas.height = frame.displayHeight;
         viewer.width = frame.displayWidth;
         viewer.height = frame.displayHeight;
+        this.onResize?.(frame.displayWidth, frame.displayHeight);
       }
       this.ctx.drawImage(frame, 0, 0);
       viewer.decodedFrames++;
@@ -331,6 +359,154 @@ async function run(token) {
   // Who are we watching? Same connection, answered on it (§13.2).
   conn.write(tailscreenFrameEncode(Kc.metadataRequestType)).catch(() => {});
 
+  const W = TailscreenWire;
+  const utf8 = new TextEncoder();
+  const sendFrame = (type, obj) =>
+    conn.write(tailscreenFrameEncode(type, obj === undefined ? undefined : utf8.encode(JSON.stringify(obj)))).catch(() => {});
+
+  // --- remote control (§12): request → granted → input events on the stage ---
+  const ink = $("ink");
+  const inkCtx = ink.getContext("2d");
+  const norm = (e) => {
+    const r = ink.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+  };
+  const setControlling = (on) => {
+    viewer.controlling = on;
+    document.body.classList.toggle("controlling", on);
+    $("btn-control").textContent = on ? "Release control" : "Request control";
+    $("btn-control").classList.toggle("active", on);
+    if (on) {
+      mode = "control";
+      document.body.classList.remove("drawing");
+      $("btn-draw").classList.remove("active");
+    } else if (mode === "control") mode = null;
+  };
+  let mode = null; // "control" | "draw" | null — the overlay serves one at a time
+  $("btn-control").onclick = () => {
+    if (viewer.controlling) {
+      sendFrame(Kc.controlReleasedType); // TS-RMT-006
+      setControlling(false);
+    } else {
+      sendFrame(Kc.controlRequestType);
+      log("control requested");
+    }
+  };
+  let lastMoveAt = 0;
+  ink.addEventListener("pointermove", (e) => {
+    if (mode === "control") {
+      const now = performance.now();
+      if (now - lastMoveAt < 16) return; // the sharer enforces a rate ceiling (TS-RMT-007); be a good citizen
+      lastMoveAt = now;
+      const [x, y] = norm(e);
+      sendFrame(Kc.inputEventType, W.input.mouseMove(x, y));
+    } else if (mode === "draw" && stroke) {
+      stroke.points.push(norm(e));
+      renderInk();
+    }
+  });
+  ink.addEventListener("pointerdown", (e) => {
+    if (mode === "control") {
+      const b = W.input.button(e);
+      if (!b) return;
+      ink.setPointerCapture(e.pointerId);
+      const [x, y] = norm(e);
+      sendFrame(Kc.inputEventType, W.input.mouseDown(x, y, b, W.modifiers(e)));
+    } else if (mode === "draw") {
+      ink.setPointerCapture(e.pointerId);
+      stroke = { points: [norm(e)] };
+    }
+  });
+  ink.addEventListener("pointerup", (e) => {
+    if (mode === "control") {
+      const b = W.input.button(e);
+      if (!b) return;
+      const [x, y] = norm(e);
+      sendFrame(Kc.inputEventType, W.input.mouseUp(x, y, b, W.modifiers(e)));
+    } else if (mode === "draw" && stroke) {
+      stroke.points.push(norm(e));
+      const [r, g, b] = $("sel-color").value.split(",").map(Number);
+      const op = W.annotation.add("pen", stroke.points, { r, g, b, a: 1 }, 0.004);
+      stroke = null;
+      annotations.apply(op);
+      mine.push(op.annotation.id);
+      renderInk();
+      sendFrame(Kc.annotationType, op);
+    }
+  });
+  ink.addEventListener("contextmenu", (e) => mode && e.preventDefault());
+  ink.addEventListener(
+    "wheel",
+    (e) => {
+      if (mode !== "control") return;
+      e.preventDefault();
+      const [x, y] = norm(e);
+      const [dx, dy] = W.input.lines(e);
+      sendFrame(Kc.inputEventType, W.input.scroll(x, y, dx, dy, W.modifiers(e)));
+    },
+    { passive: false },
+  );
+  const keyHandler = (kind) => (e) => {
+    if (mode !== "control" || e.target !== document.body) return;
+    const usage = W.input.usage(e);
+    if (usage === null) return; // modifiers ride the bit field, never as keys (TS-RMT-025)
+    e.preventDefault();
+    sendFrame(Kc.inputEventType, kind === "down" ? W.input.keyDown(usage, W.modifiers(e)) : W.input.keyUp(usage, W.modifiers(e)));
+  };
+  document.addEventListener("keydown", keyHandler("down"));
+  document.addEventListener("keyup", keyHandler("up"));
+
+  // --- annotations (§11): draw, and render what the sharer relays ---
+  const annotations = new W.AnnotationStore();
+  const mine = [];
+  let stroke = null;
+  const renderInk = () => {
+    annotations.render(inkCtx, ink.width, ink.height);
+    if (stroke) {
+      const [r, g, b] = $("sel-color").value.split(",").map(Number);
+      W.AnnotationStore.prototype.render.call(
+        { items: new Map([["live", { tool: "pen", points: stroke.points, color: { r, g, b, a: 1 }, width: 0.004 }]]) },
+        inkCtx, ink.width, ink.height,
+      );
+    }
+  };
+  video.onResize = (w, h) => {
+    ink.width = w;
+    ink.height = h;
+    renderInk();
+  };
+  $("btn-draw").onclick = () => {
+    const on = mode !== "draw";
+    if (on && viewer.controlling) {
+      sendFrame(Kc.controlReleasedType);
+      setControlling(false);
+    }
+    mode = on ? "draw" : null;
+    document.body.classList.toggle("drawing", on);
+    $("btn-draw").classList.toggle("active", on);
+  };
+  $("btn-undo").onclick = () => {
+    const id = mine.pop();
+    if (!id) return;
+    annotations.apply(W.annotation.undo(id));
+    renderInk();
+    sendFrame(Kc.annotationType, W.annotation.undo(id));
+  };
+  $("btn-clear").onclick = () => {
+    annotations.apply(W.annotation.clearAll());
+    mine.length = 0;
+    renderInk();
+    sendFrame(Kc.annotationType, W.annotation.clearAll());
+  };
+  // The sharer's advertised capabilities decide what the toolbar offers:
+  // bit 3 remoteControl ("this host can inject"), bit 4 annotations ("this
+  // host renders/relays strokes") — hidden rather than disabled, like the apps.
+  const applyCaps = (caps) => {
+    viewer.serverCaps = caps;
+    $("btn-control").hidden = !(caps & 8);
+    for (const id of ["btn-draw", "sel-color", "btn-undo", "btn-clear"]) $(id).hidden = !(caps & 16);
+  };
+
   $("btn-audio").onclick = () => {
     if (!audio.enabled) {
       audio.enable();
@@ -365,6 +541,7 @@ async function run(token) {
             break;
           case "acked":
             log(`admitted: ssrc=${s.ssrc} serverCaps=${s.serverCaps}`);
+            applyCaps(s.serverCaps);
             placard(null);
             break;
           case "denied":
@@ -408,6 +585,29 @@ async function run(token) {
           const r = session.ingest(frame.payload, nowNs());
           for (const au of r.video) video.handle(au);
           for (const fr of r.audio) audio.handle(fr);
+          continue;
+        }
+        if (frame.type === Kc.annotationType) {
+          try {
+            if (annotations.apply(JSON.parse(new TextDecoder().decode(frame.payload)))) {
+              viewer.annotationsReceived++;
+              renderInk();
+            }
+          } catch {}
+          continue;
+        }
+        if (frame.type === Kc.controlGrantedType) {
+          log("control granted");
+          setControlling(true);
+          continue;
+        }
+        if (frame.type === Kc.controlRevokedType) {
+          let reason = "";
+          try {
+            reason = JSON.parse(new TextDecoder().decode(frame.payload)).reason ?? "";
+          } catch {}
+          log("control revoked" + (reason ? `: ${reason}` : ""));
+          setControlling(false);
           continue;
         }
         if (frame.type === Kc.metadataResponseType) {

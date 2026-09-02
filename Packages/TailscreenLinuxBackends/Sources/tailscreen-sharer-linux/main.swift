@@ -21,6 +21,7 @@ import TailscreenTransport
 //                           [--display :N] [--fps N] [--seconds N]
 //                           [--allow-control]
 //   tailscreen-sharer-linux --link [--link-relay-map-url URL] [--approve-guests]
+//                           [--allow-control [--grant-control]]
 //                           [--display :N] [--fps N] [--seconds N]
 //
 // TAILSCREEN_TS_AUTHKEY / TAILSCREEN_TS_CONTROL_URL are honoured as defaults,
@@ -65,6 +66,11 @@ struct Config: Sendable {
     /// automation escape hatch, the guest-side twin of TAILSCREEN_OPEN_DOOR.
     /// Never on by default.
     var approveGuests = false
+    /// Grant every control request the moment it arrives (needs
+    /// `--allow-control`, and XTEST). The same automation escape hatch as
+    /// `--approve-guests`, for the browser e2e's remote-control leg: nobody is
+    /// there to press Grant. Never on by default.
+    var grantControl = false
 
     static func parse() -> Config {
         var c = Config()
@@ -85,6 +91,7 @@ struct Config: Sendable {
             case "--link": c.link = true
             case "--link-relay-map-url": c.linkRelayMapURL = it.next()
             case "--approve-guests": c.approveGuests = true
+            case "--grant-control": c.grantControl = true
             default: FileHandle.standardError.write(Data("unknown argument \(a)\n".utf8))
             }
         }
@@ -153,6 +160,17 @@ if config.approveGuests {
         for viewer in pending {
             log("auto-approving guest \(viewer.id)")
             Task { server.approveViewer(addr: viewer.id) }
+        }
+    }
+}
+
+if config.grantControl {
+    // Same hop-off-the-callback shape as the approval above; `grantControl`
+    // returns false (and logs why) when no injector is present.
+    server.onControlRequestsChanged = { requests in
+        for request in requests {
+            log("auto-granting control to \(request.viewerIP)")
+            Task { _ = server.grantControl(toConnectionID: request.id) }
         }
     }
 }
