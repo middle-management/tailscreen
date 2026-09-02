@@ -129,6 +129,16 @@ link minted against your derper carries your derper. The relay sees only
 ciphertext either way — self-hosting it is about availability and traffic
 policy, not confidentiality.
 
+Two things change when guests are **browsers** (the web form of the link).
+A browser can only reach a relay over the DERP protocol's WebSocket
+upgrade (`wss://`, which `derper` serves on its normal TLS port), and it
+holds the browser's certificate rules: the derper needs a certificate the
+browser already trusts — a self-signed one fails silently, because a page
+cannot ask you to accept it. And a browser cannot hole-punch, so a browser
+viewer never leaves the relay: budget the derper for the share's bitrate
+times the number of browser viewers, for the whole session, where a
+native guest usually costs it a few seconds of bootstrap.
+
 ## Caveats
 
 - **Interactive login expects a browser-redirect endpoint.** Tailscale's

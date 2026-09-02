@@ -21,13 +21,20 @@ session, the sharer engine, and every loss-recovery, congestion, and
 admission decision — is shared by all three apps, and each platform
 supplies only what has to touch the OS:
 
-|  | macOS | Linux | Windows |
-| :--- | :--- | :--- | :--- |
-| Capture | ScreenCaptureKit | X11 / ScreenCast portal | Windows.Graphics.Capture |
-| Encode / decode | VideoToolbox (hardware) | libavcodec (software) | libavcodec (software) |
-| Render | Metal | OpenGL (GTK4) | WinUI |
-| Audio I/O | AVAudioEngine | ALSA | WASAPI |
-| Input injection | CGEvent | XTEST | SendInput |
+|  | macOS | Linux | Windows | Browser (viewing only) |
+| :--- | :--- | :--- | :--- | :--- |
+| Capture | ScreenCaptureKit | X11 / ScreenCast portal | Windows.Graphics.Capture | — |
+| Encode / decode | VideoToolbox (hardware) | libavcodec (software) | libavcodec (software) | WebCodecs (decode; the browser's own decoders) |
+| Render | Metal | OpenGL (GTK4) | WinUI | Canvas 2D |
+| Audio I/O | AVAudioEngine | ALSA | WASAPI | Web Audio (output only) |
+| Input injection | CGEvent | XTEST | SendInput | — |
+
+The fourth column is a page, not an app: the same portable core, this time
+the public Go SDK compiled to WebAssembly, behind the browser's decoders
+and a canvas. It only views, only as a guest, and — because a browser has
+no UDP — its whole datagram plane rides the TCP line of the diagram below
+as `mediaDatagram` frames (the [stream
+profile]({{ site.baseurl }}{% link protocol.md %}#stream-carriage--the-reliable-transport-profile-0x0d)).
 
 ```
 sharer                                       viewer
@@ -258,6 +265,25 @@ is never persisted: stop sharing, press New Link, or flip the toggle off
 and every outstanding copy of the link is dead. On macOS a share can even
 run **link-only** — started signed out, no tsnet node at all, the guest
 tunnel as its only transport.
+
+**A browser is a guest too.** The web form of a share link
+(`https://tailscreen.dev/view/#tc…`) opens a static page that carries the
+fork's `guest` client and the protocol SDK compiled to WebAssembly. It
+reaches the relay over a WebSocket — the only socket a browser has — so
+its WireGuard tunnel is always relayed and never upgrades to a direct
+path, and everything inside it is carried reliably whether it is shaped
+like UDP or not. That is exactly the case the stream profile exists for,
+so the page uses nothing else: it sends its HELLO as a
+`mediaDatagram` frame, the sharer keys that viewer's media to the
+connection instead of a UDP address, and every RTP packet, receiver
+report and PLI follows the same way. Loss recovery is masked off (a
+reliable stream loses nothing; what it does instead is queue), the
+sharer's existing per-viewer send chain absorbs the backpressure, and
+from admission onward the page is an ordinary guest: mandatory approval
+every join, identity by key, the same drawing and remote-control gates.
+Decoding is WebCodecs — H.264 everywhere the browser ships a decoder,
+with the codec-unsupported fallback covering HEVC — and audio is Web
+Audio behind the click browsers insist on.
 
 ## Annotations
 

@@ -36,6 +36,7 @@ Always go through `make` (`make build`, `test`, `run`, `release`, …) — the r
 - `make test-conformance` — runs the protocol conformance vectors (`conformance/vectors/`) against **`sdk/go`**, the public Go SDK, which was written from `docs/spec.md` and shares no code with ours. Needs Go, nothing else. CI's `linux-conformance` leg runs this **plus** `cd sdk/go && go test ./...` **plus** `make libtailscreen-check` — reproduce all three before concluding a failure there is flaky. The Swift half of the same pair rides inside `make test-protocol`. Neighbours: `make fuzz-conformance` (coverage-guided fuzzing of the same parsers, off the PR path) and `make libtailscreen-check` (the SDK as a C static library — `-buildmode=c-archive`, same mechanism as `libtailscale.a` — plus the C smoke test that links it).
 - `make test-l10n` — builds + tests the shared string catalog. Its suites scan **all four** source trees for `L("…")` keys the catalog is missing, so it is the only check on the GTK and WinUI apps' user-facing strings; reproduces a `linux-l10n` CI failure.
 - `make test-e2e` — one-shot `e2e-up` → `swift test --filter TailscaleConnectivityTests` → `e2e-down` against a local headscale in Docker.
+- `make web-viewer` / `make test-web-spike` — the browser viewer (`web/viewer`, `.claude/rules/web-viewer.md`). The first is the js/wasm build (Go only; prints the raw/gzip/brotli sizes and exports the page's strings); the second is the browser↔sharer end-to-end and Linux-only: it needs Go, Node with a global `playwright` module plus Google Chrome (`playwright install --with-deps chrome`), Xvfb, and `xdotool` for the remote-control leg. Reproduces a `linux-web-spike` CI failure.
 
 The app package lives in `Apps/macOS/` — bare `swift` commands for the app must run from that directory (from the repo root there is no manifest at all). And running `swift build` there before `make tailscale` will fail to link — you need `libtailscale.a` first.
 
@@ -90,7 +91,8 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 | `.claude/rules/linux.md` | GTK app, X11/portal capture, ALSA, XTEST injection + their pitfalls | `Apps/linux`, Linux backend packages |
 | `.claude/rules/windows.md` | WinUI app, WGC capture, SendInput, layered-window overlay, DPI awareness | `Apps/windows`, Windows backend packages |
 | `.claude/rules/tailscalekit.md` | The fork submodule, how to change it, the Windows Go↔C bridge and runtime-start commits | `Packages/TailscaleKit/**` |
-| `.claude/rules/ci.md` | Shared build definitions, the linux-packages matrix, release/soak workflows | `.github/**` |
+| `.claude/rules/ci.md` | Shared build definitions, the linux-packages matrix, release/soak/Pages workflows | `.github/**` |
+| `.claude/rules/web-viewer.md` | The browser viewer: the wasm surface, the page, its strings, the gzip loader, hosting, the e2e's traps | `web/viewer/**` |
 
 One skill loads on demand rather than by path: **`test-catalog`** — the extracted pure-decision suites, the test-only seams, and which package a new suite belongs in. Invoke it when adding or moving a test.
 

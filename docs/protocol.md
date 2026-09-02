@@ -39,6 +39,7 @@ move, and for that reason the literal lives once in the code, in
 | Annotations    | TCP/7447  | Length-framed JSON messages. Reliable on purpose.                    |
 | Remote control | TCP/7447  | Request/grant/revoke + input events, on the same framed channel.     |
 | Metadata       | TCP/7447  | Share name, resolution, request-to-share prompts.                    |
+| Stream carriage | TCP/7447 | The whole UDP plane above — control, RTP, reports — as `mediaDatagram` frames, for a viewer with no UDP (a browser). See below. |
 | Discovery      | —         | Read off the tailnet's own netmap, not probed. See below.            |
 
 ## Video — UDP RTP
@@ -271,8 +272,11 @@ The message types on this channel:
 | `0x08` | `controlRevoked`  | sharer → viewer | Control ended (`{reason}`).                      |
 | `0x09` | `inputEvent`      | viewer → sharer | Mouse move/down/up/scroll, key down/up. Coordinates normalized `[0,1]` top-left; keys are **USB HID usage IDs** with a platform-neutral modifier set — no platform's native keycodes or flag bits ever ride the wire ([details]({{ site.baseurl }}{% link spec.md %}#122-input-events)). |
 | `0x0A` | `controlReleased` | viewer → sharer | "I'm done controlling" — the sharer revokes so UI and gate clear in step. |
+| `0x0B` | `metadataRequest` | peer → peer     | Empty payload: "describe yourself". See [Metadata](#metadata--tcp-requestresponse). |
+| `0x0C` | `metadataResponse` | receiver → requester | Share name / resolution / whether sharing, on the same connection. |
+| `0x0D` | `mediaDatagram`   | viewer ↔ sharer | **Not JSON**: one raw datagram exactly as it would have gone over UDP. See [Stream carriage](#stream-carriage--the-reliable-transport-profile-0x0d). |
 
-`0x00`–`0x02` are historical and stay reserved. Types `0x0A`–`0x0C` also
+`0x00`–`0x02` are historical and stay reserved. Types `0x0A`–`0x0D` also
 appear in the UDP control table above — that's fine, they're disjoint
 spaces on disjoint transports. Unknown type bytes are skipped, which is
 the entire backward-compatibility story on this channel too.
@@ -294,6 +298,40 @@ Why TCP for this and UDP for video? Because **dropping a stroke segment
 invisible.** A circle drawn as two disconnected arcs reads as broken
 software; a 16 ms frame stutter goes unnoticed. The transport choice
 tracks the cost of loss.
+
+## Stream carriage — the reliable-transport profile (`0x0D`)
+
+Everything above assumes a viewer can send and receive UDP. Some can't: a
+network that blocks it, and — the case that made this a feature — a
+**browser**, which has no datagram socket at all and reaches the guest
+tunnel's relay over a WebSocket. For those, the *whole* UDP plane is
+carried over the framed TCP channel instead: each datagram — HELLO,
+KEEPALIVE, every RTP packet, receiver reports, PLI — becomes one
+`mediaDatagram` frame whose payload is the datagram's bytes, byte for
+byte. Nothing inside is re-encoded, so past the demultiplexer the sharer
+and viewer pipelines are the same code that serves UDP.
+
+There is no capability bit for it. A viewer **elects** the profile by
+sending its HELLO as a frame; the connection it arrived on becomes that
+viewer's media route, and closing it is that viewer's BYE. Two things
+change on election. Loss recovery is masked off — a reliable, in-order
+stream never loses a packet, so NACK retransmits and FEC parity would be
+pure overhead (receiver reports stay: RTT and liveness still matter). And
+loss turns into *delay*: what a lossy path would have dropped, a stream
+queues, so the sharer treats a stream viewer as it treats a legacy
+PLI-only viewer whose socket is backing up — its per-viewer send chain
+sheds whole frames under pressure and the fairness controller throttles
+it to keyframes if that persists — rather than growing a second
+congestion controller. Latency under loss is worse than native UDP, which
+is inherent and the reason the apps stay the recommendation where they
+can run.
+
+A sharer that predates the profile skips the unknown frame type and the
+viewer's HELLO simply times out — the ordinary forward-compatibility rule
+doing the degradation. The normative text is
+[§2.2 of the specification]({{ site.baseurl }}{% link spec.md %}#22-stream-carriage-of-the-datagram-plane-reliable-transport-profile);
+the native apps expose the profile behind `TAILSCREEN_FORCE_STREAM=1`,
+and the browser viewer runs on nothing else.
 
 ## Metadata — TCP request/response
 
@@ -347,7 +385,11 @@ is peer enumeration — the token *is* the rendezvous, so discovery is
 simply inapplicable — and the sharer compensates at the admission layer:
 a guest's stable identifier is its WireGuard node key, approval is
 mandatory on every join, and a deny evicts that key at the tunnel for the
-life of the link. The full accounting is
+life of the link. The **browser viewer** is a guest on this tunnel with
+one difference in transport: it reaches the relay only over a WebSocket —
+a reliable stream end to end — so it always runs the stream carriage
+above rather than have UDP-shaped loss recovery fight a transport that
+never loses. The full accounting is
 [Appendix D of the specification]({{ site.baseurl }}{% link spec.md %}#appendix-d-transport-bootstrap-via-connection-token-guest-mode)
 (informative — it adds no wire values and changes no requirements) and the
 [security model]({{ site.baseurl }}{% link security.md %}).

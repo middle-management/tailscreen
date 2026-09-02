@@ -1,9 +1,10 @@
 //go:build js && wasm
 
-// Command viewer is the browser viewer's wasm core. Phase 2 of
-// plans/browser-viewer.md: transport only — it proves a browser can dial a
-// share by token through the guest tunnel and move the stream profile's
-// framed datagrams both ways. Decoding (Phase 3) is not here yet.
+// Command viewer is the browser viewer's wasm core (plans/browser-viewer.md,
+// Phases 2–4): the guest tunnel dialled by token, the stream profile's
+// framing, the receive pipeline (session_js.go), and every wire constant the
+// page's control and drawing paths need. Decoding and rendering stay on the
+// page — WebCodecs and a canvas are browser APIs, not Go's.
 //
 // It exports a deliberately small surface onto globalThis; the page owns the
 // loop (dial → HELLO → KEEPALIVE cadence → classify what comes back):

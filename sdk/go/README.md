@@ -77,6 +77,19 @@ Two conventions worth reading before the API:
   the protocol's forward compatibility, and an implementation that raises on
   them will break against the next peer that ships a feature it lacks.
 
+## Using it from a browser
+
+The same package compiles for `GOOS=js GOARCH=wasm` unchanged — it owns no
+socket and no goroutine, which is what makes that true — and that is how
+Tailscreen's own [browser viewer](../../web/viewer/README.md) is built: this
+SDK plus the guest tunnel's client, one wasm module, with a page on top that
+does WebCodecs and a canvas. Every wire byte the page sends or reads comes
+from here, so the page never re-implements a format the conformance vectors
+pin. It is also the worked example of the specification's reliable-transport
+profile (§2.2): a browser has no UDP, so the page carries the datagram plane
+as `MsgMediaDatagram` frames over the TCP channel, and past the demultiplexer
+the pipeline is the one described above.
+
 ## Using it from C
 
 `make libtailscreen` from the repository root produces

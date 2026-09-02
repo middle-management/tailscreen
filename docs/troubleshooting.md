@@ -228,6 +228,43 @@ whole `tailscreen://join?token=…` line or the bare `tc…` token both
 work); or the guest's network blocks the outbound HTTPS/TLS connection
 the relay bootstrap needs.
 
+## The browser viewer: a 404, a blank stage, or "codec unsupported"
+
+The web form of a share link opens a page instead of an app
+([Usage]({{ site.baseurl }}{% link usage.md %}#sharing-via-link-guests)),
+and its failure modes are mostly the browser's:
+
+- **`tailscreen.dev/view/` is a 404.** The root URL — the one the apps'
+  **Copy Web Link** produces — only exists once a stable release ships the
+  page; until then the same page is served from
+  `https://tailscreen.dev/next/view/`. Keep the `#tc…` fragment when you
+  change the path; the token lives there.
+- **"Waiting for approval" and nothing happens.** Same as any guest: the
+  sharer has to press Accept, every join. Nothing is stuck.
+- **The stage stays blank, or the page says the codec is unsupported.**
+  The page decodes with the browser's own decoders (WebCodecs), and H.264
+  is a *licensed* codec that not every build carries. Chrome, Edge and
+  Firefox have it; plain Chromium builds and some distribution-packaged
+  browsers do not, and there the page has nothing to decode with. Try one
+  of the three. An HEVC share is not the problem — the page asks the
+  sharer to fall back to H.264 by itself.
+- **The page loads but WebCodecs is "not defined".** Browsers expose it
+  only in a *secure context*: `https://` or a file opened from disk. A
+  copy of the page served over plain `http://` from a LAN host will not
+  decode; serve it over TLS, or use the single-file bundle
+  (`make web-viewer-bundle`) straight from disk.
+- **Video but no sound.** Browsers refuse to play audio until the page has
+  been clicked; press **Enable audio**.
+- **It stutters more than the apps do.** A browser cannot hole-punch, so
+  everything it receives crosses a DERP relay, at screen-share bitrate,
+  for the whole session — and on a stream, packet loss shows up as delay
+  rather than as dropped frames. Tailscale's free relays are not sized for
+  that; a [self-hosted relay]({{ site.baseurl }}{% link self-hosted.md %}#your-own-relay-for-share-links-derper)
+  is the fix, and a native app on the same machine will always do better.
+
+The page's **Log** button shows what it saw — codec probes, the approval
+sequence, decode errors — and is what to paste into a bug report.
+
 ## Clicking a tailscreen: link does nothing
 
 The scheme is registered by the *packaged* app, and each platform has a

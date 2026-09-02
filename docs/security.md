@@ -176,6 +176,18 @@ capability to knock, never capability to watch.**
   applies unchanged; what disappears is surface, not protection: there is
   no tailnet side to reach, and the DERP relay that bootstraps guests
   still sees only ciphertext.
+- **A browser is a guest with two extra things to know.** The web form of
+  a link opens a static page on `tailscreen.dev` that runs the same guest
+  tunnel in WebAssembly, so every protection above applies as written:
+  same handshake, same mandatory approval, same key identity, same gates
+  on drawing and control. The token rides in the URL *fragment*, which a
+  browser never sends to the server, so the site hosting the page never
+  learns it — and the page is plain static files, so there is nothing
+  server-side to learn it with. What a browser *adds* is a trust
+  dependency the apps don't have: the JavaScript that decrypts your
+  stream is served by whoever hosts the page (for the hosted URL, GitHub
+  Pages on our behalf — see below). And a browser cannot hole-punch, so
+  every byte to it crosses a relay, as ciphertext, for the whole session.
 
 ## Who can control your machine
 
@@ -268,6 +280,15 @@ threat model:
 - **Malicious code in the Tailscreen process.** No sandboxing beyond what
   the OS itself enforces on a signed app. If you're worried about supply-
   chain attacks, build from source.
+- **The host serving the browser viewer.** A page is code you download
+  every time you open it, from `tailscreen.dev` (GitHub Pages, built from
+  this repository by a public workflow). Whoever controls that host — or
+  your path to it — controls the code that decrypts the stream in that
+  tab. The apps have no such dependency. If that matters in your
+  deployment, `make web-viewer-bundle` produces a single self-contained
+  HTML file you can host yourself, or open straight from disk; and a
+  guest you don't trust to pick their viewer is not a guest you should
+  approve.
 - **Compromised Tailscale credentials.** If an attacker can join your
   tailnet, they're inside your perimeter. The approval gate and block
   list still stand between them and your pixels, but ACLs are your

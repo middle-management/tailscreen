@@ -1,6 +1,15 @@
 # Browser viewer — the stream profile, the wasm transport, and the page
 
-> Status: plan. This is the "separate plan" `plans/share-by-token.md` deferred
+> Status: **shipped.** All four phases are on `main` — #289 (Phase 1, the
+> stream profile), #290 (Phase 2, the wasm transport), #291 (Phase 3, the
+> page decodes), #292 (Phase 4, control + drawing + hosting + docs), merged
+> 2026-09-02. The page is live at `https://tailscreen.dev/next/view/`; the
+> root `/view/` — which is where the apps' **Copy Web Link** points — appears
+> with the first *stable* release whose tree carries `web/viewer/index.html`
+> (the Pages workflow's channel rule; see "Follow-ups" below). What remains
+> is the follow-up list at the end, not build order.
+>
+> This is the "separate plan" `plans/share-by-token.md` deferred
 > ("Browser viewer (needs the reliable-transport profile; separate plan)").
 > Feasibility groundwork: `plans/tailcat-evaluation.md`, "Use case 2: browser
 > viewer" — read it first; this document turns its findings into a build
@@ -161,6 +170,12 @@ profile that means:
 
 ## Phase 1 — the stream profile, native
 
+> Status: **done** (#289). Spec §2.2 + registries + vectors + both enums,
+> the sharer's stream-viewer route, the viewer's `TAILSCREEN_FORCE_STREAM`
+> mode, and the decision suites; `make test-protocol` / `test-conformance` /
+> `test-differential` green. Automatic UDP→stream fallback for native
+> viewers stayed a follow-up, as planned.
+
 No browser anywhere in this phase; it is useful stand-alone as the fallback
 for any viewer on a UDP-blocking network, on every platform.
 
@@ -193,7 +208,7 @@ sharer hosts serve it, `make test-protocol` / `test-conformance` /
 
 ## Phase 2 — the wasm transport spike
 
-> Status: **done** (this branch). The gate is met end to end with no
+> Status: **done** (#290). The gate is met end to end with no
 > internet: real Chromium → the fork's `guest` client compiled to wasm →
 > DERP over WebSocket → WireGuard → the real Linux sharer in link-only mode,
 > a framed HELLO electing the stream profile, parked → approved → HELLO_ACK,
@@ -268,7 +283,7 @@ the page (it advertises no caps yet), and any UI beyond a status readout.
 
 ## Phase 3 — the page
 
-> Status: **done** (this branch). Chrome watches a live share: the wasm
+> Status: **done** (#291). Chrome watches a live share: the wasm
 > session hands access units to WebCodecs, frames land on a canvas, Opus
 > plays through an AudioContext, and the placards come from the shared
 > catalog. `make test-web-spike` now asserts decoded frames and a non-flat
@@ -324,7 +339,7 @@ both, and it is the first thing to check when they are.
 
 ## Phase 4 — chrome and shipping
 
-> Status: **done** (this branch). Remote control and drawing from the page,
+> Status: **done** (#292). Remote control and drawing from the page,
 > the page hosted on the site, the web form of a share link in all three
 > apps, and the docs — with the browser as a fourth column of the platform
 > matrix, honestly filled.
@@ -395,6 +410,36 @@ brotli). The `guest` package's server half rides along because it is one
 package; splitting it behind a build tag would be a fork change for a few
 megabytes of raw size that the gzip transfer mostly hides. Deferred.
 
+## Follow-ups
+
+What shipping left open, roughly in the order it will matter:
+
+- **The root `/view/` URL.** `pages.yml` publishes `/view/` only when the
+  latest stable release tag carries the page, so the web link the apps copy
+  (`ShareLinkFormat.webViewerURL`) is a 404 until the next stable release;
+  `/next/view/` serves the same page from `main` meanwhile. Nothing to do
+  but release — and note that a *pre-release* does not flip it.
+- **Ship the single-file bundle.** `make web-viewer-bundle` produces
+  `tailscreen-viewer.html` for networks with no web access, and `usage.md`
+  tells people to build it — but `release.yml` does not attach it to a
+  release. Whether it should is a product call (it is 10 MB of base64 wasm
+  that nobody has asked for yet); if yes, it is one upload step.
+- **Safari.** Unrun: no headless WebKit with WebCodecs in the harness.
+  "avc" + avcC is the format WebKit accepts, so it is the first thing to
+  check on a Mac, along with `DecompressionStream` (16.4+) and the audio
+  gesture rule.
+- **Automatic UDP→stream fallback for native viewers.** The profile ships
+  behind `TAILSCREEN_FORCE_STREAM=1`; the automatic version (UDP silent
+  after HELLO retries → retry framed) is the Phase 1 follow-up still owed.
+- **A direct path for browsers.** Every browser viewer is DERP-relayed at
+  share bitrate, which is the one structural cost. The way out is a
+  WebRTC data channel (or WebTransport) endpoint on the sharer — tailcat's
+  open direction too — and it is a transport change on both ends, not a
+  page change.
+- **wasm size.** 34 MB raw / 7.8 MB gzip. The `guest` package's server half
+  rides along; splitting it behind a build tag in the fork would save a few
+  raw megabytes the gzip transfer mostly hides. Deferred until it hurts.
+
 ## Non-goals
 
 - **Browser sharing.** `getDisplayMedia` capture + WebCodecs encode is a
@@ -413,7 +458,7 @@ megabytes of raw size that the gzip transfer mostly hides. Deferred.
 | :- | :- |
 | `guest` client under `GOOS=js` | **Retired** (Phase 2): compiles unchanged and bootstraps in Chromium; `linux-web-spike` pins it. |
 | Relay bandwidth | Every browser viewer is DERP-relayed. Self-hosted derper guidance ships with Phase 4 docs; the sharer's per-viewer fairness already isolates a slow relay path. |
-| wasm size (~27 MB class) | **Measured** (Phase 2): 33.9 MB raw, 7.8 MB gzip, 5.4 MB brotli. Budget decisions are Phase 4's, now with a real number. |
-| WebCodecs variance (HEVC, Safari) | **Measured on Chrome** (Phase 3): H.264 every profile ✓, HEVC ✗ on Linux → the CODEC_NO path; Playwright's Chromium has no H.264 at all, so the gate runs on Chrome. Safari/Firefox live runs still owed (Phase 4). |
+| wasm size (~27 MB class) | **Measured** (Phase 2): 33.9 MB raw, 7.8 MB gzip, 5.4 MB brotli. **Decided** (Phase 4): the page fetches the gzip and inflates it with `DecompressionStream`, so first load is the gzip size; the bundle inlines the same gzip. |
+| WebCodecs variance (HEVC, Safari) | **Measured on Chrome and Firefox** (Phases 3–4): H.264 every profile ✓ on both, HEVC ✗ on Linux → the CODEC_NO path; Playwright's Chromium has no H.264 at all, so the gate runs on Chrome (`PW_BROWSER=firefox` runs the same assertions on Firefox). Safari still owed — see Follow-ups. |
 | Double-reliable stacking (our stream inside WG inside WebSocket/TCP) | Loss on the physical path recovers in the outer TCP; the inner plane sees it as delay, which is what the backpressure controller keys on. Latency under loss will be worse than native UDP — inherent, documented, and the reason native apps stay the recommendation. |
 | Ordering vs. the annotation invariant | Media and annotations share one connection; frames are sent from one prioritized outbox, so the annotation-ordering rule (synchronous enqueue, one drain) carries over unchanged — the outbox must preserve enqueue order within each priority class. |
