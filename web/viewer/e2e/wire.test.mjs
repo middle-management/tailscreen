@@ -61,6 +61,31 @@ assert.deepEqual(json(add), {
 assert.deepEqual(json(W.annotation.undo("x")), { type: "undo", id: "x" });
 assert.deepEqual(json(W.annotation.clearAll()), { type: "clearAll" });
 
+// The stroke width unit (TS-ANN-005): points against a 1000-px short edge,
+// the apps' default 3 — pinned against the conformance vector's own `add`
+// so the page can never again send a fraction the sharers draw as a hairline.
+const vectors = JSON.parse(readFileSync(path.join(here, "../../../conformance/vectors/json-payloads.json"), "utf8"));
+const vecAdd = JSON.parse(vectors.cases.find((c) => c.id === "json/annotation-add-pen").in.json);
+assert.deepEqual(
+  json(W.annotation.add("pen", [[0.25, 0.5], [0.3, 0.55]], { r: 1, g: 0.1, b: 0.15, a: 1 }, undefined, vecAdd.annotation.id)),
+  vecAdd,
+  "the page's add must serialise exactly like the specification's example, default width included",
+);
+assert.equal(W.annotation.defaultWidth, 3);
+assert.equal(W.annotation.strokePixels(3, 1000), 3, "3 points on the reference edge is 3 px");
+assert.equal(W.annotation.strokePixels(3, 720), 2.16, "and scales with the short edge");
+assert.equal(W.annotation.strokePixels(3, 100), 1, "floored at one pixel");
+assert.equal(W.annotation.strokePixels(undefined, 1000), 3, "a missing width is the default");
+{
+  // Through the renderer: the lineWidth it sets is the scaled one.
+  const seen = [];
+  const ctx = new Proxy({}, { get: (_, k) => (k === "lineWidth" ? undefined : () => {}), set: (_, k, v) => (k === "lineWidth" && seen.push(v), true) });
+  const store = new W.AnnotationStore();
+  store.apply(W.annotation.add("pen", [[0, 0], [1, 1]], { r: 1, g: 1, b: 1, a: 1 }));
+  store.render(ctx, 1920, 1080);
+  assert.deepEqual(seen, [3.24], "a 3-point stroke on a 1080-px short edge is 3.24 px");
+}
+
 // The store: add, undo, clear, and unknown-is-discarded (TS-ANN-003).
 const store = new W.AnnotationStore();
 assert.ok(store.apply(add));

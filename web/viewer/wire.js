@@ -63,13 +63,27 @@
     modifiers,
   };
 
+  // A stroke's `width` is in POINTS relative to the video's short edge, quoted
+  // against a 1000-px reference (TS-ANN-005; `Annotation.defaultWidth` and
+  // `AnnotationRasterizer.referenceShortEdge` on the Swift side): 3 means a
+  // 3-px stroke on a 1000-px-tall frame, scaling with the display. It is NOT
+  // a fraction of the frame — the page once sent 0.004 (≈3 px of its own
+  // canvas), which the sharers drew as a 0.004-point hairline nobody could
+  // see, while an app's 3.0 would have rendered here 2000 px wide.
+  const DEFAULT_WIDTH = 3;
+  const REFERENCE_SHORT_EDGE = 1000;
+  const strokePixels = (width, short) => Math.max(1, ((width ?? DEFAULT_WIDTH) * short) / REFERENCE_SHORT_EDGE);
+
   const annotation = {
-    add: (tool, points, color, width, id = crypto.randomUUID()) => ({
+    add: (tool, points, color, width = DEFAULT_WIDTH, id = crypto.randomUUID()) => ({
       type: "add",
       annotation: { id, tool, points, color, width },
     }),
     undo: (id) => ({ type: "undo", id }),
     clearAll: () => ({ type: "clearAll" }),
+    defaultWidth: DEFAULT_WIDTH,
+    referenceShortEdge: REFERENCE_SHORT_EDGE,
+    strokePixels,
   };
 
   const TOOLS = new Set(["pen", "line", "arrow", "rectangle", "oval", "click"]);
@@ -114,7 +128,7 @@
     if (!pts.length) return;
     ctx.save();
     ctx.strokeStyle = ctx.fillStyle = css(a.color);
-    ctx.lineWidth = Math.max(1, (a.width ?? 0.004) * short);
+    ctx.lineWidth = strokePixels(a.width, short);
     ctx.lineCap = ctx.lineJoin = "round";
     const [x0, y0] = pts[0];
     const [x1, y1] = pts[pts.length - 1];
