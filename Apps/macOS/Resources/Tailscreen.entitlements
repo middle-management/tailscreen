@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      The hardened runtime (codesign's runtime option, which notarization
+      requires) blocks every TCC-gated device the app does not claim here.
+
+      Microphone: without this key, AVCaptureDevice.requestAccess(for: .audio)
+      is denied at once: no system prompt, and the app never appears under
+      System Settings > Privacy & Security > Microphone, so there is nothing
+      the person can switch on. A `make run` build is not hardened and prompts
+      normally, which is how notarized builds shipped through v0.10.0-rc.7
+      with voice silently unavailable.
+
+      Screen Recording is TCC-only and needs no entitlement; a camera would
+      need com.apple.security.device.camera the same way.
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>
