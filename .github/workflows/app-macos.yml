@@ -576,15 +576,27 @@ jobs:
             exit 1
           fi
 
+          # `--options runtime` is the hardened runtime notarization requires,
+          # and it blocks every TCC-gated device the app does not claim in
+          # its entitlements: without the file, the microphone request was
+          # denied on the spot — no prompt, no row under Privacy & Security —
+          # on every notarized build through rc.7, while `make run` (not
+          # hardened) prompted normally. The self-check below greps the
+          # signed app for the key so a dropped `--entitlements` cannot ship
+          # silently again.
           /usr/bin/codesign \
             --force \
             --options runtime \
             --timestamp \
             --deep \
+            --entitlements Apps/macOS/Resources/Tailscreen.entitlements \
             --sign "$IDENTITY_HASH" \
             "${APP_NAME}.app"
 
           /usr/bin/codesign --verify --deep --strict --verbose=2 "${APP_NAME}.app"
+          /usr/bin/codesign -d --entitlements - "${APP_NAME}.app" 2>&1 | tee /tmp/entitlements.txt
+          grep -q "com.apple.security.device.audio-input" /tmp/entitlements.txt \
+            || { echo "::error::signed app carries no audio-input entitlement — the microphone would be denied without a prompt"; exit 1; }
 
       - name: Notarize and staple
         if: steps.signing.outputs.enabled == 'true' && inputs.notarize

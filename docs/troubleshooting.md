@@ -159,6 +159,25 @@ second click needed. If you launched Tailscreen from Terminal, the
 permission may need to go to Terminal instead, same as with Screen
 Recording.
 
+## "Microphone permission denied", and Tailscreen isn't in the Microphone list
+
+Turning on the microphone fails with *Microphone permission denied*, but
+**System Settings → Privacy & Security → Microphone** has no Tailscreen
+row to switch on. Release builds of Tailscreen up to **v0.10.0-rc.7** had
+this on every Mac: the signed app lacked the entitlement macOS requires
+before it will even *ask* for the microphone, so the request was denied
+on the spot and never shown to you. It is fixed in the next build. On an
+affected build there is nothing to grant — nothing in System Settings
+helps — so update rather than reinstall. If you had also denied an older
+prompt at some point, clear the stale decision after updating:
+
+```bash
+tccutil reset Microphone se.middlemanagement.tailscreen
+```
+
+Sharing your screen and hearing others were never affected; only sending
+your own voice was.
+
 ## Capture restarts by itself mid-share
 
 Viewers see a brief pause, the sharer's log shows a helper restart. The
