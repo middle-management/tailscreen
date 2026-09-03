@@ -328,16 +328,6 @@ private struct StartingShareCard: View {
 private struct SharingCard: View {
     @EnvironmentObject var appState: AppState
 
-    /// Mic-button tooltip. The parenthetical chord tracks the configurable
-    /// hotkey; an unmappable stored chord is hidden rather than misprinted
-    /// (nil `micShortcutDisplay`).
-    private var micTooltip: String {
-        guard let chord = appState.micShortcutDisplay else {
-            return appState.isMicOn ? L("Mute Mic") : L("Unmute Mic")
-        }
-        return appState.isMicOn ? L("Mute Mic (\(chord))") : L("Unmute Mic (\(chord))")
-    }
-
     private var resolutionText: String? {
         guard let res = appState.metadataService.currentMetadata?.screenResolution else { return nil }
         return "\(res.width) × \(res.height)"
@@ -434,108 +424,9 @@ private struct SharingCard: View {
                 ShareViaLinkSection()
             }
 
-            // GeometryReader measures the popover's actual width, which
-            // we feed into a derived height via the shared display's
-            // aspect ratio. This is more robust than chaining
-            // `.aspectRatio` + `.frame(maxWidth: .infinity)` on a Color,
-            // which SwiftUI sometimes resolves to a single-line strip
-            // when the parent VStack distributes height tightly.
-            GeometryReader { geo in
-                let height = geo.size.width / max(0.1, screenAspect)
-                ZStack {
-                    Color.black.opacity(appState.previewImage == nil ? 0.15 : 1.0)
-                    if let image = appState.previewImage {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small).scaleEffect(0.7)
-                            Text(L("Capturing…"))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .frame(width: geo.size.width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous))
-            }
-            .frame(height: previewHeight)
+            SharePreviewThumbnail(height: previewHeight)
 
-            // Multiple buttons in a 280px popover would truncate ("Unmut…",
-            // "Stop Shari…"). Icon-only for Change Source + Draw + Mic;
-            // full label only on the destructive action so it stays
-            // prominent.
-            HStack(spacing: 6) {
-                Button {
-                    Task { await appState.changeShareSource() }
-                } label: {
-                    Image(systemName: "rectangle.on.rectangle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(appState.isChangingSource)
-                .help(L("Change source…"))
-                .accessibilityLabel(L("Change what you're sharing"))
-                .accessibilityHint(L("Reopens the picker without disconnecting viewers"))
-
-                Button {
-                    appState.toggleSharerOverlay()
-                } label: {
-                    Image(systemName: appState.isSharerOverlayVisible ? "pencil.slash" : "pencil.tip")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(appState.isSharerOverlayVisible ? L("Stop Drawing") : L("Draw"))
-                .accessibilityLabel(
-                    appState.isSharerOverlayVisible
-                        ? L("Stop drawing on screen")
-                        : L("Draw on screen"))
-
-                Button {
-                    Task { await appState.toggleMic() }
-                } label: {
-                    Image(systemName: appState.isMicOn ? "mic.fill" : "mic.slash")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(micTooltip)
-                .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
-                .accessibilityHint(L("Toggles voice chat with viewers"))
-
-                Button {
-                    appState.toggleSystemAudio()
-                } label: {
-                    Image(systemName: appState.isSystemAudioOn ? "speaker.wave.2.fill" : "speaker.slash")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(
-                    appState.isSystemAudioOn
-                        ? L("Mute System Audio")
-                        : L("Share System Audio")
-                )
-                .accessibilityLabel(
-                    appState.isSystemAudioOn
-                        ? L("Mute System Audio")
-                        : L("Share System Audio")
-                )
-                .accessibilityHint(L("Shares your computer's audio with viewers"))
-
-                Button {
-                    Task { await appState.stopSharing(reason: "StopSharingButton") }
-                } label: {
-                    Text(L("Stop Sharing")).frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .layoutPriority(1)
-                .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
-            }
+            ShareSessionControls(includesStop: true)
 
             AudioDevicePickers()
         }
@@ -549,14 +440,165 @@ private struct SharingCard: View {
     }
 }
 
-/// The share-by-token controls inside the SharingCard: the "Share via
+/// The live capture preview — the ~1 Hz thumbnail the capture helper sends
+/// back — in a black rounded container of the caller's height.
+///
+/// Shared by the menubar `SharingCard` and the hub window's share card, which
+/// is why the height is a parameter rather than derived here: the popover is a
+/// fixed 280 pt wide and can size the box to the shared display's aspect ratio
+/// exactly, while the window is user-resizable and has no such number to
+/// compute from. The image is `.fit` rather than `.fill` for the same reason —
+/// a fixed-height box in a flexible-width column letterboxes against the black
+/// backing instead of cropping the preview or overflowing its own bounds.
+struct SharePreviewThumbnail: View {
+    @EnvironmentObject var appState: AppState
+    let height: CGFloat
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(appState.previewImage == nil ? 0.15 : 1.0)
+            if let image = appState.previewImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                    Text(L("Capturing…"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous))
+        // One element rather than a black rectangle plus a spinner plus a
+        // label: the placard's own text is what the label says while the
+        // first frame is still coming.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            appState.previewImage == nil
+                ? L("Capturing…")
+                : L("Live preview of what you're sharing"))
+    }
+}
+
+/// The continuous session controls of a live share: Change Source, Draw, Mic,
+/// Share System Audio — and, for the popover, Stop Sharing on the same row.
+///
+/// Rendered on both sharer surfaces. The hub window passes
+/// `includesStop: false` because its card already carries Stop up in the
+/// status row, next to the "Sharing your screen" headline.
+///
+/// Icon-only on both: five labelled buttons would truncate ("Unmut…", "Stop
+/// Shari…") in the 280 pt popover, and the window card is only ~270 pt wide at
+/// the minimum window size, so labels would be no safer there. Every button
+/// carries `.help` plus an explicit accessibility label, which is what makes
+/// icon-only legitimate.
+struct ShareSessionControls: View {
+    @EnvironmentObject var appState: AppState
+    /// Whether Stop Sharing rides along at the end of the row.
+    var includesStop: Bool = false
+
+    /// Mic-button tooltip. The parenthetical chord tracks the configurable
+    /// hotkey; an unmappable stored chord is hidden rather than misprinted
+    /// (nil `micShortcutDisplay`).
+    private var micTooltip: String {
+        guard let chord = appState.micShortcutDisplay else {
+            return appState.isMicOn ? L("Mute Mic") : L("Unmute Mic")
+        }
+        return appState.isMicOn ? L("Mute Mic (\(chord))") : L("Unmute Mic (\(chord))")
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                Task { await appState.changeShareSource() }
+            } label: {
+                Image(systemName: "rectangle.on.rectangle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(appState.isChangingSource)
+            .help(L("Change source…"))
+            .accessibilityLabel(L("Change what you're sharing"))
+            .accessibilityHint(L("Reopens the picker without disconnecting viewers"))
+
+            Button {
+                appState.toggleSharerOverlay()
+            } label: {
+                Image(systemName: appState.isSharerOverlayVisible ? "pencil.slash" : "pencil.tip")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(appState.isSharerOverlayVisible ? L("Stop Drawing") : L("Draw"))
+            .accessibilityLabel(
+                appState.isSharerOverlayVisible
+                    ? L("Stop drawing on screen")
+                    : L("Draw on screen"))
+
+            Button {
+                Task { await appState.toggleMic() }
+            } label: {
+                Image(systemName: appState.isMicOn ? "mic.fill" : "mic.slash")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(micTooltip)
+            .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
+            .accessibilityHint(L("Toggles voice chat with viewers"))
+
+            Button {
+                appState.toggleSystemAudio()
+            } label: {
+                Image(systemName: appState.isSystemAudioOn ? "speaker.wave.2.fill" : "speaker.slash")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(
+                appState.isSystemAudioOn
+                    ? L("Mute System Audio")
+                    : L("Share System Audio")
+            )
+            .accessibilityLabel(
+                appState.isSystemAudioOn
+                    ? L("Mute System Audio")
+                    : L("Share System Audio")
+            )
+            .accessibilityHint(L("Shares your computer's audio with viewers"))
+
+            if includesStop {
+                Button {
+                    Task { await appState.stopSharing(reason: "StopSharingButton") }
+                } label: {
+                    Text(L("Stop Sharing")).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .layoutPriority(1)
+                .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
+            }
+        }
+    }
+}
+
+/// The share-by-token controls inside the sharing card: the "Share via
 /// Link" toggle (spins the guest node up / tears it down), the live token
 /// with Copy Link / Copy Token, New Link rotation, and the guest count.
 /// Hidden entirely when Settings → Link Sharing is off (the section's
 /// `linkSharingEnabled` gate at the call site). The token is minted per
 /// link and dies with the toggle, a rotation, or the share — the static
 /// caption says so, because a dead link fails silently on the other end.
-private struct ShareViaLinkSection: View {
+///
+/// Non-private because the hub window's share card renders it too: a link is
+/// how somebody gets in, and copying it shouldn't send the sharer hunting for
+/// the other surface.
+struct ShareViaLinkSection: View {
     @EnvironmentObject var appState: AppState
 
     private var guestCountText: String {
@@ -672,13 +714,13 @@ private struct ShareViaLinkSection: View {
     }
 }
 
-/// Compact input + output device pickers. Used inside both
-/// SharingCard and ViewingCard — anywhere voice playback is active.
+/// Compact input + output device pickers. Used inside the sharing card (both
+/// surfaces) and ViewingCard — anywhere voice playback is active.
 /// Refreshes the device list on appear so hot-plugged devices show
 /// up the next time the popover opens. `nil` selection means "follow
 /// system default"; that's also the initial value, so newly-launched
 /// instances inherit whatever the user has set in System Settings.
-private struct AudioDevicePickers: View {
+struct AudioDevicePickers: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
