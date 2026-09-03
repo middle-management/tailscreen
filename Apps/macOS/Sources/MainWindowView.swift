@@ -735,13 +735,14 @@ private struct ShareStatusSection: View {
 private struct ActiveShareCard: View {
     @EnvironmentObject var appState: AppState
 
-    /// Height of the live preview in the window card. The popover derives its
-    /// preview height from the shared display's aspect ratio because it knows
-    /// its own width (a fixed 280 pt); this card is as wide as the user's
-    /// window, so it takes a fixed height instead and lets the thumbnail
-    /// letterbox. ~180 pt is the 16:9 height at the default 400 pt window
-    /// width, so the common case has no bars at all.
-    private static let previewHeight: CGFloat = 180
+    /// Height of the live preview in the window card. The popover works back
+    /// from its own fixed width; this card is as wide as the user's window, so
+    /// it states a height and lets the thumbnail derive its width from the
+    /// shared display's aspect — a proportioned thumbnail sitting at the
+    /// card's leading edge rather than a full-width box. 120 pt is enough to
+    /// recognise what is on screen while leaving the actions, the roster and
+    /// the link controls above the fold at the default window size.
+    private static let previewHeight: CGFloat = 120
 
     private var viewersText: String {
         let count = appState.currentViewers.count
@@ -751,11 +752,16 @@ private struct ActiveShareCard: View {
 
     /// Viewer count plus the shared display's resolution, when the metadata
     /// service has reported one.
+    ///
+    /// The resolution is joined with non-breaking spaces so the line can only
+    /// wrap at the separator. Ordinary spaces let it break mid-value — the
+    /// first screenshot of this card read "1 viewer connected · 1920" over
+    /// "× 1080", which is a measurement torn in half.
     private var sharingDetailText: String {
         guard let res = appState.metadataService.currentMetadata?.screenResolution else {
             return viewersText
         }
-        return "\(viewersText) · \(res.width) × \(res.height)"
+        return "\(viewersText) · \(res.width)\u{00A0}×\u{00A0}\(res.height)"
     }
 
     var body: some View {
@@ -804,7 +810,7 @@ private struct ActiveShareCard: View {
             // preview takes a fixed height here because the window is
             // resizable and has no popover-width number to derive one from.
             SharePreviewThumbnail(height: Self.previewHeight)
-            ShareSessionControls()
+            ShareSessionControls(style: .window)
             // Who is watching, and the ✕ that drops one of them. The count
             // above says *how many* and never *which*, which left no place
             // to hang a per-viewer action — so dropping a viewer was the
