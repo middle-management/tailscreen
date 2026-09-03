@@ -274,7 +274,15 @@ and its failure modes are mostly the browser's:
   decode; serve it over TLS, or use the single-file bundle
   (`make web-viewer-bundle`) straight from disk.
 - **Video but no sound.** Browsers refuse to play audio until the page has
-  been clicked; press **Enable audio**.
+  been clicked; press **Enable audio**. If there is still nothing, the
+  Stats overlay's audio line says where it stops: `voice` and `system`
+  count the packets of each kind that arrived (zero means the sharer is
+  not sending that kind — the microphone is off, or Share System Audio
+  is), `decoded` counts what the browser turned into sound, and `ctx`
+  is the browser's audio output: `running` is right, `suspended` means
+  the browser is still blocking playback — click anywhere on the page,
+  and check the site's autoplay permission — and `unsupported` means
+  this browser has no WebCodecs audio decoder.
 - **It stutters more than the apps do.** A browser cannot hole-punch, so
   everything it receives crosses a DERP relay, at screen-share bitrate,
   for the whole session — and on a stream, packet loss shows up as delay

@@ -130,8 +130,9 @@ web-viewer: ## Build the browser viewer's wasm (web/viewer/dist) and print its s
 web-viewer-bundle: web-viewer ## One self-contained HTML file of the browser viewer (web/viewer/dist/tailscreen-viewer.html)
 	python3 web/viewer/tools/bundle.py
 
-test-web-spike: web-viewer ## Browser↔sharer transport spike: localderp + Xvfb + sharer --link + Chromium (Linux)
+test-web-spike: web-viewer ## Browser↔sharer end-to-end: wire + audio checks, then localderp + Xvfb + sharer --link + Chrome (Linux)
 	node web/viewer/e2e/wire.test.mjs
+	NODE_PATH="$$(npm root -g)" node web/viewer/e2e/audio.test.mjs
 	cd web/viewer && go build -o dist/localderp ./cmd/localderp
 	cd Packages/TailscreenLinuxBackends && PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit swift build --product tailscreen-sharer-linux
 	NODE_PATH="$$(npm root -g)" node web/viewer/e2e/spike.mjs

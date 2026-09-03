@@ -28,6 +28,12 @@ const viewer = (window.__viewer = {
   keyframes: 0,
   rtpVideo: 0,
   audioFrames: 0,
+  audioVoice: 0, // PT 98 packets handed to the decoder
+  audioSystem: 0, // PT 99 packets handed to the decoder
+  audioPlayed: 0, // decoder outputs scheduled on the AudioContext
+  audioPlayErrors: 0,
+  audioContextState: null,
+  audioUnsupported: false,
   fps: 0,
   kbps: 0,
   unsupported: false,
@@ -310,40 +316,93 @@ class AudioPath {
     this.muted = false;
   }
 
+  // Called from the Enable audio click — the gesture browsers require before
+  // an AudioContext may run. The state is tracked because a context that
+  // stays (or falls back to) "suspended" is the one failure that looks like
+  // nothing: packets arrive, the decoder runs, and no sound comes out. So
+  // the state is logged, shown in the HUD, and any later pointer or key on
+  // the page resumes it again (a click that the browser did count).
   enable() {
-    if (!this.ctx) this.ctx = new AudioContext({ sampleRate: 48_000 });
-    this.ctx.resume();
+    if (typeof AudioDecoder !== "function") {
+      viewer.audioUnsupported = true;
+      log("audio unavailable: this browser has no WebCodecs AudioDecoder");
+      return false;
+    }
+    if (!this.ctx) {
+      this.ctx = new AudioContext({ sampleRate: 48_000 });
+      this.ctx.onstatechange = () => {
+        viewer.audioContextState = this.ctx.state;
+        log(`audio context: ${this.ctx.state}`);
+      };
+      const nudge = () => {
+        if (this.ctx && this.ctx.state !== "running") this.ctx.resume().catch(() => {});
+      };
+      document.addEventListener("pointerdown", nudge, true);
+      document.addEventListener("keydown", nudge, true);
+    }
+    viewer.audioContextState = this.ctx.state;
+    this.ctx.resume().then(
+      () => log(`audio enabled: context ${this.ctx.state}, ${this.ctx.sampleRate} Hz`),
+      (e) => log(`audio context resume failed: ${e?.message ?? e}`),
+    );
     this.enabled = true;
+    return true;
   }
 
   handle(fr) {
     if (!this.enabled || this.muted) return;
     let d = this.decoders.get(fr.ssrc);
     if (!d) {
-      d = new AudioDecoder({
-        output: (data) => this.play(fr.ssrc, data),
-        error: (e) => {
-          log(`audio decode error (ssrc ${fr.ssrc}): ${e.message}`);
-          this.decoders.delete(fr.ssrc);
-        },
-      });
-      d.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 1 });
+      try {
+        d = new AudioDecoder({
+          output: (data) => this.play(fr.ssrc, data),
+          error: (e) => {
+            log(`audio decode error (ssrc ${fr.ssrc}): ${e.message}`);
+            this.decoders.delete(fr.ssrc);
+          },
+        });
+        d.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 1 });
+      } catch (e) {
+        if (!viewer.audioUnsupported) log(`audio decoder unavailable: ${e?.message ?? e}`);
+        viewer.audioUnsupported = true;
+        return;
+      }
       this.decoders.set(fr.ssrc, d);
+      log(`audio: decoding ssrc ${fr.ssrc} (pt ${fr.pt})`);
     }
     try {
       d.decode(new EncodedAudioChunk({ type: "key", timestamp: rtpToMicros(fr.timestamp, 48_000), data: fr.payload }));
       viewer.audioFrames++;
+      if (fr.pt === K().pt.voice) viewer.audioVoice++;
+      else viewer.audioSystem++;
     } catch (e) {
       log("audio chunk rejected: " + e.message);
     }
   }
 
+  // Decoder output → one AudioBufferSourceNode, scheduled back to back per
+  // SSRC with a small lead; re-anchored when the schedule is in the past
+  // (starved) or absurdly far ahead (a burst). Mono in, mono out.
   play(ssrc, data) {
     try {
       const n = data.numberOfFrames;
-      const buf = this.ctx.createBuffer(1, n, data.sampleRate);
       const f32 = new Float32Array(n);
-      data.copyTo(f32, { planeIndex: 0, format: "f32-planar" });
+      try {
+        data.copyTo(f32, { planeIndex: 0, format: "f32-planar" });
+      } catch {
+        // A browser that will not convert: take the native layout and
+        // convert here. Mono, so interleaved and planar are the same bytes.
+        if (data.format === "s16" || data.format === "s16-planar") {
+          const s16 = new Int16Array(n * data.numberOfChannels);
+          data.copyTo(s16, { planeIndex: 0 });
+          for (let i = 0; i < n; i++) f32[i] = s16[i * data.numberOfChannels] / 32768;
+        } else {
+          const raw = new Float32Array(n * data.numberOfChannels);
+          data.copyTo(raw, { planeIndex: 0 });
+          for (let i = 0; i < n; i++) f32[i] = raw[i * data.numberOfChannels];
+        }
+      }
+      const buf = this.ctx.createBuffer(1, n, data.sampleRate);
       buf.copyToChannel(f32, 0);
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
@@ -353,6 +412,10 @@ class AudioPath {
       if (at < now + 0.02 || at > now + 0.5) at = now + 0.06; // (re)anchor with a small lead
       src.start(at);
       this.next.set(ssrc, at + buf.duration);
+      viewer.audioPlayed++;
+    } catch (e) {
+      viewer.audioPlayErrors++;
+      if (viewer.audioPlayErrors <= 3) log(`audio play error: ${e?.message ?? e}`);
     } finally {
       data.close();
     }
@@ -529,7 +592,11 @@ async function run(token) {
 
   $("btn-audio").onclick = () => {
     if (!audio.enabled) {
-      audio.enable();
+      if (!audio.enable()) {
+        $("btn-audio").textContent = "Audio unavailable";
+        $("btn-audio").disabled = true;
+        return;
+      }
       $("btn-audio").textContent = t("Mute System Audio");
     } else {
       audio.muted = !audio.muted;
@@ -582,7 +649,10 @@ async function run(token) {
         `${viewer.state}  ${viewer.codecString ?? "—"}  ${viewer.width}×${viewer.height}\n` +
         `${viewer.fps} fps  ${viewer.kbps} kbps  decoded ${viewer.decodedFrames}  dropped ${viewer.droppedAUs}  errors ${viewer.decodeErrors}\n` +
         `AUs ${s.stats.videoAUs}  key ${s.stats.keyframes}  torn ${s.stats.tornAUs}  gaps ${s.stats.skippedGaps}  ` +
-        `PLI ${s.stats.pliSent}  RR ${s.stats.reports}  audio ${viewer.audioFrames}`;
+        `PLI ${s.stats.pliSent}  RR ${s.stats.reports}\n` +
+        `audio voice ${viewer.audioVoice}  system ${viewer.audioSystem}  decoded ${viewer.audioPlayed}` +
+        (viewer.audioPlayErrors ? `  errors ${viewer.audioPlayErrors}` : "") +
+        `  ctx ${viewer.audioContextState ?? (viewer.audioUnsupported ? "unsupported" : "off")}`;
     }
   };
   const ticker = setInterval(() => {
