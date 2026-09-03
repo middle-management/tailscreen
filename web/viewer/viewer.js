@@ -446,7 +446,7 @@ async function run(token) {
     } else if (mode === "draw" && stroke) {
       stroke.points.push(norm(e));
       const [r, g, b] = $("sel-color").value.split(",").map(Number);
-      const op = W.annotation.add("pen", stroke.points, { r, g, b, a: 1 }, 0.004);
+      const op = W.annotation.add("pen", stroke.points, { r, g, b, a: 1 }); // the apps' default width (TS-ANN-005)
       stroke = null;
       annotations.apply(op);
       mine.push(op.annotation.id);
@@ -485,7 +485,7 @@ async function run(token) {
     if (stroke) {
       const [r, g, b] = $("sel-color").value.split(",").map(Number);
       W.AnnotationStore.prototype.render.call(
-        { items: new Map([["live", { tool: "pen", points: stroke.points, color: { r, g, b, a: 1 }, width: 0.004 }]]) },
+        { items: new Map([["live", { tool: "pen", points: stroke.points, color: { r, g, b, a: 1 }, width: W.annotation.defaultWidth }]]) },
         inkCtx, ink.width, ink.height,
       );
     }
