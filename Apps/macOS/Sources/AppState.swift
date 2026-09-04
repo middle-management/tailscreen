@@ -618,10 +618,13 @@ class AppState: ObservableObject {
     /// True between the sharer reporting HELLO_PENDING and the viewer
     /// receiving its first decoded frame. Drives the placard overlaid on
     /// the viewer window. Reset on connect/disconnect.
-    @Published var viewerAwaitingApproval: Bool = false {
-        didSet {
-            guard viewerAwaitingApproval != oldValue else { return }
-            viewerWaitingPlacard?.isHidden = !viewerAwaitingApproval
+    let viewerPresentation = ViewerPresentationState()
+    var viewerAwaitingApproval: Bool {
+        get { viewerPresentation.awaitingApproval }
+        set {
+            guard newValue != viewerPresentation.awaitingApproval else { return }
+            viewerPresentation.setAwaitingApproval(newValue)
+            viewerWaitingPlacard?.isHidden = !newValue
         }
     }
 
@@ -632,9 +635,11 @@ class AppState: ObservableObject {
     /// claim "Viewing" while the sharer hasn't let us in yet. Drives the
     /// "Connecting to <host>…" title; the approval placard stays on the
     /// separate HELLO_PENDING signal (`viewerAwaitingApproval`).
-    @Published var isAwaitingAdmission: Bool = false {
-        didSet {
-            guard isAwaitingAdmission != oldValue else { return }
+    var isAwaitingAdmission: Bool {
+        get { viewerPresentation.awaitingAdmission }
+        set {
+            guard newValue != viewerPresentation.awaitingAdmission else { return }
+            viewerPresentation.setAwaitingAdmission(newValue)
             refreshViewerWindowTitle()
         }
     }
@@ -643,33 +648,25 @@ class AppState: ObservableObject {
     /// state. Set by `endViewerSession(reason:)`; cleared by
     /// reconnect / dismiss / a fresh `connect()`. Published so the other
     /// surfaces (menubar popover, hub) can reflect it if they choose.
-    @Published private(set) var viewerSessionEnding: ViewerSessionEnding? {
-        didSet {
-            guard viewerSessionEnding != oldValue else { return }
-            viewerSessionEndedHost?.model.state = viewerSessionEnding.map {
+    private(set) var viewerSessionEnding: ViewerSessionEnding? {
+        get { viewerPresentation.ending }
+        set {
+            guard newValue != viewerPresentation.ending else { return }
+            viewerPresentation.setEnding(newValue)
+            viewerSessionEndedHost?.model.state = newValue.map {
                 sessionEndedPresentation($0)
             }
             refreshViewerWindowTitle()
         }
     }
 
-    /// Peer of the current / most recent viewer session, kept so the ended
-    /// pane's Reconnect (and the stall banner's) can redial without the
-    /// user re-finding the row. `host` is what `connect(to:)` dialed (IP or
-    /// name); `displayName` is what titles and messages show.
-    private var lastViewerPeer: (host: String, displayName: String)?
-
-    /// The share-by-token token of the current / most recent viewer session,
-    /// nil for tailnet sessions. Reconnect redials through the guest path
-    /// when set — a token in `lastViewerPeer.host` would otherwise be
-    /// re-dialed as a hostname. The token stays valid until the sharer
-    /// stops the link, so a mid-session reconnect is expected to work.
-    private var lastViewerGuestToken: String?
-
     /// True while the viewer session (current or connecting) runs over a
     /// guest tunnel. Drives the stats overlay's connection row and the
     /// join-flavored copy.
-    @Published private(set) var viewerIsGuestSession = false
+    private(set) var viewerIsGuestSession: Bool {
+        get { viewerPresentation.isGuestSession }
+        set { viewerPresentation.setGuestSession(newValue) }
+    }
 
     /// Join-a-Share sheet state. `joinSheetInput` is what the sheet's paste
     /// field edits — pre-filled by a `tailscreen:` URL open.
@@ -855,6 +852,13 @@ class AppState: ObservableObject {
         // Same forwarding for the profile registry, so the header's
         // account menu re-renders on add/switch/remove/identity updates.
         profileStore.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+
+        // Preserve AppState's existing observation surface while viewer
+        // presentation state moves behind its own feature boundary. Views can
+        // migrate to observing `viewerPresentation` directly without a flag day.
+        viewerPresentation.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
@@ -2284,7 +2288,9 @@ class AppState: ObservableObject {
     /// placard is the expected first state.
     func connect(to host: String, displayName: String? = nil, guestToken: String? = nil) async {
         guard !host.isEmpty || guestToken != nil else { return }
-        lastViewerGuestToken = guestToken
+        viewerPresentation.begin(
+            target: ViewerSessionTarget(
+                host: host, displayName: displayName ?? host, guestToken: guestToken))
 
         connectionState = .connecting
         defer {
@@ -2299,7 +2305,6 @@ class AppState: ObservableObject {
         // ended-state pane / notice banner from the previous session.
         viewerSessionEnding = nil
         dismissViewerNotice()
-        lastViewerPeer = (host: host, displayName: displayName ?? host)
         isAwaitingAdmission = true
         let renderer = ensureViewer()
         viewerIsGuestSession = guestToken != nil
@@ -2321,7 +2326,8 @@ class AppState: ObservableObject {
             // it via `onVideoSizeChanged`.
             c.onAwaitingApproval = { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.viewerAwaitingApproval = true
+                    guard let self, self.viewerPresentation.markAwaitingApproval() else { return }
+                    self.viewerAwaitingApproval = true
                 }
             }
 
@@ -2477,6 +2483,7 @@ class AppState: ObservableObject {
             // to `.viewing` (which would resurrect a dead session).
             if viewerWasDenied { return }
 
+            _ = viewerPresentation.markViewing()
             connectionState = .viewing
             connectedHostname = displayName ?? host
             refreshViewerWindowTitle()
@@ -2485,6 +2492,7 @@ class AppState: ObservableObject {
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
+            viewerPresentation.fail(String(describing: error))
             presentError(.connectionFailed(host: host, underlying: error))
             client = nil
             isAwaitingAdmission = false
@@ -2951,8 +2959,9 @@ class AppState: ObservableObject {
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
         viewerIsGuestSession = false
-        // Deliberately NOT `lastViewerGuestToken = nil`: Reconnect redials
-        // the most recent session, and for a guest one that means the token.
+        // `viewerPresentation.dismiss()` deliberately retains the target:
+        // Reconnect redials the most recent session, including its guest token.
+        viewerPresentation.dismiss()
         // End any remote-control session and stop capturing input (also
         // clears the control border + announces to VoiceOver).
         if viewerControlState != .none {
@@ -2995,6 +3004,7 @@ class AppState: ObservableObject {
         }
         dismissViewerNotice()
         viewerSessionEnding = reason
+        viewerPresentation.end(reason)
         postViewerAccessibilityAnnouncement(sessionEndedPresentation(reason).message)
         // Deliberately NOT: clearPendingBuffer (the last frame is the
         // context for the reason text), orderOut (the whole point), or the
@@ -3007,6 +3017,7 @@ class AppState: ObservableObject {
     /// window (orderOut, never an AppKit close/release).
     func dismissViewerWindow() {
         viewerSessionEnding = nil
+        viewerPresentation.dismiss()
         dismissViewerNotice()
         viewerRenderer?.clearPendingBuffer()
         viewerHost?.zoomState = ViewerZoomState()
@@ -3020,7 +3031,7 @@ class AppState: ObservableObject {
     /// Reconnect button and the stall banner's — from a live (stalled)
     /// session it disconnects first.
     func reconnectViewerSession() {
-        guard let peer = lastViewerPeer else { return }
+        guard let target = viewerPresentation.lifecycle.target else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
             if self.connectionState == .viewing {
@@ -3029,8 +3040,8 @@ class AppState: ObservableObject {
             // A guest session redials by token — its `host` is empty, and
             // the token stays valid as long as the sharer's link is up.
             await self.connect(
-                to: peer.host, displayName: peer.displayName,
-                guestToken: self.lastViewerGuestToken)
+                to: target.host, displayName: target.displayName,
+                guestToken: target.guestToken)
             // A failed redial has already alerted (`connectionFailed`);
             // don't leave a visible window as an unexplained frozen frame
             // behind that alert. The deny path sets its own ending.
@@ -3059,9 +3070,9 @@ class AppState: ObservableObject {
     /// announcement). The deny-flavored wordings reuse the alert copy so
     /// the two surfaces can't tell the same story differently.
     private func sessionEndedPresentation(_ reason: ViewerSessionEnding) -> ViewerSessionEndedModel.EndedState {
-        // `lastViewerPeer` is set at every `connect()` entry, so the
+        // `viewerPresentation.lifecycle.target` is set at every `connect()` entry, so the
         // fallback (same key the hub's session strip uses) is defensive.
-        let name = lastViewerPeer?.displayName ?? L("peer")
+        let name = viewerPresentation.lifecycle.target?.displayName ?? L("peer")
         switch reason {
         case .sharerStopped:
             return .init(
@@ -3094,7 +3105,7 @@ class AppState: ObservableObject {
             win.title = L("Session Ended")
             return
         }
-        guard let name = lastViewerPeer?.displayName ?? connectedHostname else {
+        guard let name = viewerPresentation.lifecycle.target?.displayName ?? connectedHostname else {
             win.title = "Tailscreen"
             return
         }
@@ -3114,7 +3125,7 @@ class AppState: ObservableObject {
 
     /// Keep the video surface's VoiceOver label naming the current peer.
     private func refreshViewerVideoAccessibilityLabel() {
-        let name = connectedHostname ?? lastViewerPeer?.displayName
+        let name = connectedHostname ?? viewerPresentation.lifecycle.target?.displayName
         let label = name.map { L("Shared screen from \($0)") } ?? L("Shared screen")
         viewerVideoAccessibilityView?.setAccessibilityLabel(label)
     }

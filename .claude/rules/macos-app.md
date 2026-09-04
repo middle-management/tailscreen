@@ -13,6 +13,8 @@ Capture and encoding live in a separate **helper subprocess** (`Tailscreen --cap
 TailscreenApp (@main, AppEntry dispatch)
  ├─ Main process
  │   └─ AppState (@MainActor)
+ │        ├─ ViewerPresentationState
+ │        │    └─ ViewerSessionLifecycle (portable phase + reconnect target)
  │        ├─ presentNativePicker() ── spawn ─▶ picker-helper subprocess
  │        │       (returns archived SCContentFilter via stdout)
  │        ├─ TailscaleScreenShareServer
@@ -38,7 +40,7 @@ TailscreenApp (@main, AppEntry dispatch)
 
 Both helper subprocesses are short-lived for the same reason: ScreenCaptureKit's APIs couple to `replayd` / WindowServer via XPC, and process death is the only reliable way to clear those couplings. The picker-helper exits the moment the user picks (or cancels); the capture-helper lives for the duration of one share.
 
-The viewer `NSWindow` (with its `CAMetalLayer`) is held for the process lifetime to avoid an autoreleasepool teardown race with VideoToolbox/Metal on disconnect.
+The viewer `NSWindow` (with its `CAMetalLayer`) is held for the process lifetime to avoid an autoreleasepool teardown race with VideoToolbox/Metal on disconnect. `ViewerPresentationState` is the focused observable child for viewer-only flags and the portable `ViewerSessionLifecycle`; `AppState` forwards its `objectWillChange` and retains computed compatibility properties because those setters also drive AppKit window/toolbar effects. Put new viewer-presentation state in the child rather than adding another unrelated `@Published` slot to `AppState`.
 
 ## UI surfaces
 

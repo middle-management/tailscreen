@@ -57,11 +57,12 @@ var gAddAccount: (@MainActor @Sendable () -> Void)?
 // interactive-login URL in a browser. Wired in the picker block.
 var gReturnToPicker: (@MainActor @Sendable () -> Void)?
 var gOpenLogin: (@MainActor @Sendable () -> Void)?
-// The sharer the current/most recent session dialed — IP for the redial,
-// hostname for display. Retained across the session's end so the ended
-// placard's Reconnect has somewhere to go; wired in the live block.
-var gLastDial: (ip: String, name: String)?
-// Redial `gLastDial` (the ended/failed placard's Reconnect). Wired in the
+// Portable lifecycle for the current/most-recent viewer. GTK still publishes
+// its toolkit-facing phase through ViewerUIState, but reconnect identity now
+// has the same one-value invariant as macOS and Windows: row/address/token
+// cannot drift across parallel "last ..." slots.
+var gViewerLifecycle = ViewerSessionLifecycle()
+// Redial `gViewerLifecycle.target` (the ended/failed placard's Reconnect). Wired in the
 // live block; nil in previews/self-tests, which hides the button.
 // Deliberately NOT `@Sendable`, unlike its neighbours: it captures
 // `startSession`, whose captures (the FFmpeg decoder, the audio sink) are not
@@ -70,10 +71,6 @@ var gReconnect: (@MainActor () -> Void)?
 // Join a share-by-token session with a parsed token (the hub's join card).
 // Same non-`@Sendable` reasoning as `gReconnect`: it captures `startSession`.
 var gJoinShare: (@MainActor (String) -> Void)?
-// The token of the current / most recent guest session, nil for tailnet ones.
-// Reconnect redials through the guest path when set — `gLastDial.ip` is empty
-// then, and dialing "" would otherwise be the redial.
-var gLastGuestToken: String?
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
 // Headless SHARER gate: draw a known stroke on the annotation overlay and read
@@ -292,7 +289,12 @@ if gSelfTest {
         gStore.set(makePreviewFrame(width: 960, height: 540))
         // Name the fake peer so the watching bar's "Watching <host>" reads as
         // it would live rather than trailing off into nothing.
-        gLastDial = (ip: "100.64.0.12", name: "robert-macbook")
+        gViewerLifecycle.begin(
+            ViewerSessionTarget(
+                host: "100.64.0.12",
+                displayName: "robert-macbook"
+            )
+        )
         gUIState.remoteControlAvailable = true
         gUIState.annotationsAvailable = true
         gUIState.hasVideo = true
@@ -473,8 +475,9 @@ if gSelfTest {
         } else {
             config.hostname = dialHost
         }
-        gLastGuestToken = guestToken
-        gLastDial = (ip: dialHost, name: displayName)
+        gViewerLifecycle.begin(
+            ViewerSessionTarget(
+                host: dialHost, displayName: displayName, guestToken: guestToken))
         sink.resetForNewSession()  // the sink outlives one session
         gAnnotations.resetForNewSession()
         gUIState.beginSession()
@@ -511,6 +514,7 @@ if gSelfTest {
                         gAnnoForwarder.attach(channel)
                     },
                     onAdmitted: { caps in
+                        _ = gViewerLifecycle.markViewing()
                         // The sharer's caps decide, guest or tailnet: the
                         // back-channel rides the guest tunnel too now, and a
                         // sharer that predates it doesn't advertise these
@@ -519,7 +523,10 @@ if gSelfTest {
                             remoteControl: caps.contains(.remoteControl),
                             annotations: caps.contains(.annotations))
                     },
-                    onAwaitingApproval: { gUIState.post(sessionPhase: .awaitingApproval) },
+                    onAwaitingApproval: {
+                        guard gViewerLifecycle.markAwaitingApproval() else { return }
+                        gUIState.post(sessionPhase: .awaitingApproval)
+                    },
                     onEnded: { reason, wasAdmitted in
                         ended.value = (reason, wasAdmitted)
                     },
@@ -543,20 +550,23 @@ if gSelfTest {
                 if let end = ended.value {
                     // Sharer stop / deny / kick / timeout / socket death: the
                     // placard explains it and offers Reconnect / Back.
-                    gUIState.post(
-                        sessionPhase: .ended(
-                            sessionEndReason(end.reason, wasAdmitted: end.wasAdmitted)))
+                    let reason = sessionEndReason(end.reason, wasAdmitted: end.wasAdmitted)
+                    _ = gViewerLifecycle.end(reason)
+                    gUIState.post(sessionPhase: .ended(reason))
                 } else if gPickerMode {
                     // The user ended it — no explanation owed, straight back.
+                    gViewerLifecycle.dismiss()
                     gReturnToPicker?()
                 } else {
                     // Direct-host mode has no list; rest on the status pane.
+                    gViewerLifecycle.dismiss()
                     gUIState.returnToPickerState()
                     gUIState.post(status: L("Session Ended"))
                 }
             } catch {
                 FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
                 gVoice.detach()
+                _ = gViewerLifecycle.fail(L("Connection failed"))
                 gUIState.post(sessionPhase: .failed(L("Connection failed")))
             }
         }
@@ -567,10 +577,12 @@ if gSelfTest {
     // the peer may have dropped off the refreshed list while their share
     // merely restarted.
     gReconnect = {
-        guard let dial = gLastDial else { return }
-        // A guest session redials by token — its dial IP is empty, and the
+        guard let target = gViewerLifecycle.target else { return }
+        // A guest session redials by token — its dial host is empty, and the
         // token stays valid as long as the sharer's link is up.
-        startSession(host: dial.ip, displayName: dial.name, guestToken: gLastGuestToken)
+        startSession(
+            host: target.host, displayName: target.displayName,
+            guestToken: target.guestToken)
     }
 
     // The hub's join card (and `--join`): a guest session by parsed token.
@@ -725,6 +737,7 @@ if gSelfTest {
         // Return to the screen list when a session ends: reset the session UI
         // and re-list.
         gReturnToPicker = {
+            gViewerLifecycle.dismiss()
             gUIState.returnToPickerState()
             gAnnotations.resetForNewSession()
             gPicker.phase = .picking
@@ -889,37 +902,14 @@ struct ViewerApp: App {
     // bar) — the retained dial target, falling back to the picker's connecting
     // phase for anything that races the retention.
     private var sessionHost: String {
-        if let dial = gLastDial { return dial.name }
+        if let target = gViewerLifecycle.target { return target.displayName }
         if case .connecting(let host) = picker.phase { return host }
         return ""
     }
 
     /// The viewer's session state as the shared placard's phase.
-    ///
-    /// Two enums rather than one because the chrome must not import a viewer's
-    /// session model to draw a handful of sentences — the same reason it takes
-    /// `HubScreen` instead of `DiscoveredSharer`. The cost is this function;
-    /// the benefit is a UI package that compiles without a transport.
     private static func hubPhase(_ phase: ViewerUIState.SessionPhase) -> HubSessionPhase {
-        switch phase {
-        case .connecting: return .connecting
-        case .awaitingApproval: return .awaitingApproval
-        case .viewing: return .viewing
-        case .ended(let reason): return .ended(hubEndReason(reason))
-        case .failed(let reason): return .failed(reason)
-        }
-    }
-
-    /// The UI state's end reason as the chrome's — case for case; two enums
-    /// for the same import-direction reason as `hubPhase`.
-    private static func hubEndReason(_ reason: ViewerUIState.EndReason) -> HubSessionEndReason {
-        switch reason {
-        case .sharerStopped: return .sharerStopped
-        case .timedOut: return .timedOut
-        case .connectionLost: return .connectionLost
-        case .declined: return .declined
-        case .disconnectedBySharer: return .disconnectedBySharer
-        }
+        phase
     }
 
     /// The server's viewer health as the chrome's — case for case, for the
@@ -939,7 +929,7 @@ struct ViewerApp: App {
     /// Reconnect for the ended/failed placard — absent (nil) when nothing was
     /// ever dialed, e.g. the `--ui-preview` chrome shots.
     private var placardReconnect: (@MainActor @Sendable () -> Void)? {
-        guard gLastDial != nil, gReconnect != nil else { return nil }
+        guard gViewerLifecycle.target != nil, gReconnect != nil else { return nil }
         return { gReconnect?() }
     }
 

@@ -568,19 +568,14 @@ final class AppUIState: ObservableObject {
     /// snapping back to the hub, and everything gated on `watching == nil`
     /// (header, refresh, account switching) stays gated until the person
     /// dismisses it.
-    @Published var watching: String?
-    /// Where the session UI is — placard phases before admission, `.viewing`
-    /// while the video renders, `.ended`/`.failed` afterwards. nil whenever
-    /// `watching` is nil.
-    @Published var sessionPhase: HubSessionPhase?
-    /// The last dialed peer's row id, retained past the session's end so the
-    /// ended placard's Reconnect can redial through `connect(toID:)`.
-    private var lastPeerID: String?
-    /// The last guest session's share token, nil for tailnet sessions. The
-    /// ended placard's Reconnect redials through the guest path when set —
-    /// there is no peer row to resolve, and the token stays valid as long as
-    /// the sharer's link is up.
-    private var lastGuestToken: String?
+    @Published private(set) var viewerLifecycle = ViewerSessionLifecycle()
+    /// Toolkit-facing projections. Mutating `viewerLifecycle` publishes the
+    /// one source value, so the view still re-renders without parallel
+    /// `watching`, phase, peer-id and guest-token slots drifting apart.
+    var watching: String? {
+        viewerLifecycle.phase == nil ? nil : viewerLifecycle.target?.displayName
+    }
+    var sessionPhase: HubSessionPhase? { viewerLifecycle.phase }
     /// Bumped per decoded frame so SwiftCrossUI re-runs `updateWinUIElement`.
     /// The frame itself travels through `frameStore`, never through this.
     @Published var frameGeneration = 0
@@ -1389,7 +1384,6 @@ final class AppUIState: ObservableObject {
 
     func connect(to peer: DiscoveredSharer) {
         guard phase == .ready else { return }
-        lastGuestToken = nil
         startSession(
             config: ViewerConfig(
                 // Dial by IP, not hostname: the transport documents that this
@@ -1397,28 +1391,26 @@ final class AppUIState: ObservableObject {
                 // path warns about.
                 hostname: peer.tailscaleIP,
                 statePath: stateDirectory()),
-            displayName: peer.displayName, peerID: peer.id, isGuest: false)
+            target: ViewerSessionTarget(
+                identifier: peer.id, host: peer.tailscaleIP,
+                displayName: peer.displayName))
     }
 
     /// Join a share-by-token session (the hub's join card, signed in or not
     /// — the guest tunnel needs no tsnet node, so no `phase` guard). The
     /// token arrives already parsed by `HubJoinCard`.
     func joinShare(token: String) {
-        lastGuestToken = token
         startSession(
             config: ViewerConfig(guestToken: token),
-            displayName: L("Shared screen"), peerID: nil, isGuest: true)
+            target: ViewerSessionTarget(
+                host: "", displayName: L("Shared screen"), guestToken: token))
     }
 
-    private func startSession(
-        config: ViewerConfig, displayName: String, peerID: String?, isGuest: Bool
-    ) {
+    private func startSession(config: ViewerConfig, target: ViewerSessionTarget) {
         guard sessionTask == nil else { return }
         stopRequested = false
-        watching = displayName
-        sessionPhase = .connecting
-        lastPeerID = peerID
-        status = L("Connecting to \(displayName)…")
+        viewerLifecycle.begin(target)
+        status = L("Connecting to \(target.displayName)…")
         detail = ""
 
         sessionTask = Task { [weak self] in
@@ -1487,8 +1479,8 @@ final class AppUIState: ObservableObject {
                             // session that ended immediately — a stale
                             // `.viewing` must not clobber the ended placard.
                             guard let self, self.sessionTask != nil else { return }
-                            self.status = L("Watching \(displayName)")
-                            self.sessionPhase = .viewing
+                            guard self.viewerLifecycle.markViewing() else { return }
+                            self.status = L("Watching \(target.displayName)")
                             // Drawing and Request Control appear only if the
                             // sharer said it can serve them. Withheld bits mean
                             // a quieter UI, never a broken one — and the
@@ -1503,8 +1495,8 @@ final class AppUIState: ObservableObject {
                         Task { @MainActor in
                             // Same stale-hop guard as `onAdmitted`.
                             guard let self, self.sessionTask != nil else { return }
-                            self.status = L("Waiting for \(displayName) to approve…")
-                            self.sessionPhase = .awaitingApproval
+                            guard self.viewerLifecycle.markAwaitingApproval() else { return }
+                            self.status = L("Waiting for \(target.displayName) to approve…")
                         }
                     },
                     onEnded: { reason, wasAdmitted in
@@ -1549,17 +1541,16 @@ final class AppUIState: ObservableObject {
                 // `resolve` is the one place that split is applied, so this
                 // app, the GTK one and macOS cannot tell the same ending
                 // different stories.
-                sessionPhase = .ended(
+                _ = viewerLifecycle.end(
                     ViewerSessionEndReason.resolve(
                         end.reason, wasAdmitted: end.wasAdmitted))
             } else if let failureMessage {
                 // The session threw (dial/bring-up failure): same placard
                 // shape, with the error as the sentence.
-                sessionPhase = .failed(failureMessage)
+                _ = viewerLifecycle.fail(failureMessage)
             } else {
                 // The user stopped it — no explanation owed.
-                watching = nil
-                sessionPhase = nil
+                viewerLifecycle.dismiss()
             }
         }
     }
@@ -1570,13 +1561,13 @@ final class AppUIState: ObservableObject {
     /// than a dial into nothing.
     func reconnectSession() {
         guard sessionTask == nil else { return }
-        sessionPhase = nil
-        watching = nil
-        if let token = lastGuestToken {
+        guard let target = viewerLifecycle.target else { return }
+        viewerLifecycle.dismiss()
+        if let token = target.guestToken {
             joinShare(token: token)
             return
         }
-        guard let id = lastPeerID else { return }
+        guard let id = target.identifier else { return }
         connect(toID: id)
     }
 
@@ -1584,8 +1575,7 @@ final class AppUIState: ObservableObject {
     /// the hub.
     func dismissEndedSession() {
         guard sessionTask == nil else { return }
-        sessionPhase = nil
-        watching = nil
+        viewerLifecycle.dismiss()
     }
 
     func disconnect() {
@@ -1897,8 +1887,7 @@ final class AppUIState: ObservableObject {
         status = L("Not signed in")
         detail = ""
         peers = []
-        watching = nil
-        sessionPhase = nil
+        viewerLifecycle.forget()
         Task { await transport.teardown() }
     }
 
