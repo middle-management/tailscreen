@@ -750,18 +750,18 @@ private struct ActiveShareCard: View {
         return count == 1 ? L("1 viewer connected") : L("\(count) viewers connected")
     }
 
-    /// Viewer count plus the shared display's resolution, when the metadata
-    /// service has reported one.
-    ///
-    /// The resolution is joined with non-breaking spaces so the line can only
-    /// wrap at the separator. Ordinary spaces let it break mid-value — the
-    /// first screenshot of this card read "1 viewer connected · 1920" over
-    /// "× 1080", which is a measurement torn in half.
-    private var sharingDetailText: String {
+    /// The shared display's resolution, once the metadata service has reported
+    /// one. Its own line under the viewer count rather than joined to it: the
+    /// status row shares its width with the Stop Sharing button, so the joined
+    /// form wrapped at the default window size — first mid-measurement ("1
+    /// viewer connected · 1920" over "× 1080"), then, once non-breaking spaces
+    /// ruled that out, with the separator left dangling at the end of the
+    /// line. Two short lines cannot do either, at any width.
+    private var resolutionText: String? {
         guard let res = appState.metadataService.currentMetadata?.screenResolution else {
-            return viewersText
+            return nil
         }
-        return "\(viewersText) · \(res.width)\u{00A0}×\u{00A0}\(res.height)"
+        return "\(res.width) × \(res.height)"
     }
 
     var body: some View {
@@ -774,11 +774,16 @@ private struct ActiveShareCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L("Sharing your screen"))
                         .font(.system(.headline, design: .rounded))
-                    // Count and resolution on one line — both are already
-                    // localized (or number-only), so the join is verbatim.
-                    Text(verbatim: sharingDetailText)
+                    Text(viewersText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    if let resolutionText {
+                        // Verbatim: digits and a multiplication sign, with
+                        // nothing to translate.
+                        Text(verbatim: resolutionText)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 8)
                 Button(L("Stop Sharing")) {
