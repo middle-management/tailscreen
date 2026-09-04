@@ -626,7 +626,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         NotificationCenter.default.post(
             name: .tailscreenViewerDecodeFailed,
-            object: nil,
+            object: self,
             userInfo: ["codec": String(describing: codec)]
         )
     }
@@ -652,7 +652,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         case .signalDegraded:
             renderer.setDegraded(true)
         case .surfaceError:
-            NotificationCenter.default.post(name: .tailscreenViewerVideoStalled, object: nil)
+            NotificationCenter.default.post(name: .tailscreenViewerVideoStalled, object: self)
         }
     }
 

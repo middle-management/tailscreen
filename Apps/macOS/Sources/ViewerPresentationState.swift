@@ -5,21 +5,39 @@ import TailscreenProtocol
 /// Viewer-session presentation state owned by the macOS shell.
 ///
 /// AppState still owns effects — the client, AppKit window, renderer, audio
-/// and alerts — while this object owns the related values those effects
-/// mutate. Keeping them together gives the viewer lifecycle one boundary
-/// instead of four independent `@Published` flags plus reconnect identity on
-/// the app-wide object.
+/// and alerts — while this object owns the portable lifecycle and the one
+/// macOS-only pre-admission flag. Presentation values that the lifecycle
+/// already determines are projections, not separately mutable slots.
 ///
 /// AppState relays `objectWillChange`, preserving its existing public surface
 /// while views migrate to observing this model directly.
 @MainActor
 final class ViewerPresentationState: ObservableObject {
-    @Published private(set) var awaitingApproval = false
     @Published private(set) var awaitingAdmission = false
-    @Published private(set) var ending: ViewerSessionEndReason?
-    @Published private(set) var isGuestSession = false
 
     @Published private(set) var lifecycle = ViewerSessionLifecycle()
+
+    var awaitingApproval: Bool {
+        lifecycle.phase == .awaitingApproval
+    }
+
+    var ending: ViewerSessionEndReason? {
+        switch lifecycle.phase {
+        case .ended(let reason):
+            reason
+        case .failed:
+            // macOS explains connection failures in an alert; if an old
+            // viewer window is still visible during Reconnect, its deterministic
+            // in-window projection is the corresponding connection-lost state.
+            .connectionLost
+        default:
+            nil
+        }
+    }
+
+    var isGuestSession: Bool {
+        lifecycle.phase != nil && lifecycle.target?.isGuest == true
+    }
 
     @discardableResult
     func begin(target: ViewerSessionTarget) -> ViewerSessionID {
@@ -44,16 +62,8 @@ final class ViewerPresentationState: ObservableObject {
         lifecycle.markViewing(for: id)
     }
 
-    func setAwaitingApproval(_ value: Bool) {
-        awaitingApproval = value
-    }
-
     func setAwaitingAdmission(_ value: Bool) {
         awaitingAdmission = value
-    }
-
-    func setGuestSession(_ value: Bool) {
-        isGuestSession = value
     }
 
     @discardableResult
@@ -66,10 +76,6 @@ final class ViewerPresentationState: ObservableObject {
         lifecycle.fail(message, for: id)
     }
 
-    func setEnding(_ reason: ViewerSessionEndReason?) {
-        ending = reason
-    }
-
     /// Dismiss presentation while retaining the target for Reconnect and
     /// ended-state copy.
     func dismiss() {
@@ -78,9 +84,6 @@ final class ViewerPresentationState: ObservableObject {
 
     func forget() {
         lifecycle.forget()
-        awaitingApproval = false
         awaitingAdmission = false
-        ending = nil
-        isGuestSession = false
     }
 }

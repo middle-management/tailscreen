@@ -615,18 +615,15 @@ class AppState: ObservableObject {
     /// `client.connect()` returns so a deny that raced the connect doesn't
     /// get re-promoted to `.viewing`. Reset at the top of `connect()`.
     private var viewerWasDenied = false
+    /// Orders `connect()` invocations across the suspension required to stop a
+    /// previous client. The newest request alone may create the replacement.
+    private var viewerConnectRequestID: UInt64 = 0
 
-    /// True between the sharer reporting HELLO_PENDING and the viewer
-    /// receiving its first decoded frame. Drives the placard overlaid on
-    /// the viewer window. Reset on connect/disconnect.
+    /// Derived from the portable HELLO_PENDING phase. Drives the placard
+    /// overlaid on the viewer window until HELLO_ACK admits this attempt.
     let viewerPresentation = ViewerPresentationState()
     var viewerAwaitingApproval: Bool {
-        get { viewerPresentation.awaitingApproval }
-        set {
-            guard newValue != viewerPresentation.awaitingApproval else { return }
-            viewerPresentation.setAwaitingApproval(newValue)
-            viewerWaitingPlacard?.isHidden = !newValue
-        }
+        viewerPresentation.awaitingApproval
     }
 
     /// True from `connect()` until the sharer's HELLO_ACK admits us (the
@@ -645,28 +642,31 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Non-nil while the viewer window shows the in-window "session ended"
-    /// state. Set by `endViewerSession(reason:sessionID:)`; cleared by
-    /// reconnect / dismiss / a fresh `connect()`. Published so the other
-    /// surfaces (menubar popover, hub) can reflect it if they choose.
-    private(set) var viewerSessionEnding: ViewerSessionEnding? {
-        get { viewerPresentation.ending }
-        set {
-            guard newValue != viewerPresentation.ending else { return }
-            viewerPresentation.setEnding(newValue)
-            viewerSessionEndedHost?.model.state = newValue.map {
-                sessionEndedPresentation($0)
-            }
-            refreshViewerWindowTitle()
-        }
+    /// Lifecycle projection for the in-window "session ended" state. A
+    /// transport failure maps deterministically to connection-lost copy;
+    /// reconnect / dismiss / a fresh `connect()` clears it by transitioning
+    /// the lifecycle, never by mutating a parallel slot.
+    var viewerSessionEnding: ViewerSessionEnding? {
+        viewerPresentation.ending
     }
 
     /// True while the viewer session (current or connecting) runs over a
     /// guest tunnel. Drives the stats overlay's connection row and the
     /// join-flavored copy.
-    private(set) var viewerIsGuestSession: Bool {
-        get { viewerPresentation.isGuestSession }
-        set { viewerPresentation.setGuestSession(newValue) }
+    var viewerIsGuestSession: Bool {
+        viewerPresentation.isGuestSession
+    }
+
+    /// Apply portable lifecycle projections to the AppKit objects that cannot
+    /// observe `ViewerPresentationState` themselves. Call once after every
+    /// accepted lifecycle transition rather than maintaining parallel flags.
+    private func syncViewerPresentationEffects() {
+        viewerWaitingPlacard?.isHidden = !viewerAwaitingApproval
+        viewerSessionEndedHost?.model.state = viewerSessionEnding.map {
+            sessionEndedPresentation($0)
+        }
+        viewerRenderer?.statsModel.isGuestSession = viewerIsGuestSession
+        refreshViewerWindowTitle()
     }
 
     /// Join-a-Share sheet state. `joinSheetInput` is what the sheet's paste
@@ -1057,8 +1057,14 @@ class AppState: ObservableObject {
                 queue: .main
             ) { [weak self] note in
                 let codec = (note.userInfo?["codec"] as? String) ?? "this"
-                Task { @MainActor [weak self] in
-                    guard let self = self, self.connectionState == .viewing else { return }
+                let source = note.object as? TailscaleScreenShareClient
+                Task { @MainActor [weak self, weak source] in
+                    guard
+                        let self,
+                        let source,
+                        source === self.client,
+                        self.connectionState == .viewing
+                    else { return }
                     self.showViewerNotice(
                         message: L(
                             "This Mac can't decode the \(codec) video stream. Asking the sharer to switch to H.264 — the picture should return in a moment."
@@ -1078,9 +1084,15 @@ class AppState: ObservableObject {
                 forName: .tailscreenViewerVideoStalled,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self = self, self.connectionState == .viewing else { return }
+            ) { [weak self] note in
+                let source = note.object as? TailscaleScreenShareClient
+                Task { @MainActor [weak self, weak source] in
+                    guard
+                        let self,
+                        let source,
+                        source === self.client,
+                        self.connectionState == .viewing
+                    else { return }
                     self.showViewerNotice(
                         message: L(
                             "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
@@ -2297,42 +2309,41 @@ class AppState: ObservableObject {
     /// placard is the expected first state.
     func connect(to host: String, displayName: String? = nil, guestToken: String? = nil) async {
         guard !host.isEmpty || guestToken != nil else { return }
+        viewerConnectRequestID &+= 1
+        let connectRequestID = viewerConnectRequestID
+        // A lifecycle ID rejects callbacks that were already queued, but it
+        // must not become a substitute for stopping the superseded client's
+        // receive/listener tasks.
+        if client != nil {
+            await disconnectCurrentViewer(invalidatePendingConnects: false)
+        }
+        // Another connect may have entered while the previous transport was
+        // shutting down. It owns the next client; this request must not
+        // overwrite it after resuming.
+        guard connectRequestID == viewerConnectRequestID else { return }
         let sessionID = viewerPresentation.begin(
             target: ViewerSessionTarget(
                 host: host, displayName: displayName ?? host, guestToken: guestToken))
 
         connectionState = .connecting
-        defer {
-            if viewerPresentation.isCurrent(sessionID), connectionState == .connecting {
-                connectionState = .idle
-                isAwaitingAdmission = false
-            }
-        }
         viewerWasDenied = false
-        viewerAwaitingApproval = false
-        // A fresh connect owns the window again — drop any leftover
-        // ended-state pane / notice banner from the previous session.
-        viewerSessionEnding = nil
         dismissViewerNotice()
         isAwaitingAdmission = true
         let renderer = ensureViewer()
-        viewerIsGuestSession = guestToken != nil
-        renderer.statsModel.isGuestSession = guestToken != nil
-        refreshViewerWindowTitle()
+        syncViewerPresentationEffects()
         refreshViewerVideoAccessibilityLabel()
         // Belt-and-braces zoom reset at session entry: disconnect()
         // already resets, and `videoSize.didSet` resets on a resolution
         // change — but a new sharer streaming at the *same* resolution
         // fires neither, and must not inherit the previous session's zoom.
         viewerHost?.zoomState = ViewerZoomState()
+        let c = TailscaleScreenShareClient(renderer: renderer)
+        client = c
         do {
-            let c = TailscaleScreenShareClient(renderer: renderer)
-            client = c
-
             // HELLO_PENDING means the sharer parked us behind the approval
             // gate. Surface the placard so the viewer doesn't sit on a
-            // black window with no explanation; first decoded frame clears
-            // it via `onVideoSizeChanged`.
+            // black window with no explanation; HELLO_ACK clears it through
+            // the admission callback below.
             c.onAwaitingApproval = { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self,
@@ -2340,7 +2351,7 @@ class AppState: ObservableObject {
                     else {
                         return
                     }
-                    self.viewerAwaitingApproval = true
+                    self.syncViewerPresentationEffects()
                 }
             }
 
@@ -2464,8 +2475,17 @@ class AppState: ObservableObject {
                         self.viewerPresentation.isActive(sessionID)
                     else { return }
                     // The SSRC assignment IS the admission signal — the
-                    // pre-admission "Connecting to…" title ends here.
+                    // pre-admission "Connecting to…" title and approval
+                    // placard end here, not merely when the dial returns.
+                    guard self.viewerPresentation.markViewing(for: sessionID) else { return }
+                    self.connectionState = .viewing
                     self.isAwaitingAdmission = false
+                    self.connectedHostname = displayName ?? host
+                    self.syncViewerPresentationEffects()
+                    self.refreshViewerVideoAccessibilityLabel()
+                    NSApp.activate(ignoringOtherApps: true)
+                    self.viewerWindow?.orderFrontRegardless()
+                    self.viewerWindow?.makeKeyAndOrderFront(nil)
                     guard self.voiceChannel == nil else { return }
                     self.micCapture?.stop()
                     self.micCapture = nil
@@ -2507,8 +2527,10 @@ class AppState: ObservableObject {
             // to `.viewing` (which would resurrect a dead session).
             if viewerWasDenied { return }
 
-            guard viewerPresentation.markViewing(for: sessionID) else { return }
-            connectionState = .viewing
+            guard viewerPresentation.isCurrent(sessionID) else {
+                await c.disconnect()
+                return
+            }
             connectedHostname = displayName ?? host
             refreshViewerWindowTitle()
             refreshViewerVideoAccessibilityLabel()
@@ -2516,12 +2538,15 @@ class AppState: ObservableObject {
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
-            guard viewerPresentation.fail(String(describing: error), for: sessionID) else {
-                return
+            await c.disconnect()
+            guard viewerPresentation.fail(String(describing: error), for: sessionID) else { return }
+            if client === c {
+                client = nil
             }
-            presentError(.connectionFailed(host: host, underlying: error))
-            client = nil
+            connectionState = .idle
             isAwaitingAdmission = false
+            syncViewerPresentationEffects()
+            presentError(.connectionFailed(host: host, underlying: error))
         }
     }
 
@@ -2682,10 +2707,9 @@ class AppState: ObservableObject {
             host?.videoSize = size
             guard let self, let win else { return }
             MainActor.assumeIsolated {
-                // First decoded frame implies the sharer accepted us — clear
-                // the "waiting for approval" placard (and the pre-admission
-                // title) regardless of resize.
-                self.viewerAwaitingApproval = false
+                // HELLO_ACK normally cleared the pre-admission title before
+                // media arrived. The first frame is a belt-and-braces fallback
+                // for the macOS-only title flag, not a second lifecycle state.
                 self.isAwaitingAdmission = false
                 // Scripted local E2E harness greps for this marker to know
                 // the viewer end-to-end pipeline is working. Cheap; only
@@ -2970,24 +2994,33 @@ class AppState: ObservableObject {
     }
 
     func disconnect() async {
-        await client?.disconnect()
+        await disconnectCurrentViewer(invalidatePendingConnects: true)
+    }
+
+    private func disconnectCurrentViewer(invalidatePendingConnects: Bool) async {
+        if invalidatePendingConnects {
+            viewerConnectRequestID &+= 1
+        }
+        // Invalidate presentation and ownership before the first suspension:
+        // a superseding connect can then await transport cleanup without the
+        // old connect task or a queued notification changing current state.
+        let disconnectingClient = client
         client = nil
+        viewerPresentation.dismiss()
+        connectionState = .idle
+        connectedHostname = nil
+        isAwaitingAdmission = false
+        syncViewerPresentationEffects()
         micCapture?.stop()
         micCapture = nil
         voiceChannel = nil
         isMicOn = false
-        connectionState = .idle
-        connectedHostname = nil
-        viewerAwaitingApproval = false
-        isAwaitingAdmission = false
-        viewerSessionEnding = nil
         dismissViewerNotice()
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
-        viewerIsGuestSession = false
-        // `viewerPresentation.dismiss()` deliberately retains the target:
-        // Reconnect redials the most recent session, including its guest token.
-        viewerPresentation.dismiss()
+        // `viewerPresentation.dismiss()` above deliberately retained the
+        // target: Reconnect redials the most recent session, including its
+        // guest token.
         // End any remote-control session and stop capturing input (also
         // clears the control border + announces to VoiceOver).
         if viewerControlState != .none {
@@ -3005,6 +3038,10 @@ class AppState: ObservableObject {
         // Allow the next session to re-emit the E2E_MARKER on its first frame.
         didLogFirstViewerFrame = false
         refreshViewerWindowTitle()
+        // Suspend only after every AppState-owned value is settled. A new
+        // connect may start while transport shutdown finishes, and this
+        // function must not resume by clearing any of that replacement state.
+        await disconnectingClient?.disconnect()
     }
 
     /// The session ended without the user asking — sharer stop, timeout,
@@ -3014,7 +3051,9 @@ class AppState: ObservableObject {
     /// "session ended" pane (reason + Reconnect / Close).
     func endViewerSession(reason: ViewerSessionEnding, sessionID: ViewerSessionID) async {
         guard viewerPresentation.end(reason, for: sessionID) else { return }
-        await client?.disconnect()
+        // As in local disconnect, settle AppState before suspending so a
+        // Reconnect click cannot be cleared when old transport cleanup resumes.
+        let endingClient = client
         client = nil
         micCapture?.stop()
         micCapture = nil
@@ -3022,7 +3061,6 @@ class AppState: ObservableObject {
         isMicOn = false
         connectionState = .idle
         connectedHostname = nil
-        viewerAwaitingApproval = false
         isAwaitingAdmission = false
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
@@ -3030,20 +3068,21 @@ class AppState: ObservableObject {
             exitViewerControl()
         }
         dismissViewerNotice()
-        viewerSessionEnding = reason
+        syncViewerPresentationEffects()
         postViewerAccessibilityAnnouncement(sessionEndedPresentation(reason).message)
         // Deliberately NOT: clearPendingBuffer (the last frame is the
         // context for the reason text), orderOut (the whole point), or the
         // zoom / resize-tracking resets — `dismissViewerWindow` owns those.
         didLogFirstViewerFrame = false
+        await endingClient?.disconnect()
     }
 
     /// Ended-pane Close, ⌘W on the ended state, and the close button
     /// outside `.viewing`: a plain close of the process-lifetime viewer
     /// window (orderOut, never an AppKit close/release).
     func dismissViewerWindow() {
-        viewerSessionEnding = nil
         viewerPresentation.dismiss()
+        syncViewerPresentationEffects()
         dismissViewerNotice()
         viewerRenderer?.clearPendingBuffer()
         viewerHost?.zoomState = ViewerZoomState()
@@ -3057,12 +3096,14 @@ class AppState: ObservableObject {
     /// the retained reconnect target belongs to the old tailnet and must not
     /// survive into the next profile.
     private func forgetViewerForAccountTeardown() {
+        // Also cancels a `connect()` suspended while an older client shuts
+        // down, including when account teardown observes `connectionState`
+        // after that synchronous state reset.
+        viewerConnectRequestID &+= 1
         dismissViewerWindow()
-        viewerAwaitingApproval = false
         isAwaitingAdmission = false
-        viewerIsGuestSession = false
-        viewerRenderer?.statsModel.isGuestSession = false
         viewerPresentation.forget()
+        syncViewerPresentationEffects()
     }
 
     /// Redial the current / most recent peer. Serves both the ended pane's
@@ -3080,14 +3121,6 @@ class AppState: ObservableObject {
             await self.connect(
                 to: target.host, displayName: target.displayName,
                 guestToken: target.guestToken)
-            // A failed redial has already alerted (`connectionFailed`);
-            // don't leave a visible window as an unexplained frozen frame
-            // behind that alert. The deny path sets its own ending.
-            if self.connectionState != .viewing, self.viewerSessionEnding == nil,
-                self.viewerWindow?.isVisible == true
-            {
-                self.viewerSessionEnding = .connectionLost
-            }
         }
     }
 
@@ -4246,10 +4279,6 @@ class AppState: ObservableObject {
     /// switching back later restores the session silently. This is
     /// `signOut()`'s teardown half minus `tailscaleAuth.signOut()`.
     private func teardownNodeKeepingLogin() async {
-        // Profile switching is allowed with an ended viewer pane because the
-        // transport is already idle. Hide it and drop its old-tailnet target
-        // before bringing the next profile up.
-        forgetViewerForAccountTeardown()
         await server?.stop()
         server = nil
         await askToShare.stopListener()
@@ -4301,6 +4330,9 @@ class AppState: ObservableObject {
         }
         isSwitchingProfile = true
         defer { isSwitchingProfile = false }
+        // An ended viewer pane is compatible with the idle gate, but its
+        // reconnect target belongs to the profile we are leaving.
+        forgetViewerForAccountTeardown()
         await teardownNodeKeepingLogin()
         profileStore.setActive(id)
         await attemptSessionRestore()
@@ -4316,6 +4348,9 @@ class AppState: ObservableObject {
             return
         }
         let profile = profileStore.addProfile()
+        // Drop any ended-session target at the actual account boundary, not
+        // in node teardown, which is also used for same-account recovery.
+        forgetViewerForAccountTeardown()
         await teardownNodeKeepingLogin()
         profileStore.setActive(profile.id)
         await login(silent: false)
