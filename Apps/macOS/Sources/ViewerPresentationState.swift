@@ -19,20 +19,29 @@ final class ViewerPresentationState: ObservableObject {
     @Published private(set) var ending: ViewerSessionEndReason?
     @Published private(set) var isGuestSession = false
 
-    private(set) var lifecycle = ViewerSessionLifecycle()
+    @Published private(set) var lifecycle = ViewerSessionLifecycle()
 
-    func begin(target: ViewerSessionTarget) {
+    @discardableResult
+    func begin(target: ViewerSessionTarget) -> ViewerSessionID {
         lifecycle.begin(target)
     }
 
-    @discardableResult
-    func markAwaitingApproval() -> Bool {
-        lifecycle.markAwaitingApproval()
+    func isCurrent(_ id: ViewerSessionID) -> Bool {
+        lifecycle.isCurrent(id)
+    }
+
+    func isActive(_ id: ViewerSessionID) -> Bool {
+        lifecycle.isActive(id)
     }
 
     @discardableResult
-    func markViewing() -> Bool {
-        lifecycle.markViewing()
+    func markAwaitingApproval(for id: ViewerSessionID) -> Bool {
+        lifecycle.markAwaitingApproval(for: id)
+    }
+
+    @discardableResult
+    func markViewing(for id: ViewerSessionID) -> Bool {
+        lifecycle.markViewing(for: id)
     }
 
     func setAwaitingApproval(_ value: Bool) {
@@ -47,12 +56,14 @@ final class ViewerPresentationState: ObservableObject {
         isGuestSession = value
     }
 
-    func end(_ reason: ViewerSessionEndReason) {
-        _ = lifecycle.end(reason)
+    @discardableResult
+    func end(_ reason: ViewerSessionEndReason, for id: ViewerSessionID) -> Bool {
+        lifecycle.end(reason, for: id)
     }
 
-    func fail(_ message: String) {
-        _ = lifecycle.fail(message)
+    @discardableResult
+    func fail(_ message: String, for id: ViewerSessionID) -> Bool {
+        lifecycle.fail(message, for: id)
     }
 
     func setEnding(_ reason: ViewerSessionEndReason?) {

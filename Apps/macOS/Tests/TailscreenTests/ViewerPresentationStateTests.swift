@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 
 @testable import Tailscreen
@@ -9,19 +10,19 @@ final class ViewerPresentationStateTests: XCTestCase {
 
     func testPresentationFlagsAndPortableLifecycleMoveIndependently() {
         let state = ViewerPresentationState()
-        state.begin(target: target)
+        let id = state.begin(target: target)
         state.setAwaitingAdmission(true)
 
         XCTAssertEqual(state.lifecycle.phase, .connecting)
         XCTAssertEqual(state.lifecycle.target, target)
         XCTAssertTrue(state.awaitingAdmission)
 
-        XCTAssertTrue(state.markAwaitingApproval())
+        XCTAssertTrue(state.markAwaitingApproval(for: id))
         state.setAwaitingApproval(true)
         XCTAssertEqual(state.lifecycle.phase, .awaitingApproval)
         XCTAssertTrue(state.awaitingApproval)
 
-        XCTAssertTrue(state.markViewing())
+        XCTAssertTrue(state.markViewing(for: id))
         state.setAwaitingApproval(false)
         state.setAwaitingAdmission(false)
         XCTAssertEqual(state.lifecycle.phase, .viewing)
@@ -31,10 +32,10 @@ final class ViewerPresentationStateTests: XCTestCase {
 
     func testEndAndDismissKeepReconnectTarget() {
         let state = ViewerPresentationState()
-        state.begin(target: target)
-        _ = state.markViewing()
+        let id = state.begin(target: target)
+        _ = state.markViewing(for: id)
 
-        state.end(.sharerStopped)
+        state.end(.sharerStopped, for: id)
         state.setEnding(.sharerStopped)
         XCTAssertEqual(state.lifecycle.phase, .ended(.sharerStopped))
         XCTAssertEqual(state.ending, .sharerStopped)
@@ -60,5 +61,19 @@ final class ViewerPresentationStateTests: XCTestCase {
         XCTAssertEqual(state.lifecycle.target, target)
         XCTAssertNil(state.lifecycle.target?.guestToken)
         XCTAssertFalse(state.isGuestSession)
+    }
+
+    func testLifecycleMutationPublishesObjectChange() {
+        let state = ViewerPresentationState()
+        var changeCount = 0
+        let observation = state.objectWillChange.sink { changeCount += 1 }
+
+        let id = state.begin(target: target)
+        XCTAssertGreaterThan(changeCount, 0)
+        let changesAfterBegin = changeCount
+
+        XCTAssertTrue(state.markViewing(for: id))
+        XCTAssertGreaterThan(changeCount, changesAfterBegin)
+        withExtendedLifetime(observation) {}
     }
 }

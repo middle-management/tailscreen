@@ -30,50 +30,52 @@ final class ViewerSessionLifecycleTests: XCTestCase {
 
     func testConnectingCanMoveThroughApprovalToViewing() {
         var state = ViewerSessionLifecycle()
-        state.begin(tailnet)
+        let id = state.begin(tailnet)
 
-        XCTAssertTrue(state.markAwaitingApproval())
+        XCTAssertTrue(state.markAwaitingApproval(for: id))
         XCTAssertEqual(state.phase, .awaitingApproval)
-        XCTAssertTrue(state.markViewing())
+        XCTAssertTrue(state.markViewing(for: id))
         XCTAssertEqual(state.phase, .viewing)
     }
 
     func testDirectAdmissionMovesConnectingToViewing() {
         var state = ViewerSessionLifecycle()
-        state.begin(tailnet)
+        let id = state.begin(tailnet)
 
-        XCTAssertTrue(state.markViewing())
+        XCTAssertTrue(state.markViewing(for: id))
         XCTAssertEqual(state.phase, .viewing)
     }
 
     func testTerminalAndDismissedSessionsRejectStaleCallbacks() {
         var ended = ViewerSessionLifecycle()
-        ended.begin(tailnet)
-        XCTAssertTrue(ended.end(.sharerStopped))
-        XCTAssertFalse(ended.markAwaitingApproval())
-        XCTAssertFalse(ended.markViewing())
-        XCTAssertFalse(ended.fail("late"))
+        let endedID = ended.begin(tailnet)
+        XCTAssertTrue(ended.end(.sharerStopped, for: endedID))
+        XCTAssertFalse(ended.markAwaitingApproval(for: endedID))
+        XCTAssertFalse(ended.markViewing(for: endedID))
+        XCTAssertFalse(ended.fail("late", for: endedID))
         XCTAssertEqual(ended.phase, .ended(.sharerStopped))
+        XCTAssertTrue(ended.isCurrent(endedID))
+        XCTAssertFalse(ended.isActive(endedID))
 
         var dismissed = ViewerSessionLifecycle()
-        dismissed.begin(tailnet)
+        let dismissedID = dismissed.begin(tailnet)
         dismissed.dismiss()
-        XCTAssertFalse(dismissed.markAwaitingApproval())
-        XCTAssertFalse(dismissed.markViewing())
-        XCTAssertFalse(dismissed.end(.connectionLost))
+        XCTAssertFalse(dismissed.markAwaitingApproval(for: dismissedID))
+        XCTAssertFalse(dismissed.markViewing(for: dismissedID))
+        XCTAssertFalse(dismissed.end(.connectionLost, for: dismissedID))
         XCTAssertNil(dismissed.phase)
     }
 
     func testEndAndFailureStayPresentedWithReconnectTarget() {
         var ended = ViewerSessionLifecycle()
-        ended.begin(tailnet)
-        XCTAssertTrue(ended.end(.disconnectedBySharer))
+        let endedID = ended.begin(tailnet)
+        XCTAssertTrue(ended.end(.disconnectedBySharer, for: endedID))
         XCTAssertTrue(try XCTUnwrap(ended.phase).isOver)
         XCTAssertEqual(ended.target, tailnet)
 
         var failed = ViewerSessionLifecycle()
-        failed.begin(guest)
-        XCTAssertTrue(failed.fail("relay unavailable"))
+        let failedID = failed.begin(guest)
+        XCTAssertTrue(failed.fail("relay unavailable", for: failedID))
         XCTAssertTrue(try XCTUnwrap(failed.phase).isOver)
         XCTAssertEqual(failed.target, guest)
     }
@@ -93,13 +95,30 @@ final class ViewerSessionLifecycleTests: XCTestCase {
 
     func testNewBeginReplacesEveryPartOfOldTarget() {
         var state = ViewerSessionLifecycle()
-        state.begin(guest)
-        _ = state.fail("failed")
+        let guestID = state.begin(guest)
+        _ = state.fail("failed", for: guestID)
 
         state.begin(tailnet)
 
         XCTAssertEqual(state.phase, .connecting)
         XCTAssertEqual(state.target, tailnet)
         XCTAssertNil(state.target?.guestToken)
+    }
+
+    func testCallbackFromReplacedSessionCannotAdvanceNewSession() {
+        var state = ViewerSessionLifecycle()
+        let oldID = state.begin(guest)
+        XCTAssertTrue(state.markAwaitingApproval(for: oldID))
+        XCTAssertTrue(state.end(.connectionLost, for: oldID))
+
+        let currentID = state.begin(tailnet)
+
+        XCTAssertFalse(state.markViewing(for: oldID))
+        XCTAssertFalse(state.markAwaitingApproval(for: oldID))
+        XCTAssertFalse(state.end(.sharerStopped, for: oldID))
+        XCTAssertFalse(state.fail("late failure", for: oldID))
+        XCTAssertFalse(state.dismiss(ifCurrent: oldID))
+        XCTAssertEqual(state.phase, .connecting)
+        XCTAssertTrue(state.isCurrent(currentID))
     }
 }

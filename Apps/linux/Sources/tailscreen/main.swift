@@ -475,7 +475,7 @@ if gSelfTest {
         } else {
             config.hostname = dialHost
         }
-        gViewerLifecycle.begin(
+        let sessionID = gViewerLifecycle.begin(
             ViewerSessionTarget(
                 host: dialHost, displayName: displayName, guestToken: guestToken))
         sink.resetForNewSession()  // the sink outlives one session
@@ -507,25 +507,37 @@ if gSelfTest {
                     // `attach` publishes availability itself, off the latch —
                     // a second `setMicAvailable(true)` here would be the UI
                     // asserting a capability the latch had not granted.
-                    onVoiceReady: { uplink in gVoice.attach(uplink) },
+                    onVoiceReady: { uplink in
+                        guard gViewerLifecycle.isActive(sessionID) else { return }
+                        gVoice.attach(uplink)
+                    },
                     onBackChannelReady: { channel in
-                        gControls.attach(channel)
-                        gInput.attach(channel)
-                        gAnnoForwarder.attach(channel)
+                        Task { @MainActor in
+                            guard gViewerLifecycle.isActive(sessionID) else { return }
+                            gControls.attach(channel)
+                            gInput.attach(channel)
+                            gAnnoForwarder.attach(channel)
+                        }
                     },
                     onAdmitted: { caps in
-                        _ = gViewerLifecycle.markViewing()
-                        // The sharer's caps decide, guest or tailnet: the
-                        // back-channel rides the guest tunnel too now, and a
-                        // sharer that predates it doesn't advertise these
-                        // bits over a link in the first place.
-                        gUIState.setCaps(
-                            remoteControl: caps.contains(.remoteControl),
-                            annotations: caps.contains(.annotations))
+                        Task { @MainActor in
+                            guard gViewerLifecycle.markViewing(for: sessionID) else { return }
+                            // The sharer's caps decide, guest or tailnet: the
+                            // back-channel rides the guest tunnel too now, and
+                            // a sharer that predates it doesn't advertise these
+                            // bits over a link in the first place.
+                            gUIState.setCaps(
+                                remoteControl: caps.contains(.remoteControl),
+                                annotations: caps.contains(.annotations))
+                        }
                     },
                     onAwaitingApproval: {
-                        guard gViewerLifecycle.markAwaitingApproval() else { return }
-                        gUIState.post(sessionPhase: .awaitingApproval)
+                        Task { @MainActor in
+                            guard gViewerLifecycle.markAwaitingApproval(for: sessionID) else {
+                                return
+                            }
+                            gUIState.post(sessionPhase: .awaitingApproval)
+                        }
                     },
                     onEnded: { reason, wasAdmitted in
                         ended.value = (reason, wasAdmitted)
@@ -535,6 +547,7 @@ if gSelfTest {
                     // keyframe — the session asks for one) rebuilds it.
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: {
+                        guard gViewerLifecycle.isActive(sessionID) else { return }
                         // Terminal rung: name the stall on the session placard
                         // instead of leaving a frozen last frame. Unlatch the
                         // sink first so a frame that somehow decodes later
@@ -545,28 +558,29 @@ if gSelfTest {
                                 "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
                             ))
                     })
+                guard gViewerLifecycle.isCurrent(sessionID) else { return }
                 FileHandle.standardError.write(Data("session ended\n".utf8))
                 gVoice.detach()
                 if let end = ended.value {
                     // Sharer stop / deny / kick / timeout / socket death: the
                     // placard explains it and offers Reconnect / Back.
                     let reason = sessionEndReason(end.reason, wasAdmitted: end.wasAdmitted)
-                    _ = gViewerLifecycle.end(reason)
+                    guard gViewerLifecycle.end(reason, for: sessionID) else { return }
                     gUIState.post(sessionPhase: .ended(reason))
                 } else if gPickerMode {
                     // The user ended it — no explanation owed, straight back.
-                    gViewerLifecycle.dismiss()
+                    guard gViewerLifecycle.dismiss(ifCurrent: sessionID) else { return }
                     gReturnToPicker?()
                 } else {
                     // Direct-host mode has no list; rest on the status pane.
-                    gViewerLifecycle.dismiss()
+                    guard gViewerLifecycle.dismiss(ifCurrent: sessionID) else { return }
                     gUIState.returnToPickerState()
                     gUIState.post(status: L("Session Ended"))
                 }
             } catch {
+                guard gViewerLifecycle.fail(L("Connection failed"), for: sessionID) else { return }
                 FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
                 gVoice.detach()
-                _ = gViewerLifecycle.fail(L("Connection failed"))
                 gUIState.post(sessionPhase: .failed(L("Connection failed")))
             }
         }

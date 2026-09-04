@@ -842,14 +842,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Post `.tailscreenViewerPeerClosed` with the reason riding along, so
-    /// AppState can explain the ending instead of collapsing sharer-stop,
-    /// idle timeout, and socket-error storms into one unexplained
-    /// disconnect.
+    /// Post `.tailscreenViewerPeerClosed` with this client as the source and
+    /// the reason riding along. AppState rejects a close from a replaced
+    /// client before explaining the current session's ending.
     private func postPeerClosed(_ reason: ViewerCloseReason) {
         NotificationCenter.default.post(
             name: .tailscreenViewerPeerClosed,
-            object: nil,
+            object: self,
             userInfo: [ViewerCloseReason.userInfoKey: reason.rawValue])
     }
 

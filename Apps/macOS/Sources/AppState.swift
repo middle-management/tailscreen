@@ -645,7 +645,7 @@ class AppState: ObservableObject {
     }
 
     /// Non-nil while the viewer window shows the in-window "session ended"
-    /// state. Set by `endViewerSession(reason:)`; cleared by
+    /// state. Set by `endViewerSession(reason:sessionID:)`; cleared by
     /// reconnect / dismiss / a fresh `connect()`. Published so the other
     /// surfaces (menubar popover, hub) can reflect it if they choose.
     private(set) var viewerSessionEnding: ViewerSessionEnding? {
@@ -1030,9 +1030,17 @@ class AppState: ObservableObject {
                 let reason =
                     (note.userInfo?[ViewerCloseReason.userInfoKey] as? String)
                     .flatMap(ViewerCloseReason.init(rawValue:)) ?? .connectionLost
-                Task { @MainActor [weak self] in
-                    guard let self = self, self.connectionState == .viewing else { return }
-                    await self.endViewerSession(reason: Self.sessionEnding(for: reason))
+                let source = note.object as? TailscaleScreenShareClient
+                Task { @MainActor [weak self, weak source] in
+                    guard
+                        let self,
+                        let source,
+                        source === self.client,
+                        self.connectionState == .viewing,
+                        let sessionID = self.viewerPresentation.lifecycle.sessionID
+                    else { return }
+                    await self.endViewerSession(
+                        reason: Self.sessionEnding(for: reason), sessionID: sessionID)
                 }
             }
         )
@@ -2288,13 +2296,13 @@ class AppState: ObservableObject {
     /// placard is the expected first state.
     func connect(to host: String, displayName: String? = nil, guestToken: String? = nil) async {
         guard !host.isEmpty || guestToken != nil else { return }
-        viewerPresentation.begin(
+        let sessionID = viewerPresentation.begin(
             target: ViewerSessionTarget(
                 host: host, displayName: displayName ?? host, guestToken: guestToken))
 
         connectionState = .connecting
         defer {
-            if connectionState == .connecting {
+            if viewerPresentation.isCurrent(sessionID), connectionState == .connecting {
                 connectionState = .idle
                 isAwaitingAdmission = false
             }
@@ -2326,7 +2334,11 @@ class AppState: ObservableObject {
             // it via `onVideoSizeChanged`.
             c.onAwaitingApproval = { [weak self] in
                 Task { @MainActor [weak self] in
-                    guard let self, self.viewerPresentation.markAwaitingApproval() else { return }
+                    guard let self,
+                        self.viewerPresentation.markAwaitingApproval(for: sessionID)
+                    else {
+                        return
+                    }
                     self.viewerAwaitingApproval = true
                 }
             }
@@ -2337,7 +2349,7 @@ class AppState: ObservableObject {
             // screen behind it.
             c.onDeniedBySharer = { [weak self] in
                 Task { @MainActor [weak self] in
-                    guard let self = self else { return }
+                    guard let self, self.viewerPresentation.isActive(sessionID) else { return }
                     // Accept the deny in `.connecting` too: a synchronous
                     // HELLO_DENY (cached StableNodeID) can land while
                     // `connect()` is still mid-flight, and dropping it would
@@ -2360,7 +2372,8 @@ class AppState: ObservableObject {
                     // keeps the plain teardown.
                     if self.viewerWindow?.isVisible == true {
                         await self.endViewerSession(
-                            reason: wasWatching ? .disconnectedBySharer : .declined)
+                            reason: wasWatching ? .disconnectedBySharer : .declined,
+                            sessionID: sessionID)
                     } else {
                         await self.disconnect()
                     }
@@ -2385,25 +2398,32 @@ class AppState: ObservableObject {
             // SCStream picking up the overlay panel.
             c.onAnnotationReceived = { [weak self] op in
                 Task { @MainActor [weak self] in
-                    self?.viewerOverlay?.model.apply(remoteOp: op)
+                    guard let self, self.viewerPresentation.isActive(sessionID) else { return }
+                    self.viewerOverlay?.model.apply(remoteOp: op)
                 }
             }
 
             c.onRemoteControlSupportChanged = { [weak self] supported in
                 Task { @MainActor [weak self] in
-                    self?.sharerSupportsRemoteControl = supported
+                    guard let self, self.viewerPresentation.isActive(sessionID) else { return }
+                    self.sharerSupportsRemoteControl = supported
                 }
             }
 
             c.onAnnotationSupportChanged = { [weak self] supported in
                 Task { @MainActor [weak self] in
-                    self?.sharerSupportsAnnotations = supported
+                    guard let self, self.viewerPresentation.isActive(sessionID) else { return }
+                    self.sharerSupportsAnnotations = supported
                 }
             }
 
             c.onControlGranted = { [weak self] in
                 Task { @MainActor [weak self] in
-                    guard let self, self.connectionState == .viewing else { return }
+                    guard
+                        let self,
+                        self.viewerPresentation.isActive(sessionID),
+                        self.connectionState == .viewing
+                    else { return }
                     // Only enter control if we're still actually asking for it.
                     // A viewer that clicked Request then Stop before the answer
                     // shouldn't be silently forced into capturing by a late
@@ -2418,7 +2438,7 @@ class AppState: ObservableObject {
 
             c.onControlRevoked = { [weak self] reason in
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
+                    guard let self, self.viewerPresentation.isActive(sessionID) else { return }
                     self.logger.log("Remote control revoked by sharer (\(reason))")
                     let wasControlling = self.viewerControlState == .controlling
                     self.exitViewerControl()
@@ -2438,7 +2458,10 @@ class AppState: ObservableObject {
             // assignment the client ever surfaces.
             c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
                 Task { @MainActor [weak self, weak c] in
-                    guard let self = self, let c = c else { return }
+                    guard
+                        let self, let c,
+                        self.viewerPresentation.isActive(sessionID)
+                    else { return }
                     // The SSRC assignment IS the admission signal — the
                     // pre-admission "Connecting to…" title ends here.
                     self.isAwaitingAdmission = false
@@ -2483,7 +2506,7 @@ class AppState: ObservableObject {
             // to `.viewing` (which would resurrect a dead session).
             if viewerWasDenied { return }
 
-            _ = viewerPresentation.markViewing()
+            guard viewerPresentation.markViewing(for: sessionID) else { return }
             connectionState = .viewing
             connectedHostname = displayName ?? host
             refreshViewerWindowTitle()
@@ -2492,7 +2515,9 @@ class AppState: ObservableObject {
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
-            viewerPresentation.fail(String(describing: error))
+            guard viewerPresentation.fail(String(describing: error), for: sessionID) else {
+                return
+            }
             presentError(.connectionFailed(host: host, underlying: error))
             client = nil
             isAwaitingAdmission = false
@@ -2986,7 +3011,8 @@ class AppState: ObservableObject {
     /// minus everything that hides the window or clears the last frame:
     /// the window stays up showing the frozen frame under an explicit
     /// "session ended" pane (reason + Reconnect / Close).
-    func endViewerSession(reason: ViewerSessionEnding) async {
+    func endViewerSession(reason: ViewerSessionEnding, sessionID: ViewerSessionID) async {
+        guard viewerPresentation.end(reason, for: sessionID) else { return }
         await client?.disconnect()
         client = nil
         micCapture?.stop()
@@ -3004,7 +3030,6 @@ class AppState: ObservableObject {
         }
         dismissViewerNotice()
         viewerSessionEnding = reason
-        viewerPresentation.end(reason)
         postViewerAccessibilityAnnouncement(sessionEndedPresentation(reason).message)
         // Deliberately NOT: clearPendingBuffer (the last frame is the
         // context for the reason text), orderOut (the whole point), or the
@@ -3025,6 +3050,18 @@ class AppState: ObservableObject {
         userResizedViewer = false
         didLogFirstViewerFrame = false
         refreshViewerWindowTitle()
+    }
+
+    /// Account boundaries are stronger than closing an ended-session pane:
+    /// the retained reconnect target belongs to the old tailnet and must not
+    /// survive into the next profile.
+    private func forgetViewerForAccountTeardown() {
+        dismissViewerWindow()
+        viewerAwaitingApproval = false
+        isAwaitingAdmission = false
+        viewerIsGuestSession = false
+        viewerRenderer?.statsModel.isGuestSession = false
+        viewerPresentation.forget()
     }
 
     /// Redial the current / most recent peer. Serves both the ended pane's
@@ -4120,10 +4157,13 @@ class AppState: ObservableObject {
                 await stopSharing(reason: "signOut")
             }
 
-            // Disconnect if connected
-            if connectionState == .viewing {
+            // Disconnect viewing AND in-flight sessions. Closing the node
+            // under `.connecting` leaves its eventual callback free to
+            // resurrect viewer state after the account is gone.
+            if connectionState != .idle {
                 await disconnect()
             }
+            forgetViewerForAccountTeardown()
 
             // Reset Tailscale state
             await server?.stop()
@@ -4176,6 +4216,10 @@ class AppState: ObservableObject {
     /// switching back later restores the session silently. This is
     /// `signOut()`'s teardown half minus `tailscaleAuth.signOut()`.
     private func teardownNodeKeepingLogin() async {
+        // Profile switching is allowed with an ended viewer pane because the
+        // transport is already idle. Hide it and drop its old-tailnet target
+        // before bringing the next profile up.
+        forgetViewerForAccountTeardown()
         await server?.stop()
         server = nil
         await askToShare.stopListener()

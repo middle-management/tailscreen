@@ -1409,7 +1409,7 @@ final class AppUIState: ObservableObject {
     private func startSession(config: ViewerConfig, target: ViewerSessionTarget) {
         guard sessionTask == nil else { return }
         stopRequested = false
-        viewerLifecycle.begin(target)
+        let sessionID = viewerLifecycle.begin(target)
         status = L("Connecting to \(target.displayName)…")
         detail = ""
 
@@ -1468,10 +1468,14 @@ final class AppUIState: ObservableObject {
                     backChannelHandlers: interaction.backChannelHandlers(),
                     microphone: microphone,
                     onVoiceReady: { [weak self] uplink in
-                        self?.attachVoice(uplink)
+                        guard let self, self.viewerLifecycle.isActive(sessionID) else { return }
+                        self.attachVoice(uplink)
                     },
                     onBackChannelReady: { [weak self] channel in
-                        Task { @MainActor in self?.interaction.beginSession(channel: channel) }
+                        Task { @MainActor in
+                            guard let self, self.viewerLifecycle.isActive(sessionID) else { return }
+                            self.interaction.beginSession(channel: channel)
+                        }
                     },
                     onAdmitted: { [weak self] caps in
                         Task { @MainActor in
@@ -1479,7 +1483,7 @@ final class AppUIState: ObservableObject {
                             // session that ended immediately — a stale
                             // `.viewing` must not clobber the ended placard.
                             guard let self, self.sessionTask != nil else { return }
-                            guard self.viewerLifecycle.markViewing() else { return }
+                            guard self.viewerLifecycle.markViewing(for: sessionID) else { return }
                             self.status = L("Watching \(target.displayName)")
                             // Drawing and Request Control appear only if the
                             // sharer said it can serve them. Withheld bits mean
@@ -1495,7 +1499,9 @@ final class AppUIState: ObservableObject {
                         Task { @MainActor in
                             // Same stale-hop guard as `onAdmitted`.
                             guard let self, self.sessionTask != nil else { return }
-                            guard self.viewerLifecycle.markAwaitingApproval() else { return }
+                            guard self.viewerLifecycle.markAwaitingApproval(for: sessionID) else {
+                                return
+                            }
                             self.status = L("Waiting for \(target.displayName) to approve…")
                         }
                     },
@@ -1507,10 +1513,11 @@ final class AppUIState: ObservableObject {
                     // fresh keyframe — the session asks for one) rebuilds it.
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: { [weak self] in
+                        guard let self, self.viewerLifecycle.isActive(sessionID) else { return }
                         // Terminal rung: name the stall on the hub's detail
                         // line — the same surface a decline or session error
                         // uses — instead of a silently frozen last frame.
-                        self?.detail = L(
+                        self.detail = L(
                             "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
                         )
                     }
@@ -1543,14 +1550,15 @@ final class AppUIState: ObservableObject {
                 // different stories.
                 _ = viewerLifecycle.end(
                     ViewerSessionEndReason.resolve(
-                        end.reason, wasAdmitted: end.wasAdmitted))
+                        end.reason, wasAdmitted: end.wasAdmitted),
+                    for: sessionID)
             } else if let failureMessage {
                 // The session threw (dial/bring-up failure): same placard
                 // shape, with the error as the sentence.
-                _ = viewerLifecycle.fail(failureMessage)
+                _ = viewerLifecycle.fail(failureMessage, for: sessionID)
             } else {
                 // The user stopped it — no explanation owed.
-                viewerLifecycle.dismiss()
+                _ = viewerLifecycle.dismiss(ifCurrent: sessionID)
             }
         }
     }

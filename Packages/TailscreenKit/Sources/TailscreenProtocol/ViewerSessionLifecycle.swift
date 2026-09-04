@@ -22,6 +22,15 @@ public enum ViewerSessionPhase: Equatable, Sendable {
     }
 }
 
+/// Opaque identity for one invocation of `ViewerSessionLifecycle.begin`.
+///
+/// Asynchronous callbacks carry this value back into transition methods so a
+/// callback queued by an old session cannot advance whichever session happens
+/// to be current when it finally runs.
+public struct ViewerSessionID: Equatable, Hashable, Sendable {
+    fileprivate let value: UInt64
+}
+
 /// Everything a host needs to redial the current or most recent viewer.
 ///
 /// `identifier` is the hub row id when reconnect should resolve through a
@@ -59,20 +68,38 @@ public struct ViewerSessionTarget: Equatable, Sendable {
 public struct ViewerSessionLifecycle: Equatable, Sendable {
     public private(set) var phase: ViewerSessionPhase?
     public private(set) var target: ViewerSessionTarget?
+    public private(set) var sessionID: ViewerSessionID?
+    private var nextSessionValue: UInt64 = 0
 
     public init() {}
 
     /// Begin owning the viewer presentation for `target`.
-    public mutating func begin(_ target: ViewerSessionTarget) {
+    @discardableResult
+    public mutating func begin(_ target: ViewerSessionTarget) -> ViewerSessionID {
+        nextSessionValue &+= 1
+        let id = ViewerSessionID(value: nextSessionValue)
         self.target = target
+        sessionID = id
         phase = .connecting
+        return id
+    }
+
+    /// Whether `id` still names the current session, including its retained
+    /// terminal presentation.
+    public func isCurrent(_ id: ViewerSessionID) -> Bool {
+        sessionID == id && phase != nil
+    }
+
+    /// Whether callbacks from `id` may still apply non-terminal side effects.
+    public func isActive(_ id: ViewerSessionID) -> Bool {
+        isCurrent(id) && phase?.isOver == false
     }
 
     /// Apply HELLO_PENDING. Returns false for a callback from a session that
-    /// has already ended or been dismissed.
+    /// has been replaced, ended or dismissed.
     @discardableResult
-    public mutating func markAwaitingApproval() -> Bool {
-        guard phase == .connecting else { return false }
+    public mutating func markAwaitingApproval(for id: ViewerSessionID) -> Bool {
+        guard isCurrent(id), phase == .connecting else { return false }
         phase = .awaitingApproval
         return true
     }
@@ -80,24 +107,26 @@ public struct ViewerSessionLifecycle: Equatable, Sendable {
     /// Apply HELLO_ACK / first decoded frame. Both connecting and pending are
     /// valid predecessors; terminal or dismissed sessions reject stale hops.
     @discardableResult
-    public mutating func markViewing() -> Bool {
-        guard phase == .connecting || phase == .awaitingApproval else { return false }
+    public mutating func markViewing(for id: ViewerSessionID) -> Bool {
+        guard isCurrent(id), phase == .connecting || phase == .awaitingApproval else {
+            return false
+        }
         phase = .viewing
         return true
     }
 
     /// Keep the presentation up with the portable end reason.
     @discardableResult
-    public mutating func end(_ reason: ViewerSessionEndReason) -> Bool {
-        guard phase != nil, phase?.isOver == false else { return false }
+    public mutating func end(_ reason: ViewerSessionEndReason, for id: ViewerSessionID) -> Bool {
+        guard isActive(id) else { return false }
         phase = .ended(reason)
         return true
     }
 
     /// Keep the presentation up with a bring-up/runtime failure.
     @discardableResult
-    public mutating func fail(_ message: String) -> Bool {
-        guard phase != nil, phase?.isOver == false else { return false }
+    public mutating func fail(_ message: String, for id: ViewerSessionID) -> Bool {
+        guard isActive(id) else { return false }
         phase = .failed(message)
         return true
     }
@@ -108,6 +137,16 @@ public struct ViewerSessionLifecycle: Equatable, Sendable {
     /// macOS uses in notices and accessibility labels.
     public mutating func dismiss() {
         phase = nil
+        sessionID = nil
+    }
+
+    /// Session-tail variant of `dismiss()`: an old task cannot dismiss the
+    /// replacement that started after it.
+    @discardableResult
+    public mutating func dismiss(ifCurrent id: ViewerSessionID) -> Bool {
+        guard isCurrent(id) else { return false }
+        dismiss()
+        return true
     }
 
     /// Sign-out / account teardown is the stronger reset: no session UI and
@@ -115,5 +154,6 @@ public struct ViewerSessionLifecycle: Equatable, Sendable {
     public mutating func forget() {
         phase = nil
         target = nil
+        sessionID = nil
     }
 }
