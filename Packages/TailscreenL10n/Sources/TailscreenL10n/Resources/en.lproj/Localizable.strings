@@ -50,7 +50,6 @@
 "Opens Tailscale sign-in in your browser" = "Opens Tailscale sign-in in your browser";
 
 /* MARK: - Main window hub (MainWindowView.swift) */
-"Mic, system audio, and drawing controls live in the menu bar icon." = "Mic, system audio, and drawing controls live in the menu bar icon.";
 "Screens" = "Screens";
 "Search screens" = "Search screens";
 "Account" = "Account";
@@ -110,6 +109,7 @@
 "1 viewer connected" = "1 viewer connected";
 "%lld viewers connected" = "%lld viewers connected";
 "Capturing…" = "Capturing…";
+"Live preview of what you're sharing" = "Live preview of what you're sharing";
 "Stop Drawing" = "Stop Drawing";
 "Draw" = "Draw";
 "Stop drawing on screen" = "Stop drawing on screen";

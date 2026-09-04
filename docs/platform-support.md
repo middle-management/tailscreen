@@ -231,10 +231,11 @@ action: one component each (`HubQualityMenu`), serving both hosts, backed by
 the same portable `QualitySettings` model and `PeerRoute`/latency
 classifications the macOS hub uses.
 
-The last block is about *where the sharing controls live*. On macOS the window is
-the **hub** (sign-in, accounts, peer list) and the menubar item is the **sharer
-tool**, so you mute, draw, approve a viewer and stop without the window ever
-coming forward. Linux and Windows put everything in one window — which during a
+The last block is about *where the sharing controls live*. On macOS the live
+share's card — preview, mute, draw, approve a viewer, the link, stop — renders
+in the window *and* in the menubar item, out of the same components, so you can
+mute, draw, approve a viewer and stop without the window ever coming forward.
+Linux and Windows have the same card, but only in the window — which during a
 share is behind the thing you're sharing, and raising it is itself visible to
 your viewers. Every mid-share action costs an interruption the audience can see.
 

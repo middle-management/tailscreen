@@ -71,6 +71,20 @@ is up, people on your tailnet can connect, and by default each one waits
 for your approval before they see anything (see
 [Approving viewers](#approving-viewers)).
 
+### The sharing card
+
+Once a share is up, everything about it lives in one card: a live preview
+of what viewers are seeing, the resolution and viewer count, the session
+buttons (**Change Source…**, **Draw**, mic, **Share System Audio**),
+**Stop Sharing**, the viewer list with its approval prompts, the approval
+toggle, **Share via Link**, and the mic/speaker device pickers.
+
+On macOS that card is in two places at once — the menubar 📺 and the
+Tailscreen window — and they're the same card, not a full version and a
+summary. Use whichever you're already looking at: the menubar when the
+window is buried behind what you're sharing, the window when you have it
+open anyway. On Linux and Windows the card lives in the hub window.
+
 ### Changing what you share mid-session
 
 While sharing, pick **Change Source…** in the sharing card. It reopens the
@@ -142,8 +156,8 @@ or DERP-relayed — with a rough latency estimate.
 
 **Require approval for new viewers** is on by default. When someone
 connects to your share, they don't see pixels — they wait on their
-Connecting screen while your menubar shows a row for them with four
-choices:
+Connecting screen while your sharing card — the menubar one and the
+window's, on macOS — shows a row for them with four choices:
 
 - **Accept** — admit them, this once.
 - **Always Allow** — admit them now and automatically in the future.
@@ -178,8 +192,8 @@ Everything above assumes both machines are on your tailnet. **Share via
 Link** is the way in for someone who isn't — no Tailscale account, no
 install ceremony beyond Tailscreen itself.
 
-While sharing, flip **Share via Link** in the sharing card (the menubar
-card on macOS; the hub's share card on Linux and Windows, where the link
+While sharing, flip **Share via Link** in the sharing card (either copy of
+it on macOS; the hub's share card on Linux and Windows, where the link
 appears as selectable text to copy). Tailscreen mints a one-off link (a
 `tailscreen:` URL wrapping a `tc…` token). On macOS it comes with four
 buttons:
@@ -211,7 +225,7 @@ also holds a relay override for
 **Sharing without signing in** works too: the macOS welcome screen offers
 **Share your screen via Link…** alongside the sign-in button. The picker
 opens, the share starts as a *link-only* share — no Tailscale account,
-no tailnet, the link is the only way in — and the menubar card shows the
+no tailnet, the link is the only way in — and the sharing card shows the
 link with the same Copy / New Link / guest controls. Approval is still
 mandatory for every guest, and Stop Sharing is the way to end it (a
 link-only share has no link-off toggle: turning off its only transport

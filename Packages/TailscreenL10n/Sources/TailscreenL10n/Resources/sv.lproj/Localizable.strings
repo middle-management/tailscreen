@@ -39,7 +39,6 @@
 "Opens Tailscale sign-in in your browser" = "Öppnar Tailscale-inloggning i din webbläsare";
 
 /* MARK: - Main window hub (MainWindowView.swift) */
-"Mic, system audio, and drawing controls live in the menu bar icon." = "Kontroller för mikrofon, systemljud och ritning finns i menyradsikonen.";
 "Screens" = "Skärmar";
 "Search screens" = "Sök skärmar";
 "Account" = "Konto";
@@ -111,6 +110,7 @@
 "1 viewer connected" = "1 tittare ansluten";
 "%lld viewers connected" = "%lld tittare anslutna";
 "Capturing…" = "Fångar…";
+"Live preview of what you're sharing" = "Direktförhandsvisning av det du delar";
 "Stop Drawing" = "Sluta rita";
 "Draw" = "Rita";
 "Stop drawing on screen" = "Sluta rita på skärmen";
