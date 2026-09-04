@@ -2634,15 +2634,13 @@ class AppState: ObservableObject {
             onClose: { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
-                    if self.connectionState == .viewing {
+                    if self.connectionState != .idle {
                         await self.disconnect()
                     } else {
-                        // Ended state, mid-connect, or a stray close: act
-                        // like a plain close. The NSWindow itself stays
-                        // alive (process-lifetime), so this orders out
-                        // rather than letting AppKit run the release
-                        // cascade — previously this branch was a no-op and
-                        // the close button did nothing outside `.viewing`.
+                        // Ended state or a stray close: act like a plain
+                        // close. The NSWindow itself stays alive
+                        // (process-lifetime), so this orders out rather than
+                        // letting AppKit run the release cascade.
                         self.dismissViewerWindow()
                     }
                 }
@@ -5251,11 +5249,10 @@ class AppState: ObservableObject {
     }
 
     /// Vibrancy-backed centered placard shown between HELLO_PENDING and
-    /// the first decoded frame: spinner + "Waiting for the sharer…" +
-    /// Cancel. Constraint-sized (the caller centers it and caps its
-    /// width), so long translations grow it instead of truncating. Held by
-    /// AppState and toggled via `viewerWaitingPlacard?.isHidden` from
-    /// `viewerAwaitingApproval.didSet`.
+    /// HELLO_ACK: spinner + "Waiting for the sharer…" + Cancel.
+    /// Constraint-sized (the caller centers it and caps its width), so long
+    /// translations grow it instead of truncating. Held by AppState and
+    /// synchronized from the lifecycle by `syncViewerPresentationEffects`.
     @MainActor
     private func makeWaitingPlacard() -> NSView {
         let effect = NSVisualEffectView()

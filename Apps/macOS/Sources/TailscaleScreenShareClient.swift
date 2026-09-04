@@ -76,7 +76,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// it needn't be the receive task's context; it just must be consistent).
     private let viewerFrameQueue = DispatchQueue(label: "com.tailscreen.viewer-session-frames")
     private var isConnected = false
+    /// Disconnect is a permanent cancellation request for this one-shot
+    /// client. The task is shared so overlapping callers await the same
+    /// teardown instead of returning while cleanup is still running.
+    private let disconnectLock = NSLock()
     private var isDisconnecting = false
+    private var disconnectTask: Task<Void, Never>?
 
     /// Audio SSRC the sharer assigned via HELLO_ACK. nil until the ack
     /// arrives; the VoiceChannel waits on this before sending mic audio.
@@ -88,8 +93,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     /// Fires when the sharer reports our HELLO is parked behind their
     /// approval gate (HELLO_PENDING). AppState toggles a "Waiting for
-    /// sharer to accept" overlay; cleared on first decoded frame or
-    /// disconnect.
+    /// sharer to accept" overlay; HELLO_ACK or disconnect clears it.
     var onAwaitingApproval: (() -> Void)?
 
     /// Fires when the sharer declines (or has blocked) this viewer
@@ -410,6 +414,60 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
+    private var disconnectRequested: Bool {
+        disconnectLock.withLock { isDisconnecting }
+    }
+
+    private func throwIfDisconnectRequested() throws {
+        if disconnectRequested {
+            throw CancellationError()
+        }
+    }
+
+    /// A listener can finish binding after an early disconnect already found
+    /// nothing to close. Install it atomically with the cancellation check so
+    /// either this path or the shared teardown owns closing it.
+    private func keepListenerUnlessDisconnecting(_ listener: PacketListener) async throws {
+        let installed = disconnectLock.withLock {
+            guard !isDisconnecting else { return false }
+            packetListener = listener
+            return true
+        }
+        guard installed else {
+            await listener.close()
+            throw CancellationError()
+        }
+    }
+
+    /// Atomically publish every media task before disconnect can begin. Once
+    /// this returns, teardown either sees the complete set or start was
+    /// rejected; it can never miss tasks installed just after it finished.
+    private func startMediaUnlessDisconnecting() throws {
+        let started = disconnectLock.withLock {
+            guard !isDisconnecting else { return false }
+            isConnected = true
+            viewerSession?.start()
+            receiveTask = Task { [weak self] in
+                await self?.receiveLoop()
+            }
+            keepaliveTask = Task { [weak self] in
+                await self?.keepaliveLoop()
+            }
+            return true
+        }
+        guard started else {
+            decoder?.onDecodedFrame = nil
+            decoder?.onFrameDecodeFailed = nil
+            decoder?.onRecoveryAction = nil
+            decoder?.onRecovered = nil
+            decoder?.shutdown()
+            decoder = nil
+            viewerSession = nil
+            serverAddr = nil
+            throw CancellationError()
+        }
+    }
+
     func connect(
         to hostname: String,
         port: UInt16 = NetworkConfig.tailscreenPort,
@@ -419,6 +477,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         existingNode: TailscaleNode? = nil
     ) async throws {
         guard !isConnected else { return }
+        try throwIfDisconnectRequested()
 
         // Fresh session — drop counters from the previous connection so
         // the stats overlay doesn't inherit a stale drop-rate or codec
@@ -463,15 +522,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.node = newNode
             self.ownsNode = true
             try await TsnetNodeFactory.up(newNode, spec: spec, timeout: .unbounded)
+            try throwIfDisconnectRequested()
             node = newNode
         }
 
         let ips = try await node.addrs()
+        try throwIfDisconnectRequested()
         logger.log("Tailscale connected — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
 
         guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
         }
+        try throwIfDisconnectRequested()
 
         // tsnet's ListenPacket needs an explicit IP. Bind on this node's
         // tailnet IPv4 (preferred) or IPv6 with port 0 → kernel picks an
@@ -484,7 +546,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             address: bindAddr,
             logger: logger
         )
-        self.packetListener = pl
+        try await keepListenerUnlessDisconnecting(pl)
         let addr = formatAddr(host: hostname, port: port)
         self.serverAddr = addr
         logger.log("Bound local UDP, dialing \(addr)")
@@ -495,21 +557,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // ViewerSession drives the receive path (built here, run below).
         buildViewerSession(decoder: decoder, addr: addr)
 
-        self.isConnected = true
-
         // The session advertises NACK + receiver-report + FEC in its extended
         // HELLO (via `onControlToSend`). Old servers read byte 0 only and reply
         // with a legacy 5-byte ack (caps `[]`), so the viewer degrades to the
         // PLI path against them; a NACK-era server's ack simply lacks `.fec`.
-        viewerSession?.start()
+        try startMediaUnlessDisconnecting()
         logger.log("HELLO sent via ViewerSession to \(addr)")
-
-        receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
-        }
-        keepaliveTask = Task { [weak self] in
-            await self?.keepaliveLoop()
-        }
 
         // Annotation back-channel: dial inline (so it's ready by the time
         // connect() returns), then hand the connection to a task that drains it
@@ -521,18 +574,34 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             let conn = try await OutgoingConnection(
                 tailscale: tailscaleHandle, to: "\(hostname):\(port)", proto: .tcp, logger: logger)
             try await conn.connect()
-            self.annotationChannel = conn
+            let installed = disconnectLock.withLock {
+                guard !isDisconnecting else { return false }
+                annotationChannel = conn
+                return true
+            }
+            if !installed {
+                await conn.close()
+                throw CancellationError()
+            }
             initialAnnotationConn = conn
             logger.log("Annotation back-channel open to \(hostname):\(port)")
+        } catch let error as CancellationError {
+            throw error
         } catch {
             logger.log("Annotation back-channel initial dial failed: \(error) — retrying in background")
         }
         let target = "\(hostname):\(port)"
-        annotationReceiveTask = Task { [weak self] in
-            await self?.runAnnotationChannel(initial: initialAnnotationConn) { [weak self] in
-                await self?.dialAnnotation(to: target)
+        let annotationConn = initialAnnotationConn
+        let started = disconnectLock.withLock {
+            guard !isDisconnecting else { return false }
+            annotationReceiveTask = Task { [weak self] in
+                await self?.runAnnotationChannel(initial: annotationConn) { [weak self] in
+                    await self?.dialAnnotation(to: target)
+                }
             }
+            return true
         }
+        guard started else { throw CancellationError() }
     }
 
     /// Connect over a share-by-token guest tunnel instead of the tailnet:
@@ -547,6 +616,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// only the dials differ.
     func connectGuest(token: String) async throws {
         guard !isConnected else { return }
+        try throwIfDisconnectRequested()
 
         renderer.resetStats()
         resetViewerSupportState()
@@ -556,9 +626,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         let guest = GuestClientNode(token: token, logger: logger)
         self.guestClient = guest
         let pl = try await guest.dialUDP(port: NetworkConfig.tailscreenPort)
-        self.packetListener = pl
+        try await keepListenerUnlessDisconnecting(pl)
         let addr = formatAddr(
             host: try await guest.serverAddr(), port: NetworkConfig.tailscreenPort)
+        try throwIfDisconnectRequested()
         self.serverAddr = addr
         logger.log("Guest tunnel up, dialing \(addr)")
 
@@ -566,17 +637,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         self.decoder = decoder
         buildViewerSession(decoder: decoder, addr: addr)
 
-        self.isConnected = true
-
-        viewerSession?.start()
+        try startMediaUnlessDisconnecting()
         logger.log("HELLO sent via ViewerSession to \(addr) (guest)")
-
-        receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
-        }
-        keepaliveTask = Task { [weak self] in
-            await self?.keepaliveLoop()
-        }
 
         // The annotation/control back-channel, through the guest tunnel —
         // same framed protocol, same reconnect loop as the tailnet path;
@@ -586,17 +648,33 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         var initialConn: (any FramedControlChannel)?
         do {
             let conn = try await guest.dial(port: NetworkConfig.tailscreenPort)
-            self.annotationChannel = conn
+            let installed = disconnectLock.withLock {
+                guard !isDisconnecting else { return false }
+                annotationChannel = conn
+                return true
+            }
+            if !installed {
+                await conn.close()
+                throw CancellationError()
+            }
             initialConn = conn
             logger.log("Annotation back-channel open through the guest tunnel")
+        } catch let error as CancellationError {
+            throw error
         } catch {
             logger.log("Guest annotation back-channel initial dial failed: \(error) — retrying in background")
         }
-        annotationReceiveTask = Task { [weak self] in
-            await self?.runAnnotationChannel(initial: initialConn) { [weak self] in
-                await self?.dialGuestAnnotation()
+        let annotationConn = initialConn
+        let started = disconnectLock.withLock {
+            guard !isDisconnecting else { return false }
+            annotationReceiveTask = Task { [weak self] in
+                await self?.runAnnotationChannel(initial: annotationConn) { [weak self] in
+                    await self?.dialGuestAnnotation()
+                }
             }
+            return true
         }
+        guard started else { throw CancellationError() }
     }
 
     /// IPv6 literals must be bracketed: "[::1]:7447", not "::1:7447". IPv4
@@ -885,9 +963,22 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     func disconnect() async {
-        if isDisconnecting { return }
-        isDisconnecting = true
+        let task = disconnectLock.withLock { () -> Task<Void, Never> in
+            isDisconnecting = true
+            if let disconnectTask {
+                return disconnectTask
+            }
+            let task = Task { [weak self] in
+                guard let self else { return }
+                await self.performDisconnect()
+            }
+            disconnectTask = task
+            return task
+        }
+        await task.value
+    }
 
+    private func performDisconnect() async {
         // Best-effort BYE so the server can drop us immediately rather than
         // wait the full idle timeout. UDP send isn't guaranteed; if it
         // doesn't arrive, the server's sweeper will collect us.
