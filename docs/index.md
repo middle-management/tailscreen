@@ -161,7 +161,7 @@ Curious what&rsquo;s underneath?
 <figure class="ts-shot">
   <a href="{{ '/assets/screenshots/macos-sharing.png' | relative_url }}">
     <img src="{{ '/assets/screenshots/macos-sharing.png' | relative_url }}"
-         alt="The Tailscreen hub window while sharing, showing one viewer connected and a request from studio-imac for keyboard and mouse control with Deny and Grant buttons."
+         alt="The Tailscreen hub window while sharing, showing a live preview of the shared screen, the session controls, one viewer connected, and a request from studio-imac for keyboard and mouse control with Deny and Grant buttons."
          loading="lazy" decoding="async">
   </a>
   <figcaption><strong>Nothing without a grant.</strong> See who&rsquo;s
