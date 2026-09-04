@@ -341,6 +341,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// adaptive sweep's `fairnessDecision`; expires by simply not being
         /// renewed after a clean window (asymmetric hysteresis for free).
         var throttledUntilNs: UInt64 = 0
+        /// The Sendable, UI-facing projection of this same admitted viewer.
+        ///
+        /// This used to live in a second `[String: ViewerInfo]` mutex that
+        /// every add, remove, timeout and identity update had to keep in
+        /// lockstep with `viewers`. Keeping it on the entry makes that
+        /// invariant structural: there is no admitted viewer without its
+        /// projection, and removing the entry removes both atomically.
+        var info: ViewerInfo
     }
 
     private let viewers = Mutex<[String: Viewer]>([:])
@@ -479,13 +487,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// in production. Internal (not private) so `@testable import` reaches it.
     var grantBypassesAccessibilityForTesting = false
 
-    /// Public projection of `viewers` that the UI can read without touching
-    /// the internal RTP bookkeeping. Kept in lockstep with `viewers` from
-    /// the same lifecycle hooks (`registerOrRefresh`, `removeViewer`,
-    /// `sweepIdleViewers`, `stop`). `Viewer` is intentionally not Sendable —
-    /// `ViewerInfo` is the safe, value-type snapshot.
-    private let viewerInfos = Mutex<[String: ViewerInfo]>([:])
-
     /// Per-pending-viewer state for the approval gate (see
     /// `requireApproval`). Kept separate from `viewers` so a pending viewer
     /// can't accidentally be included in video / audio fan-out. Stores
@@ -496,6 +497,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let addr: String
         let audioSSRC: UInt32
         var lastSeenNs: UInt64
+        /// Sendable, UI-facing projection of this same pending viewer. It
+        /// belongs here rather than in a parallel map for the same reason as
+        /// `Viewer.info`: lifecycle and projection are one atomic entry.
+        var info: PendingViewerInfo
     }
     private let pendingViewers = Mutex<[String: PendingViewer]>([:])
     /// Hard cap on the pending-approval set. A peer that HELLOs while the
@@ -507,10 +512,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// One-shot latch so the "pending set full" line logs at most once per
     /// saturation episode instead of on every dropped HELLO.
     private let pendingCapLogged = Mutex<Bool>(false)
-
-    /// Public projection of `pendingViewers` — built alongside it in the
-    /// same critical sections, surfaced via `onPendingViewersChanged`.
-    private let pendingViewerInfos = Mutex<[String: PendingViewerInfo]>([:])
 
     /// When true, a HELLO from a previously-unseen viewer parks them in
     /// `pendingViewers` and fires `onPendingViewersChanged` instead of
@@ -2718,6 +2719,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // Cap the pending set so a flood of spoofed HELLO source
             // addresses can't exhaust memory or amplify LocalAPI resolves.
             // Drop the HELLO (logged once) when full and this addr is new.
+            let cachedName = peerNameCache.withLock { $0[ip] }
+            let cachedStableID = peerStableIDCache.withLock { $0[ip] }
+            let info = PendingViewerInfo(
+                id: addr, tailscaleIP: ip, hostname: cachedName, stableID: cachedStableID,
+                arrivedAt: Date(), isGuest: guest)
             let accepted = pendingViewers.withLock { state -> Bool in
                 guard Self.canAcceptPending(currentCount: state.count, isExisting: state[addr] != nil) else {
                     return false
@@ -2727,19 +2733,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                     // Sharer voice owns 0, system audio owns 1 (see RTPHeader).
                     ssrc = UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max)
                 } while state.values.contains(where: { $0.audioSSRC == ssrc })
-                state[addr] = PendingViewer(addr: addr, audioSSRC: ssrc, lastSeenNs: now)
+                state[addr] = PendingViewer(
+                    addr: addr, audioSSRC: ssrc, lastSeenNs: now, info: info)
                 return true
             }
             guard accepted else {
                 logPendingCapReached(addr: addr)
                 return
             }
-            let cachedName = peerNameCache.withLock { $0[ip] }
-            let cachedStableID = peerStableIDCache.withLock { $0[ip] }
-            let info = PendingViewerInfo(
-                id: addr, tailscaleIP: ip, hostname: cachedName, stableID: cachedStableID,
-                arrivedAt: Date(), isGuest: guest)
-            pendingViewerInfos.withLock { $0[addr] = info }
             logger.log("Viewer pending approval \(addr)")
             notifyPendingViewersChanged()
             if cachedName == nil || cachedStableID == nil {
@@ -2757,6 +2758,15 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             return
         }
 
+        let cachedName = peerNameCache.withLock { $0[ip] }
+        let newInfo = ViewerInfo(
+            id: addr,
+            tailscaleIP: ip,
+            hostname: cachedName,
+            stableID: cachedStableID,
+            connectedAt: Date(),
+            isGuest: guest
+        )
         let (added, viewerCount, audioSSRC) = viewers.withLock { state -> (Bool, Int, UInt32) in
             if var existing = state[addr] {
                 existing.lastSeenNs = now
@@ -2773,7 +2783,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 ssrc: UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max),
                 audioSSRC: newAudioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
-                lastSeenNs: now
+                lastSeenNs: now,
+                info: newInfo
             )
             state[addr] = v
             return (true, state.count, newAudioSSRC)
@@ -2823,8 +2834,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // open-door mode, so admit everyone in the pending queue —
             // except remembered-deny peers, who get denied instead
             // ("Deny & block" outranks the gate).
-            let pendingStableIDs = pendingViewerInfos.withLock { state in
-                state.mapValues { $0.stableID }
+            let pendingStableIDs = pendingViewers.withLock { state in
+                state.mapValues { $0.info.stableID }
             }
             let policies = accessPolicies.withLock { $0 }
             let decision = Self.drainDecision(
@@ -2846,8 +2857,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// issued while someone is waiting acts on them immediately.
     public func setAccessPolicies(_ policies: [String: PeerPolicy]) {
         accessPolicies.withLock { $0 = policies }
-        let resolved = pendingViewerInfos.withLock { state in
-            state.compactMap { (addr, info) in info.stableID.map { (addr, $0) } }
+        let resolved = pendingViewers.withLock { state in
+            state.compactMap { (addr, viewer) in viewer.info.stableID.map { (addr, $0) } }
         }
         for (addr, stableID) in resolved {
             applyRememberedPolicyToPending(addr: addr, stableID: stableID)
@@ -2855,8 +2866,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // Sweep the CONNECTED roster too: a "Deny & Block" applied to an
         // already-connected peer must expel it here, not merely block its
         // future HELLOs (which never come — it's already in the fan-out).
-        let connectedStableIDs = viewerInfos.withLock { state in
-            state.mapValues { $0.stableID }
+        let connectedStableIDs = viewers.withLock { state in
+            state.mapValues { $0.info.stableID }
         }
         for addr in Self.connectedDenyList(viewerStableIDs: connectedStableIDs, policies: policies) {
             logger.log("Expelling connected viewer \(addr): policy changed to deny")
@@ -2893,26 +2904,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    /// Seed, insert, and publish a freshly-added connected viewer's
-    /// `ViewerInfo` from the identity caches, then kick the shared resolver
-    /// if either the hostname or StableNodeID is still uncached. Shared by
-    /// `registerOrRefresh`'s add path and `approveViewer` so the
-    /// build → insert → notify → resolve-if-uncached shape lives once.
+    /// Publish a freshly-added connected viewer, then kick the shared
+    /// resolver if either the hostname or StableNodeID is still uncached.
+    /// The `ViewerInfo` now lives on the `Viewer` entry and is inserted
+    /// atomically with it; this is the shared notify → resolve-if-uncached
+    /// tail used by `registerOrRefresh` and `approveViewer`.
     private func publishAddedViewer(addr: String) {
-        let ip = Self.ipFromAddr(addr)
-        let cachedName = peerNameCache.withLock { $0[ip] }
-        let cachedStableID = peerStableIDCache.withLock { $0[ip] }
-        let info = ViewerInfo(
-            id: addr,
-            tailscaleIP: ip,
-            hostname: cachedName,
-            stableID: cachedStableID,
-            connectedAt: Date(),
-            isGuest: isGuestAddr(addr)
-        )
-        viewerInfos.withLock { $0[addr] = info }
+        let identityMissing = viewers.withLock { state in
+            guard let info = state[addr]?.info else { return false }
+            return info.hostname == nil || info.stableID == nil
+        }
         notifyViewersChanged()
-        if cachedName == nil || cachedStableID == nil {
+        if identityMissing {
             scheduleIdentityResolve()
         }
         // One choke point for "a viewer entered the admitted set" (both the
@@ -2932,7 +2935,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let pending = pendingViewers.withLock { state -> PendingViewer? in
             state.removeValue(forKey: addr)
         }
-        pendingViewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
         notifyPendingViewersChanged()
         guard let pending else { return }
 
@@ -2943,7 +2945,15 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 ssrc: UInt32.random(in: 2...UInt32.max),
                 audioSSRC: pending.audioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
-                lastSeenNs: now
+                lastSeenNs: now,
+                info: ViewerInfo(
+                    id: pending.info.id,
+                    tailscaleIP: pending.info.tailscaleIP,
+                    hostname: pending.info.hostname,
+                    stableID: pending.info.stableID,
+                    connectedAt: Date(),
+                    isGuest: pending.info.isGuest
+                )
             )
             state[addr] = v
             return (true, state.count)
@@ -2971,7 +2981,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             state.removeValue(forKey: addr) != nil
         }
         guard existed else { return }
-        pendingViewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
         notifyPendingViewersChanged()
         logger.log("Viewer denied \(addr)")
         sendDenialDatagrams(to: addr)
@@ -3088,7 +3097,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             expelledAddrs.withLock { _ = $0.removeValue(forKey: addr) }
             return
         }
-        viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
         // Symmetric teardown: drop the per-viewer video send chain (a
         // lingering chain would keep addressing the kicked peer) and sever
         // the TCP annotation back-channel keyed by IP, so a blocked peer
@@ -3152,7 +3160,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             state.removeValue(forKey: addr) != nil
         }
         if removed {
-            pendingViewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
             notifyPendingViewersChanged()
             logger.log("Pending viewer disconnected \(addr)")
         }
@@ -3163,7 +3170,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             state.removeValue(forKey: addr) != nil
         }
         if removed {
-            viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
             // Prune the departed viewer's audio send chain (video chains
             // self-prune on the next broadcast's rebuild).
             audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
@@ -3185,8 +3191,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// is at most a handful of entries.
     private func notifyViewersChanged() {
         guard let cb = onViewersChanged else { return }
-        let snapshot = viewerInfos.withLock { state -> [ViewerInfo] in
-            state.values.sorted { $0.connectedAt < $1.connectedAt }
+        let snapshot = viewers.withLock { state -> [ViewerInfo] in
+            state.values.map(\.info).sorted { $0.connectedAt < $1.connectedAt }
         }
         cb(snapshot)
     }
@@ -3194,8 +3200,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Mirror of `notifyViewersChanged` for the pending-approval set.
     private func notifyPendingViewersChanged() {
         guard let cb = onPendingViewersChanged else { return }
-        let snapshot = pendingViewerInfos.withLock { state -> [PendingViewerInfo] in
-            state.values.sorted { $0.arrivedAt < $1.arrivedAt }
+        let snapshot = pendingViewers.withLock { state -> [PendingViewerInfo] in
+            state.values.map(\.info).sorted { $0.arrivedAt < $1.arrivedAt }
         }
         cb(snapshot)
     }
@@ -3337,19 +3343,25 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // so including them just spins the resolver through its full retry
         // budget per guest join (and in a guest-only share there is no node
         // to ask at all).
-        let pending = pendingViewerInfos.withLock { state -> [String: String] in
+        let pending = pendingViewers.withLock { state -> [String: String] in
             var m: [String: String] = [:]
-            for (addr, info) in state
-            where !info.isGuest && (info.hostname == nil || info.stableID == nil) {
-                m[addr] = info.tailscaleIP
+            for (addr, viewer) in state
+            where
+                !viewer.info.isGuest
+                && (viewer.info.hostname == nil || viewer.info.stableID == nil)
+            {
+                m[addr] = viewer.info.tailscaleIP
             }
             return m
         }
-        let connected = viewerInfos.withLock { state -> [String: String] in
+        let connected = viewers.withLock { state -> [String: String] in
             var m: [String: String] = [:]
-            for (addr, info) in state
-            where !info.isGuest && (info.hostname == nil || info.stableID == nil) {
-                m[addr] = info.tailscaleIP
+            for (addr, viewer) in state
+            where
+                !viewer.info.isGuest
+                && (viewer.info.hostname == nil || viewer.info.stableID == nil)
+            {
+                m[addr] = viewer.info.tailscaleIP
             }
             return m
         }
@@ -3389,18 +3401,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     private func applyResolvedIdentity(addr: String, hostname: String?, stableID: String?) {
         let hostnameUsable = hostname.map { !$0.isEmpty } ?? false
 
-        let pendingPresent = pendingViewerInfos.withLock { state -> (present: Bool, changed: Bool) in
-            guard var info = state[addr] else { return (false, false) }
+        let pendingPresent = pendingViewers.withLock { state -> (present: Bool, changed: Bool) in
+            guard var viewer = state[addr] else { return (false, false) }
             var changed = false
-            if let hostname, hostnameUsable, info.hostname != hostname {
-                info.hostname = hostname
+            if let hostname, hostnameUsable, viewer.info.hostname != hostname {
+                viewer.info.hostname = hostname
                 changed = true
             }
-            if let stableID, info.stableID != stableID {
-                info.stableID = stableID
+            if let stableID, viewer.info.stableID != stableID {
+                viewer.info.stableID = stableID
                 changed = true
             }
-            state[addr] = info
+            state[addr] = viewer
             return (true, changed)
         }
         if pendingPresent.present {
@@ -3409,18 +3421,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             return
         }
 
-        let connectedPresent = viewerInfos.withLock { state -> (present: Bool, changed: Bool) in
-            guard var info = state[addr] else { return (false, false) }
+        let connectedPresent = viewers.withLock { state -> (present: Bool, changed: Bool) in
+            guard var viewer = state[addr] else { return (false, false) }
             var changed = false
-            if let hostname, hostnameUsable, info.hostname != hostname {
-                info.hostname = hostname
+            if let hostname, hostnameUsable, viewer.info.hostname != hostname {
+                viewer.info.hostname = hostname
                 changed = true
             }
-            if let stableID, info.stableID != stableID {
-                info.stableID = stableID
+            if let stableID, viewer.info.stableID != stableID {
+                viewer.info.stableID = stableID
                 changed = true
             }
-            state[addr] = info
+            state[addr] = viewer
             return (true, changed)
         }
         guard connectedPresent.present else { return }
@@ -3448,9 +3460,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 return result
             }
             if !dropped.isEmpty {
-                viewerInfos.withLock { state in
-                    for entry in dropped { state.removeValue(forKey: entry.addr) }
-                }
                 audioSendTails.withLock { state in
                     for entry in dropped { state.removeValue(forKey: entry.addr) }
                 }
@@ -3485,9 +3494,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 return stale
             }
             if !droppedPending.isEmpty {
-                pendingViewerInfos.withLock { state in
-                    for addr in droppedPending { state.removeValue(forKey: addr) }
-                }
                 notifyPendingViewersChanged()
                 for addr in droppedPending {
                     logger.log("Pending viewer timeout \(addr)")
@@ -3728,17 +3734,17 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Adaptive fps: → \(fps) fps")
     }
 
-    /// Update each connected viewer's `health` in the public `viewerInfos`
-    /// snapshot and republish if anything changed. Value-type write only —
-    /// keeps the Sendable `ViewerInfo` seam intact.
+    /// Update each connected viewer's public `info.health` projection and
+    /// republish if anything changed. Value-type write only — keeps the
+    /// Sendable `ViewerInfo` seam intact.
     private func publishViewerHealth(_ healthByAddr: [String: ViewerHealth]) {
-        let changed = viewerInfos.withLock { state -> Bool in
+        let changed = viewers.withLock { state -> Bool in
             var didChange = false
             for (addr, health) in healthByAddr {
-                guard var info = state[addr] else { continue }
-                if info.health != health {
-                    info.health = health
-                    state[addr] = info
+                guard var viewer = state[addr] else { continue }
+                if viewer.info.health != health {
+                    viewer.info.health = health
+                    state[addr] = viewer
                     didChange = true
                 }
             }
@@ -4242,9 +4248,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Server stop: capture done")
 
         viewers.withLock { $0.removeAll() }
-        viewerInfos.withLock { $0.removeAll() }
         pendingViewers.withLock { $0.removeAll() }
-        pendingViewerInfos.withLock { $0.removeAll() }
         peerNameCache.withLock { $0.removeAll() }
         peerStableIDCache.withLock { $0.removeAll() }
         preApprovedIPs.withLock { $0.removeAll() }

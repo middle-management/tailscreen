@@ -9,6 +9,7 @@ import struct TailscreenProtocol.Annotation
 import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.VideoColorInfo
 import enum TailscreenProtocol.ViewerSessionEndReason
+import enum TailscreenProtocol.ViewerSessionPhase
 
 /// Observable UI state for the viewer chrome (placards, and later the stats
 /// overlay). Updated from the transport/sink; the swift-cross-ui view tree
@@ -48,23 +49,14 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// viewing, or ended / failed with the reason).
     @Published public var sessionPhase: SessionPhase = .connecting
 
-    public enum SessionPhase: Equatable, Sendable {
-        case connecting
-        case awaitingApproval
-        case viewing
-        case ended(EndReason)
-        case failed(String)
-    }
+    public typealias SessionPhase = ViewerSessionPhase
 
     /// Why an ended session ended, already split by admission context (the
     /// transport's `deniedOrKicked` + `wasAdmitted` becomes `declined` or
     /// `disconnectedBySharer` at the mapping site).
     ///
     /// The shared `ViewerSessionEndReason` — the same list the chrome's
-    /// `HubSessionEndReason` now names. It used to be a third hand-kept copy
-    /// here, on the argument that this module imports neither the chrome nor
-    /// the viewer tier; putting the list in the dependency-free tier honours
-    /// that and still leaves exactly one set of endings.
+    /// `HubSessionEndReason` names and `ViewerSessionPhase.ended` carries.
     public typealias EndReason = ViewerSessionEndReason
 
     /// True from a session's ended/failed placard — the states that render

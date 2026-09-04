@@ -2,19 +2,14 @@ import SwiftCrossUI
 import TailscreenL10n
 
 import enum TailscreenProtocol.ViewerSessionEndReason
+import enum TailscreenProtocol.ViewerSessionPhase
 
 /// Where a viewing session is, for the placard shown before video arrives.
 ///
-/// A chrome-side enum rather than either app's session state: the placard needs
-/// to know which sentence to show and whether to spin, and giving it a whole
-/// session model would tie a UI package to a transport.
-public enum HubSessionPhase: Equatable, Sendable {
-    case connecting
-    case awaitingApproval
-    case viewing
-    case ended(HubSessionEndReason)
-    case failed(String)
-}
+/// The list lives in the dependency-free protocol tier alongside the end
+/// reasons. The chrome still imports no transport; it and both swift-cross-ui
+/// hosts now name one lifecycle instead of maintaining identical enums.
+public typealias HubSessionPhase = ViewerSessionPhase
 
 /// Why an ended session ended — the presentation-side mirror of the portable
 /// `ViewerCloseReason`, with the deny byte already split by admission context

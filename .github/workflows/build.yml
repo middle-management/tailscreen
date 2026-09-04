@@ -24,7 +24,9 @@ concurrency:
   cancel-in-progress: true
 
 # ---------------------------------------------------------------------------
-# Pinned lint/format tool versions — THE ONE PLACE either is named.
+# Pinned lint/format tool versions live in the MAKEFILE (SWIFTLINT_VERSION /
+# SWIFT_FORMAT_VERSION at the top), and the two jobs below read them from
+# there via `make -s print-swiftlint-version` / `print-swift-format-version`.
 #
 # Both are pinned because both are style checks that grade code we did not
 # change: a SwiftLint release that adds an opt-in-by-default rule, retunes an
@@ -34,19 +36,14 @@ concurrency:
 # refreshed by hand (`make lint-baseline`), so a new rule is a new violation,
 # not a frozen one.
 #
-# Bumping is a one-line change here. When bumping SWIFTLINT_VERSION, run
-# `make lint-baseline` in the same commit — a version bump and a baseline
-# refresh belong together, and the baseline diff is reviewable now that it is
-# pretty-printed.
-#
-# The versions below are the ones Homebrew shipped when the pin landed
-# (2026-08), i.e. this pin froze CI where it already was rather than moving it.
+# Why the Makefile rather than an `env:` block here: developers run `make lint`
+# too, and a pin that binds only in CI is not a pin. It was one for a while,
+# and the failure was the predictable one — a drifted Homebrew SwiftLint
+# reporting violations on a commit CI had passed, because the baseline freezes
+# each violation's reason string and a reworded reason unfreezes it. The
+# Makefile now asserts the version the same way the step below does, off the
+# same number. Bumping is still one line, just in the other file.
 # ---------------------------------------------------------------------------
-env:
-  # https://github.com/realm/SwiftLint/releases
-  SWIFTLINT_VERSION: '0.65.0'
-  # https://github.com/swiftlang/swift-format/tags (603.x tracks Swift 6.3)
-  SWIFT_FORMAT_VERSION: '603.0.0'
 
 jobs:
   build:
@@ -1424,36 +1421,31 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - name: Install SwiftLint (pinned)
-        # PINNED — see the SWIFTLINT_VERSION comment at the top of this file.
+      - name: Install the pinned SwiftLint
+        # The version comes from the Makefile so CI and `make lint` cannot
+        # disagree about what "pinned" means — see the comment at the top.
+        #
         # This deliberately does NOT use Homebrew: homebrew-core carries no
         # versioned `swiftlint@X.Y.Z` formula, and `brew install <homebrew-core
         # commit URL>` is refused outright ("Installation from a GitHub commit
         # URL is unsupported"), so brew can only ever install "latest". Each
         # SwiftLint release publishes its own prebuilt universal macOS binary
         # as portable_swiftlint.zip, which is both reproducible and a
-        # one-line bump.
+        # one-line bump. `make lint-tools` fetches the same artifact.
+        #
+        # No separate verify step follows: `make lint` now asserts the version
+        # itself, off the same number, and that assertion is the one that also
+        # protects developers. Checking it twice here would just be the kind of
+        # duplicated pin this change removed.
         run: |
           set -euo pipefail
-          url="https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
+          version="$(make -s print-swiftlint-version)"
+          url="https://github.com/realm/SwiftLint/releases/download/${version}/portable_swiftlint.zip"
           curl -fsSL "$url" -o "$RUNNER_TEMP/swiftlint.zip"
           unzip -q -o "$RUNNER_TEMP/swiftlint.zip" -d "$RUNNER_TEMP/swiftlint"
           chmod +x "$RUNNER_TEMP/swiftlint/swiftlint"
           echo "$RUNNER_TEMP/swiftlint" >> "$GITHUB_PATH"
-      - name: Verify the pinned SwiftLint is the one on PATH
-        # Assert rather than log: a pin that silently isn't in effect (a stale
-        # brew swiftlint earlier on PATH, a redirected download) is exactly the
-        # failure this whole step exists to prevent, and it would otherwise
-        # only show up as a mystery violation.
-        run: |
-          set -euo pipefail
-          got="$(swiftlint version)"
-          if [ "$got" != "$SWIFTLINT_VERSION" ]; then
-            echo "::error::SwiftLint version mismatch: expected ${SWIFTLINT_VERSION}, got ${got} (from $(command -v swiftlint))"
-            exit 1
-          fi
-          echo "SwiftLint ${got} from $(command -v swiftlint)"
-      - name: Run SwiftLint (baseline-gated)
+      - name: Run SwiftLint (baseline-gated, version asserted by the target)
         run: make lint
 
   format:
@@ -1463,8 +1455,8 @@ jobs:
     # --version` exits 127), so the job provides it.
     #
     # It is BUILT FROM A PINNED TAG rather than `brew install swift-format`,
-    # for the same reason SwiftLint is pinned (see SWIFT_FORMAT_VERSION at the
-    # top of this file) plus one more: swift-format's whole job is to rewrite
+    # for the same reason SwiftLint is pinned (see SWIFT_FORMAT_VERSION in the
+    # Makefile) plus one more: swift-format's whole job is to rewrite
     # source, so a release that changes one line-breaking heuristic reformats
     # files nobody touched. There is no prebuilt release artifact for it — the
     # swiftlang/swift-format releases are source tags — so the pin is a
@@ -1481,13 +1473,18 @@ jobs:
     # baseline now rather than an aspiration.
     #
     # If this starts failing everywhere at once, suspect SWIFT_FORMAT_VERSION
-    # at the top of this file before suspecting the diff: swift-format's whole
-    # job is rewriting source, so a release that retunes one line-breaking
-    # heuristic reformats files nobody touched. That is why it is pinned.
+    # in the Makefile before suspecting the diff: swift-format's whole job is
+    # rewriting source, so a release that retunes one line-breaking heuristic
+    # reformats files nobody touched. That is why it is pinned.
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - name: Read the pinned swift-format version from the Makefile
+        # Into $GITHUB_ENV rather than a job-level `env:` so the number has one
+        # home. The cache key below and the clone both read it back, and later
+        # steps see $GITHUB_ENV writes from earlier ones.
+        run: echo "SWIFT_FORMAT_VERSION=$(make -s print-swift-format-version)" >> "$GITHUB_ENV"
       - name: Restore the pinned swift-format
         id: swift-format-cache
         uses: actions/cache@v6
