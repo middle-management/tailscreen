@@ -46,6 +46,11 @@ Apps/macOS/Resources/*.iconset/
 e2e/.native-run/
 e2e/.native-bin/
 
+# Pinned developer tooling fetched by `make lint-tools` — a downloaded binary
+# with a platform baked into it, same reasoning as the archives below. The
+# VERSION is committed (SWIFTLINT_VERSION in the Makefile); the bytes are not.
+.tools/
+
 # The C archive built from the Go SDK (sdk/go/capi). Like libtailscale.a it is
 # a build product with a compiler and a platform baked into it, so it is built
 # per machine rather than committed — `make libtailscreen`.
