@@ -595,14 +595,18 @@ private struct HubView: View {
 // MARK: - Share section (window-side status + start)
 
 /// The window's share module: a titled card with the primary action at
-/// idle, and a compact status row while a session is up.
+/// idle, and the full sharing view while a session is up.
 ///
-/// The split is by *kind*, not by convenience. Anything that decides something
-/// about a **person** — approving a viewer, granting control, dropping someone
-/// mid-share — renders here as well as in the menubar popover, because a
-/// sharer should never have to find the other surface to answer for somebody.
-/// Continuous *session* controls (mic, audio device, drawing) stay in the
-/// popover, which is the sharer tool.
+/// While sharing, this card and the menubar popover's `SharingCard` show the
+/// same thing, out of the same components: the live preview, the session
+/// controls (Change Source / Draw / Mic / Share System Audio), the viewer
+/// roster and every decision surface hanging off it, the approval toggle, the
+/// Share-via-Link controls, and the audio device pickers. The popover is the
+/// sharer tool you can reach without raising a window; it is not a place
+/// anything lives *instead of* here, because the window is where a sharer who
+/// keeps the app open is already looking. The only deliberate difference is
+/// Stop Sharing, which sits in the status row here (there is room for a
+/// labelled button) rather than at the end of the control row.
 private struct ShareStatusSection: View {
     @EnvironmentObject var appState: AppState
 
@@ -610,53 +614,7 @@ private struct ShareStatusSection: View {
         VStack(alignment: .leading, spacing: 10) {
             switch (appState.sharingState, appState.connectionState) {
             case (.active, _):
-                HStack(alignment: .top, spacing: 10) {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 8, height: 8)
-                        .padding(.top, 5)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L("Sharing your screen"))
-                            .font(.system(.headline, design: .rounded))
-                        Text(viewersText)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Button(L("Stop Sharing")) {
-                        Task { await appState.stopSharing(reason: "MainWindowStopButton") }
-                    }
-                    .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
-                }
-                // Same reasoning as the decision surfaces below: a sharer who
-                // will never see an approval banner needs telling on whichever
-                // surface they are actually looking at.
-                if appState.notificationsDenied {
-                    NotificationsOffNotice()
-                }
-                // The sharer's decision surfaces, shared with the menubar
-                // popover — approvals shouldn't require leaving the window.
-                if !appState.pendingViewers.isEmpty {
-                    PendingViewersList(viewers: appState.pendingViewers)
-                }
-                if let grantee = appState.controlGrantee {
-                    RemoteControlGranteeBanner(grantee: grantee)
-                }
-                if !appState.controlRequests.isEmpty {
-                    ControlRequestsList(requests: appState.controlRequests)
-                }
-                // Who is watching, and the ✕ that drops one of them. The count
-                // above says *how many* and never *which*, which left no place
-                // to hang a per-viewer action — so dropping a viewer was the
-                // only sharer action reachable from nowhere but the popover.
-                if !appState.currentViewers.isEmpty {
-                    Divider()
-                    ViewersList(viewers: appState.currentViewers)
-                }
-                Text(L("Mic, system audio, and drawing controls live in the menu bar icon."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                ActiveShareCard()
             case (.starting, _):
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
@@ -765,11 +723,118 @@ private struct ShareStatusSection: View {
         default: return Color.secondary.opacity(0.06)
         }
     }
+}
+
+/// The window's live-share card: the same sharing view the menubar popover
+/// shows, on the surface the user already has open.
+///
+/// Its own view rather than a `case` body inside `ShareStatusSection` for the
+/// same reason `SharingCard` is one in the popover: it is the longest branch of
+/// that switch by far, and the state it derives (the preview height, the status
+/// line) is meaningless in the other branches.
+private struct ActiveShareCard: View {
+    @EnvironmentObject var appState: AppState
+
+    /// Height of the live preview in the window card. The popover works back
+    /// from its own fixed width; this card is as wide as the user's window, so
+    /// it states a height and lets the thumbnail derive its width from the
+    /// shared display's aspect — a proportioned thumbnail sitting at the
+    /// card's leading edge rather than a full-width box. 120 pt is enough to
+    /// recognise what is on screen while leaving the actions, the roster and
+    /// the link controls above the fold at the default window size.
+    private static let previewHeight: CGFloat = 120
 
     private var viewersText: String {
         let count = appState.currentViewers.count
         if count == 0 { return L("No viewers yet") }
         return count == 1 ? L("1 viewer connected") : L("\(count) viewers connected")
+    }
+
+    /// The shared display's resolution, once the metadata service has reported
+    /// one. Its own line under the viewer count rather than joined to it: the
+    /// status row shares its width with the Stop Sharing button, so the joined
+    /// form wrapped at the default window size — first mid-measurement ("1
+    /// viewer connected · 1920" over "× 1080"), then, once non-breaking spaces
+    /// ruled that out, with the separator left dangling at the end of the
+    /// line. Two short lines cannot do either, at any width.
+    private var resolutionText: String? {
+        guard let res = appState.metadataService.currentMetadata?.screenResolution else {
+            return nil
+        }
+        return "\(res.width) × \(res.height)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 5)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L("Sharing your screen"))
+                        .font(.system(.headline, design: .rounded))
+                    Text(viewersText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if let resolutionText {
+                        // Verbatim: digits and a multiplication sign, with
+                        // nothing to translate.
+                        Text(verbatim: resolutionText)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 8)
+                Button(L("Stop Sharing")) {
+                    Task { await appState.stopSharing(reason: "MainWindowStopButton") }
+                }
+                .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
+            }
+            // Same reasoning as the decision surfaces below: a sharer who
+            // will never see an approval banner needs telling on whichever
+            // surface they are actually looking at.
+            if appState.notificationsDenied {
+                NotificationsOffNotice()
+            }
+            // The sharer's decision surfaces, shared with the menubar
+            // popover — approvals shouldn't require leaving the window.
+            // They stay directly under the status row on both surfaces:
+            // somebody is waiting behind each one.
+            if !appState.pendingViewers.isEmpty {
+                PendingViewersList(viewers: appState.pendingViewers)
+            }
+            if let grantee = appState.controlGrantee {
+                RemoteControlGranteeBanner(grantee: grantee)
+            }
+            if !appState.controlRequests.isEmpty {
+                ControlRequestsList(requests: appState.controlRequests)
+            }
+            // What the viewers are actually seeing, then the controls that
+            // change it. Both are the menubar card's own components — the
+            // preview takes a fixed height here because the window is
+            // resizable and has no popover-width number to derive one from.
+            SharePreviewThumbnail(height: Self.previewHeight)
+            ShareSessionControls(style: .window)
+            // Who is watching, and the ✕ that drops one of them. The count
+            // above says *how many* and never *which*, which left no place
+            // to hang a per-viewer action — so dropping a viewer was the
+            // only sharer action reachable from nowhere but the popover.
+            if !appState.currentViewers.isEmpty {
+                Divider()
+                ViewersList(viewers: appState.currentViewers)
+            }
+            // The approval toggle governs tailnet viewers; a guest-only
+            // share has none (guest approval is mandatory regardless), so
+            // showing it would be a switch wired to nothing.
+            if !appState.isGuestOnlyShare {
+                ApprovalToggle()
+            }
+            if appState.linkSharingEnabled {
+                ShareViaLinkSection()
+            }
+            AudioDevicePickers()
+        }
     }
 }
 

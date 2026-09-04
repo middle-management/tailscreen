@@ -3,6 +3,7 @@ import ApplicationServices
 import Combine
 import CoreAudio
 import CoreGraphics
+import CoreImage
 import CoreVideo
 import Foundation
 import Observation
@@ -3343,6 +3344,14 @@ class AppState: ObservableObject {
     /// same viewer asking for control — the two decision surfaces stacked, so
     /// a single shot carries the roster row, the grant prompt and the
     /// consequence line under it.
+    ///
+    /// The preview thumbnail and the resolution beside the headline are seeded
+    /// too, because the sharing card renders both and an unseeded one
+    /// photographs as an empty black box over a spinner. The thumbnail is the
+    /// same stand-in frame `--ui-preview-video` feeds the renderer, so the two
+    /// shots agree about what this machine is supposed to be sharing. The
+    /// resolution is stated rather than read off `NSScreen` — a screenshot has
+    /// to say the same thing on every runner.
     private func seedUIPreviewSharing() {
         sharingState = .active
         currentViewers = [
@@ -3355,6 +3364,27 @@ class AppState: ObservableObject {
                 id: UUID(), viewerIP: "100.64.0.31",
                 hostname: "tailscreen-studio-imac", arrivedAt: Date())
         ]
+        previewImage = Self.makeUIPreviewThumbnail(width: 1920, height: 1080)
+        // Only `screenResolution` reaches the card; the rest is what a real
+        // `updateMetadata` would have filled in, under a name none of the
+        // seeded peers uses — this machine is the sharer here.
+        metadataService.currentMetadata = TailscreenMetadata(
+            shareName: "robert-mbp's Screen",
+            hostname: "robert-mbp",
+            screenResolution: .init(width: 1920, height: 1080),
+            isSharing: true, timestamp: Date(), videoCodec: .hevc)
+    }
+
+    /// The `--ui-preview-video` stand-in frame as an `NSImage`, for the
+    /// sharing card's thumbnail — which takes the decoded-and-re-encoded
+    /// preview the capture helper sends up, not a pixel buffer. Same
+    /// CoreImage hop the helper itself makes in `buildPreviewJPEG`, minus the
+    /// JPEG round-trip there is no wire here to need.
+    private static func makeUIPreviewThumbnail(width: Int, height: Int) -> NSImage? {
+        guard let buffer = makeUIPreviewFrame(width: width, height: height) else { return nil }
+        let image = CIImage(cvPixelBuffer: buffer)
+        guard let cgImage = CIContext().createCGImage(image, from: image.extent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
     }
 
     /// `--ui-preview-video`: the viewer window itself — chrome, drawing
