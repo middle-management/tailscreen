@@ -438,7 +438,10 @@ private struct SharingCard: View {
 /// height that leaves room for the rest of the card. Deriving the width instead
 /// of filling the available one is what keeps the picture free of letterbox
 /// bars at any height — a full-width box with a shorter fixed height would
-/// pillarbox a 16:9 capture into a black strip.
+/// pillarbox a 16:9 capture into a black strip. Whatever width is left over
+/// goes either side of it: the box centers itself in the space the card gives
+/// it, which is a no-op in the popover and what keeps the window's shorter
+/// preview from reading as lopsided.
 struct SharePreviewThumbnail: View {
     @EnvironmentObject var appState: AppState
     let height: CGFloat
@@ -472,6 +475,12 @@ struct SharePreviewThumbnail: View {
         }
         .frame(width: height * max(0.1, Self.screenAspect(appState)), height: height)
         .clipShape(RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous))
+        // Centered in whatever width the card gives it. In the popover the box
+        // already IS the content width, so this is a no-op there; in the
+        // window, where a shorter height makes the box narrower than the card,
+        // it is the difference between a framed preview and one shoved against
+        // the leading edge with a strip of card beside it.
+        .frame(maxWidth: .infinity)
         // One element rather than a black rectangle plus a spinner plus a
         // label: the placard's own text is what the label says while the
         // first frame is still coming.
