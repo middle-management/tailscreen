@@ -233,13 +233,31 @@ final class AccountProfileStoreTests: XCTestCase {
             .path
         XCTAssertEqual(layout.seedStatePath, preRegistry)
 
-        // And the invariant that survives any base or separator: the seed is
-        // the root's `tailscale` child.
-        let windowsish = AccountProfileLayout.windowsLocalAppData(
-            environment: ["LOCALAPPDATA": #"C:\Users\robert\AppData\Local"#])
-        let seed = try XCTUnwrap(windowsish.seedStatePath)
-        XCTAssertTrue(windowsish.root.hasSuffix("Tailscreen"))
-        XCTAssertTrue(seed.hasPrefix(windowsish.root))
+        // And the invariant behind those two exact strings: the seed is the
+        // root's `tailscale` child, whatever the base.
+        //
+        // Checked with a POSIX base for the same reason the first assertion
+        // is, and the point is sharp enough to be worth stating: a literal
+        // `C:\Users\…` base CANNOT be used here. Foundation's `URL` disagrees
+        // with itself across platforms about what such a string even is.
+        // Windows parses the drive letter; Linux treats the whole thing as one
+        // relative filename and resolves it against the CWD (harmless, still
+        // ends in `Tailscreen`); Darwin does neither and yields an EMPTY path
+        // from `appendingPathComponent(_:).path`. This test asserted against
+        // that literal and so failed on macOS only — taking `make
+        // test-protocol` down with it, which is the target CLAUDE.md points at
+        // for smoke-testing this package and which developers run on a Mac.
+        //
+        // Nothing about the SHIPPING behaviour is at stake: `.windowsLocalAppData`
+        // is called from exactly two places, the Windows app and
+        // `WindowsShareSession`, both Windows-only. The empty path is a
+        // Foundation platform difference the product never reaches, and
+        // pinning it here would be pinning Foundation, not us.
+        let other = AccountProfileLayout.windowsLocalAppData(
+            environment: ["LOCALAPPDATA": "/some/other/base"])
+        let seed = try XCTUnwrap(other.seedStatePath)
+        XCTAssertTrue(other.root.hasSuffix("Tailscreen"))
+        XCTAssertTrue(seed.hasPrefix(other.root))
         XCTAssertTrue(seed.hasSuffix("tailscale"))
 
         let fallback = AccountProfileLayout.windowsLocalAppData(
