@@ -34,6 +34,8 @@ import enum TailscreenProtocol.TailscreenInstance
 import struct TailscreenProtocol.TailscreenMetadata
 import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerSessionEndReason
+import struct TailscreenProtocol.ViewerSessionLifecycle
+import struct TailscreenProtocol.ViewerSessionTarget
 import class TailscreenSharer.SharerAskToShareCoordinator
 // Targeted, like its neighbours: one enum, to word a viewer's link state.
 import enum TailscreenSharer.ViewerHealth
