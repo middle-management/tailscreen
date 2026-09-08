@@ -3334,11 +3334,28 @@ class AppState: ObservableObject {
     static let isUIPreviewSharing = CommandLine.arguments.contains("--ui-preview-sharing")
     static let isUIPreviewVideo = CommandLine.arguments.contains("--ui-preview-video")
 
+    /// The one preview state that is *not* signed in: the welcome pane only
+    /// exists before sign-in, so it seeds no profile and no peers. It still
+    /// rides `--ui-preview` alongside, for what that flag suppresses rather
+    /// than for what it seeds — the session restore, which would bring a
+    /// real node up and sign the pane away mid-screenshot. macOS-only for
+    /// now; mirroring it in the GTK and WinUI apps (whose hubs have their
+    /// own signed-out state) is a follow-up.
+    static let isUIPreviewWelcome = CommandLine.arguments.contains("--ui-preview-welcome")
+
     /// The seeded preview state: tagged and untagged, online and offline,
     /// one peer sharing and one relayed — so a single screenshot exercises
     /// the sharing chip, the route line, the latency figure, and every axis
     /// of the filter menu. Verbatim data, deliberately not localized.
     private func seedUIPreview() {
+        if Self.isUIPreviewWelcome {
+            // Seeded on purpose even though it defaults on: the pane's
+            // Share-via-Link button is behind this gate, so a runner whose
+            // defaults say otherwise would shoot a pane missing a control.
+            linkSharingEnabled = true
+            scheduleUIPreviewWindowCapture()
+            return
+        }
         tailscaleAuth.userProfile = TailscaleUserProfile(
             displayName: "Robert", loginName: "robert@example.com",
             profilePicURL: nil, tailnetName: "example.com")
@@ -3375,11 +3392,17 @@ class AppState: ObservableObject {
         if Self.isUIPreviewRequest { seedUIPreviewShareRequest() }
         if Self.isUIPreviewSharing { seedUIPreviewSharing() }
 
-        // The viewer window and the main window both belong to SwiftUI's
-        // scene machinery, which has built neither at init time — the video
-        // seed needs a window to put a frame into, and the window-id file
-        // needs one to name. One settle hop covers both, and CI's own dwell
-        // before the shutter dwarfs it.
+        scheduleUIPreviewWindowCapture()
+    }
+
+    /// The part of preview bring-up that has to wait for SwiftUI: the viewer
+    /// window and the main window both belong to its scene machinery, which
+    /// has built neither at init time — the video seed needs a window to put
+    /// a frame into, and the window-id file needs one to name. One settle
+    /// hop covers both, and CI's own dwell before the shutter dwarfs it.
+    /// Shared by every preview state, the signed-out one included: the
+    /// screenshot job blocks on that id file whatever is on screen.
+    private func scheduleUIPreviewWindowCapture() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self = self else { return }

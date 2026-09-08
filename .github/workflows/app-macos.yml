@@ -387,7 +387,10 @@ jobs:
 
       # Each `--ui-preview*` combination renders the hub (or the viewer)
       # seeded with the same deterministic fake tailnet the GTK and Windows
-      # apps show — signed in, fake peers, no tsnet node, no network. Launched
+      # apps show — signed in, fake peers, no tsnet node, no network. The one
+      # exception is `--ui-preview-welcome`, which seeds no tailnet at all
+      # because the pane it shoots is the signed-out one; it still passes the
+      # base flag, for the session restore that flag suppresses. Launched
       # via `open` so LaunchServices gives it a proper GUI session; that is
       # also why the window-id path travels as an `--args` flag rather than an
       # env var, which `open` would drop.
@@ -481,6 +484,7 @@ jobs:
             [ -s "screenshots/$out" ] || { echo "$out is empty" >&2; exit 1; }
           }
 
+          shoot macos-welcome.png --ui-preview --ui-preview-welcome
           shoot macos-hub.png --ui-preview
           shoot macos-share-request.png --ui-preview --ui-preview-request
           shoot macos-sharing.png --ui-preview --ui-preview-sharing
