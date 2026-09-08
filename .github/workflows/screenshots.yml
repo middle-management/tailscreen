@@ -5,7 +5,9 @@ name: Screenshots
 # tailnet (signed in, fake peers, no tsnet node, no network) — so the shots
 # are consistent across platforms and stable across runs. Linux and macOS
 # additionally carry the per-state flags (`--ui-preview-request`, `-sharing`,
-# `-video`) and shoot one PNG each; Linux runs under Xvfb, while Windows and
+# `-video`) and shoot one PNG each, and all three carry `--ui-preview-welcome`
+# — the one state that seeds no tailnet, because what it shoots is the app
+# before anyone has signed in. Linux runs under Xvfb, while Windows and
 # macOS run on the runner's real desktop. Each platform's capture step lives
 # in its shared app-*.yml behind a `screenshots` input, so this file is only
 # the fan-out.

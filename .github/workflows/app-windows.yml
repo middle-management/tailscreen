@@ -1078,7 +1078,9 @@ jobs:
 
       # `--ui-preview` renders the hub seeded with the same deterministic
       # fake tailnet the GTK and macOS apps show — signed in, fake peers, no
-      # tsnet node, no network. GitHub's hosted Windows runners have an
+      # tsnet node, no network. `--ui-preview-welcome` is the exception on all
+      # three: it seeds no tailnet, because the state it shoots is the hub
+      # before anyone has signed in. GitHub's hosted Windows runners have an
       # interactive desktop session, so CopyFromScreen sees real pixels; the
       # exe runs FROM dist/ so it loads exactly the DLL set a user would get.
       # The HasExited guard matters for the usual reason: a dead app would
@@ -1090,21 +1092,29 @@ jobs:
         run: |
           Add-Type -AssemblyName System.Windows.Forms
           Add-Type -AssemblyName System.Drawing
-          $p = Start-Process -FilePath .\tailscreen.exe -ArgumentList '--ui-preview' -PassThru
-          Start-Sleep -Seconds 25
-          if ($p.HasExited) {
-            Write-Error "app exited ($($p.ExitCode)) before the screenshot"
-            exit 1
-          }
           New-Item -ItemType Directory -Force ..\screenshots | Out-Null
-          $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
-          Write-Host "virtual screen: $($vs.Width)x$($vs.Height) at ($($vs.X),$($vs.Y))"
-          $bmp = New-Object System.Drawing.Bitmap($vs.Width, $vs.Height)
-          $g = [System.Drawing.Graphics]::FromImage($bmp)
-          $g.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
-          $bmp.Save("..\screenshots\windows-hub.png", [System.Drawing.Imaging.ImageFormat]::Png)
-          $g.Dispose(); $bmp.Dispose()
-          Stop-Process -Id $p.Id -Force
+          function Shoot([string]$out, [string[]]$appArgs) {
+            $p = Start-Process -FilePath .\tailscreen.exe -ArgumentList $appArgs -PassThru
+            Start-Sleep -Seconds 25
+            if ($p.HasExited) {
+              Write-Error "app exited ($($p.ExitCode)) before the $out screenshot"
+              exit 1
+            }
+            $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            Write-Host "virtual screen: $($vs.Width)x$($vs.Height) at ($($vs.X),$($vs.Y))"
+            $bmp = New-Object System.Drawing.Bitmap($vs.Width, $vs.Height)
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
+            $bmp.Save("..\screenshots\$out", [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+            Stop-Process -Id $p.Id -Force
+            # One window per shot: the next launch must not photograph the
+            # last one still on screen.
+            Start-Sleep -Seconds 3
+          }
+          Shoot 'windows-hub.png' @('--ui-preview')
+          Shoot 'windows-welcome.png' @('--ui-preview', '--ui-preview-welcome')
+          Get-ChildItem ..\screenshots
 
       - name: Upload screenshots
         if: inputs.screenshots

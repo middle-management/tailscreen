@@ -3338,9 +3338,10 @@ class AppState: ObservableObject {
     /// exists before sign-in, so it seeds no profile and no peers. It still
     /// rides `--ui-preview` alongside, for what that flag suppresses rather
     /// than for what it seeds — the session restore, which would bring a
-    /// real node up and sign the pane away mid-screenshot. macOS-only for
-    /// now; mirroring it in the GTK and WinUI apps (whose hubs have their
-    /// own signed-out state) is a follow-up.
+    /// real node up and sign the pane away mid-screenshot. The GTK and WinUI
+    /// apps spell it the same, over their own signed-out state — the hub
+    /// before login, login card and join card — so one screenshot job drives
+    /// all three with one vocabulary.
     static let isUIPreviewWelcome = CommandLine.arguments.contains("--ui-preview-welcome")
 
     /// The seeded preview state: tagged and untagged, online and offline,
