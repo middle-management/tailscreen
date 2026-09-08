@@ -71,7 +71,7 @@ private struct JoinShareSheet: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField(L("tailscreen: link or token"), text: $appState.joinSheetInput)
+            TextField(L("tailscreen: link or token"), text: $appState.joinInput)
                 .textFieldStyle(.roundedBorder)
                 .font(.body.monospaced())
                 .onSubmit { join() }
@@ -99,7 +99,7 @@ private struct JoinShareSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(
-                    appState.joinSheetInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    appState.joinInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
@@ -107,7 +107,7 @@ private struct JoinShareSheet: View {
     }
 
     private func join() {
-        inputRejected = !appState.joinShare(input: appState.joinSheetInput)
+        inputRejected = !appState.joinShare(input: appState.joinInput)
     }
 }
 
@@ -466,6 +466,15 @@ private struct ProfileSwitchingPane: View {
 // MARK: - Welcome / sign-in
 
 /// Window-sized welcome pane shown until Tailscale sign-in completes.
+///
+/// One card per way in, because there are two and they are not variants of
+/// each other: the tailnet (sign in once, then every Tailscreen shows up by
+/// name) and a share link (nothing to sign into, works in both directions,
+/// guest-approval mandatory). The pane used to be a single sign-in call to
+/// action with the two link paths hanging under it as text links — under a
+/// subtitle that described only the tailnet, so the sentence had already
+/// excluded the thing the links below it offered. A link-only share is a
+/// whole mode of the app, not a footnote to signing in.
 private struct WelcomePane: View {
     @EnvironmentObject var appState: AppState
 
@@ -486,31 +495,96 @@ private struct WelcomePane: View {
     }()
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Spacer(minLength: 0)
 
-            Group {
-                if let brand = Self.brandImage {
-                    Image(nsImage: brand)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Image(systemName: "tv")
-                        .font(.system(size: 56, weight: .light))
-                        .foregroundStyle(.secondary)
+            VStack(spacing: 7) {
+                Group {
+                    if let brand = Self.brandImage {
+                        Image(nsImage: brand)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "tv")
+                            .font(.system(size: 40, weight: .light))
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                // Smaller than the 80 pt it was as the pane's only
+                // ornament: it now shares the column with two cards.
+                .frame(width: 52, height: 52)
+
+                Text(L("Welcome to Tailscreen"))
+                    .font(.system(.title2, design: .rounded, weight: .semibold))
+
+                Text(L("Share a screen with your tailnet, or with anyone over a link."))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(width: 80, height: 80)
 
-            Text(L("Welcome to Tailscreen"))
-                .font(.system(.title2, design: .rounded, weight: .semibold))
+            TailnetSignInCard()
+            ShareLinkCard()
 
-            Text(L("Sign in with Tailscale to share and view screens with your peers."))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: 340)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(20)
+    }
+}
+
+/// The welcome pane's card shell — the same rounded, tinted, hairlined box
+/// `ShareStatusSection` uses in the hub, so the signed-out pane and the
+/// signed-in one are visibly the same app.
+private struct WelcomeCard<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(.separator.opacity(0.4), lineWidth: 1)
+        )
+    }
+}
+
+/// Lane one: sign in and the tailnet's screens list itself.
+private struct TailnetSignInCard: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        WelcomeCard {
+            Label {
+                Text(L("Your tailnet"))
+                    .font(.system(.headline, design: .rounded))
+            } icon: {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            Text(
+                L(
+                    "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
+                )
+            )
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
 
             Group {
                 if appState.tailscaleAuth.isLoading {
@@ -533,39 +607,106 @@ private struct WelcomePane: View {
                     .accessibilityHint(L("Opens Tailscale sign-in in your browser"))
                 }
             }
-            .padding(.top, 4)
+            .padding(.top, 2)
+        }
+    }
+}
 
-            // The no-account paths: both halves of a share can run by link
-            // alone, so the empty state offers each. Joining needs a token
-            // from someone; sharing mints one — the picker opens, and the
-            // share comes up guest-only with its link in the menubar card.
-            Button(L("Join a Share…")) {
-                appState.joinSheetPresented = true
-            }
-            .buttonStyle(.link)
-            .font(.callout)
-            .accessibilityHint(L("Joins a shared screen with a link or token, without signing in"))
-            if appState.linkSharingEnabled, appState.sharingState == .idle {
-                Button(L("Share your screen via Link…")) {
-                    Task { await appState.presentNativePicker() }
+/// Lane two: the no-account paths, both directions. Joining is the inline
+/// field (the sheet's one control, inlined — joining always starts with a
+/// pasted token, and the sheet hop bought nothing at the point where the
+/// window is otherwise empty); sharing mints a token instead, so it stays a
+/// button. Both share `AppState.joinInput` with `JoinShareSheet`, which is
+/// still the target of the header's link button and of `tailscreen:` URL
+/// opens.
+private struct ShareLinkCard: View {
+    @EnvironmentObject var appState: AppState
+    @State private var inputRejected = false
+
+    private var trimmedInput: String {
+        appState.joinInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        WelcomeCard {
+            HStack(spacing: 8) {
+                Label {
+                    Text(L("A share link"))
+                        .font(.system(.headline, design: .rounded))
+                } icon: {
+                    Image(systemName: "link")
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.link)
-                .font(.callout)
+                Spacer(minLength: 8)
+                Text(L("No account needed"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+            }
+
+            HStack(spacing: 8) {
+                TextField(L("tailscreen: link or token"), text: $appState.joinInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout.monospaced())
+                    .onSubmit { join() }
+                    .onChange(of: appState.joinInput) { _, _ in
+                        // Clear the rejection the moment they edit — an
+                        // error under a field they are already fixing is
+                        // noise.
+                        inputRejected = false
+                    }
+                Button(L("Join")) {
+                    join()
+                }
+                .disabled(trimmedInput.isEmpty)
+                .accessibilityHint(
+                    L("Joins a shared screen with a link or token, without signing in"))
+            }
+
+            if inputRejected {
+                Text(L("That doesn't look like a share link or token."))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            switch AppState.welcomeLinkShareAction(
+                linkSharingEnabled: appState.linkSharingEnabled,
+                sharingState: appState.sharingState,
+                isGuestOnlyShare: appState.isGuestOnlyShare
+            ) {
+            case .offer:
+                Button {
+                    Task { await appState.presentNativePicker() }
+                } label: {
+                    Text(L("Share your screen via Link…"))
+                        .frame(maxWidth: .infinity)
+                }
                 .accessibilityHint(
                     L("Shares your screen over a link, without signing in — you approve each guest"))
-            } else if appState.isGuestOnlyShare {
+            case .sharingViaLink:
                 Text(L("You're sharing via link — the link and your guests are in the menu bar."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+            case .unavailable:
+                EmptyView()
             }
 
-            Spacer(minLength: 0)
+            Text(L("Guests join over an encrypted tunnel, and the sharer approves every one."))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: 300)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
+    }
+
+    private func join() {
+        guard !trimmedInput.isEmpty else { return }
+        inputRejected = !appState.joinShare(input: appState.joinInput)
     }
 }
 

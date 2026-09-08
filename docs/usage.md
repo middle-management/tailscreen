@@ -223,7 +223,8 @@ also holds a relay override for
 [self-hosting]({{ site.baseurl }}{% link self-hosted.md %})).
 
 **Sharing without signing in** works too: the macOS welcome screen offers
-**Share your screen via Link…** alongside the sign-in button. The picker
+**Share your screen via Link…** in its share-link card, beside the card
+that signs you into a tailnet. The picker
 opens, the share starts as a *link-only* share — no Tailscale account,
 no tailnet, the link is the only way in — and the sharing card shows the
 link with the same Copy / New Link / guest controls. Approval is still
@@ -237,9 +238,10 @@ registered (macOS; Linux via an installed `.desktop` entry — Flatpak does
 this at install, an AppImage after desktop integration; Windows via the
 MSIX install), and pasting always works:
 
-- **macOS** — click the link, or **Join a Share…** (the link icon in the
-  hub header, also offered on the sign-in screen) and paste the link or
-  token.
+- **macOS** — click the link, or paste the link or token into a field:
+  the sign-in screen has one in its share-link card, and **Join a Share…**
+  (the link icon in the hub header) opens the same field as a sheet from
+  anywhere.
 - **Linux and Windows** — click the link, or **Join a Share…** in the hub
   (offered before sign-in too — joining needs no account). The Linux app
   also takes `tailscreen --join <token-or-link>` — or the link as a bare
