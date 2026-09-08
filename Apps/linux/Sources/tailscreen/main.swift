@@ -1102,21 +1102,50 @@ struct ViewerApp: App {
         return false
     }
 
-    /// The share card as the welcome pane shows it: only once a share is
-    /// live (or has failed), because signed out this pane is the only
-    /// surface its link, roster and approvals could be on. While idle it
-    /// stays away — the share-link card's own button is what starts one, and
-    /// a second Start beside it would be two doors into one room.
-    private var welcomeShareCard: ShareCard? {
-        guard sharer.phase != .idle else { return nil }
-        return shareCard
+    /// A share running with nobody signed in — the state that replaces the
+    /// welcome pane rather than adding to it.
+    ///
+    /// `.failed` is deliberately NOT here: a failed start has no share to
+    /// show, its card would carry a Start button beside the pane's own, and
+    /// the way back to signing in would be gone. The reason goes to the
+    /// pane's share-link card instead (`welcomeShareNote`), under the button
+    /// that would try again.
+    private var showingSignedOutShare: Bool {
+        guard gPickerMode, isSignedOut else { return false }
+        return sharer.phase == .starting || sharer.phase == .sharing
     }
 
     /// Whether the hub column renders the welcome pane rather than the picker.
     /// Hoisted out of the view body for the usual reason: a pattern match
     /// inside a multi-condition `if` in this result builder is one of the
     /// shapes that fails to typecheck with a diagnostic pointing nowhere.
-    private var showingWelcome: Bool { gPickerMode && isSignedOut }
+    private var showingWelcome: Bool { gPickerMode && isSignedOut && !showingSignedOutShare }
+
+    /// The live share, alone, in the hub's own column — no sign-in card, no
+    /// join card. Signed out this is the only surface the share's link,
+    /// roster and approvals could be on, and it should read as the whole
+    /// window rather than as a postscript to an empty state.
+    @ViewBuilder private var signedOutSharingColumn: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                if let shareCard {
+                    shareCard
+                }
+            }
+            .frame(maxWidth: HubStyle.contentMaxWidth)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// A link-only start that failed, worded for the card that offered it.
+    /// Nil in every other state — including while one is running, which the
+    /// sharing view says far better than a sentence could.
+    private var welcomeShareNote: String? {
+        guard case .failed = sharer.phase else { return nil }
+        return sharer.statusLine
+    }
 
     /// The hub's sharing card. Only offered in picker mode: the direct-host
     /// path (`tailscreen <host>`) is a one-shot viewer invocation,
@@ -1201,15 +1230,23 @@ struct ViewerApp: App {
                         message: L("\($0.fromHostname) wants you to share your screen"),
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
                 },
-            settings: [
-                HubToggle(
-                    label: L("Require approval for new viewers"),
-                    caption: sharer.requireApproval
-                        ? nil
-                        : L("Anyone on your tailnet who can reach this machine can watch."),
-                    isOn: sharer.requireApproval,
-                    set: { gSharer.setRequireApproval($0) })
-            ],
+            // The approval gate governs TAILNET viewers, and a link-only
+            // share has none: every viewer is a guest, and a guest is parked
+            // for explicit approval whatever this says (`admissionDecision`).
+            // Showing it would be a switch wired to nothing, under a caption
+            // describing a tailnet this share never bound a listener on. The
+            // macOS card withholds it in the same state for the same reason.
+            settings: sharer.isLinkOnlyShare
+                ? []
+                : [
+                    HubToggle(
+                        label: L("Require approval for new viewers"),
+                        caption: sharer.requireApproval
+                            ? nil
+                            : L("Anyone on your tailnet who can reach this machine can watch."),
+                        isOn: sharer.requireApproval,
+                        set: { gSharer.setRequireApproval($0) })
+                ],
             quality: HubQuality(
                 settings: sharer.quality,
                 isSharing: sharer.phase == .sharing,
@@ -1331,7 +1368,10 @@ struct ViewerApp: App {
             // to flip.
             isOnlyWayIn: sharer.isLinkOnlyShare,
             onToggle: toggle,
-            onNewLink: newLink)
+            onNewLink: newLink,
+            // GDK's clipboard — so the link is a click rather than a careful
+            // drag across three wrapped lines of token.
+            onCopy: { copyToClipboard($0) })
     }
 
     /// Route a card prompt back to whichever feature raised it.
@@ -1546,7 +1586,14 @@ struct ViewerApp: App {
                         onJoin: welcomeJoin,
                         shareAction: welcomeShareAction,
                         onShare: { gSharer.startSharing() },
-                        shareCard: welcomeShareCard)
+                        shareNote: welcomeShareNote)
+                } else if showingSignedOutShare {
+                    // Signed out WITH a share running: the sharing view owns
+                    // the window, and the welcome pane is gone until it
+                    // stops. Two things that each want the whole column would
+                    // otherwise stack, and "get started" over a share already
+                    // going out is not a screen anybody should be shown.
+                    signedOutSharingColumn
                 } else if gPickerMode {
                     PickerContent(
                         statusLine: picker.statusLine,

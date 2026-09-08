@@ -198,10 +198,9 @@ Link** is the way in for someone who isn't — no Tailscale account, no
 install ceremony beyond Tailscreen itself.
 
 While sharing, flip **Share via Link** in the sharing card (either copy of
-it on macOS; the hub's share card on Linux and Windows, where the link
-appears as selectable text to copy). Tailscreen mints a one-off link (a
-`tailscreen:` URL wrapping a `tc…` token). On macOS it comes with four
-buttons:
+it on macOS; the hub's share card on Linux and Windows). Tailscreen mints a
+one-off link (a `tailscreen:` URL wrapping a `tc…` token), and all three
+apps put the same four buttons under it:
 
 - **Copy Link** — the `tailscreen:` URL. On a machine with Tailscreen
   installed, opening it lands in the join screen with the token filled in.
@@ -241,9 +240,8 @@ directions — and the second one's **Share your screen via Link…** is the
 one that needs no account. The picker opens, the share starts as a
 *link-only* share — no Tailscale account, no tailnet, the link is the only
 way in — and the sharing card shows the link with the same New Link and
-guest controls (Copy buttons on macOS; selectable link text on Linux and
-Windows). On macOS that card lives in the menu bar; on Linux and Windows
-it appears in the welcome screen itself, under the two cards. Approval is
+guest controls. On macOS that card lives in the menu bar; on Linux and
+Windows the sharing view takes over the window until you stop. Approval is
 still mandatory for every guest, and Stop Sharing is the way to end it (a
 link-only share has no link-off toggle: turning off its only transport
 would leave a share running that nobody can reach).
@@ -264,8 +262,8 @@ MSIX install), and pasting always works:
   the link as a bare argument — on the command line.
 - **A browser, nothing installed** — open the **web link**
   (`https://tailscreen.dev/view/#tc…`). On macOS the sharing card's
-  **Copy Web Link** puts it on the clipboard; on Linux and Windows it is the
-  second line under the link toggle. Opened *without* a token, the page
+  **Copy Web Link** puts it on the clipboard, and Linux and Windows have the
+  same button. Opened *without* a token, the page
   shows the same join field as the apps — paste the web link, the
   `tailscreen:` link or the bare token into it. Chrome, Edge and Firefox
   decode the share; Safari has not been checked yet. The page waits at the same

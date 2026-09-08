@@ -124,6 +124,10 @@ let package = Package(
                 .product(name: "TailscreenSharerLinux", package: "TailscreenLinuxBackends"),
                 "TailscreenViewerGtk",
                 "CGtkOverlay",
+                // GDK's clipboard, for the share card's Copy buttons — two
+                // calls, and swift-cross-ui wraps widgets rather than the
+                // display's clipboard. See Clipboard.swift.
+                "CGtk4Sys",
                 // X11 root capture, for the overlay self-test: it draws a known
                 // pattern and then reads the screen back to prove the pixels
                 // actually landed. Already in the graph via TailscreenSharerLinux;

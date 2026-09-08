@@ -222,11 +222,34 @@ struct TailscreenWindowsApp: App {
             } else {
                 watching(host: host)
             }
-        } else if state.phase == .idle || state.phase == .failed {
+        } else if state.isSignedOut && state.sharing.isSharing {
+            // Signed out WITH a share running: the sharing view owns the
+            // window. Two things that each want the whole column would
+            // otherwise stack, and "get started" over a share already going
+            // out is not a screen anybody should be shown.
+            signedOutSharing
+        } else if state.isSignedOut {
             signIn
         } else {
             hub
         }
+    }
+
+    /// The live share, alone, in the hub's own column. Signed out this is the
+    /// only surface its link, roster and approvals could be on, so it reads as
+    /// the whole window rather than as a postscript to an empty state.
+    @ViewBuilder private var signedOutSharing: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                if let card = state.shareCard {
+                    card
+                }
+            }
+            .frame(maxWidth: HubStyle.contentMaxWidth)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The shared session placard, with every action routed at the model. The
@@ -352,9 +375,10 @@ struct TailscreenWindowsApp: App {
             onJoin: { token in model.joinShare(token: token) },
             shareAction: state.welcomeShareAction,
             onShare: { model.startSharing() },
-            // While a link-only share runs, this pane is the only surface
-            // its link, roster and approvals could be on.
-            shareCard: state.sharing.isSharing ? state.shareCard : nil)
+            // A start that failed, worded under the button that retries it —
+            // kept apart from `detail` (the tailnet card's) so a share
+            // failure is not reported on the sign-in card.
+            shareNote: state.shareDetail)
     }
 
     /// The share-by-token way in. A computed property with an explicit type
@@ -454,6 +478,11 @@ final class AppUIState: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var status = L("Not signed in")
     @Published var detail = ""
+    /// A SHARE failure, kept apart from `detail` so the welcome pane can put
+    /// it on the card that offered the share rather than on the sign-in card
+    /// beside it. Cleared when a fresh attempt starts, so a retry never
+    /// carries the last one's reason.
+    @Published var shareDetail: String?
     @Published var loginURL: String?
     /// The RAW discovery result. Stays unfiltered on purpose: the filter menu
     /// enumerates its tags, `connect(toID:)` resolves against it, and a filter
@@ -961,19 +990,27 @@ final class AppUIState: ObservableObject {
                         message: L("\($0.fromHostname) wants you to share your screen"),
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
                 },
-            settings: [
-                HubToggle(
-                    label: L("Require approval for new viewers"),
-                    // Said only while it is off, and said as a consequence
-                    // rather than a warning glyph: this is the one setting on
-                    // the card whose wrong value is invisible in normal use —
-                    // the share looks identical, it just lets strangers in.
-                    caption: sharing.requireApproval
-                        ? nil
-                        : L("Anyone on your tailnet who can reach this machine can watch."),
-                    isOn: sharing.requireApproval,
-                    set: { [weak self] in self?.setRequireApproval($0) })
-            ],
+            // The approval gate governs TAILNET viewers, and a link-only
+            // share has none: every viewer is a guest, and a guest is parked
+            // for explicit approval whatever this says (`admissionDecision`).
+            // Showing it would be a switch wired to nothing, under a caption
+            // describing a tailnet this share never bound a listener on. The
+            // macOS card withholds it in the same state for the same reason.
+            settings: sharing.linkIsOnlyWayIn
+                ? []
+                : [
+                    HubToggle(
+                        label: L("Require approval for new viewers"),
+                        // Said only while it is off, and said as a consequence
+                        // rather than a warning glyph: this is the one setting on
+                        // the card whose wrong value is invisible in normal use —
+                        // the share looks identical, it just lets strangers in.
+                        caption: sharing.requireApproval
+                            ? nil
+                            : L("Anyone on your tailnet who can reach this machine can watch."),
+                        isOn: sharing.requireApproval,
+                        set: { [weak self] in self?.setRequireApproval($0) })
+                ],
             quality: HubQuality(
                 settings: quality,
                 isSharing: sharing.isSharing,
@@ -1092,7 +1129,10 @@ final class AppUIState: ObservableObject {
             // to flip.
             isOnlyWayIn: sharing.linkIsOnlyWayIn,
             onToggle: toggle,
-            onNewLink: newLink)
+            onNewLink: newLink,
+            // The WinRT clipboard — so the link is a click rather than a
+            // careful drag across three wrapped lines of token.
+            onCopy: { copyToClipboard($0) })
     }
 
     /// Take a share-status snapshot, and reconcile the notifications with it.
@@ -1812,6 +1852,7 @@ final class AppUIState: ObservableObject {
         let linkOnly = isSignedOut
         guard phase == .ready || linkOnly, !sharing.isSharing else { return }
         detail = ""
+        shareDetail = nil
 
         let item: WGC.CaptureItem?
         do {
@@ -1849,7 +1890,14 @@ final class AppUIState: ObservableObject {
                     linkOnly: linkOnly
                 )
             } catch {
-                self.detail = L("Could not start sharing: \(error)")
+                // Signed out this is the welcome pane's share-link card note;
+                // signed in it is the window footer, as before.
+                let reason = L("Could not start sharing: \(error)")
+                if linkOnly {
+                    self.shareDetail = reason
+                } else {
+                    self.detail = reason
+                }
             }
         }
     }

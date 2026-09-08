@@ -16,11 +16,12 @@ import TailscreenProtocol
 /// read as one product.
 ///
 /// One deliberate difference from macOS, forced by these hosts having no
-/// second surface: where the mac pane points a running link-only share at the
-/// menu bar, here the live `shareCard` renders **under** the two cards — its
-/// link, roster and approvals have nowhere else to be. `shareCard` is
-/// therefore nil while idle; the share-link card's own button is what starts
-/// one.
+/// second surface: a running link-only share does not appear here at all.
+/// The host swaps this pane for the sharing view outright — two things that
+/// each want the whole column, stacked, is a screen that says "get started"
+/// above a share already running. The share-link card's own button is what
+/// starts one, and `shareNote` is what a *failed* start says, next to the
+/// button that retries it.
 public struct HubSignInPane: View {
     let title: String
     let subtitle: String
@@ -40,9 +41,10 @@ public struct HubSignInPane: View {
     let shareAction: WelcomePaneDecision.LinkShareAction
     let shareLabel: String
     let onShare: (@MainActor @Sendable () -> Void)?
-    /// The live share's whole card, rendered under the two — see the note
-    /// above. Nil while idle.
-    let shareCard: ShareCard?
+    /// Why the last share attempt did not take, if one did not. Rendered
+    /// under the button that would try again — a failure reported anywhere
+    /// else is one nobody reads, and this pane is the whole window.
+    let shareNote: String?
 
     public init(
         title: String = L("Welcome to Tailscreen"),
@@ -56,7 +58,7 @@ public struct HubSignInPane: View {
         shareAction: WelcomePaneDecision.LinkShareAction = .unavailable,
         shareLabel: String = L("Share your screen via Link…"),
         onShare: (@MainActor @Sendable () -> Void)? = nil,
-        shareCard: ShareCard? = nil
+        shareNote: String? = nil
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -67,14 +69,13 @@ public struct HubSignInPane: View {
         self.shareAction = shareAction
         self.shareLabel = shareLabel
         self.onShare = onShare
-        self.shareCard = shareCard
+        self.shareNote = shareNote
     }
 
     public var body: some View {
-        // Scrolling, because this pane is no longer just a button: a
-        // link-only share renders its whole card here — preview, roster,
-        // approvals — and an approval you cannot scroll to is one you cannot
-        // answer.
+        // Scrolling because two cards plus a paste field outgrow a short
+        // window, and a sign-in button you cannot reach is the one control
+        // this pane exists for.
         ScrollView {
             VStack(spacing: 14) {
                 VStack(spacing: 6) {
@@ -92,10 +93,8 @@ public struct HubSignInPane: View {
                     onJoin: onJoin,
                     shareAction: shareAction,
                     shareLabel: shareLabel,
-                    onShare: onShare)
-                if let shareCard {
-                    shareCard
-                }
+                    onShare: onShare,
+                    shareNote: shareNote)
             }
             .frame(maxWidth: HubStyle.contentMaxWidth)
             .padding(20)
@@ -139,6 +138,7 @@ struct HubShareLinkCard: View {
     let shareAction: WelcomePaneDecision.LinkShareAction
     let shareLabel: String
     let onShare: (@MainActor @Sendable () -> Void)?
+    let shareNote: String?
 
     @State private var input = ""
     @State private var inputRejected = false
@@ -202,6 +202,11 @@ struct HubShareLinkCard: View {
                 .foregroundColor(HubStyle.secondaryText)
         case .unavailable:
             EmptyView()
+        }
+        if let shareNote {
+            Text(shareNote)
+                .font(.caption)
+                .foregroundColor(HubStyle.secondaryText)
         }
     }
 

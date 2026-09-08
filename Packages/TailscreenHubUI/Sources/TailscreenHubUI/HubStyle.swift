@@ -180,6 +180,17 @@ public struct HubLinkSharing: Sendable {
     public let onToggle: @MainActor @Sendable (Bool) -> Void
     /// New Link rotation (the old link dies, guests drop). Nil hides it.
     public let onNewLink: (@MainActor @Sendable () -> Void)?
+    /// Put the given text on the system clipboard — the host's seam, since
+    /// neither swift-cross-ui nor this package can reach a clipboard.
+    ///
+    /// Nil is a real state and renders the link as full selectable text
+    /// instead of Copy buttons: a host with no clipboard must still be able
+    /// to hand the link over, and select-and-paste always works (the
+    /// `HubLoginCard` lesson). Non-nil gets the macOS card's three buttons
+    /// over ONE truncated line, because a link you can copy in a click does
+    /// not also need to be readable character by character — and the token
+    /// is 120 characters that otherwise wrap over three lines, twice.
+    public let onCopy: (@MainActor @Sendable (String) -> Void)?
 
     public init(
         token: String?,
@@ -187,7 +198,8 @@ public struct HubLinkSharing: Sendable {
         guestCount: Int,
         isOnlyWayIn: Bool = false,
         onToggle: @escaping @MainActor @Sendable (Bool) -> Void,
-        onNewLink: (@MainActor @Sendable () -> Void)? = nil
+        onNewLink: (@MainActor @Sendable () -> Void)? = nil,
+        onCopy: (@MainActor @Sendable (String) -> Void)? = nil
     ) {
         self.token = token
         self.busy = busy
@@ -195,6 +207,7 @@ public struct HubLinkSharing: Sendable {
         self.isOnlyWayIn = isOnlyWayIn
         self.onToggle = onToggle
         self.onNewLink = onNewLink
+        self.onCopy = onCopy
     }
 }
 
