@@ -688,3 +688,8 @@
 "Link Sharing Is Off" = "Link Sharing Is Off";
 "Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet." = "Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet.";
 "The share link couldn't be created. Check the network and try again." = "The share link couldn't be created. Check the network and try again.";
+
+/* MARK: - Welcome pane, before any sign-in (Apps/linux main.swift, HubSignInPane.swift) */
+"Open the sign-in page" = "Open the sign-in page";
+"Your saved Tailscale sign-in needs renewing." = "Your saved Tailscale sign-in needs renewing.";
+"Could not start Tailscale: %@" = "Could not start Tailscale: %@";

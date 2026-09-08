@@ -434,13 +434,23 @@ public struct ShareCard: View {
     @ViewBuilder private var linkCluster: some View {
         if isSharing, let linkSharing {
             Divider()
-            Toggle(
-                L("Share via Link"),
-                isOn: Binding(
-                    get: { linkSharing.token != nil || linkSharing.busy },
-                    set: { linkSharing.onToggle($0) })
-            )
-            .toggleStyle(.switch)
+            if linkSharing.isOnlyWayIn {
+                // A link-only share IS its link: there is no off position
+                // short of Stop Sharing, so a toggle here would be a switch
+                // that refuses to flip. State the mode instead — the macOS
+                // menubar's `ShareViaLinkSection` splits the same way.
+                Text(L("Sharing via link — the link is the only way in"))
+                    .font(.callout)
+                    .foregroundColor(HubStyle.secondaryText)
+            } else {
+                Toggle(
+                    L("Share via Link"),
+                    isOn: Binding(
+                        get: { linkSharing.token != nil || linkSharing.busy },
+                        set: { linkSharing.onToggle($0) })
+                )
+                .toggleStyle(.switch)
+            }
             if linkSharing.busy {
                 Text(L("Creating link…"))
                     .font(.caption)

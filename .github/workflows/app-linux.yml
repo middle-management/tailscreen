@@ -390,6 +390,9 @@ jobs:
           # viewer row) — the state whose clipped layout shipped unseen
           # because nothing screenshotted it.
           shoot linux-sharing.png --ui-preview --ui-preview-sharing
+          # The pane a first launch opens on — sign in, or take one of the two
+          # ways in that need no Tailscale account at all.
+          shoot linux-welcome.png --ui-preview --ui-preview-welcome
           ls -la screenshots/
 
       - name: Upload screenshots

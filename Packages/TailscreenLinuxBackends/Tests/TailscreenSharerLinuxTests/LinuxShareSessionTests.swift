@@ -232,6 +232,42 @@ final class LinuxShareSessionTests: XCTestCase {
         XCTAssertFalse(engine.micOn, "an indicator over a device that is not open")
     }
 
+    // MARK: Link sharing
+
+    /// The toggle is a share-time control, so an idle engine ignores it —
+    /// and, crucially, publishes nothing. A `linkBusy` latched on with no
+    /// server behind it is a card stuck on "Creating link…" forever.
+    @MainActor
+    func testLinkToggleWithoutAServerIsAQuietNoOp() async throws {
+        let engine = makeEngine()
+        var published: [(String?, Bool, Bool)] = []
+        engine.onLinkSharingChanged = { published.append(($0, $1, $2)) }
+
+        engine.setLinkSharing(true)
+        engine.rotateLink()
+
+        XCTAssertTrue(published.isEmpty)
+        XCTAssertNil(engine.linkToken)
+        XCTAssertFalse(engine.linkBusy)
+        XCTAssertFalse(engine.isLinkOnlyShare)
+    }
+
+    /// A stop with nothing running says nothing about the link either — the
+    /// same quietness `testStopWithoutAServerGoesIdleWithoutAnEndEvent` pins
+    /// for the end event. There was no link, so announcing one dying would
+    /// have the card redraw a section that was never there.
+    @MainActor
+    func testStopWithoutAServerSaysNothingAboutTheLink() async throws {
+        let engine = makeEngine()
+        var published: [(String?, Bool, Bool)] = []
+        engine.onLinkSharingChanged = { published.append(($0, $1, $2)) }
+
+        engine.stopSharing()
+
+        XCTAssertTrue(published.isEmpty)
+        XCTAssertFalse(engine.isLinkOnlyShare)
+    }
+
     // MARK: Access facade
 
     @MainActor

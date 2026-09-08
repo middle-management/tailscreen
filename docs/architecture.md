@@ -262,9 +262,12 @@ mandatory on every join — the remembered-allow store, open-door mode, and
 ask-to-share pre-approval deliberately don't apply — and denying a guest
 also evicts its key at the tunnel for the life of the link. The key pair
 is never persisted: stop sharing, press New Link, or flip the toggle off
-and every outstanding copy of the link is dead. On macOS a share can even
-run **link-only** — started signed out, no tsnet node at all, the guest
-tunnel as its only transport.
+and every outstanding copy of the link is dead. A share can even run
+**link-only** — started signed out on any of the three apps, no tsnet node
+at all, the guest tunnel as its only transport. That path is written once —
+`SharerLinkSession.startLinkOnly` over `TailscaleScreenShareServer`'s
+`startGuestOnly` — which is why the swift-cross-ui hosts took one
+parameter each to gain it.
 
 **A browser is a guest too.** The web form of a share link
 (`https://tailscreen.dev/view/#tc…`) opens a static page that carries the

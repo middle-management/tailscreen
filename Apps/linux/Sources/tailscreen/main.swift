@@ -57,6 +57,10 @@ var gAddAccount: (@MainActor @Sendable () -> Void)?
 // interactive-login URL in a browser. Wired in the picker block.
 var gReturnToPicker: (@MainActor @Sendable () -> Void)?
 var gOpenLogin: (@MainActor @Sendable () -> Void)?
+// The welcome pane's sign-in button: bring the active profile's node up, or —
+// when a restore already parked a login URL — open that page rather than
+// starting a second bring-up behind the one already waiting on it.
+var gSignIn: (@MainActor @Sendable () -> Void)?
 // Portable lifecycle for the current/most-recent viewer. GTK still publishes
 // its toolkit-facing phase through ViewerUIState, but reconnect identity now
 // has the same one-value invariant as macOS and Windows: row/address/token
@@ -279,7 +283,12 @@ if gSelfTest {
     // Headless chrome preview: seed the picker with fake sharers and render the
     // hub without any networking, so the UI can be screenshotted / reviewed.
     gPickerMode = true
-    gPicker.phase = .picking
+    // `--ui-preview-welcome` holds the pane a first launch now opens on: the
+    // sign-in card over the two ways in that need no account. Everything
+    // below still seeds, so the flag is the only difference between the two
+    // screenshots.
+    gPicker.phase = gArgs.contains("--ui-preview-welcome") ? .signedOut : .picking
+    gSignIn = {}
     // Tagged and untagged, online and offline, so the header's filter menu has
     // every axis to show in a screenshot.
     gPicker.sharers = [
@@ -782,6 +791,15 @@ if gSelfTest {
             gViewerLifecycle.dismiss()
             gUIState.returnToPickerState()
             gAnnotations.resetForNewSession()
+            // Where "back" goes depends on whether there is a tailnet behind
+            // this window at all. A guest who joined by link while signed out
+            // has no node and no list: dropping them on an empty Screens list
+            // would answer "where did everyone go" with a tailnet problem
+            // they do not have. Back to the pane they came from instead.
+            guard transport.liveNode != nil else {
+                gPicker.phase = .signedOut
+                return
+            }
             gPicker.phase = .picking
             discoverAndSweep()
         }
@@ -801,13 +819,35 @@ if gSelfTest {
             explicitStateDir ? baseConfig.statePath : profile.statePath
         }
 
+        /// Has this profile ever signed in? — i.e. is there tsnet state on
+        /// disk worth restoring.
+        ///
+        /// The whole difference between "restore the session I already have"
+        /// and "start a login nobody asked for", and the same test the macOS
+        /// hub's `attemptSessionRestore` makes: an empty (or absent) state
+        /// directory means a first launch or a freshly added account, where
+        /// bringing a node up would emit a browser login URL the person never
+        /// asked for and leave the window saying "Waiting for login…".
+        @Sendable func hasSavedLogin(_ profile: ViewerProfile) -> Bool {
+            let path = stateDir(for: profile)
+            let contents = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+            return !contents.isEmpty
+        }
+
         // Bring up (or switch to) a profile: tear the current node down, reset
-        // the picker, prepare under the profile's state dir, then discover. A
-        // fresh profile's empty state dir triggers interactive login.
-        @Sendable func bringUp(profile: ViewerProfile) {
+        // the picker, prepare under the profile's state dir, then discover.
+        //
+        // `restoring` is the silent half: a launch reviving a saved session,
+        // not a person asking to sign in. If that state turns out to need the
+        // browser after all, the pane goes back to signed-out carrying the URL
+        // — the node stays parked in `up()` waiting on exactly that page, so
+        // the button opens it rather than starting a second bring-up behind
+        // the first.
+        @Sendable func bringUp(profile: ViewerProfile, restoring: Bool = false) {
             Task { @MainActor in
                 await transport.teardown()
                 gPicker.loginURL = nil
+                gPicker.signInNote = nil
                 gPicker.sharers = []
                 gPicker.shareInfo = [:]
                 gPicker.phase = .startingNode
@@ -826,9 +866,19 @@ if gSelfTest {
                     try await transport.prepare(
                         config: config,
                         onLoginURL: { url in
-                            Task { @MainActor in gPicker.loginURL = url.absoluteString }
+                            Task { @MainActor in
+                                gPicker.loginURL = url.absoluteString
+                                guard restoring else { return }
+                                // The saved state did not authenticate. Say so
+                                // where the way out is, instead of sitting on
+                                // a login the person never started.
+                                gPicker.signInNote = L(
+                                    "Your saved Tailscale sign-in needs renewing.")
+                                gPicker.phase = .signedOut
+                            }
                         })
                     gPicker.loginURL = nil
+                    gPicker.signInNote = nil
                     // Label the account by its resolved login once known.
                     if let identity = transport.accountIdentity {
                         gProfiles.rename(profile.id, to: identity)
@@ -836,7 +886,11 @@ if gSelfTest {
                     discoverAndSweep()
                 } catch {
                     FileHandle.standardError.write(Data("node bring-up failed: \(error)\n".utf8))
-                    gPicker.phase = .picking
+                    // Back to the pane the button is on, carrying the reason —
+                    // an empty screens list would blame the tailnet for a node
+                    // that never came up.
+                    gPicker.signInNote = L("Could not start Tailscale: \(error)")
+                    gPicker.phase = .signedOut
                 }
             }
         }
@@ -850,8 +904,32 @@ if gSelfTest {
         gAddAccount = {
             bringUp(profile: gProfiles.addProfile())
         }
+        // The welcome pane's button. A parked login URL means a node is
+        // already blocked in `up()` waiting on that page — opening it is the
+        // way through; a second bring-up would only queue behind it.
+        gSignIn = {
+            if gPicker.loginURL != nil {
+                gPicker.signInNote = nil
+                gPicker.phase = .startingNode
+                gOpenLogin?()
+                return
+            }
+            bringUp(profile: gProfiles.active)
+        }
+        // A share started from the welcome pane has no node behind it — it is
+        // a link-only share. Nowhere else: mid-bring-up the node is nil too,
+        // and Start there means "share on my tailnet", not "share to
+        // strangers by link instead".
+        gSharer.linkOnlyShareAllowed = { gPicker.phase == .signedOut }
 
-        bringUp(profile: gProfiles.active)
+        // Restore a saved session, or sit on the welcome pane. NOT an
+        // unconditional bring-up: this app used to open by starting a tsnet
+        // node nobody had asked it to, so a first launch met the person with a
+        // login they had not begun — and the two things they can do without an
+        // account at all (join by link, share by link) were behind it.
+        if hasSavedLogin(gProfiles.active) {
+            bringUp(profile: gProfiles.active, restoring: true)
+        }
     }
 }
 
@@ -886,6 +964,22 @@ struct ViewerApp: App {
         return false
     }
 
+    /// The welcome pane's body copy: the first-run invitation, or whatever
+    /// went wrong — a failed bring-up, or a saved sign-in that turned out to
+    /// need the browser again. The reason belongs on the card the retry
+    /// button is on, not in a status line somewhere else.
+    private var welcomeMessage: String {
+        picker.signInNote
+            ?? L("Sign in with Tailscale to share and view screens with your peers.")
+    }
+
+    /// …and its button. A parked login URL means the page is already waiting
+    /// to be opened, which is a different act from starting a sign-in.
+    private var welcomeButtonLabel: String {
+        if picker.loginURL != nil { return L("Open the sign-in page") }
+        return picker.signInNote == nil ? L("Sign in with Tailscale") : L("Try again")
+    }
+
     // Header subtitle: the picker's progress line, or the direct-connect status.
     private var headerSubtitle: String {
         gPickerMode ? picker.statusLine : ui.status
@@ -896,7 +990,7 @@ struct ViewerApp: App {
         guard gPickerMode else { return false }
         switch picker.phase {
         case .startingNode, .discovering: return true
-        case .picking, .connecting: return false
+        case .signedOut, .picking, .connecting: return false
         }
     }
 
@@ -982,6 +1076,30 @@ struct ViewerApp: App {
         return { gReturnToPicker?() }
     }
 
+    /// Sitting on the welcome pane — no node, no login in flight.
+    private var isSignedOut: Bool {
+        if case .signedOut = picker.phase { return true }
+        return false
+    }
+
+    /// The share card as the welcome pane shows it: offered when this
+    /// session can actually capture something, and kept while a link-only
+    /// share is running whatever the capture answer has become — signed out,
+    /// this pane is the only surface that share's link, roster and approvals
+    /// could be on. Withheld otherwise, because a machine that cannot share
+    /// (a Wayland session with no portal) has nothing to say here that the
+    /// pane's other two paths do not already cover.
+    private var welcomeShareCard: ShareCard? {
+        guard sharer.canShare || sharer.phase != .idle else { return nil }
+        return shareCard
+    }
+
+    /// Whether the hub column renders the welcome pane rather than the picker.
+    /// Hoisted out of the view body for the usual reason: a pattern match
+    /// inside a multi-condition `if` in this result builder is one of the
+    /// shapes that fails to typecheck with a diagnostic pointing nowhere.
+    private var showingWelcome: Bool { gPickerMode && isSignedOut }
+
     /// The hub's sharing card. Only offered in picker mode: the direct-host
     /// path (`tailscreen <host>`) is a one-shot viewer invocation,
     /// and growing a share button onto it would be surprising.
@@ -992,6 +1110,11 @@ struct ViewerApp: App {
             statusDetail: sharer.statusDetail,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
+            // Signed out, the button says what it will actually do: there is
+            // no tailnet to share to, so the share comes up over the guest
+            // tunnel with its link as the only way in. Same wording as the
+            // macOS welcome pane's link.
+            startLabel: isSignedOut ? L("Share your screen via Link…") : L("Share my screen"),
             notes: {
                 var notes: [String] = []
                 // Only after a grant was refused — see `SharerModel.controlNote`.
@@ -1185,6 +1308,10 @@ struct ViewerApp: App {
             token: sharer.linkToken,
             busy: sharer.linkBusy,
             guestCount: guests,
+            // A link-only share has no off position short of Stop Sharing —
+            // the card says so rather than drawing a switch that would refuse
+            // to flip.
+            isOnlyWayIn: sharer.isLinkOnlyShare,
             onToggle: toggle,
             onNewLink: newLink)
     }
@@ -1388,7 +1515,19 @@ struct ViewerApp: App {
                     onSelectAccount: gSwitchProfile,
                     onAddAccount: gAddAccount)
                 Divider()
-                if gPickerMode {
+                if showingWelcome {
+                    // Nothing has been brought up: no node, no login, nothing
+                    // on the network. The pane offers the sign-in that starts
+                    // one — and, beside it rather than behind it, the two
+                    // paths that need no Tailscale account: joining a share by
+                    // link, and minting one of your own.
+                    HubSignInPane(
+                        message: welcomeMessage,
+                        buttonLabel: welcomeButtonLabel,
+                        onSignIn: { gSignIn?() },
+                        shareCard: welcomeShareCard,
+                        joinCard: hubJoinCard)
+                } else if gPickerMode {
                     PickerContent(
                         statusLine: picker.statusLine,
                         isPicking: showingPickerList,

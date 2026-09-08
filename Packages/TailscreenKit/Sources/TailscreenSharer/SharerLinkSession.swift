@@ -81,6 +81,63 @@ public actor SharerLinkSession {
         return minted
     }
 
+    /// Mint a link for a share that has **no tsnet node at all** — the
+    /// signed-out, link-only share the macOS hub offers from its welcome
+    /// pane, now on the two swift-cross-ui hosts as well.
+    ///
+    /// The ordering is the mirror image of `enable`: there the server is
+    /// already running and the guest listener is attached to it, whereas
+    /// here the guest node IS the transport, so it has to exist before the
+    /// server starts — `startGuestOnly` takes the listeners as its only
+    /// sockets. Everything the guest half needs (eviction, rotation,
+    /// teardown) is the same afterwards, which is why it lives here rather
+    /// than being spelled out again in each engine.
+    ///
+    /// Throws with nothing left running: a half-started link-only share
+    /// must not leave a live token behind a share that never happened.
+    public func startLinkOnly(
+        on server: TailscaleScreenShareServer,
+        filterData: Data?,
+        quality: QualitySettings = .default,
+        relayMapURL: String? = nil,
+        port: UInt16 = NetworkConfig.tailscreenPort
+    ) async throws -> String {
+        if let token, guestServer != nil { return token }
+        let gs = try GuestServerNode(derpMapURL: relayMapURL, logger: logger)
+        do {
+            try await gs.start()
+            let pl = try await gs.listenPacket(port: port)
+            // The tunnel's TCP side: annotations and remote control for
+            // guests. Fail-soft for the same reason as `enable` — a link
+            // whose TCP bind failed still carries the video and voice that
+            // are the substance of a share.
+            var control: TailscreenControlListener?
+            do {
+                let tcp = try await gs.listen(port: port)
+                let ctl = TailscreenControlListener(port: port)
+                ctl.start(adopting: tcp)
+                control = ctl
+            } catch {
+                logger?.log(
+                    "Guest TCP control channel unavailable (\(error)) — link carries video/voice only"
+                )
+            }
+            try await server.startGuestOnly(
+                filterData: filterData,
+                quality: quality,
+                guestPacketListener: pl,
+                guestControlListener: control)
+            let minted = try await gs.token()
+            guestServer = gs
+            token = minted
+            logger?.log("Link-only share active — the link is the only way in")
+            return minted
+        } catch {
+            await gs.close()
+            throw error
+        }
+    }
+
     /// Kill the link on a still-running share: detach first (each guest
     /// gets HELLO_DENY + SERVER_BYE through the still-open guest socket),
     /// then close the node — the token is dead forever. No-op with no link.

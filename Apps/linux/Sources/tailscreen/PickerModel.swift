@@ -19,16 +19,35 @@ import struct TailscreenProtocol.TailscreenMetadata
 @MainActor
 final class PickerModel: ObservableObject {
     enum Phase: Equatable {
+        /// Nothing has been brought up: no node, no login, nothing on the
+        /// network. The welcome pane's state, and the app's state at a first
+        /// launch — this app used to open by starting a tsnet node nobody had
+        /// asked it to, so a person who had never signed in was met by
+        /// "Waiting for login…" for a login they had not begun. The two ways
+        /// on from here need no Tailscale account at all (join by link, share
+        /// by link); the third is the sign-in button.
+        case signedOut
         case startingNode  // bringing the tsnet node up (maybe awaiting login)
         case discovering  // listing sharers
         case picking  // showing the list, waiting for a choice
         case connecting(String)  // dialing the chosen sharer (by hostname, for display)
     }
 
-    @Published var phase: Phase = .startingNode
+    /// Starts signed-out. `main` moves it on at launch only for a profile
+    /// whose state directory already holds a login to restore — the same
+    /// silent-restore rule as the macOS hub's `attemptSessionRestore`.
+    @Published var phase: Phase = .signedOut
     @Published var sharers: [DiscoveredSharer] = []
     /// An interactive-login URL to show in-window (nil once logged in).
     @Published var loginURL: String?
+    /// Why the welcome pane is showing something other than its first-run
+    /// wording: a bring-up that failed, or a saved sign-in that turned out to
+    /// need the browser again. Nil is the ordinary "never signed in" case.
+    ///
+    /// Kept beside `loginURL` rather than folded into it because the two
+    /// answer different questions — this is what went wrong, that is where to
+    /// go next — and a restore can produce the second without the first.
+    @Published var signInNote: String?
     /// Per-sharer live share status (name / resolution / `isSharing`), keyed by
     /// `DiscoveredSharer.id`. Populated by a lazy metadata sweep after discovery;
     /// a missing entry means status-unknown (never rendered as "not sharing").
@@ -139,6 +158,7 @@ final class PickerModel: ObservableObject {
     /// not deducible from anything else on screen.
     var statusLine: String {
         switch phase {
+        case .signedOut: return L("Not signed in")
         case .startingNode:
             return loginURL == nil ? L("Starting Tailscale…") : L("Waiting for login…")
         case .discovering: return L("Looking for screens…")

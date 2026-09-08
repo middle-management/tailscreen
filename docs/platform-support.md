@@ -52,7 +52,7 @@ what the partial case *is*, because that is the part a reader can act on.
 | Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ | ❌ |
 | Share via Link (guests without a Tailscale account) | ✅ | ✅ | ✅ | — |
 | Copy Link / Copy Token buttons | ✅ | ⚠️ select the link text | ⚠️ select the link text | — |
-| Start a share without signing in (link-only) | ✅ | ❌ | ❌ | — |
+| Start a share without signing in (link-only) | ✅ | ✅ | ✅ | — |
 | Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ | ✅ the only way in: the **web link** |
 | Guests draw + request control (same capability gates as tailnet viewers) | ✅ | ✅ | ✅ | ✅ |
 | `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² | ⚠️ the web link opens the page; `tailscreen:` needs an app |

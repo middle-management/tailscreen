@@ -133,6 +133,11 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// True while the link is being created or rotated (the relay
         /// bootstrap blocks for the network); toggle flips are ignored.
         public var linkBusy = false
+        /// This share was started signed out: the guest tunnel is its only
+        /// socket, so the link is the only way in. The card states the mode
+        /// instead of drawing a toggle with no off position short of Stop
+        /// Sharing.
+        public var linkIsOnlyWayIn = false
 
         public init() {}
     }
@@ -366,13 +371,20 @@ public final class WindowsShareSession: @unchecked Sendable {
     ///   login the user is never prompted for. The share then waits at that
     ///   login forever and never appears on anyone's tailnet. Sharing the
     ///   node is also what gives the app ONE identity, as the macOS app has.
+    /// - Parameter linkOnly: run this share with **no tsnet node at all** —
+    ///   started signed out, the guest tunnel is the server's only socket and
+    ///   the link is the only way in. `existingNode`, `hostname`, `statePath`
+    ///   and `controlListener` are all inert then: there is no tailnet
+    ///   listener, no ask-to-share channel and no LocalAPI identity, so every
+    ///   viewer arrives as a guest at the mandatory approval gate.
     public func beginSharing(
         item: WGC.CaptureItem,
         hostname: String,
         statePath: String,
         quality: QualitySettings,
         existingNode: TailscaleNode? = nil,
-        controlListener: TailscreenControlListener? = nil
+        controlListener: TailscreenControlListener? = nil,
+        linkOnly: Bool = false
     ) async throws {
         let generation = beginShareGeneration()
         // A capture FACTORY, not an instance, because the server respawns the
@@ -548,6 +560,7 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.micOn = false
                 $0.linkToken = nil
                 $0.linkBusy = false
+                $0.linkIsOnlyWayIn = false
             }
             // The server drives its own teardown from here (listener close
             // included); only the guest node remains.
@@ -600,7 +613,37 @@ public final class WindowsShareSession: @unchecked Sendable {
         let controlURL = ProcessInfo.processInfo.environment["TAILSCREEN_TS_CONTROL_URL"]
         let authKey = ProcessInfo.processInfo.environment["TAILSCREEN_TS_AUTHKEY"]
         do {
-            if let controlURL {
+            if linkOnly {
+                // The guest node comes up first because it is the whole
+                // transport, and the token exists the moment the share does.
+                // `startLinkOnly` unwinds its own node on failure, so the
+                // catch below has only the server left to clear.
+                update {
+                    $0.linkIsOnlyWayIn = true
+                    $0.linkBusy = true
+                }
+                let token = try await link.startLinkOnly(
+                    on: newServer, filterData: selectionData, quality: quality)
+                // Only once this is still the current share: a token on screen
+                // for a share that was stopped mid-start is a link that admits
+                // people to nothing. The stop that landed inside the await
+                // tore down a link that did not exist yet, so close this one.
+                guard isCurrentShare(generation) else {
+                    lock.withLock { if server === newServer { server = nil } }
+                    await newServer.stop()
+                    await link.teardown()
+                    update {
+                        $0.linkToken = nil
+                        $0.linkBusy = false
+                        $0.linkIsOnlyWayIn = false
+                    }
+                    return
+                }
+                update {
+                    $0.linkToken = token
+                    $0.linkBusy = false
+                }
+            } else if let controlURL {
                 try await newServer.start(
                     hostname: hostname, authKey: authKey, path: statePath,
                     controlURL: controlURL, filterData: selectionData, quality: quality,
@@ -622,6 +665,12 @@ public final class WindowsShareSession: @unchecked Sendable {
                 update {
                     $0.isSharing = false
                     $0.message = ""
+                    // A link-only start that failed leaves the card claiming
+                    // to be minting a link for a share that never happened.
+                    // (`startLinkOnly` already closed its own guest node.)
+                    $0.linkToken = nil
+                    $0.linkBusy = false
+                    $0.linkIsOnlyWayIn = false
                 }
             }
             throw error
@@ -765,8 +814,13 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// attaches its listener to the running server; `off` drops every guest
     /// and kills the token. No-op while idle or busy.
     public func setLinkSharing(_ on: Bool) {
-        let (server, busy) = lock.withLock { (self.server, self.status.linkBusy) }
-        guard !busy, let server else { return }
+        let (server, busy, linkOnly) = lock.withLock {
+            (self.server, self.status.linkBusy, self.status.linkIsOnlyWayIn)
+        }
+        // A link-only share has nothing to toggle: the link IS the share, and
+        // turning it off would drop every guest and leave a running capture
+        // with no listener at all.
+        guard !busy, !linkOnly, let server else { return }
         update { $0.linkBusy = true }
         Task { [link] in
             var token: String?
@@ -996,6 +1050,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             update {
                 $0.linkToken = nil
                 $0.linkBusy = false
+                $0.linkIsOnlyWayIn = false
             }
             return
         }
@@ -1017,6 +1072,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.preview = nil
             $0.linkToken = nil
             $0.linkBusy = false
+            $0.linkIsOnlyWayIn = false
         }
     }
 

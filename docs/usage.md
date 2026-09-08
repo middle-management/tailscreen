@@ -51,6 +51,12 @@ The honest differences:
   only on the macOS sharer — viewers on every platform play it back.
 - **Permissions:** Screen Recording and Accessibility prompts are macOS
   concepts. Linux and Windows have no equivalent gate.
+- **Signing in is something you start.** All three apps open on a welcome
+  pane — sign in with Tailscale, join a share by link, or share your own
+  screen by link — and none of them begins a browser sign-in you did not
+  ask for. Once you have signed in, launching the app restores that
+  session silently; if the saved sign-in has expired, the pane comes back
+  and says so.
 
 The full feature-by-feature comparison lives in
 [Platform support]({{ site.baseurl }}{% link platform-support.md %}).
@@ -229,15 +235,16 @@ also holds a relay override for
   <figcaption>Two ways in, before you have signed into anything.</figcaption>
 </figure>
 
-**Sharing without signing in** works too: the macOS welcome screen offers
-**Share your screen via Link…** in its share-link card, beside the card
-that signs you into a tailnet. The picker opens, the share starts as a
-*link-only* share — no Tailscale account,
-no tailnet, the link is the only way in — and the sharing card shows the
-link with the same Copy / New Link / guest controls. Approval is still
-mandatory for every guest, and Stop Sharing is the way to end it (a
-link-only share has no link-off toggle: turning off its only transport
-would leave a share running that nobody can reach).
+**Sharing without signing in** works too, on all three platforms: the
+welcome screen — the macOS one, and the pane the Linux and Windows apps
+open on before sign-in — offers **Share your screen via Link…** alongside
+the sign-in button. The picker opens, the share starts as a *link-only*
+share — no Tailscale account, no tailnet, the link is the only way in —
+and the sharing card shows the link with the same New Link and guest
+controls (Copy buttons on macOS; selectable link text on Linux and
+Windows). Approval is still mandatory for every guest, and Stop Sharing is
+the way to end it (a link-only share has no link-off toggle: turning off
+its only transport would leave a share running that nobody can reach).
 
 **Joining** works on all three platforms — clicking a `tailscreen:` link
 opens the app straight into the guest session wherever the scheme is
@@ -279,9 +286,7 @@ sessions carry the full feature set: video, voice, **annotations, and
 remote control** — the same capability gates apply as for tailnet
 viewers (a sharer that can't render strokes or inject input simply
 doesn't offer those tools), and remote control still takes the sharer's
-explicit per-request grant. Sharing *without signing in at all* (a
-link-only share) is macOS-only today — see the
-[platform matrix]({{ site.baseurl }}{% link platform-support.md %}).
+explicit per-request grant.
 
 ## Asking someone to share
 

@@ -171,6 +171,12 @@ public struct HubLinkSharing: Sendable {
     public let busy: Bool
     /// Connected + pending guests, for the count line under the link.
     public let guestCount: Int
+    /// This share has no tailnet listener at all — it was started signed
+    /// out, so the link is the only way in. The card states that instead of
+    /// drawing a toggle, because the off position would be a switch that
+    /// refuses to flip: the only way to end a link-only share is to stop it.
+    /// The macOS menubar's `ShareViaLinkSection` makes the same split.
+    public let isOnlyWayIn: Bool
     public let onToggle: @MainActor @Sendable (Bool) -> Void
     /// New Link rotation (the old link dies, guests drop). Nil hides it.
     public let onNewLink: (@MainActor @Sendable () -> Void)?
@@ -179,12 +185,14 @@ public struct HubLinkSharing: Sendable {
         token: String?,
         busy: Bool,
         guestCount: Int,
+        isOnlyWayIn: Bool = false,
         onToggle: @escaping @MainActor @Sendable (Bool) -> Void,
         onNewLink: (@MainActor @Sendable () -> Void)? = nil
     ) {
         self.token = token
         self.busy = busy
         self.guestCount = guestCount
+        self.isOnlyWayIn = isOnlyWayIn
         self.onToggle = onToggle
         self.onNewLink = onNewLink
     }

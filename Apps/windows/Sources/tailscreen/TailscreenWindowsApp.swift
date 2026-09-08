@@ -345,8 +345,15 @@ struct TailscreenWindowsApp: App {
             ? L("Sign in to your tailnet to share this screen or watch someone else's.")
             : state.detail
         let label = state.phase == .failed ? L("Try again") : L("Sign in to Tailscale")
-        return SignInPane(
-            message: message, buttonLabel: label, onSignIn: { model.signIn() },
+        return HubSignInPane(
+            title: L("Screens on your tailnet"),
+            message: message,
+            buttonLabel: label,
+            onSignIn: { model.signIn() },
+            // Beside sign-in, never behind it: a link-only share needs no
+            // Tailscale account, and while one is running this pane is the
+            // only surface its link, roster and approvals could be on.
+            shareCard: state.shareCard,
             joinCard: hubJoinCard)
     }
 
@@ -413,48 +420,6 @@ struct TailscreenWindowsApp: App {
     private var showsDetail: Bool {
         guard !state.detail.isEmpty else { return false }
         return state.phase != .idle && state.phase != .failed
-    }
-}
-
-/// The pre-sign-in state: what this app is for, and the one button that starts
-/// it.
-///
-/// A card rather than a bare button because this is the first thing anyone sees
-/// and "Tailscreen" over a lone control says nothing about what pressing it
-/// does. On failure the same card carries the reason and says "Try again",
-/// which keeps the error where the retry is.
-struct SignInPane: View {
-    let message: String
-    let buttonLabel: String
-    let onSignIn: @MainActor @Sendable () -> Void
-    /// The share-by-token way in, offered beside sign-in because joining by
-    /// token is exactly the path that needs no Tailscale account — hiding it
-    /// behind the sign-in button would gate the accountless flow on an
-    /// account. Nil renders nothing.
-    var joinCard: HubJoinCard?
-
-    var body: some View {
-        VStack(spacing: 14) {
-            VStack(spacing: 12) {
-                Text(L("Screens on your tailnet"))
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                Text(message)
-                    .font(.callout)
-                    .foregroundColor(HubStyle.secondaryText)
-                    .multilineTextAlignment(.center)
-                Button(buttonLabel, action: onSignIn)
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .hubCard()
-            if let joinCard {
-                joinCard
-            }
-        }
-        .frame(maxWidth: HubStyle.contentMaxWidth)
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 }
 
@@ -916,6 +881,10 @@ final class AppUIState: ObservableObject {
         PeerListFilterStore.save(new)
     }
 
+    /// No node, and none coming up: the sign-in pane's state. A share
+    /// started from there is a link-only share — see `startSharing`.
+    var isSignedOut: Bool { phase == .idle || phase == .failed }
+
     /// The sharing half of the hub, or nil on a build that cannot capture.
     ///
     /// Withheld rather than shown and then failing: a Windows build without
@@ -929,7 +898,11 @@ final class AppUIState: ObservableObject {
                 : L("Not sharing"),
             isSharing: sharing.isSharing,
             canShare: watching == nil,
-            startLabel: L("Share this screen"),
+            // Signed out, the button says what it will actually do: there is
+            // no tailnet to share to, so the share comes up over the guest
+            // tunnel with its link as the only way in. Same wording as the
+            // macOS welcome pane's link.
+            startLabel: isSignedOut ? L("Share your screen via Link…") : L("Share this screen"),
             notes: shareNotes,
             // The roster: who is watching, and what can be done about them.
             // `notes` stays for statistics — a person is not a note.
@@ -1092,6 +1065,10 @@ final class AppUIState: ObservableObject {
             token: sharing.linkToken,
             busy: sharing.linkBusy,
             guestCount: guests,
+            // A link-only share has no off position short of Stop Sharing —
+            // the card says so rather than drawing a switch that would refuse
+            // to flip.
+            isOnlyWayIn: sharing.linkIsOnlyWayIn,
             onToggle: toggle,
             onNewLink: newLink)
     }
@@ -1804,7 +1781,14 @@ final class AppUIState: ObservableObject {
     }
 
     func startSharing() {
-        guard phase == .ready, !sharing.isSharing else { return }
+        // Signed out is a real way to share, not a blocked one: the share
+        // comes up over the guest tunnel with its link as the only way in,
+        // exactly as the macOS welcome pane's "Share your screen via Link…".
+        // Mid-bring-up (`.starting`) is still refused — the person is signing
+        // in, and turning that into a link-only share would answer a question
+        // they had not finished asking.
+        let linkOnly = isSignedOut
+        guard phase == .ready || linkOnly, !sharing.isSharing else { return }
         detail = ""
 
         let item: WGC.CaptureItem?
@@ -1832,12 +1816,15 @@ final class AppUIState: ObservableObject {
                     // THE app's node, not a new one. A second node means a
                     // second machine key, a second browser login nobody is
                     // prompted for, and a share that waits at that login
-                    // forever without ever joining the tailnet.
+                    // forever without ever joining the tailnet. Nil signed
+                    // out, where `linkOnly` says there is to be no node at
+                    // all.
                     existingNode: transport.sharedNode,
                     // The app's long-lived listener, so the share does not bind
                     // a second one to port 7447 and `onRequestToShare` keeps
                     // pointing at this model.
-                    controlListener: askToShare.controlListener
+                    controlListener: askToShare.controlListener,
+                    linkOnly: linkOnly
                 )
             } catch {
                 self.detail = L("Could not start sharing: \(error)")
