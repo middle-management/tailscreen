@@ -565,9 +565,7 @@
 "Video is available on Windows only." = "Video is available on Windows only.";
 
 /* Sign-in + hub (TailscreenWindowsApp.swift) */
-"Sign in to your tailnet to share this screen or watch someone else's." = "Sign in to your tailnet to share this screen or watch someone else's.";
 "Try again" = "Try again";
-"Screens on your tailnet" = "Screens on your tailnet";
 "Waiting for browser sign-in…" = "Waiting for browser sign-in…";
 "Could not start Tailscale" = "Could not start Tailscale";
 "Discovery failed: %@" = "Discovery failed: %@";
@@ -689,7 +687,14 @@
 "Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet." = "Sharing without signing in works over a share link, and link sharing is turned off in Settings. Turn it on under Settings → Link sharing, or sign in to share over your tailnet.";
 "The share link couldn't be created. Check the network and try again." = "The share link couldn't be created. Check the network and try again.";
 
-/* MARK: - Welcome pane, before any sign-in (Apps/linux main.swift, HubSignInPane.swift) */
+/* MARK: - Welcome pane, before any sign-in (HubSignInPane.swift, Apps/linux main.swift) */
+"Share a screen with your tailnet, or with anyone over a link." = "Share a screen with your tailnet, or with anyone over a link.";
+"Your tailnet" = "Your tailnet";
+"Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around." = "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around.";
+"A share link" = "A share link";
+"No account needed" = "No account needed";
+"Guests join over an encrypted tunnel, and the sharer approves every one." = "Guests join over an encrypted tunnel, and the sharer approves every one.";
+"You're sharing via link — the link and your guests are on the card below." = "You're sharing via link — the link and your guests are on the card below.";
 "Open the sign-in page" = "Open the sign-in page";
 "Your saved Tailscale sign-in needs renewing." = "Your saved Tailscale sign-in needs renewing.";
 "Could not start Tailscale: %@" = "Could not start Tailscale: %@";

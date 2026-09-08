@@ -964,13 +964,33 @@ struct ViewerApp: App {
         return false
     }
 
-    /// The welcome pane's body copy: the first-run invitation, or whatever
-    /// went wrong — a failed bring-up, or a saved sign-in that turned out to
-    /// need the browser again. The reason belongs on the card the retry
-    /// button is on, not in a status line somewhere else.
-    private var welcomeMessage: String {
+    /// The tailnet card's body copy: the pitch by default, or whatever went
+    /// wrong — a failed bring-up, or a saved sign-in that turned out to need
+    /// the browser again. The reason belongs on the card the retry button is
+    /// on, not in a status line somewhere else.
+    private var welcomeTailnetMessage: String {
         picker.signInNote
-            ?? L("Sign in with Tailscale to share and view screens with your peers.")
+            ?? L(
+                "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
+            )
+    }
+
+    /// The pane's join handler, absent (so the field is not drawn) in the
+    /// previews and self-tests that wire no session machinery.
+    private var welcomeJoin: (@MainActor @Sendable (String) -> Void)? {
+        guard gJoinShare != nil else { return nil }
+        return { token in gJoinShare?(token) }
+    }
+
+    /// What the pane's share-link card offers — the pinned decision, given
+    /// this host's three flags. `.starting` counts as neither idle nor
+    /// announceable until the token exists, which is exactly the moment
+    /// `isLinkOnlyShare` flips.
+    private var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
+        WelcomePaneDecision.linkShareAction(
+            canShare: sharer.canShare,
+            isIdle: sharer.phase == .idle,
+            isLinkOnlyShare: sharer.isLinkOnlyShare)
     }
 
     /// …and its button. A parked login URL means the page is already waiting
@@ -1082,15 +1102,13 @@ struct ViewerApp: App {
         return false
     }
 
-    /// The share card as the welcome pane shows it: offered when this
-    /// session can actually capture something, and kept while a link-only
-    /// share is running whatever the capture answer has become — signed out,
-    /// this pane is the only surface that share's link, roster and approvals
-    /// could be on. Withheld otherwise, because a machine that cannot share
-    /// (a Wayland session with no portal) has nothing to say here that the
-    /// pane's other two paths do not already cover.
+    /// The share card as the welcome pane shows it: only once a share is
+    /// live (or has failed), because signed out this pane is the only
+    /// surface its link, roster and approvals could be on. While idle it
+    /// stays away — the share-link card's own button is what starts one, and
+    /// a second Start beside it would be two doors into one room.
     private var welcomeShareCard: ShareCard? {
-        guard sharer.canShare || sharer.phase != .idle else { return nil }
+        guard sharer.phase != .idle else { return nil }
         return shareCard
     }
 
@@ -1522,11 +1540,13 @@ struct ViewerApp: App {
                     // paths that need no Tailscale account: joining a share by
                     // link, and minting one of your own.
                     HubSignInPane(
-                        message: welcomeMessage,
-                        buttonLabel: welcomeButtonLabel,
+                        tailnetMessage: welcomeTailnetMessage,
+                        signInLabel: welcomeButtonLabel,
                         onSignIn: { gSignIn?() },
-                        shareCard: welcomeShareCard,
-                        joinCard: hubJoinCard)
+                        onJoin: welcomeJoin,
+                        shareAction: welcomeShareAction,
+                        onShare: { gSharer.startSharing() },
+                        shareCard: welcomeShareCard)
                 } else if gPickerMode {
                     PickerContent(
                         statusLine: picker.statusLine,

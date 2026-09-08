@@ -36,6 +36,7 @@ import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerSessionEndReason
 import struct TailscreenProtocol.ViewerSessionLifecycle
 import struct TailscreenProtocol.ViewerSessionTarget
+import enum TailscreenProtocol.WelcomePaneDecision
 import class TailscreenSharer.SharerAskToShareCoordinator
 // Targeted, like its neighbours: one enum, to word a viewer's link state.
 import enum TailscreenSharer.ViewerHealth
@@ -340,21 +341,20 @@ struct TailscreenWindowsApp: App {
 
     private var signIn: some View {
         let model = state
-        let message =
-            state.detail.isEmpty
-            ? L("Sign in to your tailnet to share this screen or watch someone else's.")
-            : state.detail
         let label = state.phase == .failed ? L("Try again") : L("Sign in to Tailscale")
         return HubSignInPane(
-            title: L("Screens on your tailnet"),
-            message: message,
-            buttonLabel: label,
+            tailnetMessage: state.welcomeTailnetMessage,
+            signInLabel: label,
             onSignIn: { model.signIn() },
-            // Beside sign-in, never behind it: a link-only share needs no
-            // Tailscale account, and while one is running this pane is the
-            // only surface its link, roster and approvals could be on.
-            shareCard: state.shareCard,
-            joinCard: hubJoinCard)
+            // Beside sign-in, never behind it: both link directions need no
+            // Tailscale account, so gating them on one would put an account
+            // in front of the paths that exist for people without one.
+            onJoin: { token in model.joinShare(token: token) },
+            shareAction: state.welcomeShareAction,
+            onShare: { model.startSharing() },
+            // While a link-only share runs, this pane is the only surface
+            // its link, roster and approvals could be on.
+            shareCard: state.sharing.isSharing ? state.shareCard : nil)
     }
 
     /// The share-by-token way in. A computed property with an explicit type
@@ -884,6 +884,28 @@ final class AppUIState: ObservableObject {
     /// No node, and none coming up: the sign-in pane's state. A share
     /// started from there is a link-only share — see `startSharing`.
     var isSignedOut: Bool { phase == .idle || phase == .failed }
+
+    /// The welcome pane's tailnet card copy: the pitch by default, or
+    /// whatever went wrong once something has. The reason belongs on the
+    /// card its Try again button is on, which is also why the window footer
+    /// deliberately stops repeating it before sign-in.
+    var welcomeTailnetMessage: String {
+        guard detail.isEmpty else { return detail }
+        return L(
+            "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
+        )
+    }
+
+    /// What the welcome pane's share-link card offers, via the pinned
+    /// `WelcomePaneDecision` both swift-cross-ui hubs read. `canShare` folds
+    /// in this app's two gates — a build without Windows.Graphics.Capture,
+    /// and a viewing session already owning the window.
+    var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
+        WelcomePaneDecision.linkShareAction(
+            canShare: shareSession.isSupported && watching == nil,
+            isIdle: !sharing.isSharing,
+            isLinkOnlyShare: sharing.linkIsOnlyWayIn)
+    }
 
     /// The sharing half of the hub, or nil on a build that cannot capture.
     ///

@@ -518,12 +518,19 @@ again returns to the pane carrying the URL, so the button opens the page
 the parked `up()` is already waiting on rather than starting a second
 bring-up behind it. The pane itself is now shared —
 `TailscreenHubUI.HubSignInPane`, the Windows app's own `SignInPane` moved
-up with a share-card slot added — so a link-only share's link, roster and
-approvals render on the one surface a signed-out app has. Deviations: the
+up — and follows PR #303's macOS welcome pane card for card: **Your
+tailnet** (sign in, and what signing in buys) beside **A share link**
+(both accountless directions — an inline paste field for joining, a button
+for minting). Its one branch is the portable
+`WelcomePaneDecision.linkShareAction`, pinned by
+`WelcomePaneDecisionTests`. Where the mac pane points a running link-only
+share at the menu bar, these hosts render the live share card under the
+two: its link, roster and approvals have no other surface. Deviations: the
 macOS `AppState` still keeps its own copy of the link lifecycle (phase 4's,
-converging it remains rename-shaped work); `Settings → Link sharing` stays
-macOS-only, so the two swift-cross-ui hosts have no off switch for the
-feature.)*
+converging it remains rename-shaped work) and its own copy of the welcome
+branch (`welcomeLinkShareAction`, PR #303, which predates the portable
+one); `Settings → Link sharing` stays macOS-only, so the two swift-cross-ui
+hosts have no off switch for the feature.)*
 
 ## Risks & mitigations
 
