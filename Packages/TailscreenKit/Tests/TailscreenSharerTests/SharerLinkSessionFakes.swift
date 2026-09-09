@@ -13,8 +13,7 @@ import Foundation
 import Synchronization
 import TailscaleKit
 import TailscreenProtocol
-
-@testable import TailscreenSharer
+import TailscreenSharer
 
 // MARK: - The suspension point
 

@@ -25,9 +25,8 @@
 import Foundation
 import TailscaleKit
 import TailscreenProtocol
+import TailscreenSharer
 import XCTest
-
-@testable import TailscreenSharer
 
 final class SharerLinkSessionTests: XCTestCase {
 
