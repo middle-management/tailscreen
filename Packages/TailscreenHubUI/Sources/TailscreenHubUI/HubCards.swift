@@ -218,9 +218,9 @@ public struct ShareCard: View {
             if let extraAction {
                 Button(extraAction.label, action: extraAction.perform)
             }
-            drawingCluster
             peopleCluster
             linkCluster
+            drawingCluster
             settingsCluster
         }
         .padding(14)
@@ -434,25 +434,29 @@ public struct ShareCard: View {
     @ViewBuilder private var linkCluster: some View {
         if isSharing, let linkSharing {
             Divider()
-            Toggle(
-                L("Share via Link"),
-                isOn: Binding(
-                    get: { linkSharing.token != nil || linkSharing.busy },
-                    set: { linkSharing.onToggle($0) })
-            )
-            .toggleStyle(.switch)
+            if linkSharing.isOnlyWayIn {
+                // A link-only share IS its link: there is no off position
+                // short of Stop Sharing, so a toggle here would be a switch
+                // that refuses to flip. State the mode instead — the macOS
+                // menubar's `ShareViaLinkSection` splits the same way.
+                Text(L("Sharing via link — the link is the only way in"))
+                    .font(.callout)
+                    .foregroundColor(HubStyle.secondaryText)
+            } else {
+                Toggle(
+                    L("Share via Link"),
+                    isOn: Binding(
+                        get: { linkSharing.token != nil || linkSharing.busy },
+                        set: { linkSharing.onToggle($0) })
+                )
+                .toggleStyle(.switch)
+            }
             if linkSharing.busy {
                 Text(L("Creating link…"))
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
             } else if let token = linkSharing.token {
-                Text(ShareLinkFormat.link(token: token))
-                    .font(.caption)
-                    .textSelectionEnabled()
-                // The browser form: same token, opens in any browser, no app.
-                Text(ShareLinkFormat.webLink(token: token))
-                    .font(.caption)
-                    .textSelectionEnabled()
+                linkBody(token: token, copy: linkSharing.onCopy)
                 Text(guestCountLine)
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
@@ -467,6 +471,45 @@ public struct ShareCard: View {
                 .font(.caption)
                 .foregroundColor(HubStyle.secondaryText)
             }
+        }
+    }
+
+    /// The link, in whichever form this host can hand over.
+    ///
+    /// With a clipboard: one truncated line so the card stays compact, and
+    /// the macOS card's three buttons — the `tailscreen:` link for a machine
+    /// with the app, the `https:` one for a browser with nothing installed,
+    /// and the bare token for pasting into a join field. Without one: both
+    /// links in full, selectable, exactly as before — a link you can select
+    /// and paste always works, which is why the fallback is not a disabled
+    /// button.
+    ///
+    /// A method taking the closure rather than reading `linkSharing` inside
+    /// the cluster: an `if let` over a captured optional closure nested in
+    /// that builder is one of the shapes this result builder typechecks
+    /// badly, and the cluster is already three levels deep.
+    @ViewBuilder private func linkBody(
+        token: String, copy: (@MainActor @Sendable (String) -> Void)?
+    ) -> some View {
+        if let copy {
+            Text(ShareLinkFormat.link(token: token))
+                .font(.caption)
+                .lineLimit(1)
+                .textSelectionEnabled()
+            HStack(spacing: 6) {
+                Button(L("Copy Link")) { copy(ShareLinkFormat.link(token: token)) }
+                Button(L("Copy Web Link")) { copy(ShareLinkFormat.webLink(token: token)) }
+                Button(L("Copy Token")) { copy(token) }
+                Spacer()
+            }
+        } else {
+            Text(ShareLinkFormat.link(token: token))
+                .font(.caption)
+                .textSelectionEnabled()
+            // The browser form: same token, opens in any browser, no app.
+            Text(ShareLinkFormat.webLink(token: token))
+                .font(.caption)
+                .textSelectionEnabled()
         }
     }
 

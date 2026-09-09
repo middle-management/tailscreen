@@ -133,6 +133,11 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// True while the link is being created or rotated (the relay
         /// bootstrap blocks for the network); toggle flips are ignored.
         public var linkBusy = false
+        /// This share was started signed out: the guest tunnel is its only
+        /// socket, so the link is the only way in. The card states the mode
+        /// instead of drawing a toggle with no off position short of Stop
+        /// Sharing.
+        public var linkIsOnlyWayIn = false
 
         public init() {}
     }
@@ -366,13 +371,20 @@ public final class WindowsShareSession: @unchecked Sendable {
     ///   login the user is never prompted for. The share then waits at that
     ///   login forever and never appears on anyone's tailnet. Sharing the
     ///   node is also what gives the app ONE identity, as the macOS app has.
+    /// - Parameter linkOnly: run this share with **no tsnet node at all** —
+    ///   started signed out, the guest tunnel is the server's only socket and
+    ///   the link is the only way in. `existingNode`, `hostname`, `statePath`
+    ///   and `controlListener` are all inert then: there is no tailnet
+    ///   listener, no ask-to-share channel and no LocalAPI identity, so every
+    ///   viewer arrives as a guest at the mandatory approval gate.
     public func beginSharing(
         item: WGC.CaptureItem,
         hostname: String,
         statePath: String,
         quality: QualitySettings,
         existingNode: TailscaleNode? = nil,
-        controlListener: TailscreenControlListener? = nil
+        controlListener: TailscreenControlListener? = nil,
+        linkOnly: Bool = false
     ) async throws {
         let generation = beginShareGeneration()
         // A capture FACTORY, not an instance, because the server respawns the
@@ -527,6 +539,12 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         newServer.onCaptureStopped = { [weak self] error in
             guard let self, self.isCurrentShare(generation) else { return }
+            // The share is over, so the generation ends here rather than only
+            // in `stopSharing`: a link-only `beginSharing` still suspended in
+            // its bootstrap would otherwise pass its own `isCurrentShare`
+            // check on the way out and republish `isSharing` for a capture
+            // that has already died.
+            self.endShareGeneration()
             // Before the status push: a capture that died must not leave the
             // microphone open, and the status it publishes says `micAvailable
             // = false`, so the two would otherwise disagree.
@@ -535,7 +553,14 @@ public final class WindowsShareSession: @unchecked Sendable {
             // died on its own must not leave a click-swallowing window over a
             // desktop that is no longer sharing anything.
             self.teardownDrawing()
+            // Captured as the status is blanked — inside the same locked
+            // body, since `status` is lock-guarded — for the same reason the
+            // GTK engine captures it: this task reaches the actor a hop
+            // later, and a Stop → Start in between can have minted a
+            // replacement link that an unscoped teardown would close.
+            var minted: String?
             self.update {
+                minted = $0.linkToken
                 $0.isSharing = false
                 $0.viewerCount = 0
                 $0.viewers = []
@@ -548,10 +573,17 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.micOn = false
                 $0.linkToken = nil
                 $0.linkBusy = false
+                $0.linkIsOnlyWayIn = false
             }
             // The server drives its own teardown from here (listener close
-            // included); only the guest node remains.
-            Task { [link = self.link] in await link.teardown() }
+            // included); only the guest node remains. The server goes with the
+            // token for the same reason the GTK engine passes it: a
+            // `setLinkSharing(true)` still in flight owns a claim that only
+            // its own server can invalidate, and without that it could publish
+            // a token onto a share whose capture is gone.
+            Task { [link = self.link, server = newServer] in
+                await link.teardown(for: server, mintedToken: minted)
+            }
         }
 
         // Publish the server, then assert the gate — in that order, and both
@@ -600,7 +632,47 @@ public final class WindowsShareSession: @unchecked Sendable {
         let controlURL = ProcessInfo.processInfo.environment["TAILSCREEN_TS_CONTROL_URL"]
         let authKey = ProcessInfo.processInfo.environment["TAILSCREEN_TS_AUTHKEY"]
         do {
-            if let controlURL {
+            if linkOnly {
+                // The guest node comes up first because it is the whole
+                // transport, and the token exists the moment the share does.
+                // `startLinkOnly` unwinds its own node on failure, so the
+                // catch below has only the server left to clear.
+                update {
+                    $0.linkIsOnlyWayIn = true
+                    $0.linkBusy = true
+                }
+                let token = try await link.startLinkOnly(
+                    on: newServer, filterData: selectionData, quality: quality)
+                // Only once this is still the current share: a token on screen
+                // for a share that was stopped mid-start is a link that admits
+                // people to nothing. The stop that landed inside the await
+                // tore down a link that did not exist yet, so close this one.
+                guard isCurrentShare(generation) else {
+                    lock.withLock { if server === newServer { server = nil } }
+                    await newServer.stop()
+                    // Scoped to the token this attempt minted: the
+                    // replacement share that made this one stale may already
+                    // have minted a link of its own, and closing whichever
+                    // link is current would kill the live one.
+                    //
+                    // Nothing is published from here at all. Closing our own
+                    // node proves only that, not that the STATUS is still
+                    // ours — a replacement that has published its bootstrap
+                    // flags would have them blanked, and its own completion
+                    // does not set them again. The stop path already cleared
+                    // the status of the share this attempt belonged to.
+                    await link.teardown(mintedToken: token)
+                    return
+                }
+                // `linkBusy` deliberately stays true here: it is what the
+                // welcome pane reads as "a start is in flight", and
+                // `isSharing` does not rise until the publish at the end of
+                // this method. Clearing it now opens a window where the pane
+                // classifies the state as idle and offers the button again —
+                // a second click, a second share. The two move together, in
+                // that final update.
+                update { $0.linkToken = token }
+            } else if let controlURL {
                 try await newServer.start(
                     hostname: hostname, authKey: authKey, path: statePath,
                     controlURL: controlURL, filterData: selectionData, quality: quality,
@@ -622,6 +694,12 @@ public final class WindowsShareSession: @unchecked Sendable {
                 update {
                     $0.isSharing = false
                     $0.message = ""
+                    // A link-only start that failed leaves the card claiming
+                    // to be minting a link for a share that never happened.
+                    // (`startLinkOnly` already closed its own guest node.)
+                    $0.linkToken = nil
+                    $0.linkBusy = false
+                    $0.linkIsOnlyWayIn = false
                 }
             }
             throw error
@@ -640,6 +718,10 @@ public final class WindowsShareSession: @unchecked Sendable {
         update {
             $0.isSharing = true
             $0.message = regionNote
+            // With the share now live, the bootstrap is over — published in
+            // the same snapshot so no observer sees "not sharing, not busy"
+            // for a link-only share that is up.
+            $0.linkBusy = false
         }
     }
 
@@ -765,8 +847,13 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// attaches its listener to the running server; `off` drops every guest
     /// and kills the token. No-op while idle or busy.
     public func setLinkSharing(_ on: Bool) {
-        let (server, busy) = lock.withLock { (self.server, self.status.linkBusy) }
-        guard !busy, let server else { return }
+        let (server, busy, linkOnly) = lock.withLock {
+            (self.server, self.status.linkBusy, self.status.linkIsOnlyWayIn)
+        }
+        // A link-only share has nothing to toggle: the link IS the share, and
+        // turning it off would drop every guest and leave a running capture
+        // with no listener at all.
+        guard !busy, !linkOnly, let server else { return }
         update { $0.linkBusy = true }
         Task { [link] in
             var token: String?
@@ -990,12 +1077,15 @@ public final class WindowsShareSession: @unchecked Sendable {
         stopVoice()
         // The token dies with the share. The server's stop() below closes
         // the guest listener and tells every guest, so only the node is left
-        // to close — and the card's toggle drops with the share.
-        await link.teardown()
+        // to close — and the card's toggle drops with the share. Scoped to
+        // this server so a link toggled on mid-share and still bootstrapping
+        // is invalidated with it, and a replacement's is not.
+        await link.teardown(for: running)
         guard let running else {
             update {
                 $0.linkToken = nil
                 $0.linkBusy = false
+                $0.linkIsOnlyWayIn = false
             }
             return
         }
@@ -1017,6 +1107,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.preview = nil
             $0.linkToken = nil
             $0.linkBusy = false
+            $0.linkIsOnlyWayIn = false
         }
     }
 

@@ -674,11 +674,7 @@ private struct ShareLinkCard: View {
                     .foregroundStyle(.red)
             }
 
-            switch AppState.welcomeLinkShareAction(
-                linkSharingEnabled: appState.linkSharingEnabled,
-                sharingState: appState.sharingState,
-                isGuestOnlyShare: appState.isGuestOnlyShare
-            ) {
+            switch appState.welcomeLinkShareAction {
             case .offer:
                 Button {
                     Task { await appState.presentNativePicker() }

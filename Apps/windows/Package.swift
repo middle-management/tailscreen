@@ -109,6 +109,13 @@ let package = Package(
                 .product(
                     name: "WinUIBackend", package: "swift-cross-ui",
                     condition: .when(platforms: [.windows])),
+                // The clipboard binding (`Clipboard`, `DataPackage`) the share
+                // card's Copy buttons go through — see WindowsClipboard.swift.
+                // WinUI depends on this module but does not re-export it, so
+                // importing it needs the product named here.
+                .product(
+                    name: "UWP", package: "swift-winui",
+                    condition: .when(platforms: [.windows])),
                 .product(
                     name: "WinUI", package: "swift-winui",
                     condition: .when(platforms: [.windows])),

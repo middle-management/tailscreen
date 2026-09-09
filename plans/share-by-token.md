@@ -415,7 +415,8 @@ StableNodeID-keyed applies; Deny tunnel-denylists the key). Zero new
 catalog keys — every string reuses phase 4's. Deviations: guest rows are
 named by tunnel IP, not key fingerprint (the resolve is async and the
 row mapping isn't; same polish bucket as the macOS notification labels);
-link-only (signed-out) sharing stays macOS-only, tracked in the matrix.)*
+link-only (signed-out) sharing stays macOS-only, tracked in the matrix
+— **closed by phase 9**.)*
 
 **Phase 8 — `tailscreen:` scheme handlers on Linux and Windows.** A copied
 link that must be *pasted* on two of three platforms is half a link; this
@@ -493,6 +494,47 @@ fork directly). Docs ship with their phases per the repo rule, safe under the
 - **5**: `TailscreenHubUI/HubHeader.swift` + join sheet, `Apps/linux`,
   `Apps/windows` glue, `docs/{usage,security,self-hosted,platform-support}.md`,
   `docs/spec.md` appendix.
+
+**Phase 9 — Link-only (signed-out) sharing on Linux and Windows, and a
+GTK app that stops assuming a login.** Phase 7's remaining deviation, plus
+the first-launch behaviour that made it invisible: the GTK app opened by
+bringing a tsnet node up nobody had asked for, so a person who had never
+signed in met "Waiting for login…" — with the two accountless paths (join
+by link, share by link) behind it.
+*(status: landed. The lifecycle is again written once:
+`SharerLinkSession.startLinkOnly(on:filterData:quality:)` is the mirror
+image of `enable` — guest node first because it *is* the transport, then
+`server.startGuestOnly` with its listeners as the only sockets, then the
+token — unwinding its own node on failure. Both engines take it through
+one new parameter (`LinuxShareSession.beginShare(node:)` now optional,
+`WindowsShareSession.beginSharing(linkOnly:)`), and both publish
+`isLinkOnlyShare`/`linkIsOnlyWayIn` so the shared card states the mode
+instead of drawing a toggle with no off position — the same split the
+macOS `ShareViaLinkSection` makes. The GTK app gains a `signedOut` picker
+phase (the initial one) and restores a saved session only when the
+profile's state directory holds one, the same test as the macOS hub's
+`attemptSessionRestore`; a restore that turns out to need the browser
+again returns to the pane carrying the URL, so the button opens the page
+the parked `up()` is already waiting on rather than starting a second
+bring-up behind it. The pane itself is now shared —
+`TailscreenHubUI.HubSignInPane`, the Windows app's own `SignInPane` moved
+up — and follows PR #303's macOS welcome pane card for card: **Your
+tailnet** (sign in, and what signing in buys) beside **A share link**
+(both accountless directions — an inline paste field for joining, a button
+for minting). Its one branch is the portable
+`WelcomePaneDecision.linkShareAction`, pinned by
+`WelcomePaneDecisionTests`. Where the mac pane points a running link-only
+share at the menu bar, these hosts render the live share card under the
+two: its link, roster and approvals have no other surface. All three hosts now read that one
+function: macOS's `AppState.welcomeLinkShareAction` became an argument
+mapping — its Settings switch into `canShare` — and its duplicate suite
+went with the duplicate branch. The link lifecycle is converged too: macOS's
+`AppState` drives the same `SharerLinkSession` — enable/disable/rotate/
+evict/teardown and `startLinkOnly` — and keeps only the published mirrors
+its SwiftUI reads synchronously plus the `onGuestViewerDenied` wire, which
+needs its own server instance. Remaining deviation: `Settings → Link
+sharing` stays macOS-only, so the two swift-cross-ui hosts have no off
+switch for the feature.)*
 
 ## Risks & mitigations
 

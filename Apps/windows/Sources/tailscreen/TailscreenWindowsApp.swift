@@ -36,6 +36,7 @@ import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerSessionEndReason
 import struct TailscreenProtocol.ViewerSessionLifecycle
 import struct TailscreenProtocol.ViewerSessionTarget
+import enum TailscreenProtocol.WelcomePaneDecision
 import class TailscreenSharer.SharerAskToShareCoordinator
 // Targeted, like its neighbours: one enum, to word a viewer's link state.
 import enum TailscreenSharer.ViewerHealth
@@ -221,11 +222,34 @@ struct TailscreenWindowsApp: App {
             } else {
                 watching(host: host)
             }
-        } else if state.phase == .idle || state.phase == .failed {
+        } else if state.isSignedOut && state.sharing.isSharing {
+            // Signed out WITH a share running: the sharing view owns the
+            // window. Two things that each want the whole column would
+            // otherwise stack, and "get started" over a share already going
+            // out is not a screen anybody should be shown.
+            signedOutSharing
+        } else if state.isSignedOut {
             signIn
         } else {
             hub
         }
+    }
+
+    /// The live share, alone, in the hub's own column. Signed out this is the
+    /// only surface its link, roster and approvals could be on, so it reads as
+    /// the whole window rather than as a postscript to an empty state.
+    @ViewBuilder private var signedOutSharing: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                if let card = state.shareCard {
+                    card
+                }
+            }
+            .frame(maxWidth: HubStyle.contentMaxWidth)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The shared session placard, with every action routed at the model. The
@@ -340,14 +364,21 @@ struct TailscreenWindowsApp: App {
 
     private var signIn: some View {
         let model = state
-        let message =
-            state.detail.isEmpty
-            ? L("Sign in to your tailnet to share this screen or watch someone else's.")
-            : state.detail
         let label = state.phase == .failed ? L("Try again") : L("Sign in to Tailscale")
-        return SignInPane(
-            message: message, buttonLabel: label, onSignIn: { model.signIn() },
-            joinCard: hubJoinCard)
+        return HubSignInPane(
+            tailnetMessage: state.welcomeTailnetMessage,
+            signInLabel: label,
+            onSignIn: { model.signIn() },
+            // Beside sign-in, never behind it: both link directions need no
+            // Tailscale account, so gating them on one would put an account
+            // in front of the paths that exist for people without one.
+            onJoin: { token in model.joinShare(token: token) },
+            shareAction: state.welcomeShareAction,
+            onShare: { model.startSharing() },
+            // A start that failed, worded under the button that retries it —
+            // kept apart from `detail` (the tailnet card's) so a share
+            // failure is not reported on the sign-in card.
+            shareNote: state.shareDetail)
     }
 
     /// The share-by-token way in. A computed property with an explicit type
@@ -416,48 +447,6 @@ struct TailscreenWindowsApp: App {
     }
 }
 
-/// The pre-sign-in state: what this app is for, and the one button that starts
-/// it.
-///
-/// A card rather than a bare button because this is the first thing anyone sees
-/// and "Tailscreen" over a lone control says nothing about what pressing it
-/// does. On failure the same card carries the reason and says "Try again",
-/// which keeps the error where the retry is.
-struct SignInPane: View {
-    let message: String
-    let buttonLabel: String
-    let onSignIn: @MainActor @Sendable () -> Void
-    /// The share-by-token way in, offered beside sign-in because joining by
-    /// token is exactly the path that needs no Tailscale account — hiding it
-    /// behind the sign-in button would gate the accountless flow on an
-    /// account. Nil renders nothing.
-    var joinCard: HubJoinCard?
-
-    var body: some View {
-        VStack(spacing: 14) {
-            VStack(spacing: 12) {
-                Text(L("Screens on your tailnet"))
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                Text(message)
-                    .font(.callout)
-                    .foregroundColor(HubStyle.secondaryText)
-                    .multilineTextAlignment(.center)
-                Button(buttonLabel, action: onSignIn)
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .hubCard()
-            if let joinCard {
-                joinCard
-            }
-        }
-        .frame(maxWidth: HubStyle.contentMaxWidth)
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    }
-}
-
 /// The server's viewer health as the chrome's — case for case, so
 /// TailscreenHubUI can draw the roster without importing the sharer tier
 /// (the same import-direction rule the session-phase enums follow). The GTK
@@ -489,6 +478,11 @@ final class AppUIState: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var status = L("Not signed in")
     @Published var detail = ""
+    /// A SHARE failure, kept apart from `detail` so the welcome pane can put
+    /// it on the card that offered the share rather than on the sign-in card
+    /// beside it. Cleared when a fresh attempt starts, so a retry never
+    /// carries the last one's reason.
+    @Published var shareDetail: String?
     @Published var loginURL: String?
     /// The RAW discovery result. Stays unfiltered on purpose: the filter menu
     /// enumerates its tags, `connect(toID:)` resolves against it, and a filter
@@ -727,14 +721,13 @@ final class AppUIState: ObservableObject {
     /// preview mode, so the platforms' screenshots read as one product.
     static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
 
-    /// The one preview state that is NOT signed in: the hub before login,
-    /// which is where the join card earns its place (joining by token needs
-    /// no account). Spelled as the macOS and GTK apps spell it, so one
-    /// screenshot job drives all three with one vocabulary. It rides
-    /// `--ui-preview` alongside for what that flag suppresses rather than
-    /// what it seeds — without it `init` falls through to `signIn()` on a
-    /// machine with a previous login, which would sign the state away
-    /// mid-screenshot.
+    /// The one preview state that is NOT signed in: the welcome pane a first
+    /// launch opens on, which is where the two no-account ways in earn their
+    /// place. Spelled as the macOS and GTK apps spell it, so one screenshot
+    /// job drives all three with one vocabulary. It rides `--ui-preview`
+    /// alongside for what that flag suppresses rather than what it seeds —
+    /// without it `init` falls through to `signIn()` on a machine with a
+    /// previous login, which would sign the state away mid-screenshot.
     static let isUIPreviewWelcome = CommandLine.arguments.contains("--ui-preview-welcome")
 
     /// The seeded preview state: tagged and untagged, online and offline,
@@ -743,16 +736,14 @@ final class AppUIState: ObservableObject {
     /// of the filter menu. Verbatim data, deliberately not localized.
     private func seedUIPreview() {
         if Self.isUIPreviewWelcome {
-            // `.starting` WITH a login URL is what the live app shows between
-            // tsnet asking for a browser and the netmap landing: `isPicking`
-            // is false, so `PickerContent` renders the login card over its
-            // spinner with the join card under it. The URL is fake data on the
-            // same footing as the seeded hostnames below. `activeAccountName`
-            // is deliberately left at its default — a hub nobody has signed
-            // into is exactly what this shoots.
-            phase = .starting
-            status = L("Waiting for browser sign-in…")
-            loginURL = "https://login.tailscale.com/a/0f19c4ab2d5e"
+            // `.idle` is the signed-out phase, so `content` renders the
+            // welcome pane: the tailnet card, and the share-link card with
+            // both no-account directions under it. Seeding stops here on
+            // purpose — every line below is a tailnet this state does not
+            // have, `activeAccountName` included, and `loginURL` stays nil
+            // because nobody has started a sign-in to be waiting on.
+            phase = .idle
+            status = L("Not signed in")
             return
         }
         phase = .ready
@@ -916,6 +907,40 @@ final class AppUIState: ObservableObject {
         PeerListFilterStore.save(new)
     }
 
+    /// No node, and none coming up: the sign-in pane's state. A share
+    /// started from there is a link-only share — see `startSharing`.
+    var isSignedOut: Bool { phase == .idle || phase == .failed }
+
+    /// The welcome pane's tailnet card copy: the pitch by default, or
+    /// whatever went wrong once something has. The reason belongs on the
+    /// card its Try again button is on, which is also why the window footer
+    /// deliberately stops repeating it before sign-in.
+    var welcomeTailnetMessage: String {
+        guard detail.isEmpty else { return detail }
+        return L(
+            "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
+        )
+    }
+
+    /// What the welcome pane's share-link card offers, via the pinned
+    /// `WelcomePaneDecision` both swift-cross-ui hubs read. `canShare` folds
+    /// in this app's two gates — a build without Windows.Graphics.Capture,
+    /// and a viewing session already owning the window.
+    ///
+    /// The other two are about the bootstrap window, which this hub renders
+    /// (unlike the GTK one, whose `.starting` phase already swaps the pane
+    /// for the sharing view): a link-only start publishes `linkBusy` before
+    /// `isSharing`, so idle has to exclude it or the button stays pressable
+    /// through the relay handshake — and `linkIsOnlyWayIn` is set at the
+    /// same early moment, so the "you're sharing via link" note waits for
+    /// the token rather than pointing at a card that does not exist yet.
+    var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
+        WelcomePaneDecision.linkShareAction(
+            canShare: shareSession.isSupported && watching == nil,
+            isIdle: !sharing.isSharing && !sharing.linkBusy,
+            isLinkOnlyShare: sharing.linkIsOnlyWayIn && sharing.linkToken != nil)
+    }
+
     /// The sharing half of the hub, or nil on a build that cannot capture.
     ///
     /// Withheld rather than shown and then failing: a Windows build without
@@ -929,7 +954,11 @@ final class AppUIState: ObservableObject {
                 : L("Not sharing"),
             isSharing: sharing.isSharing,
             canShare: watching == nil,
-            startLabel: L("Share this screen"),
+            // Signed out, the button says what it will actually do: there is
+            // no tailnet to share to, so the share comes up over the guest
+            // tunnel with its link as the only way in. Same wording as the
+            // macOS welcome pane's link.
+            startLabel: isSignedOut ? L("Share your screen via Link…") : L("Share this screen"),
             notes: shareNotes,
             // The roster: who is watching, and what can be done about them.
             // `notes` stays for statistics — a person is not a note.
@@ -966,19 +995,27 @@ final class AppUIState: ObservableObject {
                         message: L("\($0.fromHostname) wants you to share your screen"),
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
                 },
-            settings: [
-                HubToggle(
-                    label: L("Require approval for new viewers"),
-                    // Said only while it is off, and said as a consequence
-                    // rather than a warning glyph: this is the one setting on
-                    // the card whose wrong value is invisible in normal use —
-                    // the share looks identical, it just lets strangers in.
-                    caption: sharing.requireApproval
-                        ? nil
-                        : L("Anyone on your tailnet who can reach this machine can watch."),
-                    isOn: sharing.requireApproval,
-                    set: { [weak self] in self?.setRequireApproval($0) })
-            ],
+            // The approval gate governs TAILNET viewers, and a link-only
+            // share has none: every viewer is a guest, and a guest is parked
+            // for explicit approval whatever this says (`admissionDecision`).
+            // Showing it would be a switch wired to nothing, under a caption
+            // describing a tailnet this share never bound a listener on. The
+            // macOS card withholds it in the same state for the same reason.
+            settings: sharing.linkIsOnlyWayIn
+                ? []
+                : [
+                    HubToggle(
+                        label: L("Require approval for new viewers"),
+                        // Said only while it is off, and said as a consequence
+                        // rather than a warning glyph: this is the one setting on
+                        // the card whose wrong value is invisible in normal use —
+                        // the share looks identical, it just lets strangers in.
+                        caption: sharing.requireApproval
+                            ? nil
+                            : L("Anyone on your tailnet who can reach this machine can watch."),
+                        isOn: sharing.requireApproval,
+                        set: { [weak self] in self?.setRequireApproval($0) })
+                ],
             quality: HubQuality(
                 settings: quality,
                 isSharing: sharing.isSharing,
@@ -1092,8 +1129,15 @@ final class AppUIState: ObservableObject {
             token: sharing.linkToken,
             busy: sharing.linkBusy,
             guestCount: guests,
+            // A link-only share has no off position short of Stop Sharing —
+            // the card says so rather than drawing a switch that would refuse
+            // to flip.
+            isOnlyWayIn: sharing.linkIsOnlyWayIn,
             onToggle: toggle,
-            onNewLink: newLink)
+            onNewLink: newLink,
+            // The WinRT clipboard — so the link is a click rather than a
+            // careful drag across three wrapped lines of token.
+            onCopy: { copyToClipboard($0) })
     }
 
     /// Take a share-status snapshot, and reconcile the notifications with it.
@@ -1804,14 +1848,35 @@ final class AppUIState: ObservableObject {
     }
 
     func startSharing() {
-        guard phase == .ready, !sharing.isSharing else { return }
+        // Signed out is a real way to share, not a blocked one: the share
+        // comes up over the guest tunnel with its link as the only way in,
+        // exactly as the macOS welcome pane's "Share your screen via Link…".
+        // Mid-bring-up (`.starting`) is still refused — the person is signing
+        // in, and turning that into a link-only share would answer a question
+        // they had not finished asking.
+        let linkOnly = isSignedOut
+        // `linkBusy` is the in-flight link-only bootstrap: `isSharing` only
+        // turns true once the share is live, so without this a second click
+        // during the relay handshake starts a whole second share, and the
+        // first becomes a stale generation tearing itself down.
+        guard phase == .ready || linkOnly, !sharing.isSharing, !sharing.linkBusy else { return }
         detail = ""
+        shareDetail = nil
 
         let item: WGC.CaptureItem?
         do {
             item = try shareSession.pickTarget()
         } catch {
-            detail = L("Could not open the capture picker: \(error)")
+            // Signed out, the button that opened this picker lives on the
+            // share-link card, so its failure belongs there — `detail` is
+            // rendered by the welcome pane's *tailnet* card, which would put
+            // a capture error under the sign-in button that had nothing to
+            // do with it. Same split `beginSharing`'s failures already make.
+            if linkOnly {
+                shareDetail = L("Could not open the capture picker: \(error)")
+            } else {
+                detail = L("Could not open the capture picker: \(error)")
+            }
             return
         }
         // Dismissing the picker is a decision, not a failure. Say nothing.
@@ -1832,15 +1897,25 @@ final class AppUIState: ObservableObject {
                     // THE app's node, not a new one. A second node means a
                     // second machine key, a second browser login nobody is
                     // prompted for, and a share that waits at that login
-                    // forever without ever joining the tailnet.
+                    // forever without ever joining the tailnet. Nil signed
+                    // out, where `linkOnly` says there is to be no node at
+                    // all.
                     existingNode: transport.sharedNode,
                     // The app's long-lived listener, so the share does not bind
                     // a second one to port 7447 and `onRequestToShare` keeps
                     // pointing at this model.
-                    controlListener: askToShare.controlListener
+                    controlListener: askToShare.controlListener,
+                    linkOnly: linkOnly
                 )
             } catch {
-                self.detail = L("Could not start sharing: \(error)")
+                // Signed out this is the welcome pane's share-link card note;
+                // signed in it is the window footer, as before.
+                let reason = L("Could not start sharing: \(error)")
+                if linkOnly {
+                    self.shareDetail = reason
+                } else {
+                    self.detail = reason
+                }
             }
         }
     }

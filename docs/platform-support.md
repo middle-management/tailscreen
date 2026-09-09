@@ -51,8 +51,8 @@ what the partial case *is*, because that is the part a reader can act on.
 | Wide gamut / 10-bit / HDR (sharing) | ✅ | ❌ | ❌ | — |
 | Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ | ❌ |
 | Share via Link (guests without a Tailscale account) | ✅ | ✅ | ✅ | — |
-| Copy Link / Copy Token buttons | ✅ | ⚠️ select the link text | ⚠️ select the link text | — |
-| Start a share without signing in (link-only) | ✅ | ❌ | ❌ | — |
+| Copy Link / Copy Web Link / Copy Token buttons | ✅ | ✅ | ✅ | — |
+| Start a share without signing in (link-only) | ✅ | ✅ | ✅ | — |
 | Join a share by link/token as a guest | ✅ | ✅ + `--join` CLI | ✅ | ✅ the only way in: the **web link** |
 | Guests draw + request control (same capability gates as tailnet viewers) | ✅ | ✅ | ✅ | ✅ |
 | `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² | ⚠️ the web link opens the page; `tailscreen:` needs an app |
@@ -60,7 +60,7 @@ what the partial case *is*, because that is the part a reader can act on.
 ³ Browsers refuse to play audio until the page has been clicked; the
 **Enable audio** button is that click. ⁴ In a browser, **Join** means opening
 the **web link** (`https://tailscreen.dev/view/#tc…`, from **Copy Web
-Link** on macOS or the second line of the Linux/Windows share card) — or
+Link** on any of the three apps' share cards) — or
 opening the page bare and pasting any form of the link, or the bare
 token, into its join field, the apps' join sheet as a page. Either way the
 token rides the URL fragment, so it never reaches the server hosting the

@@ -170,9 +170,9 @@ capability to knock, never capability to watch.**
   approval, every time — so the answer to "who can send input to my
   machine?" stays: only the one viewer you granted, for as long as you
   let them.
-- **A share can be link-only.** Started signed out (macOS), a share runs
-  with the guest tunnel as its *only* transport — no Tailscale account,
-  no control plane, no tailnet listener bound at all. Everything above
+- **A share can be link-only.** Started signed out — on any of the three
+  apps — a share runs with the guest tunnel as its *only* transport: no
+  Tailscale account, no control plane, no tailnet listener bound at all. Everything above
   applies unchanged; what disappears is surface, not protection: there is
   no tailnet side to reach, and the DERP relay that bootstraps guests
   still sees only ciphertext.

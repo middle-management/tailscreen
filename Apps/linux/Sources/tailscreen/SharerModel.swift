@@ -207,6 +207,20 @@ final class SharerModel: ObservableObject {
     /// token = link off, which is what the toggle shows.
     @Published private(set) var linkToken: String?
     @Published private(set) var linkBusy = false
+    /// True while a LINK-ONLY share is running: started signed out, so the
+    /// guest tunnel is the server's only socket and the link is the only way
+    /// in. The card states the mode instead of drawing a toggle that could
+    /// not be flipped off.
+    @Published private(set) var isLinkOnlyShare = false
+
+    /// Supplied by `main` — whether starting a share *right now*, with no
+    /// tsnet node, should mint a link-only share rather than refuse.
+    ///
+    /// True exactly while the hub sits on its signed-out pane. Deliberately
+    /// not "is the node nil": the node is also nil mid-bring-up, and a Start
+    /// pressed while a browser login is in flight means "share on my tailnet,
+    /// in a moment", not "share to strangers by link instead".
+    var linkOnlyShareAllowed: (() -> Bool)?
 
     /// The card's Share via Link toggle / New Link, forwarded to the engine.
     func setLinkSharing(_ on: Bool) { engine.setLinkSharing(on) }
@@ -328,9 +342,10 @@ final class SharerModel: ObservableObject {
                 })
         }
         engine.onControlGrantChanged = { [weak self] name in self?.controlGrantedTo = name }
-        engine.onLinkSharingChanged = { [weak self] token, busy in
+        engine.onLinkSharingChanged = { [weak self] token, busy, isLinkOnly in
             self?.linkToken = token
             self?.linkBusy = busy
+            self?.isLinkOnlyShare = isLinkOnly
         }
         engine.onDrawingChanged = { [weak self] tool, refusal in
             guard let self else { return }
@@ -655,7 +670,13 @@ final class SharerModel: ObservableObject {
     /// Everything after "which backend": hand the engine the node and the
     /// capture factory. The engine owns the rest of the start sequence.
     private func beginShare(captureFactory: @escaping @Sendable () -> CaptureEncoding) {
-        guard let node = nodeProvider?() else {
+        // Nil node is a real mode, not a failure: signed out, the share comes
+        // up over the guest tunnel and the link is the only way in — the
+        // macOS welcome pane's "Share your screen via Link…". It is a failure
+        // anywhere else, and `linkOnlyShareAllowed` is what tells the two
+        // apart; see its note.
+        let node = nodeProvider?()
+        if node == nil, linkOnlyShareAllowed?() != true {
             phase = .failed(L("Tailscale isn't up yet"))
             return
         }
@@ -838,7 +859,11 @@ final class SharerModel: ObservableObject {
         engine.setRequireApproval(enabled)
     }
 
-    private var isFailed: Bool {
+    /// A start that failed. Not private: `startSharing()` treats it as a
+    /// retryable state, and the welcome pane has to offer the button that
+    /// retries — one answer, read in both places, so a pane cannot end up
+    /// withholding a button the model would have accepted.
+    var isFailed: Bool {
         if case .failed = phase { return true }
         return false
     }
