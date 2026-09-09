@@ -50,6 +50,13 @@ public actor SharerLinkSession {
     /// reading `guestServer`: that field is written last, and the whole
     /// bootstrap runs in the gap.
     private var claim: UInt64 = 0
+    /// Which server the live link belongs to, and which owns the mint
+    /// currently in flight. A claim alone says "somebody is minting"; these
+    /// say WHO — which is what lets a stop invalidate its own attempt without
+    /// touching a replacement's, and what stops one share being handed the
+    /// token of another's link (see the head guards below).
+    private var owner: ObjectIdentifier?
+    private var claimOwner: ObjectIdentifier?
     private let logger: LogSink?
     /// How a node is made. The default builds the real one; a test passes a
     /// fake whose every call can be held open, which is the only way the
@@ -73,9 +80,20 @@ public actor SharerLinkSession {
         relayMapURL: String? = nil,
         port: UInt16 = NetworkConfig.tailscreenPort
     ) async throws -> String {
-        if let token, guestServer != nil { return token }
+        let id = ObjectIdentifier(server)
+        if let token, guestServer != nil {
+            // Idempotent for the share that owns this link — and only for it.
+            // The engines publish their stopped state BEFORE their teardown
+            // task reaches this actor, so a replacement share can arrive here
+            // with the old link still stored: handing back that token would
+            // give it a link with no server behind it, which the delayed
+            // teardown then closes underneath it.
+            if owner == id { return token }
+            await close()
+        }
         claim &+= 1
         let mine = claim
+        claimOwner = id
         let gs = try makeNode(relayMapURL, logger)
         try await gs.startNode()
         let pl = try await gs.openPacketRoute(port: port)
@@ -114,6 +132,8 @@ public actor SharerLinkSession {
         }
         guestServer = gs
         token = minted
+        owner = id
+        claimOwner = nil
         logger?.log("Share link active")
         return minted
     }
@@ -139,9 +159,14 @@ public actor SharerLinkSession {
         relayMapURL: String? = nil,
         port: UInt16 = NetworkConfig.tailscreenPort
     ) async throws -> String {
-        if let token, guestServer != nil { return token }
+        let id = ObjectIdentifier(server)
+        if let token, guestServer != nil {
+            if owner == id { return token }
+            await close()
+        }
         claim &+= 1
         let mine = claim
+        claimOwner = id
         let gs = try makeNode(relayMapURL, logger)
         do {
             try await gs.startNode()
@@ -173,6 +198,8 @@ public actor SharerLinkSession {
             guard claim == mine else { throw SharerLinkError.superseded }
             guestServer = gs
             token = minted
+            owner = id
+            claimOwner = nil
             logger?.log("Link-only share active — the link is the only way in")
             return minted
         } catch {
@@ -220,11 +247,36 @@ public actor SharerLinkSession {
     /// whether anything was actually closed, so a caller can tell whether
     /// the published token it is about to clear was still its own.
     @discardableResult
-    public func teardown(mintedToken: String? = nil) async -> Bool {
+    public func teardown(
+        for server: (any GuestLinkServer)? = nil,
+        mintedToken: String? = nil
+    ) async -> Bool {
+        // First, and whether or not a token exists yet: a mint still in
+        // flight is invalidated, so a stop landing between `enable` attaching
+        // its listener and returning a token cannot end with a token
+        // published onto an idle app.
+        //
+        // With a server, that is scoped to the mint IT owns, so a stale
+        // share's stop cannot cancel a replacement's bootstrap. Without one,
+        // it is unconditional — the argument-less form means "I am the
+        // current share and I am ending", and there is nothing else to
+        // protect. Note this has to happen even when nothing is published
+        // yet: the early return below is exactly the case a mint in flight
+        // is in, and skipping the invalidation there is what let the mint
+        // publish onto a stopped share.
+        if let server {
+            if claimOwner == ObjectIdentifier(server) {
+                claim &+= 1
+                claimOwner = nil
+            }
+        } else {
+            claim &+= 1
+            claimOwner = nil
+        }
         if let mintedToken, token != mintedToken { return false }
-        let hadLink = guestServer != nil || token != nil
+        guard guestServer != nil || token != nil else { return false }
         await close()
-        return hadLink
+        return true
     }
 
     /// Map a denied guest's tunnel IP back to its node key and evict it at
@@ -277,6 +329,8 @@ public actor SharerLinkSession {
     /// still in flight that it no longer owns the session.
     private func close() async {
         claim &+= 1
+        claimOwner = nil
+        owner = nil
         let gs = guestServer
         guestServer = nil
         token = nil

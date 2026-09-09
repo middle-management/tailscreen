@@ -1954,14 +1954,17 @@ class AppState: ObservableObject {
         // before it can publish a token, arm an outline, or reset the state
         // this stop is in the middle of clearing.
         shareCore.endShare()
+        let stopping = server
         await server?.stop()
         server = nil
         // The token dies with the share: the server's stop() already closed
         // the guest listener and sent everyone SERVER_BYE, so only the guest
-        // node itself is left to tear down. Unscoped on purpose: this is the
-        // current share by construction, and the claim it takes inside the
-        // session is what invalidates a mint still in flight.
-        await link.teardown()
+        // node itself is left to tear down. The server is passed rather than
+        // the token because a link toggled on mid-share may still be
+        // bootstrapping — no token yet, and only its own server can invalidate
+        // the claim it holds. This is the current share by construction, so
+        // there is no replacement to protect it from.
+        await link.teardown(for: stopping)
         shareLinkToken = nil
         shareLinkError = nil
         guestPeersByIP = [:]

@@ -381,6 +381,111 @@ final class SharerLinkSessionTests: XCTestCase {
         XCTAssertTrue(probe10)
     }
 
+    /// The bug: the head guard returned the stored token for ANY server. Both
+    /// engines publish their stopped state before the teardown task reaches
+    /// this actor, so a replacement arrives here with the old link still
+    /// stored — and used to be handed that token, with no server behind it,
+    /// which the delayed teardown then closed underneath it.
+    func testAReplacementServerIsNotHandedTheOldLinksToken() async throws {
+        let journal = Journal()
+        let (session, _) = makeSession(journal: journal)
+        let first = FakeLinkServer(journal: journal)
+        let stale = try await session.startLinkOnly(on: first, filterData: nil)
+
+        // No teardown in between: exactly the window where the engine has
+        // published idle but the teardown task has not landed.
+        let second = FakeLinkServer(id: "srv2", journal: journal)
+        let minted = try await session.startLinkOnly(on: second, filterData: nil)
+
+        XCTAssertNotEqual(minted, stale)
+        // …and the replacement's server really was started, rather than the
+        // call short-circuiting on the stored token.
+        let started = await journal.contains("server.startGuestOnly(srv2)")
+        XCTAssertTrue(started)
+        // The abandoned node is closed rather than leaked.
+        let closedOld = await journal.contains("node.close(n1)")
+        XCTAssertTrue(closedOld)
+    }
+
+    /// …while the SAME server asking twice still gets the same link back:
+    /// the idempotence is what stops a second toggle minting a second node.
+    func testTheOwningServerAskingTwiceGetsTheSameLink() async throws {
+        let journal = Journal()
+        let (session, _) = makeSession(journal: journal)
+        let server = FakeLinkServer(journal: journal)
+
+        let first = try await session.enable(on: server)
+        let second = try await session.enable(on: server)
+
+        XCTAssertEqual(first, second)
+        let secondNode = await journal.contains("node.start(n2)")
+        XCTAssertFalse(secondNode)
+    }
+
+    /// The bug: a stop with no token yet scheduled no teardown at all, on the
+    /// reasoning that a start unwinds itself — true of the engines'
+    /// `beginShare`, false of their mid-share link toggle, which has no
+    /// generation check. Passing the server invalidates the claim that
+    /// server's mint holds, before any token exists.
+    func testAStopWithNoTokenYetStillInvalidatesItsOwnMint() async throws {
+        let journal = Journal()
+        let box = NodeBox()
+        let session = SharerLinkSession(
+            logger: nil,
+            makeNode: { _, _ in
+                let node = box.next(journal: journal)
+                node.tokenGate.hold()
+                return node
+            })
+        let server = FakeLinkServer(journal: journal)
+
+        let enable = Task { try await session.enable(on: server) }
+        let found = await box.awaitNode("n1")
+        let first = try XCTUnwrap(found)
+        await first.tokenGate.waitUntilParked()
+        // The stop the engine performs: no token to scope by, only the server.
+        await session.teardown(for: server)
+        first.tokenGate.release()
+
+        do {
+            _ = try await enable.value
+            XCTFail("expected the superseded mint to throw")
+        } catch SharerLinkError.superseded {
+            // expected
+        }
+        let live = await session.token
+        XCTAssertNil(live)
+    }
+
+    /// …and that invalidation is scoped: a stale share stopping must not
+    /// invalidate the mint a REPLACEMENT share has in flight.
+    func testStoppingOneShareLeavesAnotherSharesMintAlone() async throws {
+        let journal = Journal()
+        let box = NodeBox()
+        let session = SharerLinkSession(
+            logger: nil,
+            makeNode: { _, _ in
+                let node = box.next(journal: journal)
+                node.tokenGate.hold()
+                return node
+            })
+        let replacement = FakeLinkServer(id: "srv2", journal: journal)
+        let stale = FakeLinkServer(id: "srv1", journal: journal)
+
+        let mint = Task { try await session.startLinkOnly(on: replacement, filterData: nil) }
+        let found = await box.awaitNode("n1")
+        let node = try XCTUnwrap(found)
+        await node.tokenGate.waitUntilParked()
+        // The OTHER share's stop lands while this bootstrap is suspended.
+        await session.teardown(for: stale)
+        node.tokenGate.release()
+
+        let minted = try await mint.value
+        XCTAssertEqual(minted, "tc-n1")
+        let live = await session.token
+        XCTAssertEqual(live, minted)
+    }
+
     /// Eviction maps a denied guest's tunnel IP back to its node key — the
     /// deny reports an IP, the tunnel wants the key.
     func testEvictLooksUpTheNodeKeyForATunnelIP() async throws {
