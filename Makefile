@@ -235,16 +235,34 @@ endef
 # modules, so the build is a real one — but it invalidates the normal build's
 # flags, hence its own scratch path rather than churning `.build`.
 #
+# `--target Tailscreen` is load-bearing, not a narrowing: `-Xswiftc` reaches
+# EVERY swiftc invocation, including the one that links the executable, and
+# `swiftc -emit-sil` handed a list of .o files fails with "unexpected input
+# file". Building the target rather than the product stops before the link,
+# while still compiling the app module and every library it depends on — so
+# the SIL stream covers more, not less. (A library-only package never hit
+# this: its dependencies are archived with `ar`, not linked with swiftc.)
+#
 # macOS only in practice: the trap needs an imported ObjC block, and the app
 # is where those are. Its own scratch path costs a full rebuild, which is why
 # this is not folded into `build`.
 SIL_SCRATCH := $(CURDIR)/Apps/macOS/.build-sil
 SIL_OUT := $(SIL_SCRATCH)/app.sil
+SIL_ERR := $(SIL_SCRATCH)/app.sil.err
 SIL_BASELINE := $(CURDIR)/.sil-isolation-baseline.txt
 
+# SwiftPM writes its DIAGNOSTICS to stdout, which is also where the SIL goes —
+# so a plain redirect buries the compiler error in a 100MB file and leaves the
+# recipe failing with nothing on screen. Surface both streams on failure.
 sil: tailscale ## Build the app emitting SIL (into .build-sil/app.sil)
 	@mkdir -p $(SIL_SCRATCH)
-	@cd Apps/macOS && swift build --scratch-path $(SIL_SCRATCH) -Xswiftc -emit-sil > $(SIL_OUT)
+	@cd Apps/macOS && swift build --target Tailscreen --scratch-path $(SIL_SCRATCH) -Xswiftc -emit-sil \
+		> $(SIL_OUT) 2> $(SIL_ERR) || { \
+		echo "swift build -Xswiftc -emit-sil failed."; \
+		echo "--- stderr ---"; tail -40 $(SIL_ERR); \
+		echo "--- diagnostics found in the SIL stream ---"; \
+		grep -E "error:|warning:|fatal|Fatal|cannot|unsupported" $(SIL_OUT) | tail -40; \
+		exit 1; }
 	@echo "SIL: $(SIL_OUT) ($$(wc -l < $(SIL_OUT)) lines)"
 
 # Fixtures first, for the reason they exist in lint-isolation: a checker that
