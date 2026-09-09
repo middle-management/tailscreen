@@ -16,10 +16,25 @@ function in it that carries one.
 
 Exact where the source scan is heuristic: no API list, no regex over call
 shapes, no guessing at the enclosing type's isolation — and it names the
-closure. What it cannot do is tell a precondition that will fire from one that
-never will: `assumeIsolated`, `MainActor.assertIsolated`, and any callback the
-framework genuinely does invoke on the right actor all look identical here.
-That is what the baseline is for. New entries fail; the diff is the review.
+closure.
+
+Measured, and it does not work as a GATE
+----------------------------------------
+Run against the macOS app it reports 524 functions: 370 SwiftUI view-body
+closures, 5 AppKit, and ~150 `filter`/`map`/`sort` closures handed to stdlib
+higher-order functions from `@MainActor` code. All benign. The two real bugs
+this was built to find would have been 2 needles in 526.
+
+The predicate is narrower than it looks. A precondition means "an isolated
+closure crossed into code the compiler cannot check" — which includes
+`Array.filter`. It does NOT mean "a framework will call this off its actor".
+On top of that `closure #N` renumbers when anything is added above it, so a
+baseline churns on unrelated edits, and 524 entries is not reviewable.
+
+So this is a DIAGNOSTIC, not a check: run it before and after a change that
+adds a framework callback and diff the two, which is the question it answers
+well. `make lint-isolation` — the source-level check, 0 false positives on
+this tree and it catches all three historical instances — is the gate.
 """
 
 import argparse
@@ -36,10 +51,14 @@ MARKER = "swift_task_isCurrentExecutor"
 STDLIB_PREFIX = "$ss"
 
 
-def symbols_with_preconditions(text):
-    """Every SIL function whose body calls the executor check, in file order."""
+def symbols_with_preconditions(lines):
+    """Every SIL function whose body calls the executor check, in file order.
+
+    Takes an ITERABLE of lines, not a string: the app's SIL is ~1GB, and
+    reading it whole cost four and a half minutes of CI before this.
+    """
     found, current, hit = [], None, False
-    for line in text.split("\n"):
+    for line in lines:
         start = re.match(r"^sil\b.*?(@\$s[A-Za-z0-9_$]+)\s*:", line)
         if start:
             current, hit = start.group(1)[1:], False
@@ -104,14 +123,23 @@ def main():
                     help="print the set and exit 0, whatever the baseline says")
     args = ap.parse_args()
 
-    text = (sys.stdin.read() if args.sil in (None, "-")
-            else Path(args.sil).read_text())
-    if "end sil function" not in text:
+    handle = sys.stdin if args.sil in (None, "-") else open(args.sil)
+    saw_sil = False
+    def lines():
+        nonlocal saw_sil
+        for line in handle:
+            if not saw_sil and "end sil function" in line:
+                saw_sil = True
+            yield line
+    symbols = symbols_with_preconditions(lines())
+    if handle is not sys.stdin:
+        handle.close()
+    if not saw_sil:
         print("error: no SIL here. Build with `-Xswiftc -emit-sil` and pass "
               "its stdout.", file=sys.stderr)
         return 2
 
-    names = interesting(symbols_with_preconditions(text))
+    names = interesting(symbols)
     pretty = readable(names)
 
     def show(sym):

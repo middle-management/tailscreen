@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-isolation sil sil-isolation sil-isolation-report sil-isolation-baseline lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-isolation sil sil-isolation-report lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -249,7 +249,6 @@ endef
 SIL_SCRATCH := $(CURDIR)/Apps/macOS/.build-sil
 SIL_OUT := $(SIL_SCRATCH)/app.sil
 SIL_ERR := $(SIL_SCRATCH)/app.sil.err
-SIL_BASELINE := $(CURDIR)/.sil-isolation-baseline.txt
 
 # SwiftPM writes its DIAGNOSTICS to stdout, which is also where the SIL goes —
 # so a plain redirect buries the compiler error in a 100MB file and leaves the
@@ -267,17 +266,17 @@ sil: tailscale ## Build the app emitting SIL (into .build-sil/app.sil)
 
 # Fixtures first, for the reason they exist in lint-isolation: a checker that
 # fails open turns "nobody looked" into "CI says it is fine". They need no
-# toolchain — the baseline keys on mangled symbols on purpose.
-sil-isolation: sil ## Gate SE-0423 preconditions against the baseline
-	@python3 scripts/test-sil-isolation.py
-	@python3 scripts/check-sil-isolation.py $(SIL_OUT) --baseline $(SIL_BASELINE)
-
-sil-isolation-report: sil ## List every SE-0423 precondition, ignoring the baseline
+# toolchain — the check keys on mangled symbols on purpose.
+#
+# REPORT only, and not in CI. This was built to be the exact gate and it
+# cannot be one: on the macOS app it reports 524 functions, of which 370 are
+# SwiftUI view bodies and ~150 are `filter`/`map`/`sort` closures handed to
+# the stdlib — all benign. See .claude/rules/ci.md for the numbers and why.
+# It answers one question well: run it either side of a change that adds a
+# framework callback, and diff.
+sil-isolation-report: sil ## List every SE-0423 precondition (diagnostic, not a gate)
 	@python3 scripts/test-sil-isolation.py
 	@python3 scripts/check-sil-isolation.py $(SIL_OUT) --report
-
-sil-isolation-baseline: sil ## Record today's preconditions as the baseline
-	@python3 scripts/check-sil-isolation.py $(SIL_OUT) --baseline $(SIL_BASELINE) --update
 
 lint-isolation: ## Reject callbacks that inherit actor isolation (see scripts/)
 	@python3 scripts/test-callback-isolation.py
