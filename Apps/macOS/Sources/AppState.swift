@@ -1778,6 +1778,10 @@ class AppState: ObservableObject {
                     presentError(.voiceInitFailed(error))
                 }
 
+                // Non-nil once the link-only path has minted, so the paths
+                // below can unwind exactly what this attempt created rather
+                // than whatever link happens to be live.
+                var mintedLink: String?
                 do {
                     if guestOnly {
                         // Link-only share: the guest node comes up first (it
@@ -1788,11 +1792,24 @@ class AppState: ObservableObject {
                         // throws; eviction is wired before it, because a
                         // guest can arrive as soon as the server is up.
                         wireGuestEviction(on: srv)
-                        shareLinkToken = try await link.startLinkOnly(
+                        let minted = try await link.startLinkOnly(
                             on: srv,
                             filterData: effectiveFilterData,
                             quality: qualitySettings,
                             relayMapURL: linkRelayMapURL)
+                        mintedLink = minted
+                        // Stop Sharing can land inside that await — it is
+                        // seconds of relay handshake — and it clears `server`
+                        // while this attempt is suspended. Publishing a token
+                        // and then `.active` here would report a share the
+                        // person ended, over a guest node nothing references.
+                        // The mint is scoped to itself, so a replacement
+                        // share's link is not what gets closed.
+                        guard server === srv else {
+                            await link.teardown(mintedToken: minted)
+                            throw CancellationError()
+                        }
+                        shareLinkToken = minted
                         isGuestOnlyShare = true
                     } else {
                         // Reuse the AppState-owned tsnet node so the screen
@@ -1815,7 +1832,11 @@ class AppState: ObservableObject {
                     // token behind a share that never happened.
                     await srv.stop()
                     server = nil
-                    await link.teardown()
+                    // Same scoping as the guard above: a failed start unwinds
+                    // its own link, never a replacement share's. A link-only
+                    // start that threw inside `startLinkOnly` closed its node
+                    // there, so this only bites on the mint-then-bail path.
+                    if let mintedLink { await link.teardown(mintedToken: mintedLink) }
                     shareLinkToken = nil
                     isGuestOnlyShare = false
                     // `CancellationError` here means the user clicked Stop

@@ -75,4 +75,14 @@ final class WelcomePaneDecisionTests: XCTestCase {
     func testIdleBeatsALeftoverLinkFlag() {
         XCTAssertEqual(decide(isIdle: true, isLinkOnlyShare: true), .offer)
     }
+
+    /// The same rule where it is load-bearing rather than cosmetic: idle,
+    /// a stale link flag, AND a host that cannot share. Answering the flag
+    /// first would put "you're sharing via link" on a pane with no share
+    /// behind it and no link to point at — a sentence nothing on screen can
+    /// act on. Idle is answered first, so this is `.unavailable`.
+    func testIdleWithAStaleFlagOnAHostThatCannotShareOffersNothing() {
+        XCTAssertEqual(
+            decide(canShare: false, isIdle: true, isLinkOnlyShare: true), .unavailable)
+    }
 }

@@ -859,7 +859,11 @@ final class SharerModel: ObservableObject {
         engine.setRequireApproval(enabled)
     }
 
-    private var isFailed: Bool {
+    /// A start that failed. Not private: `startSharing()` treats it as a
+    /// retryable state, and the welcome pane has to offer the button that
+    /// retries — one answer, read in both places, so a pane cannot end up
+    /// withholding a button the model would have accepted.
+    var isFailed: Bool {
         if case .failed = phase { return true }
         return false
     }

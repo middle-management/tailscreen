@@ -21,6 +21,12 @@ public enum SharerLinkError: Error, Sendable {
     /// a guest listener) while the guest node was coming up. Nothing was
     /// adopted; the session closed the socket and the node.
     case attachRefused
+    /// Another attempt claimed the session while this one was bootstrapping
+    /// — a stop and a fresh start inside the seconds a relay handshake
+    /// takes. Nothing of this attempt survives: its node is closed and the
+    /// server it was starting is stopped, so the winner's link is the only
+    /// one live. Callers that are themselves stale should swallow it.
+    case superseded
 }
 
 public actor SharerLinkSession {
@@ -135,11 +141,25 @@ public actor SharerLinkSession {
                 guestPacketListener: pl,
                 guestControlListener: control)
             let minted = try await gs.token()
+            // The head guard was read before several awaits, and an actor
+            // yields at every one of them: a stop and a fresh start landing
+            // inside this bootstrap runs a whole second `startLinkOnly`,
+            // which can finish first. Publishing here would overwrite its
+            // node — leaking a live tunnel nothing can close, behind a token
+            // that admits people to a server nobody references.
+            guard guestServer == nil else { throw SharerLinkError.superseded }
             guestServer = gs
             token = minted
             logger?.log("Link-only share active — the link is the only way in")
             return minted
         } catch {
+            // All-or-nothing, and the server is part of it: `startGuestOnly`
+            // marks itself running and installs its receive/sweep loops
+            // BEFORE the capture backend can fail, so a throw after that
+            // point leaves a live server the caller is about to drop its
+            // only reference to. Stopping a server that never started is a
+            // no-op, so this is safe on the early legs too.
+            await server.stop()
             await gs.close()
             throw error
         }
@@ -168,8 +188,20 @@ public actor SharerLinkSession {
 
     /// The share ended: the server's own stop already closed the listener
     /// and told every guest, so only the node is left to tear down.
-    public func teardown() async {
+    ///
+    /// `mintedToken` is how a *stale* attempt unwinds without collateral.
+    /// Pass what `enable`/`startLinkOnly` handed back and the node is closed
+    /// only if it is still the live one; a replacement share that minted its
+    /// own link in the meantime keeps it. Omit it for the ordinary stop,
+    /// where the caller is the current share by construction. Returns
+    /// whether anything was actually closed, so a caller can tell whether
+    /// the published token it is about to clear was still its own.
+    @discardableResult
+    public func teardown(mintedToken: String? = nil) async -> Bool {
+        if let mintedToken, token != mintedToken { return false }
+        let hadLink = guestServer != nil || token != nil
         await close()
+        return hadLink
     }
 
     /// Map a denied guest's tunnel IP back to its node key and evict it at

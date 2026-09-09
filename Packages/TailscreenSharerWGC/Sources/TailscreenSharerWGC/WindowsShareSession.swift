@@ -631,11 +631,19 @@ public final class WindowsShareSession: @unchecked Sendable {
                 guard isCurrentShare(generation) else {
                     lock.withLock { if server === newServer { server = nil } }
                     await newServer.stop()
-                    await link.teardown()
-                    update {
-                        $0.linkToken = nil
-                        $0.linkBusy = false
-                        $0.linkIsOnlyWayIn = false
+                    // Scoped to the token this attempt minted: the
+                    // replacement share that made this one stale may already
+                    // have minted a link of its own, and closing whichever
+                    // link is current would kill the live one. The published
+                    // status follows the same answer — clearing it after a
+                    // replacement published its own token would blank a card
+                    // describing a share that is genuinely running.
+                    if await link.teardown(mintedToken: token) {
+                        update {
+                            $0.linkToken = nil
+                            $0.linkBusy = false
+                            $0.linkIsOnlyWayIn = false
+                        }
                     }
                     return
                 }

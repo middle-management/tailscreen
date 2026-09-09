@@ -926,11 +926,19 @@ final class AppUIState: ObservableObject {
     /// `WelcomePaneDecision` both swift-cross-ui hubs read. `canShare` folds
     /// in this app's two gates — a build without Windows.Graphics.Capture,
     /// and a viewing session already owning the window.
+    ///
+    /// The other two are about the bootstrap window, which this hub renders
+    /// (unlike the GTK one, whose `.starting` phase already swaps the pane
+    /// for the sharing view): a link-only start publishes `linkBusy` before
+    /// `isSharing`, so idle has to exclude it or the button stays pressable
+    /// through the relay handshake — and `linkIsOnlyWayIn` is set at the
+    /// same early moment, so the "you're sharing via link" note waits for
+    /// the token rather than pointing at a card that does not exist yet.
     var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: shareSession.isSupported && watching == nil,
-            isIdle: !sharing.isSharing,
-            isLinkOnlyShare: sharing.linkIsOnlyWayIn)
+            isIdle: !sharing.isSharing && !sharing.linkBusy,
+            isLinkOnlyShare: sharing.linkIsOnlyWayIn && sharing.linkToken != nil)
     }
 
     /// The sharing half of the hub, or nil on a build that cannot capture.
@@ -1847,7 +1855,11 @@ final class AppUIState: ObservableObject {
         // in, and turning that into a link-only share would answer a question
         // they had not finished asking.
         let linkOnly = isSignedOut
-        guard phase == .ready || linkOnly, !sharing.isSharing else { return }
+        // `linkBusy` is the in-flight link-only bootstrap: `isSharing` only
+        // turns true once the share is live, so without this a second click
+        // during the relay handshake starts a whole second share, and the
+        // first becomes a stale generation tearing itself down.
+        guard phase == .ready || linkOnly, !sharing.isSharing, !sharing.linkBusy else { return }
         detail = ""
         shareDetail = nil
 
@@ -1855,7 +1867,16 @@ final class AppUIState: ObservableObject {
         do {
             item = try shareSession.pickTarget()
         } catch {
-            detail = L("Could not open the capture picker: \(error)")
+            // Signed out, the button that opened this picker lives on the
+            // share-link card, so its failure belongs there — `detail` is
+            // rendered by the welcome pane's *tailnet* card, which would put
+            // a capture error under the sign-in button that had nothing to
+            // do with it. Same split `beginSharing`'s failures already make.
+            if linkOnly {
+                shareDetail = L("Could not open the capture picker: \(error)")
+            } else {
+                detail = L("Could not open the capture picker: \(error)")
+            }
             return
         }
         // Dismissing the picker is a decision, not a failure. Say nothing.

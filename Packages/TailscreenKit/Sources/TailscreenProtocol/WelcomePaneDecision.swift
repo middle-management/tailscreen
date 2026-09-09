@@ -44,13 +44,19 @@ public enum WelcomePaneDecision {
     /// `isLinkOnlyShare` that the one that *is* running was started signed
     /// out.
     ///
-    /// The precedence matters and is not symmetric: `.offer` is checked
-    /// first, so the ordinary signed-out-and-idle case never has to reason
-    /// about `isLinkOnlyShare` (which is false then anyway). The case that
-    /// would be wrong the other way round is a link-only share running on a
-    /// host whose capture backend has since gone — the note still has to
-    /// render, because a share the person cannot see the link for is a share
-    /// they cannot end from the surface they are looking at.
+    /// The precedence matters and is not symmetric. **Idle is answered
+    /// first**, whatever the link flag says: a host that publishes idle
+    /// while a stale `isLinkOnlyShare` has not yet been cleared — the
+    /// window between one teardown write and the next — must not be told it
+    /// is sharing via a link that is being torn down, and if it also cannot
+    /// capture, the honest answer is that there is nothing to offer rather
+    /// than a live-share note about a share that does not exist. The case
+    /// that would be wrong the other way round is a link-only share
+    /// genuinely *running* on a host whose capture backend has since gone
+    /// (a portal session revoked, the Settings switch turned off): not
+    /// idle, so the note still renders — because a share the person cannot
+    /// see the link for is a share they cannot end from the surface they
+    /// are looking at.
     ///
     /// Both wrong answers are silent, which is why this is a pinned decision
     /// rather than an inline ternary: an offered button on a host that cannot
@@ -61,7 +67,7 @@ public enum WelcomePaneDecision {
         isIdle: Bool,
         isLinkOnlyShare: Bool
     ) -> LinkShareAction {
-        if canShare, isIdle { return .offer }
+        if isIdle { return canShare ? .offer : .unavailable }
         if isLinkOnlyShare { return .sharingViaLink }
         return .unavailable
     }

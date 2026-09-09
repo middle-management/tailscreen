@@ -965,10 +965,15 @@ struct ViewerApp: App {
     /// this host's three flags. `.starting` counts as neither idle nor
     /// announceable until the token exists, which is exactly the moment
     /// `isLinkOnlyShare` flips.
+    ///
+    /// `.failed` counts as idle because `SharerModel.startSharing()` accepts
+    /// it: a failed link-only start puts its reason in `welcomeShareNote`,
+    /// and a reason with no button under it is a dead end — the person has
+    /// to quit the app to try again.
     private var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: sharer.canShare,
-            isIdle: sharer.phase == .idle,
+            isIdle: sharer.phase == .idle || sharer.isFailed,
             isLinkOnlyShare: sharer.isLinkOnlyShare)
     }
 

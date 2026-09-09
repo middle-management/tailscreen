@@ -579,7 +579,13 @@ public final class LinuxShareSession {
                     // link that did not exist yet, so this one has to be
                     // closed here or it outlives the share it was minted for
                     // — a live token for a share nobody is running.
-                    await self.link.teardown()
+                    //
+                    // Scoped to the token THIS attempt minted, and skipped
+                    // entirely when it minted none: the replacement share
+                    // that made this one stale may already have a link of
+                    // its own, and an unconditional teardown here would
+                    // close the live one instead of the dead one.
+                    if let minted { await self.link.teardown(mintedToken: minted) }
                     return
                 }
                 if let minted {
