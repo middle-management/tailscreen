@@ -162,13 +162,7 @@ let package = Package(
             // `SharerAskToShareCoordinatorTests` can spell
             // `TailscreenControlListener`, the type its listener-lifecycle
             // seams hand back.
-            // TailscaleKit likewise: `SharerLinkSessionTests`' fake guest
-            // node vends `GuestPeer`, the type the real node reports its
-            // admitted clients as.
-            dependencies: [
-                "TailscreenSharer", "TailscreenProtocol", "TailscreenTransport",
-                .product(name: "TailscaleKit", package: "TailscaleKit")
-            ],
+            dependencies: ["TailscreenSharer", "TailscreenProtocol", "TailscreenTransport"],
             path: "Tests/TailscreenSharerTests"
         )
     ]
