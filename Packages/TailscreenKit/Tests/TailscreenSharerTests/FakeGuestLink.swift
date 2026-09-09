@@ -28,16 +28,24 @@ final class Gate: @unchecked Sendable {
     func hold() { lock.withLock { holding = true } }
 
     /// Called from inside the faked operation.
+    ///
+    /// The "should I park" answer and the waiter list come out of the same
+    /// lock acquisition, as a flag beside an ordinary array rather than an
+    /// optional one — `discouraged_optional_collection` is on in this repo,
+    /// and an empty list means the same thing here anyway. The resumes
+    /// happen outside the lock so a continuation cannot re-enter it.
     func passOrPark() async {
-        let waiting: [CheckedContinuation<Void, Never>]? = lock.withLock {
-            guard holding else { return nil }
+        var shouldPark = false
+        var waiting: [CheckedContinuation<Void, Never>] = []
+        lock.withLock {
+            guard holding else { return }
+            shouldPark = true
             parkedCount += 1
-            let w = waiters
+            waiting = waiters
             waiters = []
-            return w
         }
-        guard let waiting else { return }
         for waiter in waiting { waiter.resume() }
+        guard shouldPark else { return }
         await withCheckedContinuation { continuation in
             lock.withLock { parked.append(continuation) }
         }
