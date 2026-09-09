@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-isolation lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -215,6 +215,21 @@ endef
 # Existing violations are frozen in .swiftlint-baseline.json; only NEW
 # warnings/errors fail the run. Refresh baseline via `make lint-baseline`
 # after a real cleanup pass.
+# Reject closures that inherit actor isolation and are then handed to a
+# framework callback that fires off that actor — the SE-0423 dynamic executor
+# precondition, which is a SIGTRAP at runtime and, verified against Swift 6.3,
+# not a diagnostic at any strictness or under any frontend flag. Its own target
+# rather than a SwiftLint custom rule because the decision needs the enclosing
+# type's isolation and the enclosing function's `nonisolated`, which a regex
+# rule cannot see. No toolchain: python3 and the source tree.
+#
+# The fixtures run first. A checker that fails open turns "nobody looked" into
+# "CI says it is fine", and this one failed open twice while it was written.
+lint-isolation: ## Reject callbacks that inherit actor isolation (see scripts/)
+	@python3 scripts/test-callback-isolation.py
+	@python3 scripts/check-callback-isolation.py
+	@echo "callback isolation: clean"
+
 lint: ## Run SwiftLint (baseline-gated; new violations fail)
 	$(call require-pinned-swiftlint,\
 		"$$SWIFTLINT" lint --baseline .swiftlint-baseline.json --strict --quiet)

@@ -1517,6 +1517,30 @@ jobs:
         # Sources/ and Tests/ using the repo's `.swift-format` config.
         run: make format-check
 
+  callback-isolation:
+    # A closure literal written inside an actor-isolated type inherits that
+    # isolation, and handing it to a framework callback whose parameter is not
+    # `@Sendable` — every imported ObjC block — makes the compiler plant a
+    # dynamic executor precondition at its entry (SE-0423). The framework then
+    # calls it on its own queue and the process dies with EXC_BREAKPOINT.
+    #
+    # Nothing else here catches that. Checked against Swift 6.3 with
+    # `-swift-version 6 -strict-concurrency=complete`: the broken form and the
+    # fixed form both compile with zero diagnostics, and no frontend flag turns
+    # it into one. It is a runtime failure, and only when the framework
+    # actually calls back — v0.10.0-rc.11 shipped one that took a discarded
+    # audio buffer at share teardown to reach, after two earlier instances had
+    # each been found the same way, by crashing.
+    #
+    # On ubuntu-latest, not the macOS `lint` job: the check reads source and
+    # needs no toolchain, and macOS minutes are 10x. Seconds, no container.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check callback isolation (fixtures first)
+        run: make lint-isolation
+
   release-version:
     # The MSIX identity/version derivation, which used to live inline in
     # release.yml where its ONLY feedback was publishing a release. It shipped
