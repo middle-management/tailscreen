@@ -1,4 +1,4 @@
-# Staged-binary architecture check, extracted from windows-build.yml when the
+# Staged-binary architecture check, extracted from build-windows.yml when the
 # arm64 leg needed it. Compares every staged PE's machine type against the app
 # exe's own — the assertion that caught the ARM64 bootstrapper beside an x64
 # exe. Arch-neutral by construction: the reference is read from the exe, so it

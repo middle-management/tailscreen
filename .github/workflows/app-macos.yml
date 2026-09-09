@@ -1,4 +1,4 @@
-name: macOS app
+name: App (macOS)
 
 # ONE definition of "build a universal, signed, notarized Tailscreen.app".
 #
@@ -662,7 +662,7 @@ jobs:
             "checksums.txt" \
             --clobber
 
-      - name: Cleanup keychain
+      - name: Clean up the keychain
         if: always() && steps.signing.outputs.enabled == 'true'
         run: |
           if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then

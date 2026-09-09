@@ -80,7 +80,7 @@ jobs:
         # PKG_CONFIG_PATH points SwiftPM at brew's opus.pc.
         run: brew install opus
 
-      - name: Build
+      - name: Build the app
         run: make build
 
       - name: Run tests (with coverage)
@@ -91,7 +91,7 @@ jobs:
         working-directory: Apps/macOS
         run: swift test --enable-code-coverage
 
-      - name: Coverage summary
+      - name: Write the coverage summary
         # Surface a percentage in the job log + the workflow run summary.
         # Uses `xcrun llvm-cov` which ships with Xcode — no third-party
         # service or secrets needed. Best-effort: if the profdata bundle
@@ -140,7 +140,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Diff coverage gate (warn-only)
+      - name: Run the diff coverage gate (warn-only)
         # Fails when < 70 % of the changed executable Sources/ lines are
         # covered, printing the uncovered file:line list. Currently
         # informational (continue-on-error: true), same convention as the
@@ -196,7 +196,7 @@ jobs:
           libtailscale: host
       - name: Install libopus
         run: brew install opus
-      - name: Build (release)
+      - name: Build the app (release)
         working-directory: Apps/macOS
         run: swift build -c release
 
@@ -1043,7 +1043,7 @@ jobs:
       # directories, on every single push, for a dependency whose revisions
       # move only when a pin does.
       #
-      # windows-build.yml already solved exactly this and its solution is
+      # build-windows.yml already solved exactly this and its solution is
       # copied here in shape, including the parts that are non-obvious:
       #
       #   • restore/save as SEPARATE steps, not `actions/cache`, because that
@@ -1092,7 +1092,7 @@ jobs:
 
       # A SECOND cache for the Windows app's Linux typecheck, because it is a
       # second full swift-cross-ui compile. Its key prefix is distinct from
-      # windows-build.yml's `windows-app-build-*` so a Linux object tree can
+      # build-windows.yml's `windows-app-build-*` so a Linux object tree can
       # never be restored into a Windows job — same package, incompatible
       # everything.
       - name: Restore the Windows app's Linux typecheck directory
@@ -1132,7 +1132,7 @@ jobs:
         # remains the authority on whether it LINKS and RUNS; this one is the
         # authority on whether it typechecks, which is where the mistakes are.
         run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/windows --product tailscreen
-      - name: Headless render self-test (Xvfb + software GL)
+      - name: Run the headless render self-test (Xvfb + software GL)
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
         # and exits 0 only if the BT.709 output is correct — a CI-gated proof
         # the GL video path renders. The live tsnet leg is local-only (L0b).
@@ -1157,7 +1157,7 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
-      - name: Headless annotation-overlay self-test (Xvfb + compositor)
+      - name: Run the headless annotation-overlay self-test (Xvfb + compositor)
         # The SHARER-side counterpart of the render gate above, and the reason
         # it is worth a whole extra Xvfb: every way the annotation overlay can
         # fail is invisible. A window that never maps, one the compositor
@@ -1195,7 +1195,7 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKOVERLAY_SELFTEST result=PASS' /tmp/overlay-selftest.log
 
-      - name: Headless capture-OUTLINE self-test (Xvfb + compositor)
+      - name: Run the headless capture-OUTLINE self-test (Xvfb + compositor)
         # The recording indicator: a border around exactly the captured region,
         # composited onto the sharer's own desktop for the life of a share.
         #
@@ -1236,7 +1236,7 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKOUTLINE_SELFTEST result=PASS' /tmp/outline-selftest.log
 
-      - name: Headless overlay-INPUT self-test (Xvfb + compositor + XTEST)
+      - name: Run the headless overlay-INPUT self-test (Xvfb + compositor + XTEST)
         # The other half of the same window. The step above asks whether the
         # overlay's pixels reach the screen; this asks whether it can take the
         # POINTER back from the desktop when the sharer arms a tool, and give it
@@ -1276,7 +1276,7 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKOVERLAY_INPUT_SELFTEST result=PASS' /tmp/overlay-input-selftest.log
 
-      - name: Capture-backend selection report
+      - name: Report the capture-backend selection
         # The WIRING gate for `CaptureBackendSelection`. Its unit tests cover
         # every branch of the decision; nothing covers whether this app feeds
         # it the right environment, and a decision handed the wrong inputs is
@@ -1409,7 +1409,6 @@ jobs:
   # reason to demote it was cost, and app-linux.yml's build cache is the cost.
   # Hard gate: no continue-on-error — an arm64 break is a real break.
   linux-app-arm64:
-    name: linux-app-arm64
     uses: ./.github/workflows/app-linux.yml
     with:
       arch: arm64
@@ -1536,7 +1535,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - name: Derivation table
+      - name: Test the version derivation
         run: ./scripts/test-release-version.sh
       # The other half of the release plumbing nothing else can reach: the job
       # graph and the upload calls, which only ever execute on a published
@@ -1544,7 +1543,7 @@ jobs:
       # skipped by a pull_request-only `needs`, and a `gh release upload` in
       # the one job that never checks out the repo. Neither is observable
       # before the release that hits them; both are decidable from the YAML.
-      - name: Release workflow wiring
+      - name: Test the release workflow wiring
         run: |
           set -euo pipefail
           python3 -c 'import yaml' 2>/dev/null \

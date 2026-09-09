@@ -1,4 +1,4 @@
-name: Windows build
+name: Build (Windows)
 
 # The per-push Windows gate: build the app for both architectures, stage it,
 # check it loads, check the Go c-archive initialises, and pack/install/launch
@@ -76,7 +76,7 @@ on:
       # entry; they now live at Apps/windows/packaging and are covered by the
       # `Apps/windows/**` line above. One fewer place for this list to go stale.
       - 'scripts/windows/**'
-      - '.github/workflows/windows-build.yml'
+      - '.github/workflows/build-windows.yml'
       # The build steps moved OUT of this file and into these two. Without
       # them listed, a change to the c-archive build, the staging, the cache
       # keys or the MSIX packing would no longer start a Windows runner — the
@@ -113,8 +113,7 @@ permissions:
   contents: read
 
 jobs:
-  app:
-    name: Swift 6.3
+  windows-app:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'run-windows-build'
@@ -142,12 +141,11 @@ jobs:
   # answering before any decoder code exists — if libavcodec can't be linked
   # here, the choice is Media Foundation and W4 looks completely different.
   #
-  # Deliberately a SEPARATE job from `app`, and deliberately NOT routed through
-  # app-windows.yml: it needs neither the submodule, the Go toolchain, nor
-  # libtailscale, and keeping it independent means an FFmpeg problem reads as
-  # an FFmpeg problem.
-  ffmpeg:
-    name: FFmpegKit
+  # Deliberately a SEPARATE job from `windows-app`, and deliberately NOT
+  # routed through app-windows.yml: it needs neither the submodule, the Go
+  # toolchain, nor libtailscale, and keeping it independent means an FFmpeg
+  # problem reads as an FFmpeg problem.
+  windows-ffmpeg:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'run-windows-build'
@@ -217,7 +215,7 @@ jobs:
       # which meant the "libavcodec decodes on Windows" gate was proving that
       # about a toolchain the shipped app no longer uses — the gate and the
       # thing it gates have to agree or it is not a gate.
-      - name: Setup Swift
+      - name: Set up Swift
         uses: SwiftyLab/setup-swift@v1
         with:
           swift-version: '6.3'
@@ -272,8 +270,7 @@ jobs:
   # A HARD GATE since the full pipeline went green on f7bab59 — build, staging,
   # arch check, upload, and the probe run (tailscale_new() returns on arm64)
   # all passed, per the flip-on-green convention.
-  arm64-probe:
-    name: app (arm64)
+  windows-app-arm64:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'run-windows-build'

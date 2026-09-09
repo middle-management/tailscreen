@@ -11,7 +11,7 @@ import Foundation
 /// So the window footer names the commit and the configuration.
 enum BuildInfo {
     /// Short commit SHA. **Rewritten by CI** — see the "Stamp the build" step
-    /// in .github/workflows/windows-build.yml, which fails the job if the
+    /// in .github/workflows/app-windows.yml, which fails the job if the
     /// placeholder survives rather than shipping a binary that lies about
     /// which commit it is.
     static let commit = "dev"

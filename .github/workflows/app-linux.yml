@@ -1,4 +1,4 @@
-name: Linux app
+name: App (Linux)
 
 # ONE definition of "build the GTK app in the swift:6.3-jammy container, prove
 # it renders, and package it".
@@ -196,7 +196,7 @@ jobs:
 
       # Without this, this job compiles swift-cross-ui from scratch on every
       # run — which is what made it one of the two jobs setting build.yml's
-      # whole wall clock. Shape copied from windows-build.yml's proven cache:
+      # whole wall clock. Shape copied from build-windows.yml's proven cache:
       # split restore/save so a failed compile still banks its objects,
       # `!cancelled()` plus a restore-ran guard because cache keys are
       # immutable, and a restore-keys prefix so a pin bump costs an incremental
@@ -234,7 +234,7 @@ jobs:
             swift build -c ${{ inputs.configuration }} \
             --package-path Apps/linux --product tailscreen
 
-      - name: glibc floor
+      - name: Check the glibc floor
         # THE PORTABILITY GATE, and the reason this job builds in jammy rather
         # than the newest image available.
         #
@@ -287,7 +287,7 @@ jobs:
             exit 1
           fi
 
-      - name: Headless render self-test (Xvfb + software GL)
+      - name: Run the headless render self-test (Xvfb + software GL)
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
         # and exits 0 only if the BT.709 output is correct — a CI-gated proof
         # the GL video path renders, on the exact binary this job ships. The
@@ -317,7 +317,7 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
-      - name: Headless annotation-overlay self-test (Xvfb + compositor)
+      - name: Run the headless annotation-overlay self-test (Xvfb + compositor)
         # The sharer-side gate, run here as well as in `linux-app` because THIS
         # arch is the reason. The overlay hands `AnnotationRasterizer`'s
         # premultiplied BGRA straight to cairo as CAIRO_FORMAT_ARGB32 with no
@@ -627,7 +627,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      - name: Summary
+      - name: Write the job summary
         if: inputs.package != 'none'
         run: |
           {

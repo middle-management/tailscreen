@@ -1,15 +1,16 @@
-name: Windows app
+name: App (Windows)
 
 # ONE definition of "build, stage and package the Windows app".
 #
 # release.yml said in its own header that its steps were
-# "windows-build.yml's `app` and `arm64-probe` jobs, copied faithfully rather
-# than reinvented". They were, and the copy was 545 lines. Between the three
-# call sites — x64 CI, arm64 CI, and the two-arch release matrix — the build
-# spine is identical: symlinks, the patch series, the Go c-archive, staging it
-# under both the Unix and MSVC names, FFmpeg, vcpkg opus, resolve, the
-# swift-winui self-contained patch, the stamp, the app, the probe, stage-app,
-# the Windows App SDK payload, the reg-free manifest, the arch check.
+# "build-windows.yml's `windows-app` and `windows-app-arm64` jobs, copied
+# faithfully rather than reinvented". They were, and the copy was 545 lines.
+# Between the three call sites — x64 CI, arm64 CI, and the two-arch release
+# matrix — the build spine is identical: symlinks, the patch series, the Go
+# c-archive, staging it under both the Unix and MSVC names, FFmpeg, vcpkg
+# opus, resolve, the swift-winui self-contained patch, the stamp, the app,
+# the probe, stage-app, the Windows App SDK payload, the reg-free manifest,
+# the arch check.
 #
 # What differs is which arch, and which of the tails runs: the per-push
 # diagnostics (probes, app-load, tsnet-node), or the release packaging (zip,
@@ -215,7 +216,7 @@ jobs:
       # binaries are produced with no commit here — unreproducible builds and
       # an unreviewed supply-chain edge on the toolchain installer. The v1 line
       # still picks up patches.
-      - name: Setup Swift ${{ inputs.swift_version }}
+      - name: Set up Swift ${{ inputs.swift_version }}
         uses: SwiftyLab/setup-swift@v1
         with:
           swift-version: ${{ inputs.swift_version }}
@@ -223,7 +224,7 @@ jobs:
       # Prints the target triple, which is a finding in its own right: if the
       # action resolved an x86_64 toolchain on an arm64 host, everything below
       # would still build and would be answering a different question.
-      - name: Swift version and target
+      - name: Report the Swift version and target
         shell: bash
         run: |
           swift --version
@@ -451,7 +452,7 @@ jobs:
       # a human. That run is the only automated proof anywhere that
       # `RegisterHotKey` accepted what `WindowsHotkeyMapping` produced; the
       # Linux legs can only check the numbers.
-      - name: WinHotkeyKit
+      - name: Test WinHotkeyKit
         if: inputs.run_probes
         run: |
           swift build --package-path Packages/WinHotkeyKit --product winhotkey-probe
@@ -472,7 +473,7 @@ jobs:
       # What no CI anywhere proves: that a toast was posted, seen, or pressed.
       # Unlike Linux, where `linux-notify` runs a real dunst and presses a real
       # button, there is no equivalent here — see the package README.
-      - name: WinNotifyKit
+      - name: Test WinNotifyKit
         if: inputs.run_probes
         run: |
           swift build --package-path Packages/WinNotifyKit --product winnotify-probe
@@ -936,7 +937,7 @@ jobs:
       # the shader: 3 is wrong pixels (read the WINVIDEO_SELFTEST bar lines), 2
       # is no D3D11 device at all, including no WARP — a runner-image regression
       # rather than ours.
-      - name: Render self-test (WARP)
+      - name: Run the render self-test (WARP)
         shell: bash
         run: |
           set +e
@@ -1384,7 +1385,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Checksums
+      - name: Write the checksums
         if: inputs.zip
         shell: bash
         working-directory: out
@@ -1413,7 +1414,7 @@ jobs:
           gh release upload "${{ inputs.tag }}" \
             out/*.zip out/*.msix out/*.cer "out/checksums-windows-${{ inputs.arch }}.txt" --clobber
 
-      - name: Package summary
+      - name: Write the package summary
         if: inputs.zip
         shell: bash
         working-directory: out
@@ -1445,7 +1446,7 @@ jobs:
       # `if: failure()` rather than a condition on the self-test specifically:
       # it costs nothing when the file is absent, and a job that failed for
       # some other reason simply prints nothing.
-      - name: Render self-test diagnosis
+      - name: Diagnose the render self-test
         if: failure()
         shell: bash
         run: |
@@ -1465,7 +1466,7 @@ jobs:
             echo 'no render self-test output — it did not get as far as running'
           fi
 
-      - name: CI summary
+      - name: Write the CI summary
         if: ${{ always() && inputs.verify_msix }}
         shell: bash
         run: |

@@ -31,6 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: No build needed for docs-only changes
+      - name: Skip the build for docs-only changes
         run: |
           echo "Docs-only PR. build.yml is path-skipped, so this companion satisfies the required build check."
