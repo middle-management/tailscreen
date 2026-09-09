@@ -525,12 +525,13 @@ for minting). Its one branch is the portable
 `WelcomePaneDecision.linkShareAction`, pinned by
 `WelcomePaneDecisionTests`. Where the mac pane points a running link-only
 share at the menu bar, these hosts render the live share card under the
-two: its link, roster and approvals have no other surface. Deviations: the
-macOS `AppState` still keeps its own copy of the link lifecycle (phase 4's,
-converging it remains rename-shaped work) and its own copy of the welcome
-branch (`welcomeLinkShareAction`, PR #303, which predates the portable
-one); `Settings → Link sharing` stays macOS-only, so the two swift-cross-ui
-hosts have no off switch for the feature.)*
+two: its link, roster and approvals have no other surface. All three hosts now read that one
+function: macOS's `AppState.welcomeLinkShareAction` became an argument
+mapping — its Settings switch into `canShare` — and its duplicate suite
+went with the duplicate branch. Deviations: the macOS `AppState` still
+keeps its own copy of the link lifecycle (phase 4's, converging it remains
+rename-shaped work), and `Settings → Link sharing` stays macOS-only, so the
+two swift-cross-ui hosts have no off switch for the feature.)*
 
 ## Risks & mitigations
 

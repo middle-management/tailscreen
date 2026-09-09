@@ -264,40 +264,22 @@ class AppState: ObservableObject {
     @Published private(set) var shareLinkError: String?
 
     /// What the welcome pane's share-link card offers for the *sharing*
-    /// half of the link feature. (Its *joining* half is never gated —
-    /// pasting a token is exactly the path that needs no account and no
-    /// settings.)
-    enum WelcomeLinkShareAction: Equatable {
-        /// Offer "Share your screen via Link…" — the picker opens and the
-        /// share comes up guest-only.
-        case offer
-        /// A link-only share is already running: point at the menubar,
-        /// where its link and guests live.
-        case sharingViaLink
-        /// Nothing to offer — link sharing is off in Settings, or a share
-        /// is mid-bring-up and a second one would only fail the share lock.
-        case unavailable
-    }
-
-    /// The pane's three-way link-share branch, as a pure function of the
-    /// three flags that drive it. Static so it is unit testable without an
-    /// `AppState` (`WelcomePaneDecisionTests`).
+    /// half of the link feature — the pinned `WelcomePaneDecision` all three
+    /// hubs read, not a fourth copy of the branch. (Its *joining* half is
+    /// never gated: pasting a token is exactly the path that needs no
+    /// account and no settings.)
     ///
-    /// The precedence matters and is not symmetric: `.offer` is checked
-    /// first, so the ordinary signed-out-and-idle case never has to reason
-    /// about `isGuestOnlyShare` (which is false then anyway). The case that
-    /// would be wrong the other way round is a guest-only share running
-    /// with link sharing since switched off in Settings — the note still
-    /// has to render, because a share the person cannot see the link for is
-    /// a share they cannot end from the surface they are looking at.
-    static func welcomeLinkShareAction(
-        linkSharingEnabled: Bool,
-        sharingState: SharingState,
-        isGuestOnlyShare: Bool
-    ) -> WelcomeLinkShareAction {
-        if linkSharingEnabled, sharingState == .idle { return .offer }
-        if isGuestOnlyShare { return .sharingViaLink }
-        return .unavailable
+    /// This hub's own gate is the Settings link-sharing switch, which is
+    /// what `canShare` means here — the swift-cross-ui hubs pass their
+    /// capture answer into the same parameter, and the branch does not care
+    /// which reason a host has for being unable to offer the button.
+    /// `.sharingViaLink` is the one that must survive the gate closing
+    /// underneath a live share; the decision's own note explains why.
+    var welcomeLinkShareAction: WelcomePaneDecision.LinkShareAction {
+        WelcomePaneDecision.linkShareAction(
+            canShare: linkSharingEnabled,
+            isIdle: sharingState == .idle,
+            isLinkOnlyShare: isGuestOnlyShare)
     }
 
     /// The guest node backing the live link. Created by `setShareLinkActive`,

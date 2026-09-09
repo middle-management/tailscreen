@@ -11,9 +11,11 @@ import Foundation
 ///
 /// Portable because the GTK and WinUI hubs render the same pane out of
 /// `TailscreenHubUI`, and because a branch with three outcomes and two silent
-/// failure modes is worth pinning once rather than per host. (The macOS app
-/// carries the same decision as `AppState.welcomeLinkShareAction`; converging
-/// the two is rename-shaped follow-up work, not a design question.)
+/// failure modes is worth pinning once rather than per host. All three hubs
+/// read this one — macOS through `AppState.welcomeLinkShareAction`, which is
+/// now an argument mapping rather than a second copy of the branch — so a
+/// pane that drifts is a compile error or a failing case, not a difference
+/// somebody notices in a screenshot months later.
 public enum WelcomePaneDecision {
     /// What the share-link card offers for the **sharing** half of the link
     /// feature. Its *joining* half is never gated — pasting a token is
@@ -33,10 +35,14 @@ public enum WelcomePaneDecision {
         case unavailable
     }
 
-    /// The card's three-way branch. `canShare` is the host's capture answer
-    /// (a Wayland session with no portal cannot share at all), `isIdle` that
-    /// no share is running or starting, `isLinkOnlyShare` that the one that
-    /// *is* running was started signed out.
+    /// The card's three-way branch. `canShare` is the host's own answer to
+    /// "could I start a link share right now" — the capture backend on
+    /// Linux (a Wayland session with no portal cannot share at all), that
+    /// plus an idle window on Windows, the Settings link-sharing switch on
+    /// macOS — and the branch deliberately does not care which of those a
+    /// host means. `isIdle` is that no share is running or starting,
+    /// `isLinkOnlyShare` that the one that *is* running was started signed
+    /// out.
     ///
     /// The precedence matters and is not symmetric: `.offer` is checked
     /// first, so the ordinary signed-out-and-idle case never has to reason

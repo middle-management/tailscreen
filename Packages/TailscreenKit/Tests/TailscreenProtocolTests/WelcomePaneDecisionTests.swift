@@ -27,10 +27,13 @@ final class WelcomePaneDecisionTests: XCTestCase {
         XCTAssertEqual(decide(), .offer)
     }
 
-    /// A Wayland session with no portal, or a Windows build without
-    /// Windows.Graphics.Capture. Withheld rather than offered-and-refused:
-    /// finding out by pressing the button is the failure this prevents.
-    func testAHostThatCannotCaptureOffersNothing() {
+    /// A Wayland session with no portal, a Windows build without
+    /// Windows.Graphics.Capture, or — on macOS, whose gate is a setting
+    /// rather than a backend — link sharing switched off, where the picker
+    /// would refuse with `.linkSharingDisabled`. Withheld rather than
+    /// offered-and-refused in all three: finding out by pressing the button
+    /// is the failure this prevents.
+    func testAHostThatCannotShareByLinkOffersNothing() {
         XCTAssertEqual(decide(canShare: false), .unavailable)
     }
 
@@ -54,7 +57,14 @@ final class WelcomePaneDecisionTests: XCTestCase {
     /// so `isLinkOnlyShare` is false for the moment. Nothing is offered,
     /// because a second start would fail the share lock, and nothing is
     /// announced, because there is no link to announce.
-    func testAShareStartingIsNeitherOfferedNorAnnounced() {
+    ///
+    /// Same tuple, second reading: a share running that is NOT link-only.
+    /// No host can reach that with this pane on screen — a tailnet share
+    /// means a signed-in hub — but the three flags are independent
+    /// published values and nothing in the type system says so, so this
+    /// also pins that the note is keyed on the link, not on "a share is
+    /// running", which would point at a link that does not exist.
+    func testAShareThatIsNotLinkOnlyIsNeitherOfferedNorAnnounced() {
         XCTAssertEqual(decide(isIdle: false), .unavailable)
     }
 
