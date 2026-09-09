@@ -300,6 +300,17 @@ class AppState: ObservableObject {
     /// nothing and both lines land in the same place.
     private let link = SharerLinkSession(logger: AppLogger())
 
+    /// The share-generation stamp, so a bring-up that was superseded can
+    /// tell. `SharerSessionCore` rather than a counter of this app's own:
+    /// it is the same struct the GTK and WinUI engines stamp their shares
+    /// with, pinned once in `SharerSessionCoreTests`, and the rule it
+    /// encodes — an attempt from a share the app has moved on from must not
+    /// publish, unwind, or release anything the current one owns — is the
+    /// same rule on all three. Only the generation half is used here; the
+    /// grant high-water mark has `lastControlGrantGeneration` and the
+    /// invite queue has `pendingPreApprovedIPs`.
+    private var shareCore = SharerSessionCore()
+
     /// Tunnel IP → admitted guest peer, mirrored from `link` whenever the
     /// roster changes while a link is live. Supplies the roster's key
     /// fingerprints — the mirror exists because those are read from a
@@ -1539,6 +1550,7 @@ class AppState: ObservableObject {
         // signed out can start a share any other way (the welcome pane's
         // Share-via-Link button and the picker both land here).
         let guestOnly = !tailscaleAuth.isAuthenticated
+        let generation = shareCore.beginShare()
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -1547,7 +1559,12 @@ class AppState: ObservableObject {
         // `sharingState = .idle`. Defer here is the safety net for
         // any path we forgot.
         defer {
-            if sharingState == .starting {
+            // Only for the share this attempt is: a stop that let a
+            // REPLACEMENT start means the `.starting` on screen is theirs,
+            // and resetting it to `.idle` here would drop their state and
+            // release the share lock out from under a bring-up that is
+            // still running.
+            if shareCore.isCurrentShare(generation), sharingState == .starting {
                 sharingState = .idle
                 shareLock.release()
                 // Honour the same contract for the outline: a share that
@@ -1805,7 +1822,7 @@ class AppState: ObservableObject {
                         // person ended, over a guest node nothing references.
                         // The mint is scoped to itself, so a replacement
                         // share's link is not what gets closed.
-                        guard server === srv else {
+                        guard shareCore.isCurrentShare(generation) else {
                             await link.teardown(mintedToken: minted)
                             throw CancellationError()
                         }
@@ -1831,12 +1848,17 @@ class AppState: ObservableObject {
                     // a half-started link-only share must not leave a live
                     // token behind a share that never happened.
                     await srv.stop()
-                    server = nil
-                    // Same scoping as the guard above: a failed start unwinds
-                    // its own link, never a replacement share's. A link-only
-                    // start that threw inside `startLinkOnly` closed its node
-                    // there, so this only bites on the mint-then-bail path.
+                    // Everything below is shared state, and a stop that let a
+                    // REPLACEMENT share start owns all of it now: blanking
+                    // `server` would strand a share that is genuinely
+                    // running, and blanking the token would erase its link.
+                    // The unwind of what THIS attempt built is not
+                    // conditional — the server is stopped above, and the
+                    // link teardown is scoped to this attempt's own mint.
+                    let isCurrent = shareCore.isCurrentShare(generation)
                     if let mintedLink { await link.teardown(mintedToken: mintedLink) }
+                    guard isCurrent else { return }
+                    server = nil
                     shareLinkToken = nil
                     isGuestOnlyShare = false
                     // `CancellationError` here means the user clicked Stop
@@ -1927,11 +1949,18 @@ class AppState: ObservableObject {
             cont.resume()
         }
 
+        // Ends the generation first, so a bring-up suspended inside
+        // `startSharing` learns it was superseded the moment it resumes —
+        // before it can publish a token, arm an outline, or reset the state
+        // this stop is in the middle of clearing.
+        shareCore.endShare()
         await server?.stop()
         server = nil
         // The token dies with the share: the server's stop() already closed
         // the guest listener and sent everyone SERVER_BYE, so only the guest
-        // node itself is left to tear down.
+        // node itself is left to tear down. Unscoped on purpose: this is the
+        // current share by construction, and the claim it takes inside the
+        // session is what invalidates a mint still in flight.
         await link.teardown()
         shareLinkToken = nil
         shareLinkError = nil
@@ -2242,12 +2271,14 @@ class AppState: ObservableObject {
         wireGuestEviction(on: server)
         do {
             shareLinkToken = try await link.enable(on: server, relayMapURL: linkRelayMapURL)
-        } catch SharerLinkError.attachRefused {
+        } catch SharerLinkError.attachRefused, SharerLinkError.superseded {
             // The share raced to a stop while the node was coming up: the
             // session closed the socket and the node, and there is no share
-            // left to put a link on. Deliberately silent — an error banner
-            // about a link would be the second surprising thing on a window
-            // whose share just ended.
+            // left to put a link on. `.superseded` is the same story one
+            // step later — the stop landed after the listener was attached.
+            // Deliberately silent in both — an error banner about a link
+            // would be the second surprising thing on a window whose share
+            // just ended.
         } catch {
             logger.log("Share link failed to start: \(error)")
             shareLinkError = L("Couldn't create the link. Check the network and try again.")

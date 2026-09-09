@@ -547,7 +547,14 @@ public final class WindowsShareSession: @unchecked Sendable {
             // died on its own must not leave a click-swallowing window over a
             // desktop that is no longer sharing anything.
             self.teardownDrawing()
+            // Captured as the status is blanked — inside the same locked
+            // body, since `status` is lock-guarded — for the same reason the
+            // GTK engine captures it: this task reaches the actor a hop
+            // later, and a Stop → Start in between can have minted a
+            // replacement link that an unscoped teardown would close.
+            var minted: String?
             self.update {
+                minted = $0.linkToken
                 $0.isSharing = false
                 $0.viewerCount = 0
                 $0.viewers = []
@@ -563,8 +570,12 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.linkIsOnlyWayIn = false
             }
             // The server drives its own teardown from here (listener close
-            // included); only the guest node remains.
-            Task { [link = self.link] in await link.teardown() }
+            // included); only the guest node remains. A capture death with no
+            // token yet needs no task: a start still bootstrapping fails its
+            // own `isCurrentShare` check and unwinds whatever it minted.
+            if let minted {
+                Task { [link = self.link] in await link.teardown(mintedToken: minted) }
+            }
         }
 
         // Publish the server, then assert the gate — in that order, and both
@@ -634,17 +645,15 @@ public final class WindowsShareSession: @unchecked Sendable {
                     // Scoped to the token this attempt minted: the
                     // replacement share that made this one stale may already
                     // have minted a link of its own, and closing whichever
-                    // link is current would kill the live one. The published
-                    // status follows the same answer — clearing it after a
-                    // replacement published its own token would blank a card
-                    // describing a share that is genuinely running.
-                    if await link.teardown(mintedToken: token) {
-                        update {
-                            $0.linkToken = nil
-                            $0.linkBusy = false
-                            $0.linkIsOnlyWayIn = false
-                        }
-                    }
+                    // link is current would kill the live one.
+                    //
+                    // Nothing is published from here at all. Closing our own
+                    // node proves only that, not that the STATUS is still
+                    // ours — a replacement that has published its bootstrap
+                    // flags would have them blanked, and its own completion
+                    // does not set them again. The stop path already cleared
+                    // the status of the share this attempt belonged to.
+                    await link.teardown(mintedToken: token)
                     return
                 }
                 update {

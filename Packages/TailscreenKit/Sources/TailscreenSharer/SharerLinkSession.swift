@@ -43,6 +43,13 @@ public actor SharerLinkSession {
     public private(set) var peersByIP: [String: GuestPeer] = [:]
     /// The live link's token — non-nil exactly while the guest node is up.
     public private(set) var token: String?
+    /// Who owns the session right now. Every mint takes the next claim
+    /// BEFORE its first await, and every teardown takes one too — which is
+    /// what invalidates a mint still in flight. An actor yields at each
+    /// await, so "is this session still unclaimed?" cannot be answered by
+    /// reading `guestServer`: that field is written last, and the whole
+    /// bootstrap runs in the gap.
+    private var claim: UInt64 = 0
     private let logger: LogSink?
 
     public init(logger: LogSink? = nil) {
@@ -58,6 +65,8 @@ public actor SharerLinkSession {
         port: UInt16 = NetworkConfig.tailscreenPort
     ) async throws -> String {
         if let token, guestServer != nil { return token }
+        claim &+= 1
+        let mine = claim
         let gs = try GuestServerNode(derpMapURL: relayMapURL, logger: logger)
         try await gs.start()
         let pl = try await gs.listenPacket(port: port)
@@ -88,6 +97,14 @@ public actor SharerLinkSession {
                 "Guest TCP control channel unavailable (\(error)) — link carries video/voice only")
         }
         let minted = try await gs.token()
+        // The share can have stopped anywhere in the bootstrap above: the
+        // server's own stop closed the listener this attempt attached, and
+        // publishing now would leave a live guest node and a token on an
+        // idle app. The stop took a claim, so this one no longer holds it.
+        guard claim == mine else {
+            await gs.close()
+            throw SharerLinkError.superseded
+        }
         guestServer = gs
         token = minted
         logger?.log("Share link active")
@@ -116,6 +133,8 @@ public actor SharerLinkSession {
         port: UInt16 = NetworkConfig.tailscreenPort
     ) async throws -> String {
         if let token, guestServer != nil { return token }
+        claim &+= 1
+        let mine = claim
         let gs = try GuestServerNode(derpMapURL: relayMapURL, logger: logger)
         do {
             try await gs.start()
@@ -142,12 +161,12 @@ public actor SharerLinkSession {
                 guestControlListener: control)
             let minted = try await gs.token()
             // The head guard was read before several awaits, and an actor
-            // yields at every one of them: a stop and a fresh start landing
-            // inside this bootstrap runs a whole second `startLinkOnly`,
-            // which can finish first. Publishing here would overwrite its
-            // node — leaking a live tunnel nothing can close, behind a token
-            // that admits people to a server nobody references.
-            guard guestServer == nil else { throw SharerLinkError.superseded }
+            // yields at every one of them: a stop, or a stop and a fresh
+            // start, landing inside this bootstrap means somebody else owns
+            // the session now. Publishing here would overwrite their node —
+            // leaking a live tunnel nothing can close, behind a token that
+            // admits people to a server nobody references.
+            guard claim == mine else { throw SharerLinkError.superseded }
             guestServer = gs
             token = minted
             logger?.log("Link-only share active — the link is the only way in")
@@ -245,10 +264,19 @@ public actor SharerLinkSession {
         return peersByIP[ip].map { ShareLinkFormat.keyFingerprint($0.key) }
     }
 
+    /// Order is the whole of it: take the claim and blank the state FIRST,
+    /// then await the node's close. Closing first leaves `token` and
+    /// `guestServer` readable across that suspension, and a `startLinkOnly`
+    /// that lands there takes the head guard's early return — handing a
+    /// replacement share the token of the link being destroyed, with no
+    /// node behind it. Taking the claim here is also what tells a mint
+    /// still in flight that it no longer owns the session.
     private func close() async {
-        await guestServer?.close()
+        claim &+= 1
+        let gs = guestServer
         guestServer = nil
         token = nil
         peersByIP = [:]
+        await gs?.close()
     }
 }

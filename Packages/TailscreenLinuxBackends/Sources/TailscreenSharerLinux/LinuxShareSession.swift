@@ -236,11 +236,20 @@ public final class LinuxShareSession {
     /// only the guest node is left to close. Synchronous state first so the
     /// card's toggle drops with the share rather than a beat later.
     private func teardownLink() {
+        // Captured before the state is blanked, and passed to the teardown:
+        // this task reaches the actor a hop later, and an immediate
+        // Stop → Start can have minted a replacement link by then. Scoped,
+        // it closes the link this share published or nothing at all.
+        //
+        // A stop with no token yet — a start still bootstrapping — needs no
+        // task here: that attempt fails its own `isCurrentShare` check when
+        // it resumes and tears down whatever it minted.
+        let minted = linkToken
         linkToken = nil
         linkBusy = false
         isLinkOnlyShare = false
         publishLink()
-        Task { [link] in await link.teardown() }
+        if let minted { Task { [link] in await link.teardown(mintedToken: minted) } }
     }
     /// The sharer's own drawing state — the same store the viewers run, so the
     /// stroke geometry, the undo stack and the identity-derived colour are
