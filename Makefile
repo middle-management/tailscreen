@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-isolation lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-isolation sil sil-isolation sil-isolation-report sil-isolation-baseline lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -225,6 +225,42 @@ endef
 #
 # The fixtures run first. A checker that fails open turns "nobody looked" into
 # "CI says it is fine", and this one failed open twice while it was written.
+# The other half of the isolation gate, and the exact one. `lint-isolation`
+# looks for the SHAPE of the bug in source, against a list of framework
+# callbacks we happen to know about; this asks the COMPILER where it planted
+# an SE-0423 dynamic executor precondition, which is the bug itself. No API
+# list, no regex, and it names the closure.
+#
+# `-Xswiftc -emit-sil` prints SIL to stdout while STILL emitting objects and
+# modules, so the build is a real one — but it invalidates the normal build's
+# flags, hence its own scratch path rather than churning `.build`.
+#
+# macOS only in practice: the trap needs an imported ObjC block, and the app
+# is where those are. Its own scratch path costs a full rebuild, which is why
+# this is not folded into `build`.
+SIL_SCRATCH := $(CURDIR)/Apps/macOS/.build-sil
+SIL_OUT := $(SIL_SCRATCH)/app.sil
+SIL_BASELINE := $(CURDIR)/.sil-isolation-baseline.txt
+
+sil: tailscale ## Build the app emitting SIL (into .build-sil/app.sil)
+	@mkdir -p $(SIL_SCRATCH)
+	@cd Apps/macOS && swift build --scratch-path $(SIL_SCRATCH) -Xswiftc -emit-sil > $(SIL_OUT)
+	@echo "SIL: $(SIL_OUT) ($$(wc -l < $(SIL_OUT)) lines)"
+
+# Fixtures first, for the reason they exist in lint-isolation: a checker that
+# fails open turns "nobody looked" into "CI says it is fine". They need no
+# toolchain — the baseline keys on mangled symbols on purpose.
+sil-isolation: sil ## Gate SE-0423 preconditions against the baseline
+	@python3 scripts/test-sil-isolation.py
+	@python3 scripts/check-sil-isolation.py $(SIL_OUT) --baseline $(SIL_BASELINE)
+
+sil-isolation-report: sil ## List every SE-0423 precondition, ignoring the baseline
+	@python3 scripts/test-sil-isolation.py
+	@python3 scripts/check-sil-isolation.py $(SIL_OUT) --report
+
+sil-isolation-baseline: sil ## Record today's preconditions as the baseline
+	@python3 scripts/check-sil-isolation.py $(SIL_OUT) --baseline $(SIL_BASELINE) --update
+
 lint-isolation: ## Reject callbacks that inherit actor isolation (see scripts/)
 	@python3 scripts/test-callback-isolation.py
 	@python3 scripts/check-callback-isolation.py

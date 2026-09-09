@@ -83,6 +83,28 @@ jobs:
       - name: Build the app
         run: make build
 
+      - name: List SE-0423 executor preconditions (report only, for now)
+        # The exact counterpart to the `callback-isolation` job. That one looks
+        # for the SHAPE of the isolation-inheriting callback in source, against
+        # a list of framework callbacks we know about; this asks the compiler
+        # where it actually planted a dynamic executor precondition —
+        # `-Xswiftc -emit-sil` prints SIL to stdout while still emitting
+        # objects, and a call to `swift_task_isCurrentExecutor` inside a
+        # function is the check the crash in v0.10.0-rc.11 tripped.
+        #
+        # REPORT ONLY on this first landing, and deliberately non-blocking:
+        # the baseline can only be written from a macOS build, so this run is
+        # how we learn what is legitimately in it. Once
+        # `.sil-isolation-baseline.txt` exists, this becomes
+        # `make sil-isolation` and loses `continue-on-error` — a new
+        # precondition then fails the build.
+        #
+        # It is a second full compile of the app (its own scratch path, since
+        # the flag invalidates the normal build's), so the run time it adds is
+        # part of what this first landing is measuring.
+        continue-on-error: true
+        run: make sil-isolation-report
+
       - name: Run tests (with coverage)
         # `--enable-code-coverage` writes an LLVM profdata bundle under
         # .build/<config>/codecov/. The subsequent step turns that into a
