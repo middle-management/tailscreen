@@ -539,6 +539,12 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         newServer.onCaptureStopped = { [weak self] error in
             guard let self, self.isCurrentShare(generation) else { return }
+            // The share is over, so the generation ends here rather than only
+            // in `stopSharing`: a link-only `beginSharing` still suspended in
+            // its bootstrap would otherwise pass its own `isCurrentShare`
+            // check on the way out and republish `isSharing` for a capture
+            // that has already died.
+            self.endShareGeneration()
             // Before the status push: a capture that died must not leave the
             // microphone open, and the status it publishes says `micAvailable
             // = false`, so the two would otherwise disagree.
@@ -570,11 +576,13 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.linkIsOnlyWayIn = false
             }
             // The server drives its own teardown from here (listener close
-            // included); only the guest node remains. A capture death with no
-            // token yet needs no task: a start still bootstrapping fails its
-            // own `isCurrentShare` check and unwinds whatever it minted.
-            if let minted {
-                Task { [link = self.link] in await link.teardown(mintedToken: minted) }
+            // included); only the guest node remains. The server goes with the
+            // token for the same reason the GTK engine passes it: a
+            // `setLinkSharing(true)` still in flight owns a claim that only
+            // its own server can invalidate, and without that it could publish
+            // a token onto a share whose capture is gone.
+            Task { [link = self.link, server = newServer] in
+                await link.teardown(for: server, mintedToken: minted)
             }
         }
 
@@ -656,10 +664,14 @@ public final class WindowsShareSession: @unchecked Sendable {
                     await link.teardown(mintedToken: token)
                     return
                 }
-                update {
-                    $0.linkToken = token
-                    $0.linkBusy = false
-                }
+                // `linkBusy` deliberately stays true here: it is what the
+                // welcome pane reads as "a start is in flight", and
+                // `isSharing` does not rise until the publish at the end of
+                // this method. Clearing it now opens a window where the pane
+                // classifies the state as idle and offers the button again —
+                // a second click, a second share. The two move together, in
+                // that final update.
+                update { $0.linkToken = token }
             } else if let controlURL {
                 try await newServer.start(
                     hostname: hostname, authKey: authKey, path: statePath,
@@ -706,6 +718,10 @@ public final class WindowsShareSession: @unchecked Sendable {
         update {
             $0.isSharing = true
             $0.message = regionNote
+            // With the share now live, the bootstrap is over — published in
+            // the same snapshot so no observer sees "not sharing, not busy"
+            // for a link-only share that is up.
+            $0.linkBusy = false
         }
     }
 
