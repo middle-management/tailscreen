@@ -381,18 +381,16 @@ jobs:
             sleep 2
           }
           shoot linux-hub.png --ui-preview
-          # The hub BEFORE sign-in — the login card and, under it, the join
-          # card that needs no account. The one state whose whole point is
-          # what it does *not* have, which is why it seeds no tailnet.
+          # The pane a first launch opens on — sign in, or take one of the two
+          # ways in that need no Tailscale account at all. The one state whose
+          # whole point is what it does *not* have, which is why it seeds no
+          # tailnet.
           shoot linux-welcome.png --ui-preview --ui-preview-welcome
           shoot linux-session.png --ui-preview --ui-preview-video
           # The share card mid-share (preview thumbnail, drawing toolbar,
           # viewer row) — the state whose clipped layout shipped unseen
           # because nothing screenshotted it.
           shoot linux-sharing.png --ui-preview --ui-preview-sharing
-          # The pane a first launch opens on — sign in, or take one of the two
-          # ways in that need no Tailscale account at all.
-          shoot linux-welcome.png --ui-preview --ui-preview-welcome
           ls -la screenshots/
 
       - name: Upload screenshots

@@ -721,14 +721,13 @@ final class AppUIState: ObservableObject {
     /// preview mode, so the platforms' screenshots read as one product.
     static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
 
-    /// The one preview state that is NOT signed in: the hub before login,
-    /// which is where the join card earns its place (joining by token needs
-    /// no account). Spelled as the macOS and GTK apps spell it, so one
-    /// screenshot job drives all three with one vocabulary. It rides
-    /// `--ui-preview` alongside for what that flag suppresses rather than
-    /// what it seeds — without it `init` falls through to `signIn()` on a
-    /// machine with a previous login, which would sign the state away
-    /// mid-screenshot.
+    /// The one preview state that is NOT signed in: the welcome pane a first
+    /// launch opens on, which is where the two no-account ways in earn their
+    /// place. Spelled as the macOS and GTK apps spell it, so one screenshot
+    /// job drives all three with one vocabulary. It rides `--ui-preview`
+    /// alongside for what that flag suppresses rather than what it seeds —
+    /// without it `init` falls through to `signIn()` on a machine with a
+    /// previous login, which would sign the state away mid-screenshot.
     static let isUIPreviewWelcome = CommandLine.arguments.contains("--ui-preview-welcome")
 
     /// The seeded preview state: tagged and untagged, online and offline,
@@ -737,16 +736,14 @@ final class AppUIState: ObservableObject {
     /// of the filter menu. Verbatim data, deliberately not localized.
     private func seedUIPreview() {
         if Self.isUIPreviewWelcome {
-            // `.starting` WITH a login URL is what the live app shows between
-            // tsnet asking for a browser and the netmap landing: `isPicking`
-            // is false, so `PickerContent` renders the login card over its
-            // spinner with the join card under it. The URL is fake data on the
-            // same footing as the seeded hostnames below. `activeAccountName`
-            // is deliberately left at its default — a hub nobody has signed
-            // into is exactly what this shoots.
-            phase = .starting
-            status = L("Waiting for browser sign-in…")
-            loginURL = "https://login.tailscale.com/a/0f19c4ab2d5e"
+            // `.idle` is the signed-out phase, so `content` renders the
+            // welcome pane: the tailnet card, and the share-link card with
+            // both no-account directions under it. Seeding stops here on
+            // purpose — every line below is a tailnet this state does not
+            // have, `activeAccountName` included, and `loginURL` stays nil
+            // because nobody has started a sign-in to be waiting on.
+            phase = .idle
+            status = L("Not signed in")
             return
         }
         phase = .ready

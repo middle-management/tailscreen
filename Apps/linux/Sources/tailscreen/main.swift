@@ -91,12 +91,12 @@ if gArgs.contains("--capture-backend-report") {
 // Headless chrome preview: render the hub with fake data and no networking, for
 // screenshots / visual review under Xvfb. Never used in a real run.
 let gUIPreview = gArgs.contains("--ui-preview")
-// The one preview state that is NOT signed in: the hub before login, which is
-// where the join card earns its place (joining by token needs no account). Its
-// own branch below rather than a flag inside the seeded one, because it is the
-// *absence* of that seed — a signed-in tailnet is exactly what this state does
-// not have. Spelled as the macOS app spells it, so one screenshot job drives
-// both with one vocabulary.
+// The one preview state that is NOT signed in: the pane a first launch now
+// opens on, where the two no-account ways in earn their place. A modifier on
+// the seeded preview rather than its own branch — everything the hub seeds is
+// still wanted behind it, so the flag is the only difference between the two
+// screenshots. Spelled as the macOS and WinUI apps spell it, so one screenshot
+// job drives all three with one vocabulary.
 let gUIPreviewWelcome = gArgs.contains("--ui-preview-welcome")
 // True when launched with no host arg → the picker drives host selection.
 var gPickerMode = false
@@ -258,27 +258,6 @@ if gSelfTest {
     // The recording indicator: does the border reach a real desktop, and does
     // it leave the middle of the screen alone. Same scheduling reason again.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OutlineSelfTest.run() }
-} else if gUIPreviewWelcome {
-    // The hub before sign-in: the login card over its spinner, the join card
-    // under it. `--ui-preview` is passed alongside and gates nothing here —
-    // what this branch shares with that one is that neither reaches the real
-    // bring-up in the chain's final else, so no node comes up and signs the
-    // state away mid-screenshot.
-    gPickerMode = true
-    // `.startingNode` WITH a login URL is exactly what the live app shows
-    // between tsnet asking for a browser and the netmap landing: `statusLine`
-    // reads "Waiting for login…" and `PickerContent` renders the login card.
-    // The URL is fake data on the same footing as the seeded hostnames.
-    gPicker.phase = .startingNode
-    gPicker.loginURL = "https://login.tailscale.com/a/0f19c4ab2d5e"
-    gOpenLogin = {}
-    // The reason this state is worth a picture at all: joining by token needs
-    // no Tailscale account, so the card is there before sign-in.
-    gJoinShare = { _ in }
-    // The account menu is wired during bring-up, before any login completes,
-    // so a signed-out hub has one too (no-op actions, as above).
-    gSwitchProfile = { _ in }
-    gAddAccount = {}
 } else if gUIPreview {
     // Headless chrome preview: seed the picker with fake sharers and render the
     // hub without any networking, so the UI can be screenshotted / reviewed.
@@ -287,7 +266,7 @@ if gSelfTest {
     // sign-in card over the two ways in that need no account. Everything
     // below still seeds, so the flag is the only difference between the two
     // screenshots.
-    gPicker.phase = gArgs.contains("--ui-preview-welcome") ? .signedOut : .picking
+    gPicker.phase = gUIPreviewWelcome ? .signedOut : .picking
     gSignIn = {}
     // Tagged and untagged, online and offline, so the header's filter menu has
     // every axis to show in a screenshot.
