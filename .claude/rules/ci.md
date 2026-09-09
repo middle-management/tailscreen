@@ -78,15 +78,11 @@ Runs `make build` + `make test` on every PR and push to `main`. Skips doc-only c
 
 **The macOS leg is the one the docs site publishes** (`docs/assets/screenshots/`), so it does two things the others don't. It crops with `screencapture -l <window>` rather than grabbing the whole screen, which keeps the window's own shadow on transparency instead of shipping a picture of a runner's desktop — the window id travels as an `--ui-preview-window-file` **argument**, because the step launches through `open` (which is what gets the app a real GUI session) and `open` forwards `--args` but not the environment. And it asks for a HiDPI display mode first, since hosted runners hand out a 1024x768 1x virtual display that crops too soft to publish; that step is best-effort by construction — every failure path leaves the shots at 1x rather than failing the job. Its guards come in pairs for the same reason the others have one: `pgrep` before (a crashed app must not become a convincing empty desktop) and a non-empty check after (a stale window id must not become a zero-byte PNG nobody notices until it is on the landing page).
 
+Two more traps on that leg. The Screen Recording grant is what `screencapture` depends on, and **a wallpaper-only PNG in the artifact is the runner saying no** — when a shot comes back wrong, the deterministic `--ui-preview` modes are the layer to extend, rather than reaching for pixel assertions. And the annotation seed draws one stroke per annotation tool but omits `.click` **on purpose**: that one is an EPHEMERAL annotation and the macOS canvas sweeps it on a real timer, so unlike the GTK model — which takes the clock as an argument and can date a stroke past the shutter — it cannot survive to the capture.
+
 ### Soak
 
 Nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
-
-### Screenshots
-
-`workflow_dispatch` (plus a `pull_request` trigger scoped to its own file, so a change to it proves itself on its own PR): one job per platform through the shared `app-*.yml` workflows, each behind a `screenshots` input, uploading PNG artifacts. The Linux and macOS legs render the app's deterministic `--ui-preview*` chrome (fake sharers, one stroke per annotation tool, a seeded mid-share card — no network), Linux under Xvfb with ImageMagick and macOS on the runner's desktop cropped to the window with `screencapture -l`; the Windows leg launches the real staged app and grabs the whole screen (`CopyFromScreen`). Every capture step guards on the app process still being alive first — a crashed app must fail the step, not produce a convincing screenshot of an empty desktop. One arch per platform (x64), since the chrome is arch-independent and those legs have the warm caches.
-
-Two macOS notes. `screencapture` needs the Screen Recording TCC grant, and a wallpaper-only PNG in the artifact is the runner saying no; the deterministic `--ui-preview` modes are what make the rest of it reproducible, so that is the layer to extend rather than reaching for pixel assertions. And the annotation seed there omits `.click` on purpose — it is an EPHEMERAL annotation and the macOS canvas sweeps it on a real timer, so unlike the GTK model (which takes the clock as an argument and can date a stroke past the shutter) it cannot survive to the capture.
 
 ### Pages
 
