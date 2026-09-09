@@ -975,7 +975,9 @@ struct ViewerApp: App {
     /// to be opened, which is a different act from starting a sign-in.
     private var welcomeButtonLabel: String {
         if picker.loginURL != nil { return L("Open the sign-in page") }
-        return picker.signInNote == nil ? L("Sign in with Tailscale") : L("Try again")
+        // Reads off the phase, like the WinUI hub's twin of this line — the
+        // retry label and the reason it prints now come from one case.
+        return picker.phase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
     }
 
     // Header subtitle: the picker's progress line, or the direct-connect status.

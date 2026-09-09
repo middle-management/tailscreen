@@ -365,7 +365,13 @@ struct TailscreenWindowsApp: App {
 
     private var signIn: some View {
         let model = state
-        let label = state.phase.hasFailed ? L("Try again") : L("Sign in to Tailscale")
+        // "with", not "to": Tailscale is the identity provider here, the same
+        // sense as any other sign-in-with-X button, and this is the same
+        // control the macOS welcome pane and the GTK hub render — all three
+        // pass it into `HubSignInPane.signInLabel`. It said "to" here alone.
+        // (`HubLoginCard`'s heading keeps "Sign in to Tailscale": that card is
+        // a URL to open in a browser, not a button, and reads right as a title.)
+        let label = state.phase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
         return HubSignInPane(
             tailnetMessage: state.welcomeTailnetMessage,
             signInLabel: label,
