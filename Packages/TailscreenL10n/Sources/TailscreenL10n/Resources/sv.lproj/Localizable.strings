@@ -33,7 +33,12 @@
 
 /* MARK: - Welcome / sign-in (MainWindowView.swift) */
 "Welcome to Tailscreen" = "Välkommen till Tailscreen";
-"Sign in with Tailscale to share and view screens with your peers." = "Logga in med Tailscale för att dela och visa skärmar med andra.";
+"Share a screen with your tailnet, or with anyone over a link." = "Dela en skärm med ditt tailnet, eller med vem som helst via en länk.";
+"Your tailnet" = "Ditt tailnet";
+"Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around." = "Varje Tailscreen på ditt tailnet, listad med namn — anslut med ett klick, ingen länk att skicka runt.";
+"A share link" = "En delningslänk";
+"No account needed" = "Inget konto behövs";
+"Guests join over an encrypted tunnel, and the sharer approves every one." = "Gäster ansluter via en krypterad tunnel, och den som delar godkänner var och en.";
 "Signing in…" = "Loggar in…";
 "Sign in with Tailscale" = "Logga in med Tailscale";
 "Opens Tailscale sign-in in your browser" = "Öppnar Tailscale-inloggning i din webbläsare";

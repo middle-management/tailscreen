@@ -44,7 +44,12 @@
 
 /* MARK: - Welcome / sign-in (MainWindowView.swift) */
 "Welcome to Tailscreen" = "Welcome to Tailscreen";
-"Sign in with Tailscale to share and view screens with your peers." = "Sign in with Tailscale to share and view screens with your peers.";
+"Share a screen with your tailnet, or with anyone over a link." = "Share a screen with your tailnet, or with anyone over a link.";
+"Your tailnet" = "Your tailnet";
+"Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around." = "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around.";
+"A share link" = "A share link";
+"No account needed" = "No account needed";
+"Guests join over an encrypted tunnel, and the sharer approves every one." = "Guests join over an encrypted tunnel, and the sharer approves every one.";
 "Signing in…" = "Signing in…";
 "Sign in with Tailscale" = "Sign in with Tailscale";
 "Opens Tailscale sign-in in your browser" = "Opens Tailscale sign-in in your browser";

@@ -263,6 +263,43 @@ class AppState: ObservableObject {
     /// attempt (and with the share). Rendered under the toggle.
     @Published private(set) var shareLinkError: String?
 
+    /// What the welcome pane's share-link card offers for the *sharing*
+    /// half of the link feature. (Its *joining* half is never gated —
+    /// pasting a token is exactly the path that needs no account and no
+    /// settings.)
+    enum WelcomeLinkShareAction: Equatable {
+        /// Offer "Share your screen via Link…" — the picker opens and the
+        /// share comes up guest-only.
+        case offer
+        /// A link-only share is already running: point at the menubar,
+        /// where its link and guests live.
+        case sharingViaLink
+        /// Nothing to offer — link sharing is off in Settings, or a share
+        /// is mid-bring-up and a second one would only fail the share lock.
+        case unavailable
+    }
+
+    /// The pane's three-way link-share branch, as a pure function of the
+    /// three flags that drive it. Static so it is unit testable without an
+    /// `AppState` (`WelcomePaneDecisionTests`).
+    ///
+    /// The precedence matters and is not symmetric: `.offer` is checked
+    /// first, so the ordinary signed-out-and-idle case never has to reason
+    /// about `isGuestOnlyShare` (which is false then anyway). The case that
+    /// would be wrong the other way round is a guest-only share running
+    /// with link sharing since switched off in Settings — the note still
+    /// has to render, because a share the person cannot see the link for is
+    /// a share they cannot end from the surface they are looking at.
+    static func welcomeLinkShareAction(
+        linkSharingEnabled: Bool,
+        sharingState: SharingState,
+        isGuestOnlyShare: Bool
+    ) -> WelcomeLinkShareAction {
+        if linkSharingEnabled, sharingState == .idle { return .offer }
+        if isGuestOnlyShare { return .sharingViaLink }
+        return .unavailable
+    }
+
     /// The guest node backing the live link. Created by `setShareLinkActive`,
     /// destroyed by it, by New Link, and by `stopSharing`.
     private var guestServer: GuestServerNode?
@@ -669,10 +706,13 @@ class AppState: ObservableObject {
         refreshViewerWindowTitle()
     }
 
-    /// Join-a-Share sheet state. `joinSheetInput` is what the sheet's paste
-    /// field edits — pre-filled by a `tailscreen:` URL open.
+    /// Join-a-Share state. `joinInput` is the pasted token or link, shared
+    /// by the sheet's field and the welcome pane's inline one — pre-filled
+    /// by a `tailscreen:` URL open. One property rather than two because
+    /// both fields drive the same `joinShare(input:)`, and a half-typed
+    /// token surviving the hop between them is the friendly behaviour.
     @Published var joinSheetPresented = false
-    @Published var joinSheetInput = ""
+    @Published var joinInput = ""
 
     /// Hosts for the ended-state pane and the non-modal notice banner,
     /// built alongside the other viewer overlays in `ensureViewer`.
@@ -2550,14 +2590,15 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Join a share from whatever the user pasted into the join sheet — a
-    /// bare token or a `tailscreen:` link. Returns false (sheet shows its
-    /// inline error, stays up) when the input holds no plausible token;
-    /// true dismisses the sheet and starts the guest connect.
+    /// Join a share from whatever the user pasted — a bare token or a
+    /// `tailscreen:` link — from either the sheet or the welcome pane's
+    /// inline field. Returns false (the caller shows its inline error and
+    /// stays put) when the input holds no plausible token; true dismisses
+    /// the sheet and starts the guest connect.
     func joinShare(input: String) -> Bool {
         guard let token = ShareLinkFormat.token(fromUserInput: input) else { return false }
         joinSheetPresented = false
-        joinSheetInput = ""
+        joinInput = ""
         Task { @MainActor [weak self] in
             await self?.connect(to: "", displayName: L("Shared screen"), guestToken: token)
         }
@@ -2573,7 +2614,7 @@ class AppState: ObservableObject {
             logger.log("Ignoring un-parseable \(ShareLinkFormat.scheme): URL")
             return
         }
-        joinSheetInput = token
+        joinInput = token
         joinSheetPresented = true
         presentMainWindow()
     }
@@ -3293,11 +3334,29 @@ class AppState: ObservableObject {
     static let isUIPreviewSharing = CommandLine.arguments.contains("--ui-preview-sharing")
     static let isUIPreviewVideo = CommandLine.arguments.contains("--ui-preview-video")
 
+    /// The one preview state that is *not* signed in: the welcome pane only
+    /// exists before sign-in, so it seeds no profile and no peers. It still
+    /// rides `--ui-preview` alongside, for what that flag suppresses rather
+    /// than for what it seeds — the session restore, which would bring a
+    /// real node up and sign the pane away mid-screenshot. The GTK and WinUI
+    /// apps spell it the same, over their own signed-out state — the hub
+    /// before login, login card and join card — so one screenshot job drives
+    /// all three with one vocabulary.
+    static let isUIPreviewWelcome = CommandLine.arguments.contains("--ui-preview-welcome")
+
     /// The seeded preview state: tagged and untagged, online and offline,
     /// one peer sharing and one relayed — so a single screenshot exercises
     /// the sharing chip, the route line, the latency figure, and every axis
     /// of the filter menu. Verbatim data, deliberately not localized.
     private func seedUIPreview() {
+        if Self.isUIPreviewWelcome {
+            // Seeded on purpose even though it defaults on: the pane's
+            // Share-via-Link button is behind this gate, so a runner whose
+            // defaults say otherwise would shoot a pane missing a control.
+            linkSharingEnabled = true
+            scheduleUIPreviewWindowCapture()
+            return
+        }
         tailscaleAuth.userProfile = TailscaleUserProfile(
             displayName: "Robert", loginName: "robert@example.com",
             profilePicURL: nil, tailnetName: "example.com")
@@ -3334,11 +3393,17 @@ class AppState: ObservableObject {
         if Self.isUIPreviewRequest { seedUIPreviewShareRequest() }
         if Self.isUIPreviewSharing { seedUIPreviewSharing() }
 
-        // The viewer window and the main window both belong to SwiftUI's
-        // scene machinery, which has built neither at init time — the video
-        // seed needs a window to put a frame into, and the window-id file
-        // needs one to name. One settle hop covers both, and CI's own dwell
-        // before the shutter dwarfs it.
+        scheduleUIPreviewWindowCapture()
+    }
+
+    /// The part of preview bring-up that has to wait for SwiftUI: the viewer
+    /// window and the main window both belong to its scene machinery, which
+    /// has built neither at init time — the video seed needs a window to put
+    /// a frame into, and the window-id file needs one to name. One settle
+    /// hop covers both, and CI's own dwell before the shutter dwarfs it.
+    /// Shared by every preview state, the signed-out one included: the
+    /// screenshot job blocks on that id file whatever is on screen.
+    private func scheduleUIPreviewWindowCapture() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self = self else { return }
