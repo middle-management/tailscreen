@@ -247,12 +247,25 @@ public actor SharerLinkSession {
         for server: TailscaleScreenShareServer? = nil,
         mintedToken: String? = nil
     ) async -> Bool {
-        // First, and whether or not a token exists yet: a mint still in flight
-        // for THIS server is invalidated, so a stop landing between `enable`
-        // attaching its listener and returning a token cannot end with a token
-        // published onto an idle app. Scoped by owner, so a replacement's
-        // bootstrap is untouched.
-        if let server, claimOwner == ObjectIdentifier(server) {
+        // First, and whether or not a token exists yet: a mint still in
+        // flight is invalidated, so a stop landing between `enable` attaching
+        // its listener and returning a token cannot end with a token
+        // published onto an idle app.
+        //
+        // With a server, that is scoped to the mint IT owns, so a stale
+        // share's stop cannot cancel a replacement's bootstrap. Without one,
+        // it is unconditional — the argument-less form means "I am the
+        // current share and I am ending", and there is nothing else to
+        // protect. Note this has to happen even when nothing is published
+        // yet: the early return below is exactly the case a mint in flight
+        // is in, and skipping the invalidation there is what let the mint
+        // publish onto a stopped share.
+        if let server {
+            if claimOwner == ObjectIdentifier(server) {
+                claim &+= 1
+                claimOwner = nil
+            }
+        } else {
             claim &+= 1
             claimOwner = nil
         }
