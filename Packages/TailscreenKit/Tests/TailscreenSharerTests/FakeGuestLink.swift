@@ -29,25 +29,34 @@ final class Gate: @unchecked Sendable {
 
     /// Called from inside the faked operation.
     ///
-    /// The "should I park" answer and the waiter list come out of the same
-    /// lock acquisition, as a flag beside an ordinary array rather than an
-    /// optional one — `discouraged_optional_collection` is on in this repo,
-    /// and an empty list means the same thing here anyway. The resumes
-    /// happen outside the lock so a continuation cannot re-enter it.
+    /// Registration comes BEFORE the announcement, under one lock
+    /// acquisition — which is why the whole body sits inside the
+    /// continuation rather than deciding first and parking after. The order
+    /// the other way is a lost wakeup: `parkedCount` rises, the test's
+    /// `waitUntilParked` returns, the test calls `release()`, that drains a
+    /// `parked` array this call has not appended to yet — and the
+    /// continuation lands a moment later with nobody left to resume it. The
+    /// symptom is the one this whole class is shaped to avoid: the test
+    /// hangs rather than failing.
+    ///
+    /// Both resumes happen outside the lock, so a continuation cannot run a
+    /// waiting task straight back into it.
     func passOrPark() async {
-        var shouldPark = false
-        var waiting: [CheckedContinuation<Void, Never>] = []
-        lock.withLock {
-            guard holding else { return }
-            shouldPark = true
-            parkedCount += 1
-            waiting = waiters
-            waiters = []
-        }
-        for waiter in waiting { waiter.resume() }
-        guard shouldPark else { return }
-        await withCheckedContinuation { continuation in
-            lock.withLock { parked.append(continuation) }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var waiting: [CheckedContinuation<Void, Never>] = []
+            var passStraightThrough = false
+            lock.withLock {
+                guard holding else {
+                    passStraightThrough = true
+                    return
+                }
+                parkedCount += 1
+                waiting = waiters
+                waiters = []
+                parked.append(continuation)
+            }
+            for waiter in waiting { waiter.resume() }
+            if passStraightThrough { continuation.resume() }
         }
     }
 
