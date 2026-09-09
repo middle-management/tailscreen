@@ -182,6 +182,31 @@ final class SharerModel: ObservableObject {
         set { engine.nodeProvider = newValue }
     }
 
+    /// Whether there is a node to share over yet.
+    ///
+    /// Deliberately the SAME call `beginShare` makes rather than a flag kept
+    /// beside it — the hub used to offer Share before the node existed and
+    /// `beginShare` answered "Tailscale isn't up yet", which is the two
+    /// disagreeing, exactly the failure `canShareWindow` is shaped to avoid on
+    /// the other precondition. Not `@Published`: the closure reads through to
+    /// the transport, and every nil→non-nil transition of that node coincides
+    /// with a `PickerModel.phase` change (bring-up ends in `.discovering`, a
+    /// failed bring-up in `.picking`), so the hub re-renders and re-reads this
+    /// on its own.
+    var hasNode: Bool { pretendsToHaveNodeForUIPreview || nodeProvider?() != nil }
+
+    /// `--ui-preview` seeds a signed-in hub but brings no node up, so without
+    /// this the seeded screenshot would lose the very Start button it exists
+    /// to photograph. Deliberately NOT set by `--ui-preview-welcome`, whose
+    /// whole subject is the hub before there is a node.
+    private var pretendsToHaveNodeForUIPreview = false
+
+    /// See `pretendsToHaveNodeForUIPreview`. Beside `seedForUIPreview` for the
+    /// same reason: the preview mode is the one caller allowed to write this.
+    func seedNodeForUIPreview() {
+        pretendsToHaveNodeForUIPreview = true
+    }
+
     /// Supplied by `main` — opens a capture device, or throws if there is none.
     ///
     /// A factory rather than an instance because a share is a session: the

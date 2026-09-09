@@ -525,6 +525,7 @@
 
 /* Sharer status + failures (SharerModel.swift / VoiceControls.swift) */
 "Not sharing" = "Delar inte";
+"Available once Tailscale is up" = "Tillgängligt när Tailscale är igång";
 "%lld waiting for approval" = "%lld väntar på godkännande";
 "Nobody watching yet" = "Ingen tittar ännu";
 "Your drawing colour" = "Din ritfärg";

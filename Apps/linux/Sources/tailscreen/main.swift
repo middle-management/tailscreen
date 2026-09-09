@@ -307,6 +307,10 @@ if gSelfTest {
     // Render the "Join a Share…" card too (no-op): the live idle hub always
     // offers it, and a screenshot without it under-sells the shipped chrome.
     gJoinShare = { _ in }
+    // This mode seeds a signed-in tailnet but no node, and the share card now
+    // withholds Start until there is one — without this the seeded shot would
+    // lose the button it exists to photograph.
+    gSharer.seedNodeForUIPreview()
     // `--ui-preview-video` jumps straight to the video state (a color-bars
     // frame) so the window-grows-to-video behaviour is screenshot-reviewable.
     if gArgs.contains("--ui-preview-video") {
@@ -982,16 +986,46 @@ struct ViewerApp: App {
         return { gReturnToPicker?() }
     }
 
+    /// Whether the card may offer Start, and why not when it may not.
+    ///
+    /// The node half reads `sharer.hasNode`, which is the very call the share
+    /// path makes — before this the card offered Start from the moment the
+    /// window opened, and pressing it before sign-in reported "Share failed:
+    /// Tailscale isn't up yet" from a hub that looked ready.
+    private var shareAvailability: HubShareAvailability {
+        HubShareAvailability.decide(
+            captureAvailable: sharer.canShare, nodeIsUp: sharer.hasNode)
+    }
+
+    /// The card's headline, with one thing to say that `SharerModel` cannot:
+    /// it knows nothing about the node, and this is the only state where the
+    /// node is why there is no button.
+    ///
+    /// Deliberately vague about which half of bring-up is outstanding —
+    /// starting the node or waiting for a browser sign-in — because the login
+    /// card directly above says exactly that, and this line repeating it in
+    /// less detail would be the hub disagreeing with itself.
+    private var shareStatusLine: String {
+        if sharer.phase == .idle, shareAvailability == .waitingForNode {
+            return L("Available once Tailscale is up")
+        }
+        return sharer.statusLine
+    }
+
     /// The hub's sharing card. Only offered in picker mode: the direct-host
     /// path (`tailscreen <host>`) is a one-shot viewer invocation,
     /// and growing a share button onto it would be surprising.
     private var shareCard: ShareCard? {
         guard gPickerMode else { return nil }
         return ShareCard(
-            statusLine: sharer.statusLine,
+            statusLine: shareStatusLine,
             statusDetail: sharer.statusDetail,
             isSharing: sharer.phase == .sharing,
-            canShare: sharer.canShare,
+            // The node gate applies to STARTING a share, never to a live one:
+            // `canShare` also carries Stop, so a card that dropped it because
+            // the node blinked would strand a share nobody can end from here.
+            canShare: sharer.phase == .sharing
+                ? sharer.canShare : shareAvailability.canStartShare,
             notes: {
                 var notes: [String] = []
                 // Only after a grant was refused — see `SharerModel.controlNote`.

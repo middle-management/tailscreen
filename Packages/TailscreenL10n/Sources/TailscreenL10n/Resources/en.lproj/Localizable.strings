@@ -540,6 +540,7 @@
 
 /* Sharer status + failures (SharerModel.swift / VoiceControls.swift) */
 "Not sharing" = "Not sharing";
+"Available once Tailscale is up" = "Available once Tailscale is up";
 "%lld waiting for approval" = "%lld waiting for approval";
 "Nobody watching yet" = "Nobody watching yet";
 "Your drawing colour" = "Your drawing colour";

@@ -19,6 +19,7 @@ import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import enum TailscreenProtocol.HubShareAvailability
 import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
@@ -921,14 +922,44 @@ final class AppUIState: ObservableObject {
     /// Withheld rather than shown and then failing: a Windows build without
     /// Windows.Graphics.Capture cannot share, and finding that out by pressing
     /// a button is worse than not being offered one.
+    /// The card's headline. `waitingForNode` is the one state the sharing
+    /// model cannot word for itself: it knows nothing about the node, and this
+    /// is the only case where the node is why there is no button.
+    ///
+    /// Deliberately vague about which half of bring-up is outstanding —
+    /// starting the node or waiting for a browser sign-in — because the login
+    /// card directly above says exactly that, and this line repeating it in
+    /// less detail would be the hub disagreeing with itself.
+    var shareStatusLine: String {
+        if sharing.isSharing { return L("Sharing \(sharing.target)") }
+        if shareAvailability == .waitingForNode { return L("Available once Tailscale is up") }
+        return L("Not sharing")
+    }
+
+    /// Whether the card may offer Start, and why not when it may not.
+    ///
+    /// The node half is `phase == .ready`, which is the very guard
+    /// `startSharing` opens with — before this the card offered Start from the
+    /// moment the window opened, and pressing it before sign-in fell straight
+    /// out of that guard and did *nothing at all*, which reads as a broken
+    /// button rather than a wrong moment. `isSupported` is already the card's
+    /// own guard above, so capture is available by the time this is asked.
+    var shareAvailability: HubShareAvailability {
+        HubShareAvailability.decide(captureAvailable: true, nodeIsUp: phase == .ready)
+    }
+
     var shareCard: ShareCard? {
         guard shareSession.isSupported else { return nil }
         return ShareCard(
-            statusLine: sharing.isSharing
-                ? L("Sharing \(sharing.target)")
-                : L("Not sharing"),
+            statusLine: shareStatusLine,
             isSharing: sharing.isSharing,
-            canShare: watching == nil,
+            // `watching == nil` is this host's own extra precondition: one app
+            // cannot watch and share at once. The node gate applies to
+            // STARTING a share, never to a live one — `canShare` also carries
+            // Stop, and a card that dropped it would strand a share nobody can
+            // end from this window, which is the only window this app has.
+            canShare: watching == nil
+                && (sharing.isSharing || shareAvailability.canStartShare),
             startLabel: L("Share this screen"),
             notes: shareNotes,
             // The roster: who is watching, and what can be done about them.
