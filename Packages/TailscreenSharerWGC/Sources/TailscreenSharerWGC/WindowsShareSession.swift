@@ -1077,8 +1077,10 @@ public final class WindowsShareSession: @unchecked Sendable {
         stopVoice()
         // The token dies with the share. The server's stop() below closes
         // the guest listener and tells every guest, so only the node is left
-        // to close — and the card's toggle drops with the share.
-        await link.teardown()
+        // to close — and the card's toggle drops with the share. Scoped to
+        // this server so a link toggled on mid-share and still bootstrapping
+        // is invalidated with it, and a replacement's is not.
+        await link.teardown(for: running)
         guard let running else {
             update {
                 $0.linkToken = nil
