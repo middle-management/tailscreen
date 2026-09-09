@@ -51,6 +51,11 @@ The honest differences:
   only on the macOS sharer — viewers on every platform play it back.
 - **Permissions:** Screen Recording and Accessibility prompts are macOS
   concepts. Linux and Windows have no equivalent gate.
+- **Signing in is something you start.** All three apps open on a welcome
+  screen — one card for your tailnet, one for a share link — and none of
+  them begins a browser sign-in you did not ask for. Once you have signed
+  in, launching the app restores that session silently; if the saved
+  sign-in has expired, the tailnet card comes back and says so.
 
 The full feature-by-feature comparison lives in
 [Platform support]({{ site.baseurl }}{% link platform-support.md %}).
@@ -193,10 +198,9 @@ Link** is the way in for someone who isn't — no Tailscale account, no
 install ceremony beyond Tailscreen itself.
 
 While sharing, flip **Share via Link** in the sharing card (either copy of
-it on macOS; the hub's share card on Linux and Windows, where the link
-appears as selectable text to copy). Tailscreen mints a one-off link (a
-`tailscreen:` URL wrapping a `tc…` token). On macOS it comes with four
-buttons:
+it on macOS; the hub's share card on Linux and Windows). Tailscreen mints a
+one-off link (a `tailscreen:` URL wrapping a `tc…` token), and all three
+apps put the same four buttons under it:
 
 - **Copy Link** — the `tailscreen:` URL. On a machine with Tailscreen
   installed, opening it lands in the join screen with the token filled in.
@@ -229,13 +233,16 @@ also holds a relay override for
   <figcaption>Two ways in, before you have signed into anything.</figcaption>
 </figure>
 
-**Sharing without signing in** works too: the macOS welcome screen offers
-**Share your screen via Link…** in its share-link card, beside the card
-that signs you into a tailnet. The picker opens, the share starts as a
-*link-only* share — no Tailscale account,
-no tailnet, the link is the only way in — and the sharing card shows the
-link with the same Copy / New Link / guest controls. Approval is still
-mandatory for every guest, and Stop Sharing is the way to end it (a
+**Sharing without signing in** works too, on all three platforms. Every
+app's welcome screen carries one card per way in — **Your tailnet**, with
+the sign-in button, and **A share link**, with both no-account
+directions — and the second one's **Share your screen via Link…** is the
+one that needs no account. The picker opens, the share starts as a
+*link-only* share — no Tailscale account, no tailnet, the link is the only
+way in — and the sharing card shows the link with the same New Link and
+guest controls. On macOS that card lives in the menu bar; on Linux and
+Windows the sharing view takes over the window until you stop. Approval is
+still mandatory for every guest, and Stop Sharing is the way to end it (a
 link-only share has no link-off toggle: turning off its only transport
 would leave a share running that nobody can reach).
 
@@ -245,18 +252,18 @@ registered (macOS; Linux via an installed `.desktop` entry — Flatpak does
 this at install, an AppImage after desktop integration; Windows via the
 MSIX install), and pasting always works:
 
-- **macOS** — click the link, or paste the link or token into a field:
-  the sign-in screen has one in its share-link card, and **Join a Share…**
-  (the link icon in the hub header) opens the same field as a sheet from
-  anywhere.
-- **Linux and Windows** — click the link, or **Join a Share…** in the hub
-  (offered before sign-in too — joining needs no account). The Linux app
-  also takes `tailscreen --join <token-or-link>` — or the link as a bare
-  argument — on the command line.
+- **macOS** — click the link, or **Join a Share…** (the link icon in the
+  hub header, also offered on the sign-in screen) and paste the link or
+  token.
+- **Linux and Windows** — click the link, or paste it: the welcome
+  screen's share-link card has a field, and once signed in **Join a
+  Share…** in the hub opens the same one (joining needs no account either
+  way). The Linux app also takes `tailscreen --join <token-or-link>` — or
+  the link as a bare argument — on the command line.
 - **A browser, nothing installed** — open the **web link**
   (`https://tailscreen.dev/view/#tc…`). On macOS the sharing card's
-  **Copy Web Link** puts it on the clipboard; on Linux and Windows it is the
-  second line under the link toggle. Opened *without* a token, the page
+  **Copy Web Link** puts it on the clipboard, and Linux and Windows have the
+  same button. Opened *without* a token, the page
   shows the same join field as the apps — paste the web link, the
   `tailscreen:` link or the bare token into it. Chrome, Edge and Firefox
   decode the share; Safari has not been checked yet. The page waits at the same
@@ -279,9 +286,7 @@ sessions carry the full feature set: video, voice, **annotations, and
 remote control** — the same capability gates apply as for tailnet
 viewers (a sharer that can't render strokes or inject input simply
 doesn't offer those tools), and remote control still takes the sharer's
-explicit per-request grant. Sharing *without signing in at all* (a
-link-only share) is macOS-only today — see the
-[platform matrix]({{ site.baseurl }}{% link platform-support.md %}).
+explicit per-request grant.
 
 ## Asking someone to share
 

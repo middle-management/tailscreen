@@ -171,22 +171,43 @@ public struct HubLinkSharing: Sendable {
     public let busy: Bool
     /// Connected + pending guests, for the count line under the link.
     public let guestCount: Int
+    /// This share has no tailnet listener at all — it was started signed
+    /// out, so the link is the only way in. The card states that instead of
+    /// drawing a toggle, because the off position would be a switch that
+    /// refuses to flip: the only way to end a link-only share is to stop it.
+    /// The macOS menubar's `ShareViaLinkSection` makes the same split.
+    public let isOnlyWayIn: Bool
     public let onToggle: @MainActor @Sendable (Bool) -> Void
     /// New Link rotation (the old link dies, guests drop). Nil hides it.
     public let onNewLink: (@MainActor @Sendable () -> Void)?
+    /// Put the given text on the system clipboard — the host's seam, since
+    /// neither swift-cross-ui nor this package can reach a clipboard.
+    ///
+    /// Nil is a real state and renders the link as full selectable text
+    /// instead of Copy buttons: a host with no clipboard must still be able
+    /// to hand the link over, and select-and-paste always works (the
+    /// `HubLoginCard` lesson). Non-nil gets the macOS card's three buttons
+    /// over ONE truncated line, because a link you can copy in a click does
+    /// not also need to be readable character by character — and the token
+    /// is 120 characters that otherwise wrap over three lines, twice.
+    public let onCopy: (@MainActor @Sendable (String) -> Void)?
 
     public init(
         token: String?,
         busy: Bool,
         guestCount: Int,
+        isOnlyWayIn: Bool = false,
         onToggle: @escaping @MainActor @Sendable (Bool) -> Void,
-        onNewLink: (@MainActor @Sendable () -> Void)? = nil
+        onNewLink: (@MainActor @Sendable () -> Void)? = nil,
+        onCopy: (@MainActor @Sendable (String) -> Void)? = nil
     ) {
         self.token = token
         self.busy = busy
         self.guestCount = guestCount
+        self.isOnlyWayIn = isOnlyWayIn
         self.onToggle = onToggle
         self.onNewLink = onNewLink
+        self.onCopy = onCopy
     }
 }
 

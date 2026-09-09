@@ -1,0 +1,74 @@
+import Foundation
+
+/// What the signed-out welcome pane offers, as pure functions of the flags
+/// that drive it.
+///
+/// The pane itself is one card per way in — the tailnet (sign in once, then
+/// every Tailscreen shows up by name) and a share link (nothing to sign into,
+/// both directions, guest approval mandatory) — because they are not variants
+/// of each other. The macOS hub states that layout in SwiftUI and this states
+/// the one branch inside it that is a decision rather than a rendering.
+///
+/// Portable because the GTK and WinUI hubs render the same pane out of
+/// `TailscreenHubUI`, and because a branch with three outcomes and two silent
+/// failure modes is worth pinning once rather than per host. All three hubs
+/// read this one — macOS through `AppState.welcomeLinkShareAction`, which is
+/// now an argument mapping rather than a second copy of the branch — so a
+/// pane that drifts is a compile error or a failing case, not a difference
+/// somebody notices in a screenshot months later.
+public enum WelcomePaneDecision {
+    /// What the share-link card offers for the **sharing** half of the link
+    /// feature. Its *joining* half is never gated — pasting a token is
+    /// exactly the path that needs no account, no capture backend, and no
+    /// settings, so it is always on screen.
+    public enum LinkShareAction: Equatable, Sendable {
+        /// Offer "Share your screen via Link…": the share comes up over the
+        /// guest tunnel with its link as the only way in.
+        case offer
+        /// A link-only share is already running — say so, and point at where
+        /// its link and guests are (the menu bar on macOS; the share card
+        /// under this one on the hosts whose window is the only surface).
+        case sharingViaLink
+        /// Nothing to offer: this machine cannot capture anything, or a
+        /// share is mid-bring-up and a second one would only fail the share
+        /// lock.
+        case unavailable
+    }
+
+    /// The card's three-way branch. `canShare` is the host's own answer to
+    /// "could I start a link share right now" — the capture backend on
+    /// Linux (a Wayland session with no portal cannot share at all), that
+    /// plus an idle window on Windows, the Settings link-sharing switch on
+    /// macOS — and the branch deliberately does not care which of those a
+    /// host means. `isIdle` is that no share is running or starting,
+    /// `isLinkOnlyShare` that the one that *is* running was started signed
+    /// out.
+    ///
+    /// The precedence matters and is not symmetric. **Idle is answered
+    /// first**, whatever the link flag says: a host that publishes idle
+    /// while a stale `isLinkOnlyShare` has not yet been cleared — the
+    /// window between one teardown write and the next — must not be told it
+    /// is sharing via a link that is being torn down, and if it also cannot
+    /// capture, the honest answer is that there is nothing to offer rather
+    /// than a live-share note about a share that does not exist. The case
+    /// that would be wrong the other way round is a link-only share
+    /// genuinely *running* on a host whose capture backend has since gone
+    /// (a portal session revoked, the Settings switch turned off): not
+    /// idle, so the note still renders — because a share the person cannot
+    /// see the link for is a share they cannot end from the surface they
+    /// are looking at.
+    ///
+    /// Both wrong answers are silent, which is why this is a pinned decision
+    /// rather than an inline ternary: an offered button on a host that cannot
+    /// capture walks somebody into a refusal, and a dropped note leaves a
+    /// running share with nothing on screen saying where its link lives.
+    public static func linkShareAction(
+        canShare: Bool,
+        isIdle: Bool,
+        isLinkOnlyShare: Bool
+    ) -> LinkShareAction {
+        if isIdle { return canShare ? .offer : .unavailable }
+        if isLinkOnlyShare { return .sharingViaLink }
+        return .unavailable
+    }
+}

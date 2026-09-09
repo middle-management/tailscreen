@@ -170,15 +170,23 @@ public final class LinuxShareSession {
     /// True while the link is being created or rotated (the relay bootstrap
     /// blocks for the network). Toggle flips are ignored meanwhile.
     public private(set) var linkBusy = false
-    /// Fired on every (token, busy) movement, on the main actor.
-    public var onLinkSharingChanged: ((String?, Bool) -> Void)?
+    /// This share was started signed out: the guest tunnel is its only
+    /// socket, so the link is the only way in and there is no off position
+    /// short of stopping. The card states the mode rather than drawing a
+    /// toggle that would refuse to flip.
+    public private(set) var isLinkOnlyShare = false
+    /// Fired on every (token, busy, link-only) movement, on the main actor.
+    public var onLinkSharingChanged: ((String?, Bool, Bool) -> Void)?
     private let link = SharerLinkSession()
 
     /// The share-by-token toggle. `on` brings the guest node up and attaches
     /// its listener to the running server; `off` drops every guest and kills
     /// the token. No-op while idle — the link is minted per share.
     public func setLinkSharing(_ on: Bool) {
-        guard !linkBusy, let server else { return }
+        // A link-only share has nothing to toggle: the link IS the share, and
+        // turning it off would drop every guest and leave a running capture
+        // with no listener at all.
+        guard !linkBusy, !isLinkOnlyShare, let server else { return }
         linkBusy = true
         publishLink()
         Task { @MainActor [weak self] in
@@ -221,17 +229,27 @@ public final class LinuxShareSession {
     }
 
     private func publishLink() {
-        onLinkSharingChanged?(linkToken, linkBusy)
+        onLinkSharingChanged?(linkToken, linkBusy, isLinkOnlyShare)
     }
 
     /// The share ended (any path): the server already told every guest, so
     /// only the guest node is left to close. Synchronous state first so the
     /// card's toggle drops with the share rather than a beat later.
     private func teardownLink() {
+        // Captured before the state is blanked, and passed to the teardown:
+        // this task reaches the actor a hop later, and an immediate
+        // Stop → Start can have minted a replacement link by then. Scoped,
+        // it closes the link this share published or nothing at all.
+        //
+        // A stop with no token yet — a start still bootstrapping — needs no
+        // task here: that attempt fails its own `isCurrentShare` check when
+        // it resumes and tears down whatever it minted.
+        let minted = linkToken
         linkToken = nil
         linkBusy = false
+        isLinkOnlyShare = false
         publishLink()
-        Task { [link] in await link.teardown() }
+        if let minted { Task { [link] in await link.teardown(mintedToken: minted) } }
     }
     /// The sharer's own drawing state — the same store the viewers run, so the
     /// stroke geometry, the undo stack and the identity-derived colour are
@@ -370,8 +388,14 @@ public final class LinuxShareSession {
     ///     being captured — the host's `captureMatchesOverlay` answer. The
     ///     outline must not lie, so a portal share passes false and gets no
     ///     indicator rather than a wrong one.
+    ///   - node: the app's signed-in tsnet node, or **nil for a link-only
+    ///     share** — started signed out, with the guest tunnel as the
+    ///     server's only socket. Nil is not a degraded tailnet share: there
+    ///     is no tailnet listener, no ask-to-share channel and no LocalAPI
+    ///     identity, so every viewer arrives as a guest at the mandatory
+    ///     approval gate, and the link exists the moment the share does.
     public func beginShare(
-        node: TailscaleNode,
+        node: TailscaleNode?,
         selectionData: Data,
         quality: QualitySettings,
         showsOutline: Bool,
@@ -522,16 +546,34 @@ public final class LinuxShareSession {
 
         Task { @MainActor in
             do {
-                try await server.start(
-                    filterData: selectionData,
-                    quality: quality,
-                    existingNode: node,
-                    // The app's long-lived listener, so the share does not
-                    // create a second one competing for port 7447 — and so
-                    // `onRequestToShare` keeps pointing here rather than being
-                    // rebound to the share's own.
-                    controlListener: askToShare.controlListener
-                )
+                // Non-nil only on the link-only path, and published only
+                // once the share is known to still be the current one —
+                // a token on screen for a share that was stopped mid-start
+                // is a link that admits people to nothing.
+                var minted: String?
+                if let node {
+                    try await server.start(
+                        filterData: selectionData,
+                        quality: quality,
+                        existingNode: node,
+                        // The app's long-lived listener, so the share does not
+                        // create a second one competing for port 7447 — and so
+                        // `onRequestToShare` keeps pointing here rather than being
+                        // rebound to the share's own.
+                        controlListener: askToShare.controlListener
+                    )
+                } else {
+                    // Link-only: the guest node comes up first because it is
+                    // the whole transport, and the token exists the moment
+                    // the share does. `startLinkOnly` unwinds its own node on
+                    // failure, so the catch below has only the server left to
+                    // clear — exactly as on the tailnet path.
+                    self.isLinkOnlyShare = true
+                    self.linkBusy = true
+                    self.publishLink()
+                    minted = try await self.link.startLinkOnly(
+                        on: server, filterData: selectionData, quality: quality)
+                }
                 // The actor is released across that await, so a stop — or a
                 // whole second `beginShare` — can have landed while the
                 // capture and the node were coming up. Publishing `.sharing`
@@ -541,7 +583,24 @@ public final class LinuxShareSession {
                 // no longer references, so nothing else would ever stop it.
                 guard self.core.isCurrentShare(generation) else {
                     await server.stop()
+                    // The guest node belongs to the link session, not to the
+                    // server: a stop that landed inside the await tore down a
+                    // link that did not exist yet, so this one has to be
+                    // closed here or it outlives the share it was minted for
+                    // — a live token for a share nobody is running.
+                    //
+                    // Scoped to the token THIS attempt minted, and skipped
+                    // entirely when it minted none: the replacement share
+                    // that made this one stale may already have a link of
+                    // its own, and an unconditional teardown here would
+                    // close the live one instead of the dead one.
+                    if let minted { await self.link.teardown(mintedToken: minted) }
                     return
+                }
+                if let minted {
+                    self.linkToken = minted
+                    self.linkBusy = false
+                    self.publishLink()
                 }
                 setPhase(.sharing)
                 // Only once the share is genuinely up: an indicator that
