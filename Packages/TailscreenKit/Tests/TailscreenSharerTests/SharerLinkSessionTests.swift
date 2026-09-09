@@ -16,7 +16,24 @@ import XCTest
 /// So these cases are about interleaving, not arithmetic. Each holds the
 /// bootstrap open at a suspension point the live node also has, runs a stop
 /// (or a whole second share) while it is parked, and asserts what survived.
-/// Every one of them was checked to fail against the bug it describes.
+///
+/// **The suite is mutation-checked.** Eleven deliberate breaks were made in
+/// `SharerLinkSession`, one at a time, and each one goes red here: `close()`
+/// awaiting before it blanks; `close()` taking no claim; either mint
+/// publishing without verifying its claim; `teardown(mintedToken:)` ignoring
+/// its argument; a failed link-only start that leaves the server running; an
+/// attach refusal that leaks the socket, or the node (checked separately —
+/// one assertion covering both would pass with either leak); a disable that
+/// closes before it detaches; either fail-soft control leg losing its
+/// `catch`; and a refused control attach that leaks the channel.
+///
+/// Two of those found nothing when first run, which is why the note is here
+/// rather than in a commit message. `enable` and `startLinkOnly` each have
+/// their OWN fail-soft `do`/`catch` around the control route, and only the
+/// link-only one was covered; and a refused control attach had no case at
+/// all — the fake server could not even express the refusal. Both are
+/// covered now. If you add a rule to `SharerLinkSession`, break it on
+/// purpose before you believe the test you wrote for it.
 final class SharerLinkSessionTests: XCTestCase {
 
     /// Build a session whose nodes are fakes, handing back the journal and a
@@ -115,6 +132,49 @@ final class SharerLinkSessionTests: XCTestCase {
     /// A refused attach means the share stopped underneath the bootstrap.
     /// Nothing adopted the socket, so the session closes both ends itself
     /// rather than leaving a live tunnel behind a share that is not there.
+    /// `enable` has its OWN fail-soft `do`/`catch` around the control route,
+    /// separate from `startLinkOnly`'s. The case above covers the link-only
+    /// one; deleting this one's `catch` leaves every test in this file green,
+    /// which is how it was found. Two blocks, two cases.
+    func testAControlChannelThatFailsToBindStillYieldsALinkOnEnable() async throws {
+        let journal = Journal()
+        let box = NodeBox()
+        let session = SharerLinkSession(
+            logger: nil,
+            makeNode: { _, _ in
+                let node = box.next(journal: journal)
+                node.controlFails = true
+                return node
+            })
+        let server = FakeLinkServer(journal: journal)
+
+        let token = try await session.enable(on: server)
+
+        XCTAssertEqual(token, "tc-n1", "a TCP bind failure cost the whole link")
+        XCTAssertTrue(server.packetAttached, "the UDP half did not survive the TCP failure")
+    }
+
+    /// A refused control attach is the session's to clean up: the server said
+    /// it kept no reference, so nothing else will ever stop that channel. The
+    /// link itself survives — a share with no annotations still carries the
+    /// video and voice that are the substance of it.
+    func testARefusedControlAttachStopsTheChannelAndKeepsTheLink() async throws {
+        let journal = Journal()
+        let box = NodeBox()
+        let session = SharerLinkSession(
+            logger: nil,
+            makeNode: { _, _ in box.next(journal: journal) })
+        let server = FakeLinkServer(journal: journal)
+        server.refuseControlAttach()
+
+        let token = try await session.enable(on: server)
+
+        XCTAssertEqual(token, "tc-n1")
+        let stopped = await journal.contains("control.stop(n1)")
+        XCTAssertTrue(stopped, "the unadopted control channel was leaked")
+        XCTAssertTrue(server.packetAttached)
+    }
+
     func testARefusedAttachClosesTheSocketAndTheNode() async throws {
         let journal = Journal()
         let (session, _) = makeSession(journal: journal)

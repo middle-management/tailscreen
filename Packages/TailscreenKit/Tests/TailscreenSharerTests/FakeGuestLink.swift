@@ -44,11 +44,25 @@ final class Gate: @unchecked Sendable {
     }
 
     /// Block the test until something is parked here.
+    ///
+    /// The check and the registration happen under ONE lock acquisition, and
+    /// that is the whole of it. Reading `parkedCount`, releasing, and then
+    /// re-taking the lock to append leaves a gap a few instructions wide in
+    /// which `passOrPark` can arrive: it increments the count, snapshots a
+    /// `waiters` list that is still empty, and parks — and the waiter
+    /// registered a moment later is never resumed. That is the same
+    /// lost-wakeup `hold()` is synchronous to avoid, one function along, and
+    /// its symptom is the same: the test hangs rather than failing.
     func waitUntilParked() async {
-        let alreadyParked: Bool = lock.withLock { parkedCount > 0 }
-        guard !alreadyParked else { return }
         await withCheckedContinuation { continuation in
-            lock.withLock { waiters.append(continuation) }
+            let alreadyParked: Bool = lock.withLock {
+                if parkedCount > 0 { return true }
+                waiters.append(continuation)
+                return false
+            }
+            // Resumed OUTSIDE the lock — a continuation resumed while holding
+            // it can run the waiting task straight back into `passOrPark`.
+            if alreadyParked { continuation.resume() }
         }
     }
 
@@ -152,6 +166,7 @@ final class FakeLinkServer: GuestLinkServer, @unchecked Sendable {
     private let lock = NSLock()
     private var _packetAttached: (any GuestPacketRoute)?
     private var _refuseAttach = false
+    private var _refuseControlAttach = false
     private var _guestOnlyThrows: Error?
     private var _stopped = false
 
@@ -163,6 +178,10 @@ final class FakeLinkServer: GuestLinkServer, @unchecked Sendable {
     var packetAttached: Bool { lock.withLock { _packetAttached != nil } }
     var stopped: Bool { lock.withLock { _stopped } }
     func refuseAttach() { lock.withLock { _refuseAttach = true } }
+    /// Refuse the CONTROL channel specifically — the share is running and
+    /// took the socket, but something already holds its guest control
+    /// channel. The session owns stopping what the server did not adopt.
+    func refuseControlAttach() { lock.withLock { _refuseControlAttach = true } }
     /// Throw from `startGuestOnlyShare` — the case where the server is
     /// already partially live when capture fails.
     func failGuestOnly(with error: Error) { lock.withLock { _guestOnlyThrows = error } }
@@ -175,7 +194,9 @@ final class FakeLinkServer: GuestLinkServer, @unchecked Sendable {
         }
     }
 
-    func attachGuestControl(_ route: any GuestControlRoute) -> Bool { true }
+    func attachGuestControl(_ route: any GuestControlRoute) -> Bool {
+        lock.withLock { !_refuseControlAttach }
+    }
 
     func detachGuestPacket() async {
         await journal.note("server.detach(\(id))")
