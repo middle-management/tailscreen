@@ -16,7 +16,7 @@ final class NodeBringUpPhaseTests: XCTestCase {
     /// they are paired with `testEveryPhaseIsExactlyOneOfSignedOutBringingUpOrReady`,
     /// where a missed case shows up as a phase belonging to no group.
     private let allPhases: [NodeBringUpPhase] = [
-        .signedOut, .startingNode, .discovering, .ready, .failed("boom"),
+        .signedOut, .startingNode, .discovering, .ready, .failed("boom")
     ]
 
     // MARK: - Signed out
