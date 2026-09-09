@@ -69,10 +69,10 @@ place to look.**
 ## Testing it on a Windows machine
 
 You do not need a Swift toolchain to try it. Every push that touches this app
-builds it in the `Windows build` workflow and attaches the app together with
+builds it in the `Build (Windows)` workflow and attaches the app together with
 the Swift runtime it needs:
 
-1. Open the latest **Windows build** run in the repository's Actions tab.
+1. Open the latest **Build (Windows)** run in the repository's Actions tab.
 2. Download the **`tailscreen-windows-x64`** artifact.
 3. Unzip it **keeping the folder intact**, and run `tailscreen.exe`
    from inside that folder.

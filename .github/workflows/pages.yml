@@ -1,4 +1,4 @@
-name: Deploy Pages
+name: Pages
 
 # One docs tree, two channels:
 #
@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v7
         with:
           # Full history so the release tags are present to resolve; the
@@ -98,7 +98,7 @@ jobs:
           mkdir -p /tmp/current/docs/_includes
           cp docs/_includes/head_custom.html /tmp/current/docs/_includes/
 
-      - name: Setup Ruby
+      - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'

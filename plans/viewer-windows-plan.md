@@ -123,7 +123,7 @@ c-archive boundary, because that is where linkage and runtime-init surprises
 live.
 
 **The spike and its `windows-spike` workflow have since been deleted.** They
-answered their question and patch 024 shipped the answer; the `Windows build`
+answered their question and patch 024 shipped the answer; the `Build (Windows)`
 job now builds the real c-archive, links it into the app and runs `tsnet-probe`
 against it, which is strictly stronger evidence than the spike could give. The
 findings above are the record — the code was scaffolding, not the record.
@@ -234,7 +234,7 @@ reuse, so it is an optimisation for later rather than the way in.
 
 Two things must happen first:
 
-1. *Gate it.* `windows-build.yml`'s `ffmpeg` job fetches a pinned LGPL shared
+1. *Gate it.* `build-windows.yml`'s `windows-ffmpeg` job fetches a pinned LGPL shared
    FFmpeg 7.1 and runs FFmpegKit's suite on Windows. If libavcodec cannot link
    here, the decision above is void and W4 becomes Media Foundation.
 2. *Extract it.* The decoder currently sits in `Packages/TailscreenLinuxBackends`'s

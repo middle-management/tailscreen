@@ -89,7 +89,6 @@ jobs:
   # of its own, and this is real logic rather than an expression. Cheap: one
   # ubuntu runner for a few seconds.
   version:
-    name: Resolve version
     # Skip every label except the two that mean "package this". `pull_request:
     # [labeled]` fires for ALL of them, and a packaging build is far too slow to
     # run on an unrelated label.
@@ -152,7 +151,6 @@ jobs:
   # The workflow this replaced was correctly gated; the generalization is what
   # broke it.
   unlabel:
-    name: Remove trigger label
     if: >-
       github.event_name == 'pull_request' &&
       (github.event.label.name == 'build-linux-package' ||
@@ -177,7 +175,6 @@ jobs:
   # macOS — universal (arm64 + x86_64), signed, notarized, stapled.
   # ---------------------------------------------------------------------------
   macos:
-    name: macOS
     # `version` ONLY — deliberately not `unlabel`, which is what the linux and
     # windows jobs already do. `unlabel` is pull_request-only, and GitHub
     # propagates SKIPPED through `needs` unless the dependent job's `if` uses a
@@ -247,7 +244,7 @@ jobs:
   # The AppImage filename is unchanged (`Tailscreen-<version>-x86_64.AppImage`).
   # ---------------------------------------------------------------------------
   linux:
-    name: Linux (${{ matrix.arch }})
+    name: linux-${{ matrix.arch }}
     needs: version
     if: >-
       github.event_name != 'pull_request' ||
@@ -285,7 +282,7 @@ jobs:
   #
   # PR builds skip this by design — there is no release to upload to.
   linux-upload:
-    name: Upload Linux ${{ matrix.arch }} to the release
+    name: linux-upload-${{ matrix.arch }}
     needs: [version, linux]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -328,7 +325,7 @@ jobs:
   # Windows — a zip and a self-signed MSIX per architecture.
   # ---------------------------------------------------------------------------
   windows:
-    name: Windows (${{ matrix.arch }})
+    name: windows-${{ matrix.arch }}
     needs: version
     if: >-
       github.event_name != 'pull_request' ||
@@ -336,7 +333,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The same per-arch split as windows-build.yml: x64 on the hosted x64
+        # The same per-arch split as build-windows.yml: x64 on the hosted x64
         # image, arm64 NATIVELY on windows-11-arm (no cross-build — that is what
         # makes the llvm-mingw + host-toolchain arrangement work). The runner,
         # the FFmpeg archive name and the vcpkg triplet all follow from `arch`
@@ -376,7 +373,6 @@ jobs:
   # of reusable-workflow calls), so gh has no git remote to infer from and
   # exits "fatal: not a git repository".
   comment:
-    name: Comment result on PR
     needs: macos
     if: always() && github.event_name == 'pull_request' && github.event.label.name == 'build:notarized'
     runs-on: ubuntu-latest

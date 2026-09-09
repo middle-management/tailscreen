@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The app staging logic, extracted VERBATIM from windows-build.yml's inline
+# The app staging logic, extracted VERBATIM from build-windows.yml's inline
 # step when the arm64 leg needed the same thing — the alternative was a second
 # 184-line copy that would agree with this one until it didn't.
 #

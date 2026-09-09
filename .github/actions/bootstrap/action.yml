@@ -78,7 +78,7 @@ runs:
     # would not fail at all: the job would go green having built nothing.
     #
     # That is this repo's oldest CI failure mode wearing a new hat (see the
-    # `paths:` holes in windows-build.yml). `windows-x64` — Go calls it
+    # `paths:` holes in build-windows.yml). `windows-x64` — Go calls it
     # `amd64` — is exactly how it arrived. Reject unknown values here, where
     # the list of known ones lives.
     - name: Validate the requested target
@@ -308,7 +308,7 @@ runs:
 
     # Skipped on a cache hit: nothing downstream of this action wants a Go
     # toolchain, only the archive it produces.
-    - name: Setup Go
+    - name: Set up Go
       if: inputs.go == 'setup-go' && (inputs.libtailscale == 'none' || steps.libtailscale-cache.outputs.cache-hit != 'true')
       uses: actions/setup-go@v7
       with:

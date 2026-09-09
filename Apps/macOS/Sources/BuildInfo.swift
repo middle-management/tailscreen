@@ -16,8 +16,8 @@ import Foundation
 /// rewrites its own copy.
 enum BuildInfo {
     /// Short commit SHA. **Rewritten by CI** — see the "Stamp the build"
-    /// steps in `.github/workflows/release.yml` and
-    /// `.github/workflows/pr-notarized-build.yml`, which fail the job if the
+    /// step in `.github/workflows/app-macos.yml` (the shared definition both
+    /// the release and the notarized PR build call), which fails the job if the
     /// placeholder survives rather than shipping an app that lies about
     /// which commit it is. A local `make build` legitimately reads "dev".
     static let commit = "dev"
