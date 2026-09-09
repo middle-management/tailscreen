@@ -19,6 +19,7 @@ import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import enum TailscreenProtocol.NodeBringUpPhase
 import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
@@ -167,7 +168,7 @@ struct TailscreenWindowsApp: App {
     /// result builder is how this file previously got "failed to produce
     /// diagnostic for expression" out of the Windows compiler.
     private var headerFilter: HubFilter? {
-        guard state.phase == .ready, state.watching == nil else { return nil }
+        guard state.phase.isReady, state.watching == nil else { return nil }
         let model = state
         return HubFilter(
             filter: model.filter,
@@ -364,7 +365,7 @@ struct TailscreenWindowsApp: App {
 
     private var signIn: some View {
         let model = state
-        let label = state.phase == .failed ? L("Try again") : L("Sign in to Tailscale")
+        let label = state.phase.hasFailed ? L("Try again") : L("Sign in to Tailscale")
         return HubSignInPane(
             tailnetMessage: state.welcomeTailnetMessage,
             signInLabel: label,
@@ -395,7 +396,7 @@ struct TailscreenWindowsApp: App {
         let model = state
         return PickerContent(
             statusLine: state.status,
-            isPicking: state.phase == .ready && !state.isSearching,
+            isPicking: state.phase.isReady && !state.isSearching,
             screens: state.hubScreens,
             loginURL: state.loginURL,
             emptyMessage: L("No Tailscreen screens found on your tailnet."),
@@ -443,7 +444,7 @@ struct TailscreenWindowsApp: App {
     /// sign-in card already shows it, and repeating it reads as two failures.
     private var showsDetail: Bool {
         guard !state.detail.isEmpty else { return false }
-        return state.phase != .idle && state.phase != .failed
+        return !state.phase.isSignedOut
     }
 }
 
@@ -468,14 +469,18 @@ private func hubHealth(_ health: ViewerHealth) -> HubViewerHealth {
 /// without hopping.
 @MainActor
 final class AppUIState: ObservableObject {
-    enum Phase: Equatable {
-        case idle
-        case starting
-        case ready
-        case failed
-    }
+    /// The shared bring-up vocabulary, in `TailscreenProtocol` so this hub,
+    /// the GTK picker and the macOS one name one lifecycle. This app's old
+    /// `idle` is its `signedOut` and `starting` its `startingNode`; `failed`
+    /// now carries the reason it used to leave in `detail`.
+    ///
+    /// `discovering` is a case this hub never enters: it goes straight from
+    /// `startingNode` to `ready` and reports its peer sweep through
+    /// `isSearching`, which is a re-list from a settled state rather than the
+    /// first one. The GTK hub does distinguish it.
+    typealias Phase = NodeBringUpPhase
 
-    @Published var phase: Phase = .idle
+    @Published var phase: Phase = .signedOut
     @Published var status = L("Not signed in")
     @Published var detail = ""
     /// A SHARE failure, kept apart from `detail` so the welcome pane can put
@@ -736,13 +741,13 @@ final class AppUIState: ObservableObject {
     /// of the filter menu. Verbatim data, deliberately not localized.
     private func seedUIPreview() {
         if Self.isUIPreviewWelcome {
-            // `.idle` is the signed-out phase, so `content` renders the
-            // welcome pane: the tailnet card, and the share-link card with
+            // `content` renders the welcome pane from `.signedOut`: the
+            // tailnet card, and the share-link card with
             // both no-account directions under it. Seeding stops here on
             // purpose — every line below is a tailnet this state does not
             // have, `activeAccountName` included, and `loginURL` stays nil
             // because nobody has started a sign-in to be waiting on.
-            phase = .idle
+            phase = .signedOut
             status = L("Not signed in")
             return
         }
@@ -862,10 +867,10 @@ final class AppUIState: ObservableObject {
     /// node bring-up or a discovery sweep. Not while merely idle: a spinner
     /// that never stops is worse than none, because it makes a settled state
     /// look broken.
-    var showsSpinner: Bool { phase == .starting || isSearching }
+    var showsSpinner: Bool { phase.isBringingUp || isSearching }
 
     /// Refresh is offered only from the settled signed-in state.
-    var canRefresh: Bool { phase == .ready && watching == nil && !isSearching }
+    var canRefresh: Bool { phase.isReady && watching == nil && !isSearching }
 
     /// The discovered peers, narrowed by the header filter, as hub rows.
     ///
@@ -909,7 +914,7 @@ final class AppUIState: ObservableObject {
 
     /// No node, and none coming up: the sign-in pane's state. A share
     /// started from there is a link-only share — see `startSharing`.
-    var isSignedOut: Bool { phase == .idle || phase == .failed }
+    var isSignedOut: Bool { phase.isSignedOut }
 
     /// The welcome pane's tailnet card copy: the pitch by default, or
     /// whatever went wrong once something has. The reason belongs on the
@@ -1305,8 +1310,8 @@ final class AppUIState: ObservableObject {
     }
 
     func signIn() {
-        guard phase == .idle || phase == .failed else { return }
-        phase = .starting
+        guard phase.isSignedOut else { return }
+        phase = .startingNode
         status = L("Starting Tailscale…")
         detail = ""
         loginURL = nil
@@ -1361,7 +1366,7 @@ final class AppUIState: ObservableObject {
                 ensureControlListener()
                 refreshPeers()
             } catch {
-                phase = .failed
+                phase = .failed("\(error)")
                 loginURL = nil
                 status = L("Could not start Tailscale")
                 detail = "\(error)"
@@ -1373,7 +1378,7 @@ final class AppUIState: ObservableObject {
         // The preview's phase is .ready but its transport never started —
         // a refresh would replace the seeded list with a discovery error.
         guard !Self.isUIPreview else { return }
-        guard phase == .ready, !isSearching else { return }
+        guard phase.isReady, !isSearching else { return }
         isSearching = true
         detail = ""
 
@@ -1452,7 +1457,7 @@ final class AppUIState: ObservableObject {
     }
 
     func connect(to peer: DiscoveredSharer) {
-        guard phase == .ready else { return }
+        guard phase.isReady else { return }
         startSession(
             config: ViewerConfig(
                 // Dial by IP, not hostname: the transport documents that this
@@ -1604,7 +1609,7 @@ final class AppUIState: ObservableObject {
             // with no account at all, and "Signed in" over the sign-in pane
             // would be the header contradicting the card under it.
             status =
-                phase == .ready
+                phase.isReady
                 ? transport.accountIdentity.map { L("Signed in as \($0)") } ?? L("Signed in")
                 : L("Not signed in")
             if let end = ended.value {
@@ -1741,7 +1746,7 @@ final class AppUIState: ObservableObject {
 
     /// The accounts, plus Sign out once there is a session to sign out of.
     var accountMenuEntries: [HubAccount] {
-        guard phase == .ready else { return accounts }
+        guard phase.isReady else { return accounts }
         return accounts + [HubAccount(id: Self.signOutEntryID, name: L("Sign out"))]
     }
 
@@ -1757,7 +1762,7 @@ final class AppUIState: ObservableObject {
     /// rule as the macOS app's `canSwitchProfile`. A share still starting or a
     /// session still connecting would be torn out from under itself.
     var canSwitchAccount: Bool {
-        watching == nil && sessionTask == nil && !sharing.isSharing && phase != .starting
+        watching == nil && sessionTask == nil && !sharing.isSharing && phase != .startingNode
     }
 
     func switchAccount(to id: String) {
@@ -1790,7 +1795,7 @@ final class AppUIState: ObservableObject {
     /// The previous account stays signed in *on disk* — its state directory is
     /// untouched — so switching back resumes without a browser round trip.
     private func restartUnderActiveAccount() {
-        phase = .idle
+        phase = .signedOut
         status = L("Switching account…")
         detail = ""
         peers = []
@@ -1859,7 +1864,7 @@ final class AppUIState: ObservableObject {
         // turns true once the share is live, so without this a second click
         // during the relay handshake starts a whole second share, and the
         // first becomes a stale generation tearing itself down.
-        guard phase == .ready || linkOnly, !sharing.isSharing, !sharing.linkBusy else { return }
+        guard phase.isReady || linkOnly, !sharing.isSharing, !sharing.linkBusy else { return }
         detail = ""
         shareDetail = nil
 
@@ -1989,9 +1994,9 @@ final class AppUIState: ObservableObject {
     }
 
     func signOut() {
-        guard phase == .ready else { return }
+        guard phase.isReady else { return }
         stopRequested = true
-        phase = .idle
+        phase = .signedOut
         status = L("Not signed in")
         detail = ""
         peers = []
