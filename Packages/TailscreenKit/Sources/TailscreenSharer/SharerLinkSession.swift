@@ -16,7 +16,7 @@ import TailscaleKit
 import TailscreenProtocol
 import TailscreenTransport
 
-public enum SharerLinkError: Error, Sendable {
+public enum SharerLinkError: Error, Equatable, Sendable {
     /// The server refused the listener — the share stopped (or already has
     /// a guest listener) while the guest node was coming up. Nothing was
     /// adopted; the session closed the socket and the node.
@@ -30,7 +30,7 @@ public enum SharerLinkError: Error, Sendable {
 }
 
 public actor SharerLinkSession {
-    private var guestServer: GuestServerNode?
+    private var guestServer: (any GuestNodeProviding)?
     /// Tunnel IP → admitted guest peer, refreshed lazily. Supplies key
     /// fingerprints and the eviction lookup (`onGuestViewerDenied` reports
     /// an IP; `removePeer` wants the node key).
@@ -51,23 +51,33 @@ public actor SharerLinkSession {
     /// bootstrap runs in the gap.
     private var claim: UInt64 = 0
     private let logger: LogSink?
+    /// How a mint gets its guest node. Defaults to the real one; a test
+    /// passes a fake so the DERP handshake — and the suspension it hides —
+    /// is something it can hold open on purpose.
+    private let makeNode: GuestNodeFactory
 
-    public init(logger: LogSink? = nil) {
+    public init(logger: LogSink? = nil, makeNode: @escaping GuestNodeFactory = SharerLinkSession.realGuestNode) {
         self.logger = logger
+        self.makeNode = makeNode
+    }
+
+    /// The factory every host installs: a `GuestServerNode` behind the seam.
+    public static let realGuestNode: GuestNodeFactory = { relayMapURL, logger in
+        try RealGuestNode(derpMapURL: relayMapURL, logger: logger)
     }
 
     /// Mint a link on a running share: guest node up, its listener attached
     /// as the server's guest socket, token returned. Blocks for the relay
     /// bootstrap. Idempotent — an already-live link returns its token.
     public func enable(
-        on server: TailscaleScreenShareServer,
+        on server: any GuestLinkServing,
         relayMapURL: String? = nil,
         port: UInt16 = NetworkConfig.tailscreenPort
     ) async throws -> String {
         if let token, guestServer != nil { return token }
         claim &+= 1
         let mine = claim
-        let gs = try GuestServerNode(derpMapURL: relayMapURL, logger: logger)
+        let gs = try makeNode(relayMapURL, logger)
         try await gs.start()
         let pl = try await gs.listenPacket(port: port)
         guard server.attachGuestPacketListener(pl) else {
@@ -86,9 +96,7 @@ public actor SharerLinkSession {
         // listen just succeeded binds TCP too.) The server owns stopping
         // it: detach and share-stop both close the adopted channel.
         do {
-            let tcp = try await gs.listen(port: port)
-            let control = TailscreenControlListener(port: port)
-            control.start(adopting: tcp)
+            let control = try await gs.listenControl(port: port)
             if !server.attachGuestControlListener(control) {
                 await control.stop()
             }
@@ -126,7 +134,7 @@ public actor SharerLinkSession {
     /// Throws with nothing left running: a half-started link-only share
     /// must not leave a live token behind a share that never happened.
     public func startLinkOnly(
-        on server: TailscaleScreenShareServer,
+        on server: any GuestLinkServing,
         filterData: Data?,
         quality: QualitySettings = .default,
         relayMapURL: String? = nil,
@@ -135,7 +143,7 @@ public actor SharerLinkSession {
         if let token, guestServer != nil { return token }
         claim &+= 1
         let mine = claim
-        let gs = try GuestServerNode(derpMapURL: relayMapURL, logger: logger)
+        let gs = try makeNode(relayMapURL, logger)
         do {
             try await gs.start()
             let pl = try await gs.listenPacket(port: port)
@@ -143,12 +151,9 @@ public actor SharerLinkSession {
             // guests. Fail-soft for the same reason as `enable` — a link
             // whose TCP bind failed still carries the video and voice that
             // are the substance of a share.
-            var control: TailscreenControlListener?
+            var control: (any GuestControlChanneling)?
             do {
-                let tcp = try await gs.listen(port: port)
-                let ctl = TailscreenControlListener(port: port)
-                ctl.start(adopting: tcp)
-                control = ctl
+                control = try await gs.listenControl(port: port)
             } catch {
                 logger?.log(
                     "Guest TCP control channel unavailable (\(error)) — link carries video/voice only"
@@ -187,7 +192,7 @@ public actor SharerLinkSession {
     /// Kill the link on a still-running share: detach first (each guest
     /// gets HELLO_DENY + SERVER_BYE through the still-open guest socket),
     /// then close the node — the token is dead forever. No-op with no link.
-    public func disable(on server: TailscaleScreenShareServer?) async {
+    public func disable(on server: (any GuestLinkServing)?) async {
         guard guestServer != nil || token != nil else { return }
         await server?.detachGuestPacketListener()
         await close()
@@ -197,7 +202,7 @@ public actor SharerLinkSession {
     /// New Link: the old token dies the moment this starts (current guests
     /// drop with it), and a fresh node key mints a fresh token.
     public func rotate(
-        on server: TailscaleScreenShareServer,
+        on server: any GuestLinkServing,
         relayMapURL: String? = nil,
         port: UInt16 = NetworkConfig.tailscreenPort
     ) async throws -> String {
