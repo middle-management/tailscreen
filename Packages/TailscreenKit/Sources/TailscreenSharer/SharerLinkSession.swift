@@ -1,14 +1,15 @@
 // The sharer's link (share-by-token) half as one portable object: the
 // guest node's lifecycle, the attach/detach handshake with the server, New
-// Link rotation, and the deny→tunnel-evict mapping. Written once here so
-// the GTK and WinUI share engines drive identical rules — the macOS
-// AppState grew the same logic first (phase 4) and keeps its own copy for
-// now; converging it is a rename-shaped follow-up, not a design question.
+// Link rotation, and the deny→tunnel-evict mapping. All three hosts drive
+// this one — the macOS AppState grew the logic first (phase 4) and its copy
+// is gone; what stays host-side is the published mirrors each hub renders
+// from (a token, a peer map, a busy flag) and the one wire the session
+// cannot make for you, `server.onGuestViewerDenied` → `evict(ip:)`.
 //
 // An actor: every host calls it from async context (the guest node's DERP
-// bootstrap blocks for the network), and the two engines guard themselves
-// differently (@MainActor vs. lock) — an actor is the shape neither has to
-// adapt to.
+// bootstrap blocks for the network), and the hosts guard themselves
+// differently (@MainActor on two of them, a lock on Windows) — an actor is
+// the shape none of them has to adapt to.
 
 import Foundation
 import TailscaleKit
@@ -27,7 +28,13 @@ public actor SharerLinkSession {
     /// Tunnel IP → admitted guest peer, refreshed lazily. Supplies key
     /// fingerprints and the eviction lookup (`onGuestViewerDenied` reports
     /// an IP; `removePeer` wants the node key).
-    private var peersByIP: [String: GuestPeer] = [:]
+    ///
+    /// Readable because a host that renders guest rows *synchronously* has
+    /// to mirror it — the macOS roster asks for a fingerprint from inside a
+    /// SwiftUI body, where an `await` is not available. `refreshPeers()`
+    /// first if you need it current; `fingerprint(forIP:)` is the async
+    /// path that does that for you.
+    public private(set) var peersByIP: [String: GuestPeer] = [:]
     /// The live link's token — non-nil exactly while the guest node is up.
     public private(set) var token: String?
     private let logger: LogSink?

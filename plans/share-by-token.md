@@ -528,10 +528,13 @@ share at the menu bar, these hosts render the live share card under the
 two: its link, roster and approvals have no other surface. All three hosts now read that one
 function: macOS's `AppState.welcomeLinkShareAction` became an argument
 mapping — its Settings switch into `canShare` — and its duplicate suite
-went with the duplicate branch. Deviations: the macOS `AppState` still
-keeps its own copy of the link lifecycle (phase 4's, converging it remains
-rename-shaped work), and `Settings → Link sharing` stays macOS-only, so the
-two swift-cross-ui hosts have no off switch for the feature.)*
+went with the duplicate branch. The link lifecycle is converged too: macOS's
+`AppState` drives the same `SharerLinkSession` — enable/disable/rotate/
+evict/teardown and `startLinkOnly` — and keeps only the published mirrors
+its SwiftUI reads synchronously plus the `onGuestViewerDenied` wire, which
+needs its own server instance. Remaining deviation: `Settings → Link
+sharing` stays macOS-only, so the two swift-cross-ui hosts have no off
+switch for the feature.)*
 
 ## Risks & mitigations
 

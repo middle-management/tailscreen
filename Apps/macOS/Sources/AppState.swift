@@ -282,14 +282,28 @@ class AppState: ObservableObject {
             isLinkOnlyShare: isGuestOnlyShare)
     }
 
-    /// The guest node backing the live link. Created by `setShareLinkActive`,
-    /// destroyed by it, by New Link, and by `stopSharing`.
-    private var guestServer: GuestServerNode?
+    /// The link's whole lifecycle, portable: the guest node up and down,
+    /// the attach/detach handshake with the server, New Link rotation, and
+    /// the deny→tunnel-evict mapping. `SharerLinkSession` (TailscreenSharer)
+    /// is the same object the GTK and WinUI engines drive; this app grew the
+    /// logic first and its copy of the rules is gone.
+    ///
+    /// An actor, so every call below is an `await` and the ordering the
+    /// rules depend on — detach before close, unwind a half-built link —
+    /// lives there rather than in each caller. What stays here is the two
+    /// things a hub owns: the published mirrors (`shareLinkToken`,
+    /// `guestPeersByIP`) SwiftUI renders from synchronously, and the
+    /// `onGuestViewerDenied` wire, which needs this app's server instance.
+    ///
+    /// Its own `AppLogger` because a property initializer cannot read
+    /// `logger`; the type is a stateless `print` sink, so a second one costs
+    /// nothing and both lines land in the same place.
+    private let link = SharerLinkSession(logger: AppLogger())
 
-    /// Tunnel IP → admitted guest peer, refreshed from
-    /// `GuestServerNode.peers()` whenever the roster changes while a link is
-    /// live. Supplies the roster's key fingerprints and the eviction lookup
-    /// (`onGuestViewerDenied` reports an IP; `removePeer` wants the key).
+    /// Tunnel IP → admitted guest peer, mirrored from `link` whenever the
+    /// roster changes while a link is live. Supplies the roster's key
+    /// fingerprints — the mirror exists because those are read from a
+    /// SwiftUI body, where the actor's `await` is not available.
     @Published private(set) var guestPeersByIP: [String: GuestPeer] = [:]
 
     /// Persistent per-peer allow/deny store behind "Always Allow" /
@@ -1767,41 +1781,19 @@ class AppState: ObservableObject {
                 do {
                     if guestOnly {
                         // Link-only share: the guest node comes up first (it
-                        // is the whole transport), its listener is the
-                        // server's only socket, and the token exists the
-                        // moment the share does. Eviction wiring is the same
-                        // as the mid-share attach path.
-                        let relay = linkShareRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let gs = try GuestServerNode(
-                            derpMapURL: relay.isEmpty ? nil : relay, logger: logger)
-                        try await gs.start()
-                        let pl = try await gs.listenPacket(port: NetworkConfig.tailscreenPort)
-                        srv.onGuestViewerDenied = { [weak self] ip in
-                            Task { @MainActor [weak self] in
-                                await self?.evictGuest(ip: ip)
-                            }
-                        }
-                        // The tunnel's TCP side: annotations + remote control
-                        // for guests. Fail-soft — a link whose TCP bind
-                        // failed still carries video and voice.
-                        var guestControl: TailscreenControlListener?
-                        do {
-                            let tcp = try await gs.listen(port: NetworkConfig.tailscreenPort)
-                            let ctl = TailscreenControlListener()
-                            ctl.start(adopting: tcp)
-                            guestControl = ctl
-                        } catch {
-                            logger.log("Guest TCP control channel unavailable (\(error))")
-                        }
-                        try await srv.startGuestOnly(
+                        // is the whole transport) and its listeners are the
+                        // server's only sockets, so the token exists the
+                        // moment the share does. `startLinkOnly` owns that
+                        // ordering and unwinds its own node if any step
+                        // throws; eviction is wired before it, because a
+                        // guest can arrive as soon as the server is up.
+                        wireGuestEviction(on: srv)
+                        shareLinkToken = try await link.startLinkOnly(
+                            on: srv,
                             filterData: effectiveFilterData,
                             quality: qualitySettings,
-                            guestPacketListener: pl,
-                            guestControlListener: guestControl)
-                        shareLinkToken = try await gs.token()
-                        guestServer = gs
+                            relayMapURL: linkRelayMapURL)
                         isGuestOnlyShare = true
-                        logger.log("Guest-only share started — link is the only way in")
                     } else {
                         // Reuse the AppState-owned tsnet node so the screen
                         // share doesn't spin up a second machine that needs
@@ -1823,8 +1815,7 @@ class AppState: ObservableObject {
                     // token behind a share that never happened.
                     await srv.stop()
                     server = nil
-                    await guestServer?.close()
-                    guestServer = nil
+                    await link.teardown()
                     shareLinkToken = nil
                     isGuestOnlyShare = false
                     // `CancellationError` here means the user clicked Stop
@@ -1920,8 +1911,7 @@ class AppState: ObservableObject {
         // The token dies with the share: the server's stop() already closed
         // the guest listener and sent everyone SERVER_BYE, so only the guest
         // node itself is left to tear down.
-        await guestServer?.close()
-        guestServer = nil
+        await link.teardown()
         shareLinkToken = nil
         shareLinkError = nil
         guestPeersByIP = [:]
@@ -2206,6 +2196,12 @@ class AppState: ObservableObject {
     /// Kill the current link and mint a fresh one — new node key, new
     /// token; the old link is dead the moment this starts, and every
     /// current guest is dropped with it.
+    ///
+    /// Composed from the two mirrored halves rather than calling
+    /// `SharerLinkSession.rotate`, which is the same pair inside the actor:
+    /// going through them is what keeps `shareLinkBusy`, `shareLinkError`
+    /// and the token mirror moving in step with the actor's state, and the
+    /// rules being reused are the halves', not the wrapper's.
     func rotateShareLink() {
         guard !shareLinkBusy, shareLinkToken != nil else { return }
         Task { @MainActor [weak self] in
@@ -2216,52 +2212,21 @@ class AppState: ObservableObject {
     }
 
     private func enableShareLink() async {
-        guard linkSharingEnabled, sharingState == .active, let server, guestServer == nil else {
+        guard linkSharingEnabled, sharingState == .active, let server, shareLinkToken == nil else {
             return
         }
         shareLinkBusy = true
         shareLinkError = nil
         defer { shareLinkBusy = false }
-
-        // Tunnel-level eviction: a Deny (or remembered-deny expel) on a
-        // guest also closes their tunnel and denylists their node key for
-        // this link's life, so a denied guest can't keep knocking.
-        server.onGuestViewerDenied = { [weak self] ip in
-            Task { @MainActor [weak self] in
-                await self?.evictGuest(ip: ip)
-            }
-        }
-
-        let relay = linkShareRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        wireGuestEviction(on: server)
         do {
-            let gs = try GuestServerNode(
-                derpMapURL: relay.isEmpty ? nil : relay, logger: logger)
-            try await gs.start()
-            let pl = try await gs.listenPacket(port: NetworkConfig.tailscreenPort)
-            guard server.attachGuestPacketListener(pl) else {
-                // The share raced to a stop (or a listener is somehow still
-                // attached) — nothing adopted the socket, so close it here.
-                await pl.close()
-                await gs.close()
-                return
-            }
-            // The tunnel's TCP side: annotations + remote control for
-            // guests. Fail-soft — the link still carries video and voice
-            // when the bind fails; the server owns stopping an adopted
-            // channel (detach and share-stop both close it).
-            do {
-                let tcp = try await gs.listen(port: NetworkConfig.tailscreenPort)
-                let ctl = TailscreenControlListener()
-                ctl.start(adopting: tcp)
-                if !server.attachGuestControlListener(ctl) {
-                    await ctl.stop()
-                }
-            } catch {
-                logger.log("Guest TCP control channel unavailable (\(error))")
-            }
-            shareLinkToken = try await gs.token()
-            guestServer = gs
-            logger.log("Share link active")
+            shareLinkToken = try await link.enable(on: server, relayMapURL: linkRelayMapURL)
+        } catch SharerLinkError.attachRefused {
+            // The share raced to a stop while the node was coming up: the
+            // session closed the socket and the node, and there is no share
+            // left to put a link on. Deliberately silent — an error banner
+            // about a link would be the second surprising thing on a window
+            // whose share just ended.
         } catch {
             logger.log("Share link failed to start: \(error)")
             shareLinkError = L("Couldn't create the link. Check the network and try again.")
@@ -2269,46 +2234,54 @@ class AppState: ObservableObject {
     }
 
     private func disableShareLink() async {
-        guard guestServer != nil || shareLinkToken != nil else { return }
-        // Order matters: detaching first sends each guest HELLO_DENY +
-        // SERVER_BYE through the still-open guest socket, so their windows
-        // say "disconnected" instead of timing out against a dead tunnel.
-        await server?.detachGuestPacketListener()
-        await guestServer?.close()
-        guestServer = nil
+        guard shareLinkToken != nil else { return }
+        // The order that makes a guest's window say "disconnected" rather
+        // than time out — detach before close — is the session's, not
+        // this caller's.
+        await link.disable(on: server)
         shareLinkToken = nil
         guestPeersByIP = [:]
-        logger.log("Share link stopped — token dead")
     }
 
-    /// Map a denied guest's tunnel IP back to its node key and evict it at
-    /// the tunnel: flows close now, and the key is refused for the life of
-    /// this link. Fired by the server's deny paths via `onGuestViewerDenied`.
+    /// Tunnel-level eviction: a Deny (or a remembered-deny expel) on a guest
+    /// also closes their tunnel and denylists their node key for this link's
+    /// life, so a denied guest cannot keep knocking.
+    ///
+    /// Wired per share rather than once, because it closes over the server
+    /// instance — and wired BEFORE the share starts on the link-only path,
+    /// where a guest can arrive as soon as `startGuestOnly` returns.
+    private func wireGuestEviction(on server: TailscaleScreenShareServer) {
+        server.onGuestViewerDenied = { [weak self] ip in
+            Task { @MainActor [weak self] in
+                await self?.evictGuest(ip: ip)
+            }
+        }
+    }
+
+    /// The Settings relay override for the guest tunnel's bootstrap, or nil
+    /// for the default DERP map. Both mint paths read it from here so a
+    /// self-hosted relay cannot end up applying to one of them only.
+    private var linkRelayMapURL: String? {
+        let trimmed = linkShareRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Evict a denied guest at the tunnel, then re-mirror the peer map the
+    /// roster reads. Fired by the server's deny paths via
+    /// `onGuestViewerDenied`.
     private func evictGuest(ip: String) async {
-        guard let gs = guestServer else { return }
+        await link.evict(ip: ip)
         await refreshGuestPeers()
-        guard let peer = guestPeersByIP[ip] else {
-            logger.log("Guest evict: no peer for \(ip) (already gone)")
-            return
-        }
-        do {
-            try await gs.removePeer(key: peer.key)
-        } catch {
-            logger.log("Guest evict failed for \(ip): \(error)")
-        }
-        guestPeersByIP.removeValue(forKey: ip)
     }
 
-    /// Refresh the tunnel-IP → guest-peer map from the guest node. Called
-    /// whenever the roster changes while a link is live (fingerprints for
-    /// the rows) and before an eviction lookup.
+    /// Mirror the tunnel-IP → guest-peer map from `link`. Called whenever
+    /// the roster changes while a link is live (fingerprints for the rows)
+    /// and after an eviction. Clears itself when there is no link, which is
+    /// the session's answer too.
     func refreshGuestPeers() async {
-        guard let gs = guestServer else {
-            if !guestPeersByIP.isEmpty { guestPeersByIP = [:] }
-            return
-        }
-        let peers = (try? await gs.peers()) ?? []
-        guestPeersByIP = Dictionary(peers.map { ($0.addr, $0) }, uniquingKeysWith: { _, last in last })
+        await link.refreshPeers()
+        let peers = await link.peersByIP
+        if guestPeersByIP != peers { guestPeersByIP = peers }
     }
 
     /// Roster label for a guest row: the short node-key fingerprint
