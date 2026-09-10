@@ -1283,7 +1283,7 @@ private struct PeerListSection: View {
             .accessibilityLabel(L("Looking for screens…"))
         } else if appState.availablePeers.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text(L("No Tailscreen devices on your tailnet"))
+                Text(L("No Tailscreen screens found on your tailnet."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(minHeight: 28)
@@ -1298,10 +1298,19 @@ private struct PeerListSection: View {
                     .font(.caption)
             }
             .transition(.opacity)
+        } else if appState.filteredPeers.isEmpty {
+            // The FILTER hid everything. Distinct from the search case below
+            // because the fix is different, and this app used to answer both
+            // with this sentence — so a search that matched nothing sent
+            // people to a filter menu that was not the problem.
+            Text(L("No screens match your filters."))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(minHeight: 28)
+                .transition(.opacity)
         } else if visiblePeers.isEmpty {
-            // Devices exist but the filter/search hides them all — say so
-            // rather than showing the misleading "no devices" empty state.
-            Text(L("No screens match your filters"))
+            // Rows survive the filter but not the search box.
+            Text(L("No screens match your search."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(minHeight: 28)

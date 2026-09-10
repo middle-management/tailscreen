@@ -43,11 +43,7 @@ final class CaseVariantKeyTests: XCTestCase {
         // "%@, %@" accessibility sentence — different grammatical positions,
         // and languages that decline by position need them separate.
         ["Offline", "offline"],
-        ["Online", "online"],
-        // Empty-state punctuation is a per-surface convention: the mac hub's
-        // empty states carry no terminal period ("No other running apps"),
-        // the shared hub's all do ("No screens match your search.").
-        ["No screens match your filters", "No screens match your filters."]
+        ["Online", "online"]
     ]
 
     private var baseCatalogURL: URL {

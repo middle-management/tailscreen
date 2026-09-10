@@ -171,7 +171,6 @@
 "Refresh screens" = "Refresh screens";
 "Refresh available screens" = "Refresh available screens";
 "Looking for screens…" = "Looking for screens…";
-"No Tailscreen devices on your tailnet" = "No Tailscreen devices on your tailnet";
 "Screens appear here when their devices are running Tailscreen." = "Screens appear here when their devices are running Tailscreen.";
 "Get Tailscreen for your other devices" = "Get Tailscreen for your other devices";
 "Clear search" = "Clear search";
@@ -443,7 +442,6 @@
 "Clear Filters" = "Clear Filters";
 "Filter screens" = "Filter screens";
 "Filter available screens" = "Filter available screens";
-"No screens match your filters" = "No screens match your filters";
 "%lld hidden by filters" = "%lld hidden by filters";
 "Only screens being shared" = "Only screens being shared";
 "Sharing" = "Sharing";
