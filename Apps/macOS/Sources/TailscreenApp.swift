@@ -27,7 +27,7 @@ enum MenubarIconState: Equatable {
         hasControlRequests: Bool,
         hasWaitingViewers: Bool
     ) -> MenubarIconState {
-        if sharing == .active {
+        if sharing == .sharing {
             // Control requests and pending viewers only exist while a
             // share is up (the server surfaces them and stopSharing
             // clears them), so these badges are meaningful only on the
@@ -37,7 +37,11 @@ enum MenubarIconState: Equatable {
             return .sharing
         }
         if connection == .viewing { return .viewing }
-        if hasPendingRequests && sharing == .idle && connection == .idle {
+        // `!sharing.isLive`, matching the popover's own banner gate: after a
+        // failed start the requests are listed in the popover, and an icon
+        // that does not badge them is the one surface saying there is nothing
+        // to look at.
+        if hasPendingRequests && !sharing.isLive && connection == .idle {
             return .requestPending
         }
         return .idle

@@ -21,17 +21,45 @@ final class ViewerPresentationState: ObservableObject {
         lifecycle.phase == .awaitingApproval
     }
 
+    /// Why an ENDED session ended. Nil for a failure, which is a different
+    /// thing with a different sentence — see `failureMessage`.
+    ///
+    /// This used to answer `.connectionLost` for `.failed` as well, because
+    /// the in-window pane had no way to say anything else and a connection
+    /// that failed to open is *a* kind of lost connection. It reads wrong
+    /// where it matters, though: a dial that was refused, or a token that had
+    /// expired, was reported to the person as "The connection to X was lost",
+    /// which describes a session they never had.
     var ending: ViewerSessionEndReason? {
+        guard case .ended(let reason) = lifecycle.phase else { return nil }
+        return reason
+    }
+
+    /// The message from a `failed` phase — a bring-up or runtime failure,
+    /// said in its own words rather than folded into an end reason.
+    var failureMessage: String? {
+        guard case .failed(let message) = lifecycle.phase else { return nil }
+        return message
+    }
+
+    /// Whether a terminal pane is on screen, whichever kind.
+    ///
+    /// What the callers that used to test `ending != nil` actually meant:
+    /// they gate menu items and window handling on "the session is over and
+    /// its pane is still up", and neither cares which of the two it is.
+    var isOver: Bool { lifecycle.phase?.isOver == true }
+
+    /// The pre-video phase the in-window placard covers, if any.
+    ///
+    /// Both of them: this app used to show the placard only from
+    /// `awaitingApproval`, so `connecting` — the phase every session passes
+    /// through — was the one moment with nothing on the surface the person
+    /// is looking at. The window title said "Connecting to X…" and the
+    /// window itself was empty.
+    var placardPhase: ViewerSessionPhase? {
         switch lifecycle.phase {
-        case .ended(let reason):
-            reason
-        case .failed:
-            // macOS explains connection failures in an alert; if an old
-            // viewer window is still visible during Reconnect, its deterministic
-            // in-window projection is the corresponding connection-lost state.
-            .connectionLost
-        default:
-            nil
+        case .connecting, .awaitingApproval: lifecycle.phase
+        default: nil
         }
     }
 

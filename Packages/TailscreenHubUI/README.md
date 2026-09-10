@@ -33,6 +33,8 @@ exists twice agrees on the day it is written and never again — so it lives her
 | `HubStatusPane` / `HubLoginCard` | Centered spinner + status; the interactive-login placard. |
 | `ShareCard` | The sharing half of the hub: start/stop, notes, prompts, and the per-share settings switches. |
 | `SessionPlacard` / `HubSessionPhase` | Connecting / awaiting approval / declined / ended. |
+| `HubScreenSkeleton` | Placeholder rows while a peer list is being built, so a sweep reads as "coming" rather than "empty". |
+| `ViewerNoticeBanner` | A strip above the video for something to say about a session that is still running — a decode stall, today. |
 | `AnnotationToolbar`, `StatsHUD`, `RemoteControlBar` | The over-video chrome. |
 | `HubAction`, `HubPrompt`, `HubToggle` | The small value types the cards take actions and settings through. |
 | `HubPreview` | Raw RGBA pixels of what viewers are receiving, for the share card's thumbnail. |

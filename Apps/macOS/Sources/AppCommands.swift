@@ -65,7 +65,7 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: .command)
             .disabled(
-                appState.connectionState != .viewing && appState.viewerSessionEnding == nil)
+                appState.connectionState != .viewing && !appState.viewerSessionIsOver)
 
             // Mirrors the global mic-toggle hotkey (⌃⌥M unless remapped in
             // Settings → Keyboard Shortcuts). A menu key equivalent only
@@ -200,7 +200,7 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("?", modifiers: .command)
             .disabled(
-                appState.sharingState == .idle
+                !appState.sharingState.isLive
                     && appState.viewerWindow?.isVisible != true
                     && !appState.isShortcutsPanelVisible)
         }

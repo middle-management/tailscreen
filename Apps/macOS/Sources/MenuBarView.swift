@@ -53,6 +53,14 @@ struct MenuBarView: View {
         // Signed out but SHARING (a guest-only, link-only share) → the full
         // popover: the sharing card is the sharer tool, and its approval
         // prompts must be reachable regardless of sign-in state.
+        //
+        // `== .idle`, NOT `!isLive`, and this is the one gate in the app
+        // where the difference matters. Everywhere else the question is "is
+        // anything running"; here it is "is there anything to SAY". A failed
+        // link-only start has nothing running and plenty to say — its reason
+        // lives on the sharing card in this very popover — so routing it to
+        // the signed-out pointer buries the only explanation the person gets
+        // once the alert is dismissed.
         if !appState.tailscaleAuth.isAuthenticated && appState.sharingState == .idle {
             SignedOutMenuView()
         } else {
@@ -73,7 +81,7 @@ struct MenuBarView: View {
                     shortcut: "⌘Q"
                 ) {
                     Task {
-                        if appState.sharingState == .active { await appState.stopSharing(reason: "QuitTailscreen") }
+                        if appState.sharingState == .sharing { await appState.stopSharing(reason: "QuitTailscreen") }
                         if appState.connectionState == .viewing { await appState.disconnect() }
                         NSApplication.shared.terminate(nil)
                     }
@@ -192,7 +200,7 @@ struct PendingRequestsBanner: View {
         // Share button would be disabled and the banner would read as
         // "X wants you to share" while a share is on-screen, which is
         // confusing. Requests stay queued for when state returns to idle.
-        let busy = appState.sharingState != .idle || appState.connectionState != .idle
+        let busy = appState.sharingState.isLive || appState.connectionState != .idle
         if requests.isEmpty || busy {
             EmptyView()
         } else {
@@ -222,7 +230,7 @@ struct PendingRequestsBanner: View {
                         }
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
-                        .disabled(appState.sharingState == .active)
+                        .disabled(appState.sharingState == .sharing)
                     }
                     .padding(10)
                     .background(
@@ -244,7 +252,7 @@ private struct StatusSection: View {
 
     var body: some View {
         switch (appState.sharingState, appState.connectionState) {
-        case (.active, _): SharingCard()
+        case (.sharing, _): SharingCard()
         case (_, .viewing): ViewingCard()
         case (.starting, _): StartingShareCard()
         case (_, .connecting): ConnectingCard()
@@ -289,7 +297,7 @@ private struct ConnectingCard: View {
     }
 }
 
-/// Transitional state between display click and `sharingState == .active`.
+/// Transitional state between display click and `sharingState == .sharing`.
 /// SCStream bring-up can take 5–10 s when replayd is unhappy
 /// (multiple retries, watchdog timeouts). Without this card the
 /// popover sits silently on the display picker the whole time and
@@ -1395,6 +1403,18 @@ private struct DisplayPickerSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            // A start that failed, said where the button that retries it is.
+            // The alert fired once and is gone; without this the card is back
+            // to offering the picker with no trace of why the last attempt
+            // did not work. Same split as `nodeFailure` on the sign-in card,
+            // and the same wording the other two hubs' share cards carry.
+            if let why = appState.sharingState.failureReason {
+                Text(L("Share failed: \(why)"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 4)
+            }
             if appState.anotherInstanceSharing {
                 // Another Tailscreen instance on this Mac is currently
                 // capturing. macOS's `replayd` only allows one SCStream

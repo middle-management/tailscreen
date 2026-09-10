@@ -266,7 +266,7 @@ if gSelfTest {
     // sign-in card over the two ways in that need no account. Everything
     // below still seeds, so the flag is the only difference between the two
     // screenshots.
-    gPicker.phase = gUIPreviewWelcome ? .signedOut : .picking
+    gPicker.phase = gUIPreviewWelcome ? .signedOut : .ready
     gSignIn = {}
     // Tagged and untagged, online and offline, so the header's filter menu has
     // every axis to show in a screenshot.
@@ -564,10 +564,12 @@ if gSelfTest {
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: {
                         guard gViewerLifecycle.isActive(sessionID) else { return }
-                        // Terminal rung: name the stall on the session placard
-                        // instead of leaving a frozen last frame. Unlatch the
-                        // sink first so a frame that somehow decodes later
-                        // re-announces video and clears the placard.
+                        // Terminal rung: say so over the frozen frame rather
+                        // than taking it away (`noteVideoStalled` owns that
+                        // rule, including the one case that still fails the
+                        // session). Unlatch the sink first, so a frame that
+                        // decodes later re-announces video and clears the
+                        // banner by itself.
                         sink.resetForNewSession()
                         gUIState.noteVideoStalled(
                             L(
@@ -685,11 +687,11 @@ if gSelfTest {
                     gPicker.shareInfo = PeerShareStatusMap.pruned(
                         gPicker.shareInfo, toPresent: Set(online.map(\.id)))
                     // Label the header with the tailnet these rows belong to
-                    // (falling back to the login) — set before `.picking`, so
+                    // (falling back to the login) — set before `.ready`, so
                     // the placard never flashes the old guidance text.
                     gPicker.tailnetName = transport.tailnetName
                     gPicker.accountIdentity = transport.accountIdentity
-                    gPicker.phase = .picking
+                    gPicker.phase = .ready
                     // Start answering asks to share. Here rather than at
                     // bring-up because a successful discovery is the first
                     // point at which the node is provably usable, and it is
@@ -717,7 +719,7 @@ if gSelfTest {
                     }
                 } catch {
                     FileHandle.standardError.write(Data("discovery failed: \(error)\n".utf8))
-                    gPicker.phase = .picking  // renders "No screens found"
+                    gPicker.phase = .ready  // renders "No screens found"
                 }
             }
         }
@@ -727,12 +729,12 @@ if gSelfTest {
         // WITHOUT flipping to the "discovering…" placard, so peers coming/going
         // are reflected live (a lightweight stand-in for an IPN-bus subscription;
         // full IPN wiring is a follow-up). Skips while a session/bring-up is in
-        // flight (phase != .picking).
+        // flight (phase is not ready).
         @Sendable func quietRefresh() {
             Task { @MainActor in
-                guard case .picking = gPicker.phase else { return }
+                guard gPicker.phase.isReady else { return }
                 guard let peers = try? await transport.discoverPeers() else { return }
-                guard case .picking = gPicker.phase else { return }  // re-check after await
+                guard gPicker.phase.isReady else { return }  // re-check after await
                 gPicker.sharers = peers
                 let online = peers.filter { $0.isOnline }
                 gPicker.shareInfo = PeerShareStatusMap.pruned(
@@ -770,6 +772,7 @@ if gSelfTest {
             gViewerLifecycle.dismiss()
             gUIState.returnToPickerState()
             gAnnotations.resetForNewSession()
+            gPicker.endDialing()
             // Where "back" goes depends on whether there is a tailnet behind
             // this window at all. A guest who joined by link while signed out
             // has no node and no list: dropping them on an empty Screens list
@@ -779,7 +782,7 @@ if gSelfTest {
                 gPicker.phase = .signedOut
                 return
             }
-            gPicker.phase = .picking
+            gPicker.phase = .ready
             discoverAndSweep()
         }
 
@@ -822,13 +825,18 @@ if gSelfTest {
         // — the node stays parked in `up()` waiting on exactly that page, so
         // the button opens it rather than starting a second bring-up behind
         // the first.
-        @Sendable func bringUp(profile: ViewerProfile, restoring: Bool = false) {
+        @Sendable func bringUp(
+            profile: ViewerProfile, restoring: Bool = false, switching: Bool = false
+        ) {
             Task { @MainActor in
                 await transport.teardown()
                 gPicker.loginURL = nil
-                gPicker.signInNote = nil
                 gPicker.sharers = []
                 gPicker.shareInfo = [:]
+                gPicker.endDialing()
+                // Set on every path through here, so a plain sign-in after a
+                // switch clears it rather than inheriting the last one's word.
+                gPicker.isSwitchingAccount = switching
                 gPicker.phase = .startingNode
                 var config = baseConfig
                 config.statePath = stateDir(for: profile)
@@ -851,13 +859,11 @@ if gSelfTest {
                                 // The saved state did not authenticate. Say so
                                 // where the way out is, instead of sitting on
                                 // a login the person never started.
-                                gPicker.signInNote = L(
-                                    "Your saved Tailscale sign-in needs renewing.")
-                                gPicker.phase = .signedOut
+                                gPicker.phase = .failed(
+                                    L("Your saved Tailscale sign-in needs renewing."))
                             }
                         })
                     gPicker.loginURL = nil
-                    gPicker.signInNote = nil
                     // Label the account by its resolved login once known.
                     if let identity = transport.accountIdentity {
                         gProfiles.rename(profile.id, to: identity)
@@ -868,8 +874,7 @@ if gSelfTest {
                     // Back to the pane the button is on, carrying the reason —
                     // an empty screens list would blame the tailnet for a node
                     // that never came up.
-                    gPicker.signInNote = L("Could not start Tailscale: \(error)")
-                    gPicker.phase = .signedOut
+                    gPicker.phase = .failed(L("Could not start Tailscale: \(error)"))
                 }
             }
         }
@@ -878,17 +883,20 @@ if gSelfTest {
         gSwitchProfile = { id in
             guard id != gProfiles.activeID else { return }
             gProfiles.setActive(id)
-            bringUp(profile: gProfiles.active)
+            bringUp(profile: gProfiles.active, switching: true)
         }
         gAddAccount = {
-            bringUp(profile: gProfiles.addProfile())
+            // Also a switch as far as the window is concerned: the node this
+            // one is on goes down and another comes up in its place.
+            bringUp(profile: gProfiles.addProfile(), switching: true)
         }
         // The welcome pane's button. A parked login URL means a node is
         // already blocked in `up()` waiting on that page — opening it is the
         // way through; a second bring-up would only queue behind it.
         gSignIn = {
             if gPicker.loginURL != nil {
-                gPicker.signInNote = nil
+                // Not a switch: this is the parked login being opened.
+                gPicker.isSwitchingAccount = false
                 gPicker.phase = .startingNode
                 gOpenLogin?()
                 return
@@ -899,7 +907,7 @@ if gSelfTest {
         // a link-only share. Nowhere else: mid-bring-up the node is nil too,
         // and Start there means "share on my tailnet", not "share to
         // strangers by link instead".
-        gSharer.linkOnlyShareAllowed = { gPicker.phase == .signedOut }
+        gSharer.linkOnlyShareAllowed = { gPicker.phase.isSignedOut }
 
         // Restore a saved session, or sit on the welcome pane. NOT an
         // unconditional bring-up: this app used to open by starting a tsnet
@@ -938,10 +946,7 @@ struct ViewerApp: App {
     }
 
     // Whether the picker list of sharers should be shown right now.
-    private var showingPickerList: Bool {
-        if case .picking = picker.phase { return true }
-        return false
-    }
+    private var showingPickerList: Bool { picker.phase.isReady }
 
     /// The tailnet card's body copy: the pitch by default, or whatever went
     /// wrong — a failed bring-up, or a saved sign-in that turned out to need
@@ -973,7 +978,7 @@ struct ViewerApp: App {
     private var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: sharer.canShare,
-            isIdle: sharer.phase == .idle || sharer.isFailed,
+            isIdle: sharer.phase.canStart,
             isLinkOnlyShare: sharer.isLinkOnlyShare)
     }
 
@@ -981,7 +986,9 @@ struct ViewerApp: App {
     /// to be opened, which is a different act from starting a sign-in.
     private var welcomeButtonLabel: String {
         if picker.loginURL != nil { return L("Open the sign-in page") }
-        return picker.signInNote == nil ? L("Sign in with Tailscale") : L("Try again")
+        // Reads off the phase, like the WinUI hub's twin of this line — the
+        // retry label and the reason it prints now come from one case.
+        return picker.phase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
     }
 
     // Header subtitle: the picker's progress line, or the direct-connect status.
@@ -991,11 +998,7 @@ struct ViewerApp: App {
 
     // A spinner rides the header while the node is coming up / discovering.
     private var headerShowsSpinner: Bool {
-        guard gPickerMode else { return false }
-        switch picker.phase {
-        case .startingNode, .discovering: return true
-        case .signedOut, .picking, .connecting: return false
-        }
+        gPickerMode && picker.phase.isBringingUp
     }
 
     // Refresh is offered only from the settled picking state. Captures the
@@ -1039,12 +1042,13 @@ struct ViewerApp: App {
     /// the native GTK window background rather than over a black GL surface — the
     /// first frame is stored before `hasVideo` flips, so mounting renders it.
     // The host this session dialed (for the session placard and the watching
-    // bar) — the retained dial target, falling back to the picker's connecting
-    // phase for anything that races the retention.
+    // bar) — the retained dial target, which `startSession` sets synchronously
+    // before any of this can re-render. There used to be a fallback onto the
+    // picker's own `connecting(host)` here, for "anything that races the
+    // retention"; nothing did, and holding a second copy of one moment in two
+    // state machines is exactly the drift the shared phase removed.
     private var sessionHost: String {
-        if let target = gViewerLifecycle.target { return target.displayName }
-        if case .connecting(let host) = picker.phase { return host }
-        return ""
+        gViewerLifecycle.target?.displayName ?? ""
     }
 
     /// The viewer's session state as the shared placard's phase.
@@ -1080,11 +1084,10 @@ struct ViewerApp: App {
         return { gReturnToPicker?() }
     }
 
-    /// Sitting on the welcome pane — no node, no login in flight.
-    private var isSignedOut: Bool {
-        if case .signedOut = picker.phase { return true }
-        return false
-    }
+    /// Sitting on the welcome pane — no node, no login in flight. A FAILED
+    /// bring-up counts: the way out of it is the same pane with its button
+    /// relabelled, which is what `welcomeButtonLabel` reads the reason for.
+    private var isSignedOut: Bool { picker.phase.isSignedOut }
 
     /// A share running with nobody signed in — the state that replaces the
     /// welcome pane rather than adding to it.
@@ -1140,6 +1143,7 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             statusDetail: sharer.statusDetail,
             isSharing: sharer.phase == .sharing,
+            isStarting: sharer.phase == .starting,
             canShare: sharer.canShare,
             // Signed out, the button says what it will actually do: there is
             // no tailnet to share to, so the share comes up over the guest
@@ -1150,6 +1154,10 @@ struct ViewerApp: App {
                 var notes: [String] = []
                 // Only after a grant was refused — see `SharerModel.controlNote`.
                 if let controlNote = sharer.controlNote { notes.append(controlNote) }
+                // A "Change source…" that did not take. A NOTE rather than a
+                // phase, because the share it failed to re-point is still
+                // running — see `SharerModel.sourceChangeNote`.
+                if let sourceNote = sharer.sourceChangeNote { notes.append(sourceNote) }
                 // Said only while sharing, and only when true: the person this
                 // would have reached is the one who has stopped looking at
                 // this window, so they should be told before they do. Two
@@ -1453,6 +1461,15 @@ struct ViewerApp: App {
                 .frame(maxWidth: .infinity)
                 .background(HubStyle.barFill)
                 Divider()
+                // Something to say about a session that is still going —
+                // today the decode-stall ladder's last rung. Above the video
+                // and below the bar that can end it, so the sentence and the
+                // way out sit together; the picture underneath is untouched,
+                // which is the whole reason this is a strip and not a placard.
+                if let notice = ui.notice {
+                    ViewerNoticeBanner(message: notice) { gUIState.notice = nil }
+                    Divider()
+                }
                 if ui.annotationsAvailable {
                     AnnotationToolbar(
                         activeTool: ui.activeTool,
@@ -1582,6 +1599,14 @@ struct ViewerApp: App {
                     PickerContent(
                         statusLine: picker.statusLine,
                         isPicking: showingPickerList,
+                        // Placeholder rows while a list is being built. The
+                        // phase names the state, so there is nothing to
+                        // derive; `.discovering` already sets `isPicking`
+                        // false and takes the rows off screen, so this
+                        // changes what fills the gap rather than whether
+                        // there is one. The quiet 10 s re-list never enters
+                        // this phase and so never blanks anything.
+                        isDiscovering: picker.phase == .discovering,
                         screens: hubScreens,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,

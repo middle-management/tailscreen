@@ -19,6 +19,7 @@ import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import enum TailscreenProtocol.NodeBringUpPhase
 import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
@@ -29,6 +30,7 @@ import struct TailscreenProtocol.PendingShareRequest
 import class TailscreenProtocol.PortableMuteHotkey
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
+import enum TailscreenProtocol.ShareBringUpPhase
 import enum TailscreenProtocol.ShareLinkFormat
 import enum TailscreenProtocol.TailscreenInstance
 import struct TailscreenProtocol.TailscreenMetadata
@@ -167,7 +169,7 @@ struct TailscreenWindowsApp: App {
     /// result builder is how this file previously got "failed to produce
     /// diagnostic for expression" out of the Windows compiler.
     private var headerFilter: HubFilter? {
-        guard state.phase == .ready, state.watching == nil else { return nil }
+        guard state.phase.isReady, state.watching == nil else { return nil }
         let model = state
         return HubFilter(
             filter: model.filter,
@@ -222,11 +224,20 @@ struct TailscreenWindowsApp: App {
             } else {
                 watching(host: host)
             }
-        } else if state.isSignedOut && state.sharing.isSharing {
-            // Signed out WITH a share running: the sharing view owns the
-            // window. Two things that each want the whole column would
-            // otherwise stack, and "get started" over a share already going
-            // out is not a screen anybody should be shown.
+        } else if state.isSignedOut && state.sharing.phase.isLive {
+            // Signed out with a share running OR STARTING: the sharing view
+            // owns the window. Two things that each want the whole column
+            // would otherwise stack, and "get started" over a share already
+            // going out is not a screen anybody should be shown.
+            //
+            // `isLive`, not `isSharing`, and the `starting` half is the point
+            // — this is the flow where bring-up is slowest (relay bootstrap,
+            // guest node, server) and it was the one place the new `.starting`
+            // state could not be reached. The welcome pane stayed up with its
+            // share button now unavailable, showing neither progress nor a
+            // way to cancel, until frames were already going out. The GTK hub
+            // has always spelled this `.starting || .sharing`; this is that
+            // condition, through the shared predicate.
             signedOutSharing
         } else if state.isSignedOut {
             signIn
@@ -290,6 +301,14 @@ struct TailscreenWindowsApp: App {
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
+            // Something to say about a session that is still going — today
+            // the decode-stall ladder's last rung. Above the video and below
+            // the bar that can end it, so the sentence and the way out sit
+            // together; the picture underneath is untouched, which is the
+            // whole reason this is a strip and not a placard.
+            if let notice = state.viewerNotice {
+                ViewerNoticeBanner(message: notice) { model.viewerNotice = nil }
+            }
             // The annotation toolbar owns the stats toggle, which is why this
             // merge collapsed two of them into one. 4.3 landed a `Stats`
             // button in the top bar while this branch was open; keeping both
@@ -364,7 +383,13 @@ struct TailscreenWindowsApp: App {
 
     private var signIn: some View {
         let model = state
-        let label = state.phase == .failed ? L("Try again") : L("Sign in to Tailscale")
+        // "with", not "to": Tailscale is the identity provider here, the same
+        // sense as any other sign-in-with-X button, and this is the same
+        // control the macOS welcome pane and the GTK hub render — all three
+        // pass it into `HubSignInPane.signInLabel`. It said "to" here alone.
+        // (`HubLoginCard`'s heading keeps "Sign in to Tailscale": that card is
+        // a URL to open in a browser, not a button, and reads right as a title.)
+        let label = state.phase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
         return HubSignInPane(
             tailnetMessage: state.welcomeTailnetMessage,
             signInLabel: label,
@@ -378,7 +403,7 @@ struct TailscreenWindowsApp: App {
             // A start that failed, worded under the button that retries it —
             // kept apart from `detail` (the tailnet card's) so a share
             // failure is not reported on the sign-in card.
-            shareNote: state.shareDetail)
+            shareNote: state.shareNote)
     }
 
     /// The share-by-token way in. A computed property with an explicit type
@@ -395,7 +420,13 @@ struct TailscreenWindowsApp: App {
         let model = state
         return PickerContent(
             statusLine: state.status,
-            isPicking: state.phase == .ready && !state.isSearching,
+            isPicking: state.phase.isReady && !state.isSearching,
+            // This hub never enters `.discovering` — it goes straight to
+            // `ready` and reports its sweep through `isSearching` — so that
+            // flag is what names the state here. Ungated on purpose: a sweep
+            // already sets `isPicking` false and takes the rows off screen,
+            // so this changes what fills the gap, not whether there is one.
+            isDiscovering: state.isSearching,
             screens: state.hubScreens,
             loginURL: state.loginURL,
             emptyMessage: L("No Tailscreen screens found on your tailnet."),
@@ -443,7 +474,7 @@ struct TailscreenWindowsApp: App {
     /// sign-in card already shows it, and repeating it reads as two failures.
     private var showsDetail: Bool {
         guard !state.detail.isEmpty else { return false }
-        return state.phase != .idle && state.phase != .failed
+        return !state.phase.isSignedOut
     }
 }
 
@@ -468,14 +499,18 @@ private func hubHealth(_ health: ViewerHealth) -> HubViewerHealth {
 /// without hopping.
 @MainActor
 final class AppUIState: ObservableObject {
-    enum Phase: Equatable {
-        case idle
-        case starting
-        case ready
-        case failed
-    }
+    /// The shared bring-up vocabulary, in `TailscreenProtocol` so this hub,
+    /// the GTK picker and the macOS one name one lifecycle. This app's old
+    /// `idle` is its `signedOut` and `starting` its `startingNode`; `failed`
+    /// now carries the reason it used to leave in `detail`.
+    ///
+    /// `discovering` is a case this hub never enters: it goes straight from
+    /// `startingNode` to `ready` and reports its peer sweep through
+    /// `isSearching`, which is a re-list from a settled state rather than the
+    /// first one. The GTK hub does distinguish it.
+    typealias Phase = NodeBringUpPhase
 
-    @Published var phase: Phase = .idle
+    @Published var phase: Phase = .signedOut
     @Published var status = L("Not signed in")
     @Published var detail = ""
     /// A SHARE failure, kept apart from `detail` so the welcome pane can put
@@ -483,6 +518,17 @@ final class AppUIState: ObservableObject {
     /// beside it. Cleared when a fresh attempt starts, so a retry never
     /// carries the last one's reason.
     @Published var shareDetail: String?
+    /// A non-modal notice about a session that is still RUNNING — rendered as
+    /// a strip above the video by `ViewerNoticeBanner`, never in place of it.
+    /// Nil when there is nothing to say.
+    ///
+    /// Its own slot rather than `detail`, which is the HUB's line: the stall
+    /// notice used to be written there, on a surface that is not on screen
+    /// while this window is watching a stream, so the one thing it had to say
+    /// was said to nobody. It is not a `sessionPhase` case either — every
+    /// phase is a state the session is IN, and this is a remark about one
+    /// still in `viewing`.
+    @Published var viewerNotice: String?
     @Published var loginURL: String?
     /// The RAW discovery result. Stays unfiltered on purpose: the filter menu
     /// enumerates its tags, `connect(toID:)` resolves against it, and a filter
@@ -736,13 +782,13 @@ final class AppUIState: ObservableObject {
     /// of the filter menu. Verbatim data, deliberately not localized.
     private func seedUIPreview() {
         if Self.isUIPreviewWelcome {
-            // `.idle` is the signed-out phase, so `content` renders the
-            // welcome pane: the tailnet card, and the share-link card with
+            // `content` renders the welcome pane from `.signedOut`: the
+            // tailnet card, and the share-link card with
             // both no-account directions under it. Seeding stops here on
             // purpose — every line below is a tailnet this state does not
             // have, `activeAccountName` included, and `loginURL` stays nil
             // because nobody has started a sign-in to be waiting on.
-            phase = .idle
+            phase = .signedOut
             status = L("Not signed in")
             return
         }
@@ -862,10 +908,10 @@ final class AppUIState: ObservableObject {
     /// node bring-up or a discovery sweep. Not while merely idle: a spinner
     /// that never stops is worse than none, because it makes a settled state
     /// look broken.
-    var showsSpinner: Bool { phase == .starting || isSearching }
+    var showsSpinner: Bool { phase.isBringingUp || isSearching }
 
     /// Refresh is offered only from the settled signed-in state.
-    var canRefresh: Bool { phase == .ready && watching == nil && !isSearching }
+    var canRefresh: Bool { phase.isReady && watching == nil && !isSearching }
 
     /// The discovered peers, narrowed by the header filter, as hub rows.
     ///
@@ -909,17 +955,36 @@ final class AppUIState: ObservableObject {
 
     /// No node, and none coming up: the sign-in pane's state. A share
     /// started from there is a link-only share — see `startSharing`.
-    var isSignedOut: Bool { phase == .idle || phase == .failed }
+    var isSignedOut: Bool { phase.isSignedOut }
 
     /// The welcome pane's tailnet card copy: the pitch by default, or
     /// whatever went wrong once something has. The reason belongs on the
     /// card its Try again button is on, which is also why the window footer
     /// deliberately stops repeating it before sign-in.
     var welcomeTailnetMessage: String {
+        // The PHASE first, then the legacy slot. `signInLabel` already reads
+        // the phase for its "Try again", and `detail` is cleared by anything
+        // that starts fresh — `startSharing()` blanks it before opening the
+        // capture picker — so reading `detail` first let a cancelled picker
+        // after a failed bring-up leave the button saying Try again over the
+        // first-run pitch: a card offering a retry for nothing.
+        if let reason = phase.failureReason { return reason }
         guard detail.isEmpty else { return detail }
         return L(
             "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
         )
+    }
+
+    /// The welcome pane's share-link card note: why the last link-only start
+    /// did not happen.
+    ///
+    /// The phase leads, exactly as `welcomeTailnetMessage` reads it for the
+    /// card beside this one and as the GTK hub's `welcomeShareNote` does —
+    /// one failure, one carrier. `shareDetail` is still behind it because it
+    /// holds the one failure the phase cannot: a capture picker that threw
+    /// before `beginSharing` was ever called.
+    var shareNote: String? {
+        sharing.phase.failureReason ?? shareDetail
     }
 
     /// What the welcome pane's share-link card offers, via the pinned
@@ -928,17 +993,34 @@ final class AppUIState: ObservableObject {
     /// and a viewing session already owning the window.
     ///
     /// The other two are about the bootstrap window, which this hub renders
-    /// (unlike the GTK one, whose `.starting` phase already swaps the pane
-    /// for the sharing view): a link-only start publishes `linkBusy` before
-    /// `isSharing`, so idle has to exclude it or the button stays pressable
+    /// rather than swapping the pane for the sharing view as the GTK one
+    /// does: a link-only start publishes `linkBusy` before the phase leaves
+    /// `starting`, so idle has to exclude it or the button stays pressable
     /// through the relay handshake — and `linkIsOnlyWayIn` is set at the
     /// same early moment, so the "you're sharing via link" note waits for
     /// the token rather than pointing at a card that does not exist yet.
     var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: shareSession.isSupported && watching == nil,
-            isIdle: !sharing.isSharing && !sharing.linkBusy,
+            isIdle: sharing.phase.canStart && !sharing.linkBusy,
             isLinkOnlyShare: sharing.linkIsOnlyWayIn && sharing.linkToken != nil)
+    }
+
+    /// What the share card's headline says, per phase.
+    ///
+    /// Four answers where this app used to have two. `starting` is the one it
+    /// could not say at all: the card read "Not sharing" through the encoder,
+    /// the server and tsnet bring-up, so a person who had just picked a window
+    /// had no sign their click had registered. Same wording as the GTK card,
+    /// which had all four from the start — and the same catalog keys, so
+    /// neither `.strings` file changes.
+    private var shareStatusLine: String {
+        switch sharing.phase {
+        case .idle: L("Not sharing")
+        case .starting: L("Starting share…")
+        case .sharing: L("Sharing \(sharing.target)")
+        case .failed(let why): L("Share failed: \(why)")
+        }
     }
 
     /// The sharing half of the hub, or nil on a build that cannot capture.
@@ -949,10 +1031,9 @@ final class AppUIState: ObservableObject {
     var shareCard: ShareCard? {
         guard shareSession.isSupported else { return nil }
         return ShareCard(
-            statusLine: sharing.isSharing
-                ? L("Sharing \(sharing.target)")
-                : L("Not sharing"),
+            statusLine: shareStatusLine,
             isSharing: sharing.isSharing,
+            isStarting: sharing.phase == .starting,
             canShare: watching == nil,
             // Signed out, the button says what it will actually do: there is
             // no tailnet to share to, so the share comes up over the guest
@@ -1305,8 +1386,8 @@ final class AppUIState: ObservableObject {
     }
 
     func signIn() {
-        guard phase == .idle || phase == .failed else { return }
-        phase = .starting
+        guard phase.isSignedOut else { return }
+        phase = .startingNode
         status = L("Starting Tailscale…")
         detail = ""
         loginURL = nil
@@ -1361,7 +1442,7 @@ final class AppUIState: ObservableObject {
                 ensureControlListener()
                 refreshPeers()
             } catch {
-                phase = .failed
+                phase = .failed("\(error)")
                 loginURL = nil
                 status = L("Could not start Tailscale")
                 detail = "\(error)"
@@ -1373,7 +1454,7 @@ final class AppUIState: ObservableObject {
         // The preview's phase is .ready but its transport never started —
         // a refresh would replace the seeded list with a discovery error.
         guard !Self.isUIPreview else { return }
-        guard phase == .ready, !isSearching else { return }
+        guard phase.isReady, !isSearching else { return }
         isSearching = true
         detail = ""
 
@@ -1452,7 +1533,7 @@ final class AppUIState: ObservableObject {
     }
 
     func connect(to peer: DiscoveredSharer) {
-        guard phase == .ready else { return }
+        guard phase.isReady else { return }
         startSession(
             config: ViewerConfig(
                 // Dial by IP, not hostname: the transport documents that this
@@ -1481,6 +1562,7 @@ final class AppUIState: ObservableObject {
         let sessionID = viewerLifecycle.begin(target)
         status = L("Connecting to \(target.displayName)…")
         detail = ""
+        viewerNotice = nil
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
@@ -1491,6 +1573,14 @@ final class AppUIState: ObservableObject {
             // its C shim.
             let sink = FrameStoreVideoSink(
                 store: frameStore,
+                // What makes a stall RECOVERABLE rather than merely
+                // survivable: announcing one re-arms this latch, so the next
+                // frame that decodes takes the banner away by itself. A notice
+                // about a stream that is visibly running again is worse than
+                // no notice.
+                onFirstFrame: { [weak self] in
+                    Task { @MainActor in self?.viewerNotice = nil }
+                },
                 onFrame: { [weak self] in
                     Task { @MainActor in self?.frameGeneration &+= 1 }
                 },
@@ -1583,10 +1673,14 @@ final class AppUIState: ObservableObject {
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: { [weak self] in
                         guard let self, self.viewerLifecycle.isActive(sessionID) else { return }
-                        // Terminal rung: name the stall on the hub's detail
-                        // line — the same surface a decline or session error
-                        // uses — instead of a silently frozen last frame.
-                        self.detail = L(
+                        // Terminal rung: say so over the frozen frame. It used
+                        // to be written to `detail`, the hub's line, which is
+                        // not on screen while this window is watching — so the
+                        // stall was announced to nobody. Unlatch the sink
+                        // first, so a frame that decodes later re-announces
+                        // video and clears the banner by itself.
+                        sink.resetForNewSession()
+                        self.viewerNotice = L(
                             "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
                         )
                     }
@@ -1597,6 +1691,7 @@ final class AppUIState: ObservableObject {
             }
             sessionTask = nil
             detachVoice()
+            viewerNotice = nil
             // Before the status line, so a stale grant or armed tool can never
             // outlive the session that produced it.
             interaction.endSession()
@@ -1604,7 +1699,7 @@ final class AppUIState: ObservableObject {
             // with no account at all, and "Signed in" over the sign-in pane
             // would be the header contradicting the card under it.
             status =
-                phase == .ready
+                phase.isReady
                 ? transport.accountIdentity.map { L("Signed in as \($0)") } ?? L("Signed in")
                 : L("Not signed in")
             if let end = ended.value {
@@ -1741,7 +1836,7 @@ final class AppUIState: ObservableObject {
 
     /// The accounts, plus Sign out once there is a session to sign out of.
     var accountMenuEntries: [HubAccount] {
-        guard phase == .ready else { return accounts }
+        guard phase.isReady else { return accounts }
         return accounts + [HubAccount(id: Self.signOutEntryID, name: L("Sign out"))]
     }
 
@@ -1757,7 +1852,7 @@ final class AppUIState: ObservableObject {
     /// rule as the macOS app's `canSwitchProfile`. A share still starting or a
     /// session still connecting would be torn out from under itself.
     var canSwitchAccount: Bool {
-        watching == nil && sessionTask == nil && !sharing.isSharing && phase != .starting
+        watching == nil && sessionTask == nil && sharing.phase.canStart && phase != .startingNode
     }
 
     func switchAccount(to id: String) {
@@ -1790,7 +1885,7 @@ final class AppUIState: ObservableObject {
     /// The previous account stays signed in *on disk* — its state directory is
     /// untouched — so switching back resumes without a browser round trip.
     private func restartUnderActiveAccount() {
-        phase = .idle
+        phase = .signedOut
         status = L("Switching account…")
         detail = ""
         peers = []
@@ -1855,11 +1950,13 @@ final class AppUIState: ObservableObject {
         // in, and turning that into a link-only share would answer a question
         // they had not finished asking.
         let linkOnly = isSignedOut
-        // `linkBusy` is the in-flight link-only bootstrap: `isSharing` only
-        // turns true once the share is live, so without this a second click
-        // during the relay handshake starts a whole second share, and the
-        // first becomes a stale generation tearing itself down.
-        guard phase == .ready || linkOnly, !sharing.isSharing, !sharing.linkBusy else { return }
+        // `canStart` is idle-or-failed, so this now also refuses a second
+        // click during CAPTURE bring-up, which `!isSharing` used to allow —
+        // the share is not live yet, and the second click started a whole
+        // second share whose first became a stale generation tearing itself
+        // down. `linkBusy` still covers the link-only bootstrap, which
+        // publishes before the phase moves.
+        guard phase.isReady || linkOnly, sharing.phase.canStart, !sharing.linkBusy else { return }
         detail = ""
         shareDetail = nil
 
@@ -1908,14 +2005,19 @@ final class AppUIState: ObservableObject {
                     linkOnly: linkOnly
                 )
             } catch {
-                // Signed out this is the welcome pane's share-link card note;
-                // signed in it is the window footer, as before.
-                let reason = L("Could not start sharing: \(error)")
-                if linkOnly {
-                    self.shareDetail = reason
-                } else {
-                    self.detail = reason
-                }
+                // Deliberately silent: the ENGINE owns this failure now. It
+                // sets `phase = .failed(reason)`, which `shareStatusLine`
+                // renders as the card's headline and `shareNote` derives the
+                // signed-out card's note from. Writing a second copy
+                // here put the same failure on screen twice in two different
+                // wordings — the card saying "Share failed: …" over a footer
+                // saying "Could not start sharing: …" — and gave the new
+                // phase payload a rival for being the source of truth.
+                //
+                // The picker failure above still writes its own slot: that
+                // one throws before `beginSharing`, so no phase ever carries
+                // it.
+                _ = error
             }
         }
     }
@@ -1989,9 +2091,9 @@ final class AppUIState: ObservableObject {
     }
 
     func signOut() {
-        guard phase == .ready else { return }
+        guard phase.isReady else { return }
         stopRequested = true
-        phase = .idle
+        phase = .signedOut
         status = L("Not signed in")
         detail = ""
         peers = []

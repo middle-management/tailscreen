@@ -20,6 +20,11 @@ struct MainWindowView: View {
         VStack(spacing: 0) {
             HubHeader()
             Divider()
+            // Deliberately the two flags, not `appState.nodePhase`: this app
+            // renders an account switch as a pane of its own and a sign-in as
+            // a spinner on the card that started it, where the other two hubs
+            // show a status pane for both. Branching on `nodePhase.isSignedOut`
+            // here would put the hub up mid-sign-in. See `AppState.nodePhase`.
             if appState.isSwitchingProfile {
                 ProfileSwitchingPane()
             } else if appState.tailscaleAuth.isAuthenticated {
@@ -567,6 +572,29 @@ private struct WelcomeCard<Content: View>: View {
 private struct TailnetSignInCard: View {
     @EnvironmentObject var appState: AppState
 
+    /// The card's body copy: the pitch by default, or the reason the last
+    /// bring-up failed once there is one.
+    ///
+    /// Substituting rather than adding a line is what both other hubs do
+    /// (`welcomeTailnetMessage` on each), and it puts the reason on the card
+    /// whose button retries it instead of only in an alert that is dismissed
+    /// and gone. Hoisted out of the body so the pitch keeps its own
+    /// indentation — nested in the view tree the literal runs past the
+    /// formatter's column limit.
+    private var bodyCopy: String {
+        if let reason = appState.nodePhase.failureReason { return reason }
+        return L(
+            "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
+        )
+    }
+
+    /// The button's label: a retry once a bring-up has failed, the first-run
+    /// call to action otherwise. Named after the `HubSignInPane.signInLabel`
+    /// the other two hubs pass the same two strings into.
+    private var signInLabel: String {
+        appState.nodePhase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
+    }
+
     var body: some View {
         WelcomeCard {
             Label {
@@ -577,17 +605,13 @@ private struct TailnetSignInCard: View {
                     .foregroundStyle(Color.accentColor)
             }
 
-            Text(
-                L(
-                    "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
-                )
-            )
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(bodyCopy)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Group {
-                if appState.tailscaleAuth.isLoading {
+                if appState.nodePhase == .startingNode {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text(L("Signing in…"))
@@ -599,7 +623,7 @@ private struct TailnetSignInCard: View {
                     Button {
                         Task { await appState.initializeTailscaleAndLogin() }
                     } label: {
-                        Text(L("Sign in with Tailscale"))
+                        Text(signInLabel)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -693,6 +717,22 @@ private struct ShareLinkCard: View {
                 EmptyView()
             }
 
+            // Why the last link-only start did not happen, under the button
+            // that would try again.
+            //
+            // The hub's share card carries this too, but the hub is not where
+            // a signed-out start lands: that flow comes back HERE, and
+            // without this the alert was the whole explanation and it is
+            // dismissed and gone. The GTK hub says it through
+            // `welcomeShareNote` and the WinUI one through `shareNote`; this
+            // is the third, off the same `failureReason`.
+            if let why = appState.sharingState.failureReason {
+                Text(L("Share failed: \(why)"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Text(L("Guests join over an encrypted tunnel, and the sharer approves every one."))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -750,7 +790,7 @@ private struct ShareStatusSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch (appState.sharingState, appState.connectionState) {
-            case (.active, _):
+            case (.sharing, _):
                 ActiveShareCard()
             case (.starting, _):
                 HStack(spacing: 10) {
@@ -807,6 +847,15 @@ private struct ShareStatusSection: View {
                     Spacer(minLength: 0)
                 }
             default:
+                // Both surfaces carry this, per the same-commit rule: a start
+                // that failed says so above the button that retries it, since
+                // the alert is dismissed and gone.
+                if let why = appState.sharingState.failureReason {
+                    Text(L("Share failed: \(why)"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if appState.anotherInstanceSharing {
                     // Same replayd one-SCStream-per-bundle constraint the
                     // popover surfaces — say it up-front instead of letting
@@ -855,7 +904,7 @@ private struct ShareStatusSection: View {
 
     private var backgroundTint: Color {
         switch (appState.sharingState, appState.connectionState) {
-        case (.active, _): return Color.green.opacity(0.12)
+        case (.sharing, _): return Color.green.opacity(0.12)
         case (_, .viewing): return Color.accentColor.opacity(0.10)
         default: return Color.secondary.opacity(0.06)
         }
@@ -1116,7 +1165,7 @@ private struct PeerListSection: View {
     /// session otherwise.
     private func canConnect(_ peer: TailscreenPeer) -> Bool {
         peer.isOnline
-            && appState.sharingState == .idle
+            && !appState.sharingState.isLive
             && appState.connectionState == .idle
     }
 
@@ -1228,9 +1277,13 @@ private struct PeerListSection: View {
     /// Show the skeleton while there is nothing to list *and* no settled
     /// answer yet — a discovery pass is in flight, or the first frame
     /// rendered before `onAppear` could kick one off.
+    ///
+    /// That pair of conditions is exactly what `NodeBringUpPhase.discovering`
+    /// names, so this reads the phase rather than re-deriving it from the two
+    /// flags. Doing so also folds in the signed-in check, which this section
+    /// is already nested under and so cannot change the answer.
     private var showsLoadingSkeleton: Bool {
-        appState.availablePeers.isEmpty
-            && (appState.isDiscovering || !appState.hasCompletedInitialDiscovery)
+        appState.availablePeers.isEmpty && appState.nodePhase == .discovering
     }
 
     @ViewBuilder
@@ -1246,7 +1299,7 @@ private struct PeerListSection: View {
             .accessibilityLabel(L("Looking for screens…"))
         } else if appState.availablePeers.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text(L("No Tailscreen devices on your tailnet"))
+                Text(L("No Tailscreen screens found on your tailnet."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(minHeight: 28)
@@ -1261,10 +1314,19 @@ private struct PeerListSection: View {
                     .font(.caption)
             }
             .transition(.opacity)
+        } else if appState.filteredPeers.isEmpty {
+            // The FILTER hid everything. Distinct from the search case below
+            // because the fix is different, and this app used to answer both
+            // with this sentence — so a search that matched nothing sent
+            // people to a filter menu that was not the problem.
+            Text(L("No screens match your filters."))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(minHeight: 28)
+                .transition(.opacity)
         } else if visiblePeers.isEmpty {
-            // Devices exist but the filter/search hides them all — say so
-            // rather than showing the misleading "no devices" empty state.
-            Text(L("No screens match your filters"))
+            // Rows survive the filter but not the search box.
+            Text(L("No screens match your search."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(minHeight: 28)
@@ -1476,7 +1538,7 @@ private struct PeerMenuRow: View {
     /// the sharing/viewing status cards own the session otherwise.
     private var canConnect: Bool {
         peer.isOnline
-            && appState.sharingState == .idle
+            && !appState.sharingState.isLive
             && appState.connectionState == .idle
     }
 
@@ -1598,7 +1660,7 @@ private struct PeerDetailView: View {
     /// here (the status cards owned the popover otherwise).
     private var canConnect: Bool {
         peer.isOnline
-            && appState.sharingState == .idle
+            && !appState.sharingState.isLive
             && appState.connectionState == .idle
     }
 

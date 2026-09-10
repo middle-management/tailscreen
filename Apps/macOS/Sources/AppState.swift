@@ -19,11 +19,14 @@ import TailscreenViewer
 /// (first preview frame landed, viewers can join) → `idle`. Replaces
 /// the older `isSharing` / `isStartingShare` bool pair so we can't
 /// end up in inconsistent in-between states.
-enum SharingState: Equatable {
-    case idle
-    case starting
-    case active
-}
+/// The shared sharer lifecycle (`ShareBringUpPhase`, TailscreenProtocol).
+///
+/// This app's own enum was `idle / starting / active` with no failure case —
+/// a start that threw was an alert and nothing else, so the card went back to
+/// offering the button with no trace of why the last attempt had not worked.
+/// `active` was also the outlier NAME: the other two hosts say `sharing`, and
+/// so does every status line here.
+typealias SharingState = ShareBringUpPhase
 
 /// Viewer-side lifecycle. `idle` → `connecting` (user clicked a
 /// peer, tsnet dial + HELLO in flight) → `viewing` (decoder up,
@@ -278,7 +281,7 @@ class AppState: ObservableObject {
     var welcomeLinkShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: linkSharingEnabled,
-            isIdle: sharingState == .idle,
+            isIdle: !sharingState.isLive,
             isLinkOnlyShare: isGuestOnlyShare)
     }
 
@@ -587,7 +590,6 @@ class AppState: ObservableObject {
     /// Running and may have died since (ask the backend).
     private enum NodeBringUpState { case notUp, upInFlight, up }
     private var nodeBringUpState: NodeBringUpState = .notUp
-    private var tailscaleIPs: [String] = []
     private var sharerOverlay: SharerOverlayWindow?
     /// Border drawn around the captured region for the whole share. Unlike
     /// `sharerOverlay` this is NOT lazy — its entire job is to be present
@@ -653,6 +655,10 @@ class AppState: ObservableObject {
     /// viewer window between HELLO_PENDING and the first decoded frame.
     /// Hidden by default; toggled by `viewerAwaitingApproval`.
     private var viewerWaitingPlacard: NSView?
+    /// The placard's text field, so the one placard can say both of the
+    /// phases it now covers. Weak: the placard view owns it, and this app
+    /// holds the placard.
+    private weak var viewerPlacardLabel: NSTextField?
 
     /// Set by `onDeniedBySharer` when a HELLO_DENY arrives — including while
     /// `connect()` is still `.connecting`. Read once by `connect()` after
@@ -694,6 +700,43 @@ class AppState: ObservableObject {
         viewerPresentation.ending
     }
 
+    /// A terminal pane is on screen — ended OR failed. What the callers that
+    /// used to test `viewerSessionEnding != nil` meant before `failed` became
+    /// a state of its own rather than being reported as connection-lost.
+    var viewerSessionIsOver: Bool {
+        viewerPresentation.isOver
+    }
+
+    /// What the in-window placard says right now, or nil to hide it.
+    ///
+    /// Two phases, one placard. `connecting` is new here: it is the phase
+    /// every session passes through, and this app showed nothing for it —
+    /// the window title carried "Connecting to X…" over an empty window,
+    /// which is the one platform where that moment was invisible on the
+    /// surface being looked at.
+    private var viewerPlacardText: String? {
+        switch viewerPresentation.placardPhase {
+        case .connecting:
+            let host = viewerPresentation.lifecycle.target?.displayName ?? ""
+            return host.isEmpty ? L("Connecting…") : L("Connecting to \(host)…")
+        case .awaitingApproval:
+            return L("Waiting for the sharer to accept your connection…")
+        default:
+            return nil
+        }
+    }
+
+    /// The terminal pane's copy: an end reason worded by `sessionEndedPresentation`,
+    /// or a failure in its own words.
+    private func viewerTerminalPresentation() -> ViewerSessionEndedModel.EndedState? {
+        if let reason = viewerSessionEnding { return sessionEndedPresentation(reason) }
+        guard let message = viewerPresentation.failureMessage else { return nil }
+        // Its own title rather than "Session Ended": nothing ended, the
+        // session never opened. The alert still fires for the same failure —
+        // this is what stays on the window behind it.
+        return .init(title: L("Connection Failed"), message: message)
+    }
+
     /// True while the viewer session (current or connecting) runs over a
     /// guest tunnel. Drives the stats overlay's connection row and the
     /// join-flavored copy.
@@ -705,10 +748,10 @@ class AppState: ObservableObject {
     /// observe `ViewerPresentationState` themselves. Call once after every
     /// accepted lifecycle transition rather than maintaining parallel flags.
     private func syncViewerPresentationEffects() {
-        viewerWaitingPlacard?.isHidden = !viewerAwaitingApproval
-        viewerSessionEndedHost?.model.state = viewerSessionEnding.map {
-            sessionEndedPresentation($0)
-        }
+        let placardText = viewerPlacardText
+        viewerWaitingPlacard?.isHidden = placardText == nil
+        if let placardText { setViewerPlacardText(placardText) }
+        viewerSessionEndedHost?.model.state = viewerTerminalPresentation()
         viewerRenderer?.statsModel.isGuestSession = viewerIsGuestSession
         refreshViewerWindowTitle()
     }
@@ -810,6 +853,21 @@ class AppState: ObservableObject {
     /// answer yet", not "no devices". Reset on sign-out with the rest of
     /// the discovery state.
     @Published var hasCompletedInitialDiscovery = false
+    /// Why the last node bring-up failed, as the person is told it — the
+    /// payload of `NodeBringUpPhase.failed`.
+    ///
+    /// New here: this app reported a failed sign-in only as an alert, which
+    /// is dismissed and gone, so coming back to the welcome pane afterwards
+    /// showed the first-run wording for a tailnet that had just refused to
+    /// come up. Both other hubs put the reason on the card whose button
+    /// retries it, and now so does this one. The alert stays — it fires once,
+    /// at the moment of failure, and carries the `TS-AUTH-001` code; this is
+    /// the state that outlives it.
+    ///
+    /// Cleared when a fresh attempt starts and by every teardown, so a reason
+    /// can never outlive the attempt it describes or follow an account switch
+    /// into the next profile.
+    @Published private(set) var nodeFailure: String?
     private var peerDiscovery: TailscalePeerDiscovery?
     /// The node the current `peerDiscovery` (and its IPN watcher) is bound
     /// to. There's one tsnet node per process, but sign-out replaces it —
@@ -839,7 +897,17 @@ class AppState: ObservableObject {
     // Metadata and requests
     @Published var metadataService = TailscreenMetadataService()
 
-    private var isLoggingIn = false
+    /// Re-entrancy guard for `login()`, and half of `nodePhase`'s in-flight
+    /// signal — which is why it is `@Published` rather than a plain flag.
+    ///
+    /// `login()` sets `nodeFailure` in its `catch` and clears this in its
+    /// `defer`, in that order. The failure publishes, but at that moment this
+    /// is still true and a running sign-in outranks a failure, so the
+    /// projection answers `.startingNode` — and the clear that would change
+    /// the answer arrives with no notification behind it. The welcome card
+    /// stayed on its "Signing in…" spinner over a sign-in that had already
+    /// failed, until some unrelated update happened to re-render it.
+    @Published private var isLoggingIn = false
 
     // Gates whether the IPN-bus BrowseToURL handler actually opens a
     // browser tab. False during silent session restore at launch (so a
@@ -1021,7 +1089,7 @@ class AppState: ObservableObject {
                 let bundleID = launched?.bundleIdentifier
                 Task { @MainActor [weak self] in
                     guard let self, let bundleID else { return }
-                    guard self.sharingState == .active,
+                    guard self.sharingState == .sharing,
                         let selection = self.currentSelection,
                         selection.excludedBundleIDs.contains(bundleID)
                     else { return }
@@ -1163,7 +1231,7 @@ class AppState: ObservableObject {
                     guard let self = self else { return }
                     if self.connectionState == .viewing {
                         await self.disconnect()
-                    } else if self.viewerSessionEnding != nil {
+                    } else if self.viewerSessionIsOver {
                         self.dismissViewerWindow()
                     }
                 }
@@ -1374,7 +1442,7 @@ class AppState: ObservableObject {
     /// sharer overlay and annotations are untouched because the shared
     /// surface itself is unchanged.
     private func applyCloakToActiveShare(force: Bool) async {
-        guard sharingState == .active, let server, let selection = currentSelection else { return }
+        guard sharingState == .sharing, let server, let selection = currentSelection else { return }
         let exclusions = appCloak.effectiveExclusions(for: selection.kind)
         guard force || exclusions != selection.excludedBundleIDs else { return }
         let updated = selection.settingExcludedBundleIDs(exclusions)
@@ -1426,7 +1494,7 @@ class AppState: ObservableObject {
     /// the share *entry point* (takes the lock, builds the server); this
     /// one requires an already-active share.
     func changeShareSource() async {
-        guard sharingState == .active, let server, !isChangingSource else { return }
+        guard sharingState == .sharing, let server, !isChangingSource else { return }
         isChangingSource = true
         defer { isChangingSource = false }
 
@@ -1439,7 +1507,7 @@ class AppState: ObservableObject {
         // died past its crash budget and torn the share down) while the
         // picker was up. Identity-check the server so a stale selection
         // can't retarget a share that already ended or restarted.
-        guard sharingState == .active, self.server === server else { return }
+        guard sharingState == .sharing, self.server === server else { return }
 
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
         let effectiveFilterData = applyingShareTransforms(to: filterData)
@@ -1467,7 +1535,7 @@ class AppState: ObservableObject {
         // stopped share would re-advertise it via metadata and resurrect
         // overlay state the stop path just tore down — the phantom-share
         // bug. On a failed re-check the stop path owns teardown; just leave.
-        guard didRetarget, sharingState == .active, self.server === server else {
+        guard didRetarget, sharingState == .sharing, self.server === server else {
             logger.log("changeShareSource: share ended mid-retarget — skipping success side effects")
             return
         }
@@ -1552,9 +1620,15 @@ class AppState: ObservableObject {
         let guestOnly = !tailscaleAuth.isAuthenticated
         let generation = shareCore.beginShare()
         sharingState = .starting
+        // Why this attempt failed, if it did. Read by the `defer` below
+        // rather than assigned at each failure site, because every exit from
+        // this function has to go through that one cleanup block — a failure
+        // path that set the state itself would slip past its `== .starting`
+        // guard and leak the share lock and the capture outline with it.
+        var startFailure: String?
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
-        // Success sets `.active` below. Every failure / catch sets
+        // Success sets `.sharing` below. Every failure / catch sets
         // `.idle` explicitly via `await stopSharing` or
         // `sharingState = .idle`. Defer here is the safety net for
         // any path we forgot.
@@ -1565,10 +1639,13 @@ class AppState: ObservableObject {
             // release the share lock out from under a bring-up that is
             // still running.
             if shareCore.isCurrentShare(generation), sharingState == .starting {
-                sharingState = .idle
+                // A reason if one was recorded, idle otherwise — a user
+                // cancellation takes the second path, since stopping on
+                // purpose is not a failure to report back.
+                sharingState = startFailure.map { .failed($0) } ?? .idle
                 shareLock.release()
                 // Honour the same contract for the outline: a share that
-                // never reached `.active` must not leave a border on screen
+                // never reached `.sharing` must not leave a border on screen
                 // claiming one is running.
                 captureOutline?.hide()
                 captureOutline = nil
@@ -1579,7 +1656,9 @@ class AppState: ObservableObject {
             // same gate, so reaching here means Settings changed underneath
             // an open picker — say why rather than failing generically.
             // (The defer above resets `.starting` and releases the lock.)
-            presentError(.linkSharingDisabled())
+            let failure = AppError.linkSharingDisabled()
+            startFailure = failure.message
+            presentError(failure)
             return
         }
         do {
@@ -1610,7 +1689,7 @@ class AppState: ObservableObject {
                         // first SCStream attempt got `-3805` and our
                         // crash budget was exhausted.
                         guard let self else { return }
-                        guard self.sharingState == .active || self.sharingState == .starting else { return }
+                        guard self.sharingState == .sharing || self.sharingState == .starting else { return }
                         let desc = error?.localizedDescription ?? "nil"
                         switch Self.captureStopAction(error) {
                         case .userInitiated:
@@ -1867,27 +1946,25 @@ class AppState: ObservableObject {
                     if error is CancellationError {
                         return
                     }
+                    let failure: AppError
                     if case ScreenCaptureError.startTimeout = error {
-                        presentError(.screenCaptureStartTimeout())
+                        failure = .screenCaptureStartTimeout()
                     } else if case ScreenCaptureError.bundleSlotPoisoned = error {
-                        presentError(.screenCaptureBundlePoisoned())
+                        failure = .screenCaptureBundlePoisoned()
                     } else if case ScreenCaptureError.noFramesDelivered = error {
-                        presentError(.screenCaptureNoFrames())
+                        failure = .screenCaptureNoFrames()
                     } else if guestOnly {
                         // The failure was most likely the relay bootstrap or
                         // the guest node, not screen capture — say so.
-                        presentError(.linkShareStartFailed(error))
+                        failure = .linkShareStartFailed(error)
                     } else {
-                        presentError(.screenCaptureGeneric(error))
+                        failure = .screenCaptureGeneric(error)
                     }
+                    // Both: the alert fires once, and the card keeps the
+                    // reason after it is dismissed. Same split as `nodeFailure`.
+                    startFailure = failure.message
+                    presentError(failure)
                     return
-                }
-
-                if !guestOnly {
-                    // Get the Tailscale IP addresses (a guest-only share has
-                    // no node to ask, and no tailnet address to show).
-                    let ips = try await srv.getIPAddresses()
-                    tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
                 }
             }
 
@@ -1904,7 +1981,7 @@ class AppState: ObservableObject {
             // fail to start, which is the same lie as an outline that lags.
             showCaptureOutline()
 
-            sharingState = .active
+            sharingState = .sharing
 
             // Automation affordance (test-local.sh / e2e scripts): mint the
             // link as soon as the share is up and print it as a greppable
@@ -1923,7 +2000,16 @@ class AppState: ObservableObject {
                 }
             }
         } catch {
-            presentError(.sharingGeneric(error))
+            // Record it for the `defer`, which is what publishes the phase.
+            // Without this the card fell back to `.idle` and the reason
+            // survived only as long as the alert — the one failure path in
+            // this function that did not satisfy the contract the rest of it
+            // states. Nothing inside the inner `do` arrives here (its own
+            // catch returns), so this covers the paths before it and
+            // whatever gets added after.
+            let failure = AppError.sharingGeneric(error)
+            startFailure = failure.message
+            presentError(failure)
         }
     }
 
@@ -1999,7 +2085,6 @@ class AppState: ObservableObject {
         // during would apply to whoever connects to the NEXT one from the same
         // address — `SharerAccessCoordinator.reset()`'s reasoning, same queue.
         policyIntents = ViewerRosterDecision.PendingIntents()
-        tailscaleIPs = []
 
         // Update metadata
         metadataService.updateMetadata(isSharing: false)
@@ -2157,7 +2242,7 @@ class AppState: ObservableObject {
     /// always present while sharing (so viewer-originated drawings render);
     /// this only flips input capture vs. click-through.
     func toggleSharerOverlay() {
-        guard sharingState == .active else { return }
+        guard sharingState == .sharing else { return }
         let overlay = ensureSharerOverlay()
         isSharerOverlayVisible.toggle()
         overlay.setInputEnabled(isSharerOverlayVisible)
@@ -2265,7 +2350,7 @@ class AppState: ObservableObject {
     }
 
     private func enableShareLink() async {
-        guard linkSharingEnabled, sharingState == .active, let server, shareLinkToken == nil else {
+        guard linkSharingEnabled, sharingState == .sharing, let server, shareLinkToken == nil else {
             return
         }
         shareLinkBusy = true
@@ -2589,14 +2674,30 @@ class AppState: ObservableObject {
             viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
             await c.disconnect()
-            guard viewerPresentation.fail(String(describing: error), for: sessionID) else { return }
+            // Build the AppError FIRST and carry its message into the
+            // lifecycle. `String(describing:)` is an implementation detail —
+            // it was never on screen while a failure was projected to
+            // "connection lost", and making the failure its own visible
+            // state put the raw transport error in front of people, beside
+            // an alert wording the same failure properly.
+            let failure = AppError.connectionFailed(host: host, underlying: error)
+            guard viewerPresentation.fail(failure.message, for: sessionID) else { return }
             if client === c {
                 client = nil
             }
             connectionState = .idle
             isAwaitingAdmission = false
             syncViewerPresentationEffects()
-            presentError(.connectionFailed(host: host, underlying: error))
+            // Show the window the pane was just written into. Only the
+            // SUCCESS path ordered it front, so on a FIRST attempt — the
+            // common case for a refused dial — `ensureViewer()` had built the
+            // window and nothing had ever revealed it: "Connection Failed"
+            // rendered into a window nobody could see, and dismissing the
+            // alert left the person with no explanation at all. A reconnect
+            // was fine only because the window was already up.
+            viewerWindow?.orderFrontRegardless()
+            viewerWindow?.makeKeyAndOrderFront(nil)
+            presentError(failure)
         }
     }
 
@@ -3221,8 +3322,13 @@ class AppState: ObservableObject {
     /// viewing, controlling, and ended states can't disagree.
     private func refreshViewerWindowTitle() {
         guard let win = viewerWindow else { return }
-        if viewerSessionEnding != nil {
-            win.title = L("Session Ended")
+        if viewerSessionIsOver {
+            // The pane's own title, not a fixed string. `viewerSessionIsOver`
+            // covers BOTH terminal phases, so hard-coding "Session Ended"
+            // here put it over the "Connection Failed" pane — reintroducing,
+            // in the title bar, exactly the claim that a session which never
+            // opened had ended. One derivation, so the two cannot disagree.
+            win.title = viewerTerminalPresentation()?.title ?? L("Session Ended")
             return
         }
         guard let name = viewerPresentation.lifecycle.target?.displayName ?? connectedHostname else {
@@ -3459,7 +3565,7 @@ class AppState: ObservableObject {
     /// resolution is stated rather than read off `NSScreen` — a screenshot has
     /// to say the same thing on every runner.
     private func seedUIPreviewSharing() {
-        sharingState = .active
+        sharingState = .sharing
         currentViewers = [
             ViewerInfo(
                 id: "100.64.0.31:52104", tailscaleIP: "100.64.0.31",
@@ -4030,8 +4136,6 @@ class AppState: ObservableObject {
             let node = try await getOrCreateNode()
             await tailscaleAuth.checkAuthStatus(node: node)
             if tailscaleAuth.isAuthenticated {
-                let ips = try await node.addrs()
-                self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
                 noteProfileIdentityFromAuth()
                 logger.log("Restored signed-in Tailscale session")
             } else {
@@ -4049,6 +4153,11 @@ class AppState: ObservableObject {
             return
         }
         isLoggingIn = true
+        // A new attempt is not the old attempt's failure. Cleared here
+        // rather than on success so the reason goes the moment the retry
+        // starts, which is also what stops `nodeBringUpPhase` having to
+        // choose between a live sign-in and a stale reason.
+        nodeFailure = nil
         // Allow the IPN BrowseToURL handler to actually open a browser
         // tab — we're here because the user explicitly asked to sign in.
         interactiveLoginRequested = true
@@ -4070,10 +4179,6 @@ class AppState: ObservableObject {
             // Update auth status after login
             await tailscaleAuth.checkAuthStatus(node: node)
 
-            // Fetch IPs after successful login
-            let ips = try await node.addrs()
-            self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
-
             // Label the active profile with the identity that just signed
             // in, so the account menu can name it while it's inactive.
             noteProfileIdentityFromAuth()
@@ -4083,6 +4188,13 @@ class AppState: ObservableObject {
             _ = silent
         } catch {
             logger.log("Login error: \(error)")
+            // Both, and they are not redundant: the alert fires once at the
+            // moment of failure and carries the error code, while this is
+            // the state the welcome pane reads afterwards — without it,
+            // returning to that pane showed first-run wording for a tailnet
+            // that had just refused to come up. Same key as the alert's own
+            // message, so the catalog gains nothing to translate.
+            nodeFailure = L("Failed to log in: \(error.localizedDescription)")
             presentError(.loginFailed(error))
         }
     }
@@ -4289,7 +4401,7 @@ class AppState: ObservableObject {
             try await tailscaleAuth.signOut()
 
             // Stop sharing if active
-            if sharingState == .active {
+            if sharingState == .sharing {
                 await stopSharing(reason: "signOut")
             }
 
@@ -4315,11 +4427,89 @@ class AppState: ObservableObject {
             availablePeers = []
             peerShareInfo = [:]
             hasCompletedInitialDiscovery = false
-            tailscaleIPs = []
+            nodeFailure = nil
 
         } catch {
             presentError(.signOutFailed(error))
         }
+    }
+
+    // MARK: - Node bring-up phase
+
+    /// Where this hub's tailnet node is, in the vocabulary all three hubs
+    /// share (`NodeBringUpPhase`, TailscreenProtocol).
+    ///
+    /// A **projection**, not a stored slot, and that is the difference
+    /// between this host and the other two. The GTK picker and the WinUI
+    /// hub own their bring-up state outright, so there the enum IS the
+    /// truth. Here the truth lives in `TailscaleAuth` — a portable object
+    /// this app shares rather than owns — plus the discovery flags. A
+    /// stored phase beside those would be one more value to keep in step
+    /// with `isAuthenticated`, i.e. exactly the two-values-that-can-disagree
+    /// problem that folding GTK's `signInNote` into `failed` removed. So the
+    /// hub reads its phase instead of maintaining one, and the mapping is
+    /// stated once, below, where a test can pin it.
+    ///
+    /// What this deliberately does NOT drive is which pane the window shows.
+    /// `MainWindowView` still branches on `isSwitchingProfile` and
+    /// `isAuthenticated`, because this app renders two of these phases
+    /// differently from the other two hubs — `startingNode` as a spinner on
+    /// the sign-in card that started it (they show a status pane), and an
+    /// account switch as a pane of its own. Both are presentation choices
+    /// layered on the phase, which is what `NodeBringUpPhase`'s own doc
+    /// comment says about the switching pane.
+    var nodePhase: NodeBringUpPhase {
+        Self.nodeBringUpPhase(
+            isAuthenticated: tailscaleAuth.isAuthenticated,
+            isSigningIn: isLoggingIn || tailscaleAuth.isLoading,
+            failure: nodeFailure,
+            isDiscovering: isDiscovering,
+            hasCompletedInitialDiscovery: hasCompletedInitialDiscovery)
+    }
+
+    /// The pure mapping behind `nodePhase`, extracted for the same reason
+    /// `canSwitchProfile` is: the precedence is the whole content, and read
+    /// off five booleans at a call site it is inferred rather than pinned.
+    ///
+    /// **Authenticated wins first, and that ordering is load-bearing.** The
+    /// obvious order — in-flight before settled — lets any window in which
+    /// `isLoading` is still set while `isAuthenticated` has already flipped
+    /// report `startingNode` for somebody who is signed in and looking at
+    /// their screens list. Everything gated on the phase would take that as
+    /// "not settled yet": the list would drop back to a spinner mid-session.
+    /// Reading the settled case first makes that unrepresentable rather than
+    /// merely unlikely.
+    ///
+    /// Among the signed-out cases a sign-in that is RUNNING outranks a
+    /// failure, so a retry shows its spinner rather than the reason it is
+    /// retrying. `login()` clears `nodeFailure` before it starts, so the two
+    /// should not overlap anyway — this is the belt to that braces.
+    ///
+    /// **In-flight means BOTH flags**, and one alone is not enough.
+    /// `AppState.isLoggingIn` is set at the top of `login()`, before
+    /// `getOrCreateNode()`; `TailscaleAuth.isLoading` only once the node
+    /// exists and the auth flow itself begins. Reading the second alone
+    /// leaves the whole node-creation window — the slow part, on a first run
+    /// — reporting `signedOut`, so the card offers a Sign in button whose
+    /// press `login()`'s own re-entrancy guard then swallows: the one state
+    /// where a control looks live and does nothing.
+    nonisolated static func nodeBringUpPhase(
+        isAuthenticated: Bool,
+        isSigningIn: Bool,
+        failure: String?,
+        isDiscovering: Bool,
+        hasCompletedInitialDiscovery: Bool
+    ) -> NodeBringUpPhase {
+        if isAuthenticated {
+            // The list is still being built on the first pass after bring-up
+            // — the same test the peer list's loading skeleton makes, now
+            // said once. An empty list before that pass is "no answer yet",
+            // never "no devices".
+            return isDiscovering || !hasCompletedInitialDiscovery ? .discovering : .ready
+        }
+        if isSigningIn { return .startingNode }
+        if let failure { return .failed(failure) }
+        return .signedOut
     }
 
     // MARK: - Account profiles
@@ -4365,9 +4555,13 @@ class AppState: ObservableObject {
         availablePeers = []
         peerShareInfo = [:]
         hasCompletedInitialDiscovery = false
-        tailscaleIPs = []
         tailscaleAuth.isAuthenticated = false
         tailscaleAuth.userProfile = nil
+        // The reason belonged to the profile being left. Carrying it across
+        // would open the next account's welcome pane on the last one's
+        // failure — the account-boundary rule `forgetViewerForAccountTeardown`
+        // applies to reconnect identity, for the same reason.
+        nodeFailure = nil
     }
 
     /// True while a session is active enough that yanking the node out
@@ -4380,12 +4574,18 @@ class AppState: ObservableObject {
     /// Pure gate: switching accounts closes the tsnet node, so it's only
     /// allowed while nothing is riding it — no share (including one still
     /// starting) and no viewer session (including one still connecting).
+    ///
+    /// A share that FAILED to start is not riding anything: it tore down
+    /// before this ever returns, so it reads through `isLive` rather than
+    /// against `.idle`. Spelled the old way, one failed start locked account
+    /// switching for the rest of the run — the person is told to "stop
+    /// sharing" when nothing is being shared and there is nothing to stop.
     /// Extracted so the precedence is pinned by tests rather than inferred
     /// from the two call sites. See `switchProfile` / `addAccountAndSignIn`.
     nonisolated static func canSwitchProfile(
         sharing: SharingState, connection: ConnectionState
     ) -> Bool {
-        sharing == .idle && connection == .idle
+        !sharing.isLive && connection == .idle
     }
 
     /// Switch the active account profile, Tailscale-style: one node at a
@@ -4725,7 +4925,7 @@ class AppState: ObservableObject {
     /// See `SharerNoticeDecision.playsSound`: a ding during a share is played
     /// by the notification daemon, which the "exclude our own audio" flag does
     /// not cover, so every viewer hears it.
-    private var isCapturing: Bool { sharingState != .idle }
+    private var isCapturing: Bool { sharingState.isLive }
 
     /// Deliver a batch of notices. The single place `SharerNoticeCenter` is
     /// touched from the notice paths, so the sound gate can't be forgotten at
@@ -5329,6 +5529,17 @@ class AppState: ObservableObject {
     /// translations grow it instead of truncating. Held by AppState and
     /// synchronized from the lifecycle by `syncViewerPresentationEffects`.
     @MainActor
+    /// Retitle the placard, and its VoiceOver group label with it.
+    ///
+    /// Both, or the two disagree: the group's label is what a screen reader
+    /// announces when focus lands on the placard, and a stale one would say
+    /// "waiting for the sharer" over a window that is still dialling.
+    private func setViewerPlacardText(_ text: String) {
+        guard viewerPlacardLabel?.stringValue != text else { return }
+        viewerPlacardLabel?.stringValue = text
+        viewerWaitingPlacard?.setAccessibilityLabel(text)
+    }
+
     private func makeWaitingPlacard() -> NSView {
         let effect = NSVisualEffectView()
         effect.material = .hudWindow
@@ -5345,8 +5556,12 @@ class AppState: ObservableObject {
         spinner.isIndeterminate = true
         spinner.startAnimation(nil)
 
+        // Seeded with the approval wording; `setViewerPlacardText` replaces
+        // it per phase, and the placard is hidden whenever there is no phase
+        // to say, so the seed is never what anybody reads.
         let waitingText = L("Waiting for the sharer to accept your connection…")
         let label = NSTextField(wrappingLabelWithString: waitingText)
+        viewerPlacardLabel = label
         label.alignment = .center
         label.font = .preferredFont(forTextStyle: .body)
         label.textColor = .labelColor

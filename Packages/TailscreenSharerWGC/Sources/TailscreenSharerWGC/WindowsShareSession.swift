@@ -41,7 +41,18 @@ import WinOverlayKit
 public final class WindowsShareSession: @unchecked Sendable {
     /// What the UI needs to render, pushed on every change.
     public struct Status: Sendable {
-        public var isSharing = false
+        /// Where the share is, in the vocabulary all three hosts share
+        /// (`ShareBringUpPhase`, TailscreenProtocol).
+        ///
+        /// This engine had only the Bool below, so `starting` did not exist
+        /// as a state and the hub's card read "Not sharing" for the whole of
+        /// bring-up — the WGC picker, the encoder, tsnet — flipping only once
+        /// frames were already going out. `failed` did not exist either: a
+        /// start that threw left the reason to the app's own string slot.
+        public var phase: ShareBringUpPhase = .idle
+        /// Live. A projection of `phase`, so the readers that only ask "is a
+        /// share up?" are unchanged and cannot disagree with it.
+        public var isSharing: Bool { phase.isSharing }
         /// The picker's own name for the target — "Screen 1", a window title.
         public var target = ""
         public var viewerCount = 0
@@ -387,6 +398,10 @@ public final class WindowsShareSession: @unchecked Sendable {
         linkOnly: Bool = false
     ) async throws {
         let generation = beginShareGeneration()
+        // Say so before any of the slow parts — the WGC picker's own dialog is
+        // already behind us, but the encoder, the server and tsnet bring-up
+        // are not, and this engine used to report all of it as "Not sharing".
+        update { $0.phase = .starting }
         // A capture FACTORY, not an instance, because the server respawns the
         // backend to restart capture. Closing over the item is what makes a
         // restart re-target the same window without asking the user again —
@@ -561,7 +576,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             var minted: String?
             self.update {
                 minted = $0.linkToken
-                $0.isSharing = false
+                // A capture that died on its own is a failure, not an idle
+                // sharer: the message below says what happened and the card
+                // offers Start again, which `canStart` allows from here.
+                $0.phase = error.map { .failed("\($0)") } ?? .idle
                 $0.viewerCount = 0
                 $0.viewers = []
                 $0.pendingViewers = []
@@ -692,7 +710,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             lock.withLock { if server === newServer { server = nil } }
             if isCurrentShare(generation) {
                 update {
-                    $0.isSharing = false
+                    $0.phase = .failed("\(error)")
                     $0.message = ""
                     // A link-only start that failed leaves the card claiming
                     // to be minting a link for a share that never happened.
@@ -716,7 +734,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         startVoice(on: newServer)
 
         update {
-            $0.isSharing = true
+            $0.phase = .sharing
             $0.message = regionNote
             // With the share now live, the bootstrap is over — published in
             // the same snapshot so no observer sees "not sharing, not busy"
@@ -1091,7 +1109,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         await running.stop()
         update {
-            $0.isSharing = false
+            $0.phase = .idle
             $0.viewerCount = 0
             $0.pendingViewers = []
             $0.message = ""

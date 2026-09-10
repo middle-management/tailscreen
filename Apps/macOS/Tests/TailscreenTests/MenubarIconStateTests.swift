@@ -15,13 +15,13 @@ final class MenubarIconStateTests: XCTestCase {
     func testActiveShareWinsOverEverything() {
         XCTAssertEqual(
             MenubarIconState.from(
-                sharing: .active, connection: .viewing,
+                sharing: .sharing, connection: .viewing,
                 hasPendingRequests: true, hasControlRequests: false,
                 hasWaitingViewers: false),
             .sharing)
         XCTAssertEqual(
             MenubarIconState.from(
-                sharing: .active, connection: .idle,
+                sharing: .sharing, connection: .idle,
                 hasPendingRequests: false, hasControlRequests: false,
                 hasWaitingViewers: false),
             .sharing)
@@ -30,7 +30,7 @@ final class MenubarIconStateTests: XCTestCase {
     func testControlRequestBadgesActiveShare() {
         XCTAssertEqual(
             MenubarIconState.from(
-                sharing: .active, connection: .idle,
+                sharing: .sharing, connection: .idle,
                 hasPendingRequests: false, hasControlRequests: true,
                 hasWaitingViewers: false),
             .sharingControlRequested)
@@ -38,7 +38,7 @@ final class MenubarIconStateTests: XCTestCase {
         // control prompt is the highest-stakes pending decision.
         XCTAssertEqual(
             MenubarIconState.from(
-                sharing: .active, connection: .viewing,
+                sharing: .sharing, connection: .viewing,
                 hasPendingRequests: true, hasControlRequests: true,
                 hasWaitingViewers: false),
             .sharingControlRequested)
@@ -47,7 +47,7 @@ final class MenubarIconStateTests: XCTestCase {
     func testWaitingViewerBadgesActiveShare() {
         XCTAssertEqual(
             MenubarIconState.from(
-                sharing: .active, connection: .idle,
+                sharing: .sharing, connection: .idle,
                 hasPendingRequests: false, hasControlRequests: false,
                 hasWaitingViewers: true),
             .sharingViewerWaiting)
@@ -55,7 +55,7 @@ final class MenubarIconStateTests: XCTestCase {
         // suppressed while a share is up.
         XCTAssertEqual(
             MenubarIconState.from(
-                sharing: .active, connection: .viewing,
+                sharing: .sharing, connection: .viewing,
                 hasPendingRequests: true, hasControlRequests: false,
                 hasWaitingViewers: true),
             .sharingViewerWaiting)
@@ -66,7 +66,7 @@ final class MenubarIconStateTests: XCTestCase {
         // the higher-stakes prompt, so its badge wins.
         XCTAssertEqual(
             MenubarIconState.from(
-                sharing: .active, connection: .idle,
+                sharing: .sharing, connection: .idle,
                 hasPendingRequests: false, hasControlRequests: true,
                 hasWaitingViewers: true),
             .sharingControlRequested)

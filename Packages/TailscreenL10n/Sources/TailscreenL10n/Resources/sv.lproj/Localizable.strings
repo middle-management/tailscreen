@@ -93,7 +93,6 @@
 "Clear Filters" = "Rensa filter";
 "Filter screens" = "Filtrera skärmar";
 "Filter available screens" = "Filtrera tillgängliga skärmar";
-"No screens match your filters" = "Inga skärmar matchar dina filter";
 "Sharing" = "Delar";
 "%lld hidden by filters" = "%lld dolda av filter";
 
@@ -172,7 +171,6 @@
 "Refresh screens" = "Uppdatera skärmar";
 "Refresh available screens" = "Uppdatera tillgängliga skärmar";
 "Looking for screens…" = "Söker efter skärmar…";
-"No Tailscreen devices on your tailnet" = "Inga Tailscreen-enheter på ditt tailnet";
 "Screens appear here when their devices are running Tailscreen." = "Skärmar visas här när deras enheter kör Tailscreen.";
 "Get Tailscreen for your other devices" = "Hämta Tailscreen till dina andra enheter";
 "Clear search" = "Rensa sökning";
@@ -571,7 +569,6 @@
 "slowest stage: %@" = "långsammaste steget: %@";
 "Could not open the capture picker: %@" = "Kunde inte öppna skärmväljaren: %@";
 "Could not change the shared source: %@" = "Kunde inte byta delad källa: %@";
-"Could not start sharing: %@" = "Kunde inte börja dela: %@";
 "Not listening for share requests: %@" = "Lyssnar inte efter delningsförfrågningar: %@";
 "Remote control isn't available for this share." = "Fjärrstyrning är inte tillgängligt för den här delningen.";
 

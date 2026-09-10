@@ -7,6 +7,7 @@ import TailscreenViewerTsnet
 // Targeted imports: bringing in all of TailscreenProtocol would collide with
 // SwiftCrossUI's own `Published` / `ObservableObject` (both ship reactive shims
 // on Linux, where Combine is absent). We only need a handful of value types.
+import enum TailscreenProtocol.NodeBringUpPhase
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
 import struct TailscreenProtocol.TailscreenMetadata
@@ -18,25 +19,41 @@ import struct TailscreenProtocol.TailscreenMetadata
 /// render self-test never enters picker mode.
 @MainActor
 final class PickerModel: ObservableObject {
-    enum Phase: Equatable {
-        /// Nothing has been brought up: no node, no login, nothing on the
-        /// network. The welcome pane's state, and the app's state at a first
-        /// launch — this app used to open by starting a tsnet node nobody had
-        /// asked it to, so a person who had never signed in was met by
-        /// "Waiting for login…" for a login they had not begun. The two ways
-        /// on from here need no Tailscale account at all (join by link, share
-        /// by link); the third is the sign-in button.
-        case signedOut
-        case startingNode  // bringing the tsnet node up (maybe awaiting login)
-        case discovering  // listing sharers
-        case picking  // showing the list, waiting for a choice
-        case connecting(String)  // dialing the chosen sharer (by hostname, for display)
-    }
+    /// The shared bring-up vocabulary, in `TailscreenProtocol` so this picker,
+    /// the WinUI hub and the macOS one name one lifecycle. This app's old
+    /// `picking` is its `ready`, and its `connecting(String)` is gone — dialing
+    /// a peer is `ViewerSessionPhase.connecting`, and holding a second copy of
+    /// that moment here is what made `sessionHost` read whichever of the two
+    /// had landed first. `isDialing` below carries the part that was actually
+    /// this model's business.
+    typealias Phase = NodeBringUpPhase
 
     /// Starts signed-out. `main` moves it on at launch only for a profile
     /// whose state directory already holds a login to restore — the same
     /// silent-restore rule as the macOS hub's `attemptSessionRestore`.
     @Published var phase: Phase = .signedOut
+
+    /// True from the moment a row is tapped until the session UI owns the
+    /// window (or the person comes back to the list).
+    ///
+    /// Its own flag rather than a `phase` case, because what it suppresses is
+    /// picker activity — a second dial, an ask, a refresh — during the beat
+    /// between `select()` and the session view mounting. `ViewerUIState`
+    /// publishes `inSession` one main-queue hop later, and this covers the gap
+    /// without claiming to be a bring-up state that it is not.
+    @Published private(set) var isDialing = false
+
+    /// Whether the bring-up in flight is an ACCOUNT SWITCH rather than a
+    /// fresh sign-in.
+    ///
+    /// The phase cannot carry this and should not: `startingNode` is the
+    /// same state either way — a node coming up — and what differs is only
+    /// why, which is a sentence rather than a transition. macOS keeps the
+    /// same distinction beside its own phase (`isSwitchingProfile`); this is
+    /// its counterpart, and the WinUI hub says the same sentence through its
+    /// own `status` slot.
+    @Published var isSwitchingAccount = false
+
     @Published var sharers: [DiscoveredSharer] = []
     /// An interactive-login URL to show in-window (nil once logged in).
     @Published var loginURL: String?
@@ -44,10 +61,15 @@ final class PickerModel: ObservableObject {
     /// wording: a bring-up that failed, or a saved sign-in that turned out to
     /// need the browser again. Nil is the ordinary "never signed in" case.
     ///
-    /// Kept beside `loginURL` rather than folded into it because the two
-    /// answer different questions — this is what went wrong, that is where to
-    /// go next — and a restore can produce the second without the first.
-    @Published var signInNote: String?
+    /// A projection of `phase` rather than a slot of its own, which is what it
+    /// used to be. Two values that had to be written and cleared together are
+    /// two values that can disagree, and this one could outlive the failure it
+    /// described — `phase` went back to `signedOut` on failure, so nothing but
+    /// the note distinguished "it broke" from "you have never signed in".
+    /// Still separate from `loginURL`, which answers a different question:
+    /// this is what went wrong, that is where to go next, and a restore can
+    /// produce the second without the first.
+    var signInNote: String? { phase.failureReason }
     /// Per-sharer live share status (name / resolution / `isSharing`), keyed by
     /// `DiscoveredSharer.id`. Populated by a lazy metadata sweep after discovery;
     /// a missing entry means status-unknown (never rendered as "not sharing").
@@ -160,35 +182,44 @@ final class PickerModel: ObservableObject {
         switch phase {
         case .signedOut: return L("Not signed in")
         case .startingNode:
+            if isSwitchingAccount { return L("Switching account…") }
             return loginURL == nil ? L("Starting Tailscale…") : L("Waiting for login…")
         case .discovering: return L("Looking for screens…")
-        case .picking:
+        case .ready:
             return hubSignedInSubtitle(tailnet: tailnetName, account: accountIdentity)
-        case .connecting(let host): return L("Connecting to \(host)…")
+        // Already localized where it was built, at the bring-up site that knows
+        // what went wrong. Re-wording it here would only be able to say less.
+        case .failed(let reason): return reason
         }
     }
 
     func select(_ sharer: DiscoveredSharer) {
-        guard case .picking = phase else { return }
-        phase = .connecting(sharer.displayName)
+        guard phase.isReady, !isDialing else { return }
+        isDialing = true
         onSelect?(sharer)
+    }
+
+    /// Leave the dialing gate — the two ways back to a usable list: a session
+    /// that ended (`gReturnToPicker`) and a node coming up fresh (`bringUp`).
+    func endDialing() {
+        isDialing = false
     }
 
     /// Ask a machine to start sharing.
     ///
-    /// Unlike `select`, this does NOT move the picker out of `.picking`: the
-    /// ask parks for up to two minutes on the other person, and locking the
-    /// window for that would be worse than useless — it would stop somebody
-    /// viewing a screen that came free while they waited.
+    /// Unlike `select`, this does NOT set `isDialing`: the ask parks for up to
+    /// two minutes on the other person, and locking the window for that would
+    /// be worse than useless — it would stop somebody viewing a screen that
+    /// came free while they waited.
     func askToShare(_ sharer: DiscoveredSharer) {
-        guard case .picking = phase, !asking.contains(sharer.id) else { return }
+        guard phase.isReady, !isDialing, !asking.contains(sharer.id) else { return }
         onAskToShare?(sharer)
     }
 
-    /// Header Refresh: re-run discovery, but only from the settled picking
-    /// state (ignored mid-bring-up / mid-connect).
+    /// Header Refresh: re-run discovery, but only from the settled state
+    /// (ignored mid-bring-up / mid-connect).
     func refresh() {
-        guard case .picking = phase else { return }
+        guard phase.isReady, !isDialing else { return }
         onRefresh?()
     }
 }

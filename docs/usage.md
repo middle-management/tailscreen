@@ -141,10 +141,12 @@ on, and supports full screen (**View → Enter Full Screen**, ⌃⌘F).
 If the share ends — the sharer stops, the connection drops, or it times
 out — the viewer doesn't just vanish, on any platform: it says what
 happened, with a **Reconnect** button that rejoins the same peer and a
-way back to the screens list. On macOS, transient video problems (a
-codec fallback, a stall) additionally appear as a banner at the top of
-the window instead of a modal alert; the stall banner carries its own
-Reconnect.
+way back to the screens list. Video problems that do not end the session
+— a codec fallback, a stall — appear as a banner rather than a modal
+alert, and leave the picture where it is: on macOS at the top of the
+window, carrying its own Reconnect; on Linux and Windows as a strip
+above the video, dismissible, with **Stop** in the bar above it as the
+way back to the list.
 
 Rows are labelled by machine name. Every Tailscreen install joins your
 tailnet as `tailscreen-<machine>` — that prefix is how peers recognise each
