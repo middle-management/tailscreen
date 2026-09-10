@@ -63,9 +63,9 @@ public struct PickerContent: View {
     public init(
         statusLine: String,
         isPicking: Bool,
+        isDiscovering: Bool = false,
         screens: [HubScreen],
         loginURL: String?,
-        isDiscovering: Bool = false,
         autoExpandFirst: Bool = false,
         emptyMessage: String = L("No Tailscreen screens found on your tailnet."),
         emptyAction: HubAction? = nil,
