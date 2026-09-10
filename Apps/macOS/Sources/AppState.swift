@@ -590,7 +590,6 @@ class AppState: ObservableObject {
     /// Running and may have died since (ask the backend).
     private enum NodeBringUpState { case notUp, upInFlight, up }
     private var nodeBringUpState: NodeBringUpState = .notUp
-    private var tailscaleIPs: [String] = []
     private var sharerOverlay: SharerOverlayWindow?
     /// Border drawn around the captured region for the whole share. Unlike
     /// `sharerOverlay` this is NOT lazy — its entire job is to be present
@@ -1967,26 +1966,6 @@ class AppState: ObservableObject {
                     presentError(failure)
                     return
                 }
-
-                if !guestOnly {
-                    // Get the Tailscale IP addresses (a guest-only share has
-                    // no node to ask, and no tailnet address to show).
-                    //
-                    // Non-fatal, and that is the point. This call sits AFTER
-                    // the inner `catch` that unwinds a failed start, so a
-                    // throw here reached the function's OUTER catch — which
-                    // raises an alert and stops nothing. The server is
-                    // already running by then, so the `defer` published
-                    // `.idle` and hid the capture outline over a share that
-                    // was still going out: the sharer's own UI says idle, no
-                    // border is drawn, and viewers can still connect. The
-                    // alternative — routing it into the unwind — would tear
-                    // down a working share over an address lookup, so this
-                    // fails OPEN and simply records no address.
-                    if let ips = try? await srv.getIPAddresses() {
-                        tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
-                    }
-                }
             }
 
             // Update metadata
@@ -2106,7 +2085,6 @@ class AppState: ObservableObject {
         // during would apply to whoever connects to the NEXT one from the same
         // address — `SharerAccessCoordinator.reset()`'s reasoning, same queue.
         policyIntents = ViewerRosterDecision.PendingIntents()
-        tailscaleIPs = []
 
         // Update metadata
         metadataService.updateMetadata(isSharing: false)
@@ -4142,8 +4120,12 @@ class AppState: ObservableObject {
             let node = try await getOrCreateNode()
             await tailscaleAuth.checkAuthStatus(node: node)
             if tailscaleAuth.isAuthenticated {
-                let ips = try await node.addrs()
-                self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+                // Kept for the THROW, not the value: a node that
+                // authenticates but cannot report its own addresses is not a
+                // usable restore, and this is what makes that land in the
+                // catch below rather than presenting a signed-in hub over a
+                // node that is not really up.
+                _ = try await node.addrs()
                 noteProfileIdentityFromAuth()
                 logger.log("Restored signed-in Tailscale session")
             } else {
@@ -4187,9 +4169,11 @@ class AppState: ObservableObject {
             // Update auth status after login
             await tailscaleAuth.checkAuthStatus(node: node)
 
-            // Fetch IPs after successful login
-            let ips = try await node.addrs()
-            self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+            // Kept for the THROW, not the value — the same post-bring-up
+            // liveness check `attemptSessionRestore` makes: a node that
+            // cannot report its own addresses fails the login rather than
+            // reporting success over a node that is not really up.
+            _ = try await node.addrs()
 
             // Label the active profile with the identity that just signed
             // in, so the account menu can name it while it's inactive.
@@ -4439,7 +4423,6 @@ class AppState: ObservableObject {
             availablePeers = []
             peerShareInfo = [:]
             hasCompletedInitialDiscovery = false
-            tailscaleIPs = []
             nodeFailure = nil
 
         } catch {
@@ -4568,7 +4551,6 @@ class AppState: ObservableObject {
         availablePeers = []
         peerShareInfo = [:]
         hasCompletedInitialDiscovery = false
-        tailscaleIPs = []
         tailscaleAuth.isAuthenticated = false
         tailscaleAuth.userProfile = nil
         // The reason belonged to the profile being left. Carrying it across
