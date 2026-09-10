@@ -513,7 +513,7 @@ final class SharerModel: ObservableObject {
     /// and therefore has to go around the main thread, which is why the two
     /// paths diverge here rather than at the capture factory.
     func startSharing() {
-        guard canShare, phase == .idle || isFailed else { return }
+        guard canShare, phase.canStart else { return }
         switch CaptureBackendSelection.choose(
             intent: .entireScreen, environment: captureEnvironment)
         {
@@ -546,7 +546,7 @@ final class SharerModel: ObservableObject {
     /// person is allowed to see, and duplicating that would be both redundant
     /// and less trustworthy.
     func startWindowShare() {
-        guard canShareWindow, phase == .idle || isFailed else { return }
+        guard canShareWindow, phase.canStart else { return }
         switch CaptureBackendSelection.choose(
             intent: .windowOrApp, environment: captureEnvironment)
         {
@@ -863,10 +863,7 @@ final class SharerModel: ObservableObject {
     /// retryable state, and the welcome pane has to offer the button that
     /// retries — one answer, read in both places, so a pane cannot end up
     /// withholding a button the model would have accepted.
-    var isFailed: Bool {
-        if case .failed = phase { return true }
-        return false
-    }
+    var isFailed: Bool { phase.hasFailed }
 }
 
 /// A stable, tailnet-legal node name for this host's share-capable node.

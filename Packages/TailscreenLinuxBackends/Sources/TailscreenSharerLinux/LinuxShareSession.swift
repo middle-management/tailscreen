@@ -27,12 +27,11 @@ import TailscreenTransport
 /// `onControlGrantChanged`.
 @MainActor
 public final class LinuxShareSession {
-    public enum Phase: Equatable, Sendable {
-        case idle
-        case starting
-        case sharing
-        case failed(String)
-    }
+    /// The shared sharer lifecycle (`ShareBringUpPhase`, TailscreenProtocol).
+    /// These four cases were written here first and the portable type lifted
+    /// them unchanged, so this is a rename of the TYPE only — every case, and
+    /// every call site, is what it was.
+    public typealias Phase = ShareBringUpPhase
 
     /// Why a share stopped being live — the façade's cue for the cleanup only
     /// it can do (notifications, the portal session, the preview).

@@ -967,7 +967,7 @@ struct ViewerApp: App {
     private var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: sharer.canShare,
-            isIdle: sharer.phase == .idle || sharer.isFailed,
+            isIdle: sharer.phase.canStart,
             isLinkOnlyShare: sharer.isLinkOnlyShare)
     }
 

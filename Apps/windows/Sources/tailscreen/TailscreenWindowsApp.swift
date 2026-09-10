@@ -30,6 +30,7 @@ import struct TailscreenProtocol.PendingShareRequest
 import class TailscreenProtocol.PortableMuteHotkey
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
+import enum TailscreenProtocol.ShareBringUpPhase
 import enum TailscreenProtocol.ShareLinkFormat
 import enum TailscreenProtocol.TailscreenInstance
 import struct TailscreenProtocol.TailscreenMetadata
@@ -939,17 +940,34 @@ final class AppUIState: ObservableObject {
     /// and a viewing session already owning the window.
     ///
     /// The other two are about the bootstrap window, which this hub renders
-    /// (unlike the GTK one, whose `.starting` phase already swaps the pane
-    /// for the sharing view): a link-only start publishes `linkBusy` before
-    /// `isSharing`, so idle has to exclude it or the button stays pressable
+    /// rather than swapping the pane for the sharing view as the GTK one
+    /// does: a link-only start publishes `linkBusy` before the phase leaves
+    /// `starting`, so idle has to exclude it or the button stays pressable
     /// through the relay handshake — and `linkIsOnlyWayIn` is set at the
     /// same early moment, so the "you're sharing via link" note waits for
     /// the token rather than pointing at a card that does not exist yet.
     var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: shareSession.isSupported && watching == nil,
-            isIdle: !sharing.isSharing && !sharing.linkBusy,
+            isIdle: sharing.phase.canStart && !sharing.linkBusy,
             isLinkOnlyShare: sharing.linkIsOnlyWayIn && sharing.linkToken != nil)
+    }
+
+    /// What the share card's headline says, per phase.
+    ///
+    /// Four answers where this app used to have two. `starting` is the one it
+    /// could not say at all: the card read "Not sharing" through the encoder,
+    /// the server and tsnet bring-up, so a person who had just picked a window
+    /// had no sign their click had registered. Same wording as the GTK card,
+    /// which had all four from the start — and the same catalog keys, so
+    /// neither `.strings` file changes.
+    private var shareStatusLine: String {
+        switch sharing.phase {
+        case .idle: L("Not sharing")
+        case .starting: L("Starting share…")
+        case .sharing: L("Sharing \(sharing.target)")
+        case .failed(let why): L("Share failed: \(why)")
+        }
     }
 
     /// The sharing half of the hub, or nil on a build that cannot capture.
@@ -960,9 +978,7 @@ final class AppUIState: ObservableObject {
     var shareCard: ShareCard? {
         guard shareSession.isSupported else { return nil }
         return ShareCard(
-            statusLine: sharing.isSharing
-                ? L("Sharing \(sharing.target)")
-                : L("Not sharing"),
+            statusLine: shareStatusLine,
             isSharing: sharing.isSharing,
             canShare: watching == nil,
             // Signed out, the button says what it will actually do: there is
@@ -1768,7 +1784,7 @@ final class AppUIState: ObservableObject {
     /// rule as the macOS app's `canSwitchProfile`. A share still starting or a
     /// session still connecting would be torn out from under itself.
     var canSwitchAccount: Bool {
-        watching == nil && sessionTask == nil && !sharing.isSharing && phase != .startingNode
+        watching == nil && sessionTask == nil && sharing.phase.canStart && phase != .startingNode
     }
 
     func switchAccount(to id: String) {
@@ -1866,11 +1882,13 @@ final class AppUIState: ObservableObject {
         // in, and turning that into a link-only share would answer a question
         // they had not finished asking.
         let linkOnly = isSignedOut
-        // `linkBusy` is the in-flight link-only bootstrap: `isSharing` only
-        // turns true once the share is live, so without this a second click
-        // during the relay handshake starts a whole second share, and the
-        // first becomes a stale generation tearing itself down.
-        guard phase.isReady || linkOnly, !sharing.isSharing, !sharing.linkBusy else { return }
+        // `canStart` is idle-or-failed, so this now also refuses a second
+        // click during CAPTURE bring-up, which `!isSharing` used to allow —
+        // the share is not live yet, and the second click started a whole
+        // second share whose first became a stale generation tearing itself
+        // down. `linkBusy` still covers the link-only bootstrap, which
+        // publishes before the phase moves.
+        guard phase.isReady || linkOnly, sharing.phase.canStart, !sharing.linkBusy else { return }
         detail = ""
         shareDetail = nil
 
