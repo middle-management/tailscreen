@@ -281,7 +281,7 @@ class AppState: ObservableObject {
     var welcomeLinkShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: linkSharingEnabled,
-            isIdle: sharingState == .idle,
+            isIdle: !sharingState.isLive,
             isLinkOnlyShare: isGuestOnlyShare)
     }
 
@@ -3297,7 +3297,12 @@ class AppState: ObservableObject {
     private func refreshViewerWindowTitle() {
         guard let win = viewerWindow else { return }
         if viewerSessionIsOver {
-            win.title = L("Session Ended")
+            // The pane's own title, not a fixed string. `viewerSessionIsOver`
+            // covers BOTH terminal phases, so hard-coding "Session Ended"
+            // here put it over the "Connection Failed" pane — reintroducing,
+            // in the title bar, exactly the claim that a session which never
+            // opened had ended. One derivation, so the two cannot disagree.
+            win.title = viewerTerminalPresentation()?.title ?? L("Session Ended")
             return
         }
         guard let name = viewerPresentation.lifecycle.target?.displayName ?? connectedHostname else {
@@ -4437,7 +4442,7 @@ class AppState: ObservableObject {
     var nodePhase: NodeBringUpPhase {
         Self.nodeBringUpPhase(
             isAuthenticated: tailscaleAuth.isAuthenticated,
-            isSigningIn: tailscaleAuth.isLoading,
+            isSigningIn: isLoggingIn || tailscaleAuth.isLoading,
             failure: nodeFailure,
             isDiscovering: isDiscovering,
             hasCompletedInitialDiscovery: hasCompletedInitialDiscovery)
@@ -4459,7 +4464,16 @@ class AppState: ObservableObject {
     /// Among the signed-out cases a sign-in that is RUNNING outranks a
     /// failure, so a retry shows its spinner rather than the reason it is
     /// retrying. `login()` clears `nodeFailure` before it starts, so the two
-    /// should not overlap anyway; this is the belt to that's braces.
+    /// should not overlap anyway — this is the belt to that braces.
+    ///
+    /// **In-flight means BOTH flags**, and one alone is not enough.
+    /// `AppState.isLoggingIn` is set at the top of `login()`, before
+    /// `getOrCreateNode()`; `TailscaleAuth.isLoading` only once the node
+    /// exists and the auth flow itself begins. Reading the second alone
+    /// leaves the whole node-creation window — the slow part, on a first run
+    /// — reporting `signedOut`, so the card offers a Sign in button whose
+    /// press `login()`'s own re-entrancy guard then swallows: the one state
+    /// where a control looks live and does nothing.
     nonisolated static func nodeBringUpPhase(
         isAuthenticated: Bool,
         isSigningIn: Bool,
@@ -4542,12 +4556,18 @@ class AppState: ObservableObject {
     /// Pure gate: switching accounts closes the tsnet node, so it's only
     /// allowed while nothing is riding it — no share (including one still
     /// starting) and no viewer session (including one still connecting).
+    ///
+    /// A share that FAILED to start is not riding anything: it tore down
+    /// before this ever returns, so it reads through `isLive` rather than
+    /// against `.idle`. Spelled the old way, one failed start locked account
+    /// switching for the rest of the run — the person is told to "stop
+    /// sharing" when nothing is being shared and there is nothing to stop.
     /// Extracted so the precedence is pinned by tests rather than inferred
     /// from the two call sites. See `switchProfile` / `addAccountAndSignIn`.
     nonisolated static func canSwitchProfile(
         sharing: SharingState, connection: ConnectionState
     ) -> Bool {
-        sharing == .idle && connection == .idle
+        !sharing.isLive && connection == .idle
     }
 
     /// Switch the active account profile, Tailscale-style: one node at a
@@ -4887,7 +4907,7 @@ class AppState: ObservableObject {
     /// See `SharerNoticeDecision.playsSound`: a ding during a share is played
     /// by the notification daemon, which the "exclude our own audio" flag does
     /// not cover, so every viewer hears it.
-    private var isCapturing: Bool { sharingState != .idle }
+    private var isCapturing: Bool { sharingState.isLive }
 
     /// Deliver a batch of notices. The single place `SharerNoticeCenter` is
     /// touched from the notice paths, so the sound gate can't be forgotten at

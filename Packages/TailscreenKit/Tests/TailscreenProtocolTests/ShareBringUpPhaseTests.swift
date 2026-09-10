@@ -47,6 +47,31 @@ final class ShareBringUpPhaseTests: XCTestCase {
         XCTAssertTrue(ShareBringUpPhase.sharing.isSharing)
     }
 
+    /// `isLive` is the question the gates around a share actually ask, and
+    /// it is not `!= .idle`.
+    ///
+    /// Every "is anything running right now" gate on macOS was spelled
+    /// against idle because idle was the only resting state there was —
+    /// dialling a peer, switching accounts, offering the link-share button,
+    /// playing a notice sound. Adding `failed` made all of them wrong at
+    /// once and silently: a share that failed to start has torn down
+    /// completely, and those gates read it as a live share until a
+    /// successful share had been started and stopped.
+    func testOnlyStartingAndSharingAreLive() {
+        XCTAssertTrue(ShareBringUpPhase.starting.isLive)
+        XCTAssertTrue(ShareBringUpPhase.sharing.isLive)
+        XCTAssertFalse(ShareBringUpPhase.idle.isLive)
+        XCTAssertFalse(ShareBringUpPhase.failed("boom").isLive)
+    }
+
+    /// The pair cannot drift apart: a phase you can start from is exactly a
+    /// phase with nothing running, for every case.
+    func testIsLiveIsTheExactComplementOfCanStart() {
+        for phase in allPhases {
+            XCTAssertEqual(phase.isLive, !phase.canStart, "\(phase)")
+        }
+    }
+
     func testFailureCarriesItsReason() {
         XCTAssertEqual(
             ShareBringUpPhase.failed("this session cannot share a single window").failureReason,

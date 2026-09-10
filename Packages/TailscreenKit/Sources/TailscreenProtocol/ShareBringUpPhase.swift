@@ -54,6 +54,26 @@ public enum ShareBringUpPhase: Equatable, Sendable {
         }
     }
 
+    /// Whether a share is occupying this machine — starting or live.
+    ///
+    /// The exact complement of `canStart`, and it exists because the two
+    /// readings are not interchangeable at a call site. Most of the gates
+    /// around a share ask "is anything riding the node / the capture stack
+    /// right now" — can this peer row be dialled, can the account be
+    /// switched, should a notice play a sound, is the machine busy enough to
+    /// hold an ask-to-share banner back — and every one of those was written
+    /// as `!= .idle` when idle was the only resting state there was.
+    ///
+    /// Adding `failed` made that spelling wrong in a way nothing catches: a
+    /// share that failed to start has torn down completely, but `!= .idle`
+    /// reads it as a live share forever. On macOS that meant a failed start
+    /// locked account switching, made every peer row unclickable, withheld
+    /// the link-share button and silenced notice sounds — until a
+    /// *successful* share had been started and stopped. Say the question the
+    /// gates are actually asking, once, rather than deriving it from the
+    /// resting state that happened to be the only one.
+    public var isLive: Bool { !canStart }
+
     /// Why the last start failed, or nil.
     public var failureReason: String? {
         guard case .failed(let reason) = self else { return nil }

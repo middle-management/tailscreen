@@ -11,10 +11,16 @@ final class NodeBringUpPhaseTests: XCTestCase {
     /// One representative of every case, for the totality legs below.
     ///
     /// Hand-written rather than `CaseIterable`, which the associated value on
-    /// `failed` rules out. A case added without a line here still compiles, so
-    /// the exhaustiveness legs are only as good as this list — which is why
-    /// they are paired with `testEveryPhaseIsExactlyOneOfSignedOutBringingUpOrReady`,
-    /// where a missed case shows up as a phase belonging to no group.
+    /// `failed` rules out.
+    ///
+    /// **A case added to the enum without a line here is not detected by
+    /// anything in this file**, including the grouping leg below — that
+    /// iterates this same list, so an omission is invisible to it too. There
+    /// is no clever mitigation; the list is a manual obligation, and it is
+    /// noted here rather than papered over. What does apply pressure is the
+    /// type itself: every derived property switches exhaustively, so adding a
+    /// case fails the build until each has an answer, and arriving here is
+    /// then the remaining step.
     private let allPhases: [NodeBringUpPhase] = [
         .signedOut, .startingNode, .discovering, .ready, .failed("boom")
     ]

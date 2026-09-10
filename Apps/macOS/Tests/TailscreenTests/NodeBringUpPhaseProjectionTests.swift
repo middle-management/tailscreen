@@ -44,6 +44,25 @@ final class NodeBringUpPhaseProjectionTests: XCTestCase {
         XCTAssertEqual(phase(isAuthenticated: true, isSigningIn: true), .ready)
     }
 
+    /// In-flight is BOTH login flags, and the app-level one is the earlier.
+    ///
+    /// `AppState.isLoggingIn` is set at the top of `login()`; the auth
+    /// object's `isLoading` only once `getOrCreateNode()` has returned and
+    /// the flow proper begins. Node creation is the slow part of a first
+    /// run, so reading only the second leaves that entire window reporting
+    /// `signedOut` — a sign-in card offering a button whose press `login()`
+    /// then swallows through its own re-entrancy guard. The projection is
+    /// handed the OR of the two.
+    ///
+    /// This leg pins only that an in-flight sign-in beats the signed-out
+    /// default — the OR itself is at the `nodePhase` call site, which a test
+    /// of the pure function cannot reach, and which is why the composition is
+    /// spelled out in that property's doc comment rather than left to be
+    /// inferred from the parameter name.
+    func testASignInInFlightOutranksTheSignedOutDefault() {
+        XCTAssertEqual(phase(isAuthenticated: false, isSigningIn: true), .startingNode)
+    }
+
     /// The same rule one step further: a reason left over from an earlier
     /// attempt cannot make a signed-in hub read as failed.
     func testSignedInWinsOverALeftoverFailure() {

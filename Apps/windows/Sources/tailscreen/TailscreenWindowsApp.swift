@@ -394,7 +394,7 @@ struct TailscreenWindowsApp: App {
             // A start that failed, worded under the button that retries it —
             // kept apart from `detail` (the tailnet card's) so a share
             // failure is not reported on the sign-in card.
-            shareNote: state.shareDetail)
+            shareNote: state.shareNote)
     }
 
     /// The share-by-token way in. A computed property with an explicit type
@@ -953,10 +953,29 @@ final class AppUIState: ObservableObject {
     /// card its Try again button is on, which is also why the window footer
     /// deliberately stops repeating it before sign-in.
     var welcomeTailnetMessage: String {
+        // The PHASE first, then the legacy slot. `signInLabel` already reads
+        // the phase for its "Try again", and `detail` is cleared by anything
+        // that starts fresh — `startSharing()` blanks it before opening the
+        // capture picker — so reading `detail` first let a cancelled picker
+        // after a failed bring-up leave the button saying Try again over the
+        // first-run pitch: a card offering a retry for nothing.
+        if let reason = phase.failureReason { return reason }
         guard detail.isEmpty else { return detail }
         return L(
             "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
         )
+    }
+
+    /// The welcome pane's share-link card note: why the last link-only start
+    /// did not happen.
+    ///
+    /// The phase leads, exactly as `welcomeTailnetMessage` reads it for the
+    /// card beside this one and as the GTK hub's `welcomeShareNote` does —
+    /// one failure, one carrier. `shareDetail` is still behind it because it
+    /// holds the one failure the phase cannot: a capture picker that threw
+    /// before `beginSharing` was ever called.
+    var shareNote: String? {
+        sharing.phase.failureReason ?? shareDetail
     }
 
     /// What the welcome pane's share-link card offers, via the pinned
@@ -1976,14 +1995,19 @@ final class AppUIState: ObservableObject {
                     linkOnly: linkOnly
                 )
             } catch {
-                // Signed out this is the welcome pane's share-link card note;
-                // signed in it is the window footer, as before.
-                let reason = L("Could not start sharing: \(error)")
-                if linkOnly {
-                    self.shareDetail = reason
-                } else {
-                    self.detail = reason
-                }
+                // Deliberately silent: the ENGINE owns this failure now. It
+                // sets `phase = .failed(reason)`, which `shareStatusLine`
+                // renders as the card's headline and `shareNote` derives the
+                // signed-out card's note from. Writing a second copy
+                // here put the same failure on screen twice in two different
+                // wordings — the card saying "Share failed: …" over a footer
+                // saying "Could not start sharing: …" — and gave the new
+                // phase payload a rival for being the source of truth.
+                //
+                // The picker failure above still writes its own slot: that
+                // one throws before `beginSharing`, so no phase ever carries
+                // it.
+                _ = error
             }
         }
     }

@@ -200,7 +200,7 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("?", modifiers: .command)
             .disabled(
-                appState.sharingState == .idle
+                !appState.sharingState.isLive
                     && appState.viewerWindow?.isVisible != true
                     && !appState.isShortcutsPanelVisible)
         }

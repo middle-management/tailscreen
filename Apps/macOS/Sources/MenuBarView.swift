@@ -53,7 +53,7 @@ struct MenuBarView: View {
         // Signed out but SHARING (a guest-only, link-only share) → the full
         // popover: the sharing card is the sharer tool, and its approval
         // prompts must be reachable regardless of sign-in state.
-        if !appState.tailscaleAuth.isAuthenticated && appState.sharingState == .idle {
+        if !appState.tailscaleAuth.isAuthenticated && !appState.sharingState.isLive {
             SignedOutMenuView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
@@ -192,7 +192,7 @@ struct PendingRequestsBanner: View {
         // Share button would be disabled and the banner would read as
         // "X wants you to share" while a share is on-screen, which is
         // confusing. Requests stay queued for when state returns to idle.
-        let busy = appState.sharingState != .idle || appState.connectionState != .idle
+        let busy = appState.sharingState.isLive || appState.connectionState != .idle
         if requests.isEmpty || busy {
             EmptyView()
         } else {

@@ -1149,7 +1149,7 @@ private struct PeerListSection: View {
     /// session otherwise.
     private func canConnect(_ peer: TailscreenPeer) -> Bool {
         peer.isOnline
-            && appState.sharingState == .idle
+            && !appState.sharingState.isLive
             && appState.connectionState == .idle
     }
 
@@ -1522,7 +1522,7 @@ private struct PeerMenuRow: View {
     /// the sharing/viewing status cards own the session otherwise.
     private var canConnect: Bool {
         peer.isOnline
-            && appState.sharingState == .idle
+            && !appState.sharingState.isLive
             && appState.connectionState == .idle
     }
 
@@ -1644,7 +1644,7 @@ private struct PeerDetailView: View {
     /// here (the status cards owned the popover otherwise).
     private var canConnect: Bool {
         peer.isOnline
-            && appState.sharingState == .idle
+            && !appState.sharingState.isLive
             && appState.connectionState == .idle
     }
 
