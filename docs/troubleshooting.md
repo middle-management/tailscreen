@@ -142,9 +142,14 @@ VideoToolbox errors). If you get all the way to the stalled banner, its
 The Linux and Windows viewers run the same recovery ladder (it lives in
 the shared core) with a simpler surface: there is no degraded badge —
 the decoder is reset at the same rung, and a persistent stall shows the
-same **"Video has stalled"** message in place of the video (Linux) or on
-the window's status line (Windows). Reconnecting to the screen is the
-equivalent reset there.
+same **"Video has stalled"** message as a dismissible strip above the
+video, over the last frame rather than in place of it. If decoding
+recovers, the strip clears itself on the next frame that arrives; if it
+does not, **Stop** in the bar above returns you to the screen list to
+reconnect. (One exception on Linux: a stall on a session that has never
+shown a frame — a stream this machine cannot decode at all — replaces
+the placard instead, because there is no picture to keep and the placard
+carries Reconnect.)
 
 ## Remote control grant fails asking for Accessibility
 

@@ -141,6 +141,22 @@ final class SharerModel: ObservableObject {
     /// costs an afternoon.
     @Published private(set) var controlNote: String?
 
+    /// Why the last "Change source…" did not take — a note on a share that is
+    /// STILL RUNNING, which is why it is a slot of its own and not `.failed`.
+    ///
+    /// It used to be the phase. `changeSource` re-points a live share and the
+    /// engine does not stop the server when it throws, so writing
+    /// `.failed(reason)` there described a running share as a failed start:
+    /// `canStart` turned true, so a second Start could be pressed straight
+    /// over the top of it and overwrite the engine's server reference, and
+    /// `isSharing` turned false, so the card dropped its Stop button and its
+    /// roster while viewers were still watching. Every other host already
+    /// keeps this distinction — macOS stops the share outright on a failed
+    /// retarget, and the WinUI engine never touches its phase here — so this
+    /// was the one place `ShareBringUpPhase.failed` did not mean what the
+    /// type says it means.
+    @Published private(set) var sourceChangeNote: String?
+
     /// Whether new viewers have to be let in by hand.
     ///
     /// Persisted, and read back at launch through the shared
@@ -387,9 +403,11 @@ final class SharerModel: ObservableObject {
         case .stopped:
             notifications.stop()
             controlNote = nil
+            sourceChangeNote = nil
         case .captureStopped:
             notifications.stop()
             controlNote = nil
+            sourceChangeNote = nil
             // Same reason as `stopSharing`: capture ending for any reason —
             // including the user pressing stop in the compositor's own
             // indicator — must take the session down with it.
@@ -619,6 +637,9 @@ final class SharerModel: ObservableObject {
     /// not "stop sharing".
     func changeSource() {
         guard canChangeSource, phase == .sharing else { return }
+        // A new attempt is not the old attempt's failure — the same rule the
+        // node bring-up follows when it clears `nodeFailure` on retry.
+        sourceChangeNote = nil
         let portal = self.portal
         Task { @MainActor in
             switch await portal.negotiate(sources: [.monitor, .window]) {
@@ -640,14 +661,14 @@ final class SharerModel: ObservableObject {
                             return encoder
                         })
                 } catch {
-                    phase = .failed(L("could not change the shared source: \(error)"))
+                    sourceChangeNote = L("could not change the shared source: \(error)")
                 }
             case .cancelled:
                 // Keep sharing what we were already sharing. Saying nothing is
                 // the whole point: they declined a change, not the share.
                 break
             case .failed(let reason):
-                phase = .failed(reason)
+                sourceChangeNote = reason
             }
         }
     }

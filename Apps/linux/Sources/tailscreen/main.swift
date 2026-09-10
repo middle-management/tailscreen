@@ -1154,6 +1154,10 @@ struct ViewerApp: App {
                 var notes: [String] = []
                 // Only after a grant was refused — see `SharerModel.controlNote`.
                 if let controlNote = sharer.controlNote { notes.append(controlNote) }
+                // A "Change source…" that did not take. A NOTE rather than a
+                // phase, because the share it failed to re-point is still
+                // running — see `SharerModel.sourceChangeNote`.
+                if let sourceNote = sharer.sourceChangeNote { notes.append(sourceNote) }
                 // Said only while sharing, and only when true: the person this
                 // would have reached is the one who has stopped looking at
                 // this window, so they should be told before they do. Two
