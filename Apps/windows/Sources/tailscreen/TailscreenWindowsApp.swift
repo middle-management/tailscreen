@@ -224,11 +224,20 @@ struct TailscreenWindowsApp: App {
             } else {
                 watching(host: host)
             }
-        } else if state.isSignedOut && state.sharing.isSharing {
-            // Signed out WITH a share running: the sharing view owns the
-            // window. Two things that each want the whole column would
-            // otherwise stack, and "get started" over a share already going
-            // out is not a screen anybody should be shown.
+        } else if state.isSignedOut && state.sharing.phase.isLive {
+            // Signed out with a share running OR STARTING: the sharing view
+            // owns the window. Two things that each want the whole column
+            // would otherwise stack, and "get started" over a share already
+            // going out is not a screen anybody should be shown.
+            //
+            // `isLive`, not `isSharing`, and the `starting` half is the point
+            // — this is the flow where bring-up is slowest (relay bootstrap,
+            // guest node, server) and it was the one place the new `.starting`
+            // state could not be reached. The welcome pane stayed up with its
+            // share button now unavailable, showing neither progress nor a
+            // way to cancel, until frames were already going out. The GTK hub
+            // has always spelled this `.starting || .sharing`; this is that
+            // condition, through the shared predicate.
             signedOutSharing
         } else if state.isSignedOut {
             signIn

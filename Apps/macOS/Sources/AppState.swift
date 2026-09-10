@@ -898,7 +898,17 @@ class AppState: ObservableObject {
     // Metadata and requests
     @Published var metadataService = TailscreenMetadataService()
 
-    private var isLoggingIn = false
+    /// Re-entrancy guard for `login()`, and half of `nodePhase`'s in-flight
+    /// signal — which is why it is `@Published` rather than a plain flag.
+    ///
+    /// `login()` sets `nodeFailure` in its `catch` and clears this in its
+    /// `defer`, in that order. The failure publishes, but at that moment this
+    /// is still true and a running sign-in outranks a failure, so the
+    /// projection answers `.startingNode` — and the clear that would change
+    /// the answer arrives with no notification behind it. The welcome card
+    /// stayed on its "Signing in…" spinner over a sign-in that had already
+    /// failed, until some unrelated update happened to re-render it.
+    @Published private var isLoggingIn = false
 
     // Gates whether the IPN-bus BrowseToURL handler actually opens a
     // browser tab. False during silent session restore at launch (so a
@@ -1961,8 +1971,21 @@ class AppState: ObservableObject {
                 if !guestOnly {
                     // Get the Tailscale IP addresses (a guest-only share has
                     // no node to ask, and no tailnet address to show).
-                    let ips = try await srv.getIPAddresses()
-                    tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+                    //
+                    // Non-fatal, and that is the point. This call sits AFTER
+                    // the inner `catch` that unwinds a failed start, so a
+                    // throw here reached the function's OUTER catch — which
+                    // raises an alert and stops nothing. The server is
+                    // already running by then, so the `defer` published
+                    // `.idle` and hid the capture outline over a share that
+                    // was still going out: the sharer's own UI says idle, no
+                    // border is drawn, and viewers can still connect. The
+                    // alternative — routing it into the unwind — would tear
+                    // down a working share over an address lookup, so this
+                    // fails OPEN and simply records no address.
+                    if let ips = try? await srv.getIPAddresses() {
+                        tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+                    }
                 }
             }
 
@@ -1998,7 +2021,16 @@ class AppState: ObservableObject {
                 }
             }
         } catch {
-            presentError(.sharingGeneric(error))
+            // Record it for the `defer`, which is what publishes the phase.
+            // Without this the card fell back to `.idle` and the reason
+            // survived only as long as the alert — the one failure path in
+            // this function that did not satisfy the contract the rest of it
+            // states. Nothing inside the inner `do` arrives here (its own
+            // catch returns), so this covers the paths before it and
+            // whatever gets added after.
+            let failure = AppError.sharingGeneric(error)
+            startFailure = failure.message
+            presentError(failure)
         }
     }
 
