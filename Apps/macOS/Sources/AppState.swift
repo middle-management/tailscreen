@@ -19,11 +19,14 @@ import TailscreenViewer
 /// (first preview frame landed, viewers can join) → `idle`. Replaces
 /// the older `isSharing` / `isStartingShare` bool pair so we can't
 /// end up in inconsistent in-between states.
-enum SharingState: Equatable {
-    case idle
-    case starting
-    case active
-}
+/// The shared sharer lifecycle (`ShareBringUpPhase`, TailscreenProtocol).
+///
+/// This app's own enum was `idle / starting / active` with no failure case —
+/// a start that threw was an alert and nothing else, so the card went back to
+/// offering the button with no trace of why the last attempt had not worked.
+/// `active` was also the outlier NAME: the other two hosts say `sharing`, and
+/// so does every status line here.
+typealias SharingState = ShareBringUpPhase
 
 /// Viewer-side lifecycle. `idle` → `connecting` (user clicked a
 /// peer, tsnet dial + HELLO in flight) → `viewing` (decoder up,
@@ -1036,7 +1039,7 @@ class AppState: ObservableObject {
                 let bundleID = launched?.bundleIdentifier
                 Task { @MainActor [weak self] in
                     guard let self, let bundleID else { return }
-                    guard self.sharingState == .active,
+                    guard self.sharingState == .sharing,
                         let selection = self.currentSelection,
                         selection.excludedBundleIDs.contains(bundleID)
                     else { return }
@@ -1389,7 +1392,7 @@ class AppState: ObservableObject {
     /// sharer overlay and annotations are untouched because the shared
     /// surface itself is unchanged.
     private func applyCloakToActiveShare(force: Bool) async {
-        guard sharingState == .active, let server, let selection = currentSelection else { return }
+        guard sharingState == .sharing, let server, let selection = currentSelection else { return }
         let exclusions = appCloak.effectiveExclusions(for: selection.kind)
         guard force || exclusions != selection.excludedBundleIDs else { return }
         let updated = selection.settingExcludedBundleIDs(exclusions)
@@ -1441,7 +1444,7 @@ class AppState: ObservableObject {
     /// the share *entry point* (takes the lock, builds the server); this
     /// one requires an already-active share.
     func changeShareSource() async {
-        guard sharingState == .active, let server, !isChangingSource else { return }
+        guard sharingState == .sharing, let server, !isChangingSource else { return }
         isChangingSource = true
         defer { isChangingSource = false }
 
@@ -1454,7 +1457,7 @@ class AppState: ObservableObject {
         // died past its crash budget and torn the share down) while the
         // picker was up. Identity-check the server so a stale selection
         // can't retarget a share that already ended or restarted.
-        guard sharingState == .active, self.server === server else { return }
+        guard sharingState == .sharing, self.server === server else { return }
 
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
         let effectiveFilterData = applyingShareTransforms(to: filterData)
@@ -1482,7 +1485,7 @@ class AppState: ObservableObject {
         // stopped share would re-advertise it via metadata and resurrect
         // overlay state the stop path just tore down — the phantom-share
         // bug. On a failed re-check the stop path owns teardown; just leave.
-        guard didRetarget, sharingState == .active, self.server === server else {
+        guard didRetarget, sharingState == .sharing, self.server === server else {
             logger.log("changeShareSource: share ended mid-retarget — skipping success side effects")
             return
         }
@@ -1567,9 +1570,15 @@ class AppState: ObservableObject {
         let guestOnly = !tailscaleAuth.isAuthenticated
         let generation = shareCore.beginShare()
         sharingState = .starting
+        // Why this attempt failed, if it did. Read by the `defer` below
+        // rather than assigned at each failure site, because every exit from
+        // this function has to go through that one cleanup block — a failure
+        // path that set the state itself would slip past its `== .starting`
+        // guard and leak the share lock and the capture outline with it.
+        var startFailure: String?
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
-        // Success sets `.active` below. Every failure / catch sets
+        // Success sets `.sharing` below. Every failure / catch sets
         // `.idle` explicitly via `await stopSharing` or
         // `sharingState = .idle`. Defer here is the safety net for
         // any path we forgot.
@@ -1580,10 +1589,13 @@ class AppState: ObservableObject {
             // release the share lock out from under a bring-up that is
             // still running.
             if shareCore.isCurrentShare(generation), sharingState == .starting {
-                sharingState = .idle
+                // A reason if one was recorded, idle otherwise — a user
+                // cancellation takes the second path, since stopping on
+                // purpose is not a failure to report back.
+                sharingState = startFailure.map { .failed($0) } ?? .idle
                 shareLock.release()
                 // Honour the same contract for the outline: a share that
-                // never reached `.active` must not leave a border on screen
+                // never reached `.sharing` must not leave a border on screen
                 // claiming one is running.
                 captureOutline?.hide()
                 captureOutline = nil
@@ -1594,7 +1606,9 @@ class AppState: ObservableObject {
             // same gate, so reaching here means Settings changed underneath
             // an open picker — say why rather than failing generically.
             // (The defer above resets `.starting` and releases the lock.)
-            presentError(.linkSharingDisabled())
+            let failure = AppError.linkSharingDisabled()
+            startFailure = failure.message
+            presentError(failure)
             return
         }
         do {
@@ -1625,7 +1639,7 @@ class AppState: ObservableObject {
                         // first SCStream attempt got `-3805` and our
                         // crash budget was exhausted.
                         guard let self else { return }
-                        guard self.sharingState == .active || self.sharingState == .starting else { return }
+                        guard self.sharingState == .sharing || self.sharingState == .starting else { return }
                         let desc = error?.localizedDescription ?? "nil"
                         switch Self.captureStopAction(error) {
                         case .userInitiated:
@@ -1882,19 +1896,24 @@ class AppState: ObservableObject {
                     if error is CancellationError {
                         return
                     }
+                    let failure: AppError
                     if case ScreenCaptureError.startTimeout = error {
-                        presentError(.screenCaptureStartTimeout())
+                        failure = .screenCaptureStartTimeout()
                     } else if case ScreenCaptureError.bundleSlotPoisoned = error {
-                        presentError(.screenCaptureBundlePoisoned())
+                        failure = .screenCaptureBundlePoisoned()
                     } else if case ScreenCaptureError.noFramesDelivered = error {
-                        presentError(.screenCaptureNoFrames())
+                        failure = .screenCaptureNoFrames()
                     } else if guestOnly {
                         // The failure was most likely the relay bootstrap or
                         // the guest node, not screen capture — say so.
-                        presentError(.linkShareStartFailed(error))
+                        failure = .linkShareStartFailed(error)
                     } else {
-                        presentError(.screenCaptureGeneric(error))
+                        failure = .screenCaptureGeneric(error)
                     }
+                    // Both: the alert fires once, and the card keeps the
+                    // reason after it is dismissed. Same split as `nodeFailure`.
+                    startFailure = failure.message
+                    presentError(failure)
                     return
                 }
 
@@ -1919,7 +1938,7 @@ class AppState: ObservableObject {
             // fail to start, which is the same lie as an outline that lags.
             showCaptureOutline()
 
-            sharingState = .active
+            sharingState = .sharing
 
             // Automation affordance (test-local.sh / e2e scripts): mint the
             // link as soon as the share is up and print it as a greppable
@@ -2172,7 +2191,7 @@ class AppState: ObservableObject {
     /// always present while sharing (so viewer-originated drawings render);
     /// this only flips input capture vs. click-through.
     func toggleSharerOverlay() {
-        guard sharingState == .active else { return }
+        guard sharingState == .sharing else { return }
         let overlay = ensureSharerOverlay()
         isSharerOverlayVisible.toggle()
         overlay.setInputEnabled(isSharerOverlayVisible)
@@ -2280,7 +2299,7 @@ class AppState: ObservableObject {
     }
 
     private func enableShareLink() async {
-        guard linkSharingEnabled, sharingState == .active, let server, shareLinkToken == nil else {
+        guard linkSharingEnabled, sharingState == .sharing, let server, shareLinkToken == nil else {
             return
         }
         shareLinkBusy = true
@@ -3474,7 +3493,7 @@ class AppState: ObservableObject {
     /// resolution is stated rather than read off `NSScreen` — a screenshot has
     /// to say the same thing on every runner.
     private func seedUIPreviewSharing() {
-        sharingState = .active
+        sharingState = .sharing
         currentViewers = [
             ViewerInfo(
                 id: "100.64.0.31:52104", tailscaleIP: "100.64.0.31",
@@ -4316,7 +4335,7 @@ class AppState: ObservableObject {
             try await tailscaleAuth.signOut()
 
             // Stop sharing if active
-            if sharingState == .active {
+            if sharingState == .sharing {
                 await stopSharing(reason: "signOut")
             }
 

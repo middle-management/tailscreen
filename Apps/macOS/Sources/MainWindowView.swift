@@ -774,7 +774,7 @@ private struct ShareStatusSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch (appState.sharingState, appState.connectionState) {
-            case (.active, _):
+            case (.sharing, _):
                 ActiveShareCard()
             case (.starting, _):
                 HStack(spacing: 10) {
@@ -831,6 +831,15 @@ private struct ShareStatusSection: View {
                     Spacer(minLength: 0)
                 }
             default:
+                // Both surfaces carry this, per the same-commit rule: a start
+                // that failed says so above the button that retries it, since
+                // the alert is dismissed and gone.
+                if let why = appState.sharingState.failureReason {
+                    Text(L("Share failed: \(why)"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if appState.anotherInstanceSharing {
                     // Same replayd one-SCStream-per-bundle constraint the
                     // popover surfaces — say it up-front instead of letting
@@ -879,7 +888,7 @@ private struct ShareStatusSection: View {
 
     private var backgroundTint: Color {
         switch (appState.sharingState, appState.connectionState) {
-        case (.active, _): return Color.green.opacity(0.12)
+        case (.sharing, _): return Color.green.opacity(0.12)
         case (_, .viewing): return Color.accentColor.opacity(0.10)
         default: return Color.secondary.opacity(0.06)
         }

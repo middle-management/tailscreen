@@ -151,11 +151,11 @@ final class ProfileStoreTests: XCTestCase {
         // Switching closes the tsnet node, so every non-idle state — a
         // share still starting, a viewer still connecting — must block it.
         XCTAssertTrue(AppState.canSwitchProfile(sharing: .idle, connection: .idle))
-        XCTAssertFalse(AppState.canSwitchProfile(sharing: .active, connection: .idle))
+        XCTAssertFalse(AppState.canSwitchProfile(sharing: .sharing, connection: .idle))
         XCTAssertFalse(AppState.canSwitchProfile(sharing: .starting, connection: .idle))
         XCTAssertFalse(AppState.canSwitchProfile(sharing: .idle, connection: .viewing))
         XCTAssertFalse(AppState.canSwitchProfile(sharing: .idle, connection: .connecting))
-        XCTAssertFalse(AppState.canSwitchProfile(sharing: .active, connection: .viewing))
+        XCTAssertFalse(AppState.canSwitchProfile(sharing: .sharing, connection: .viewing))
     }
 
     func testStatePathAppendsInstanceSuffixAtResolveTime() throws {

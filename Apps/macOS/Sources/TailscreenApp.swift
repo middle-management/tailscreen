@@ -27,7 +27,7 @@ enum MenubarIconState: Equatable {
         hasControlRequests: Bool,
         hasWaitingViewers: Bool
     ) -> MenubarIconState {
-        if sharing == .active {
+        if sharing == .sharing {
             // Control requests and pending viewers only exist while a
             // share is up (the server surfaces them and stopSharing
             // clears them), so these badges are meaningful only on the

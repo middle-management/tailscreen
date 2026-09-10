@@ -73,7 +73,7 @@ struct MenuBarView: View {
                     shortcut: "⌘Q"
                 ) {
                     Task {
-                        if appState.sharingState == .active { await appState.stopSharing(reason: "QuitTailscreen") }
+                        if appState.sharingState == .sharing { await appState.stopSharing(reason: "QuitTailscreen") }
                         if appState.connectionState == .viewing { await appState.disconnect() }
                         NSApplication.shared.terminate(nil)
                     }
@@ -222,7 +222,7 @@ struct PendingRequestsBanner: View {
                         }
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
-                        .disabled(appState.sharingState == .active)
+                        .disabled(appState.sharingState == .sharing)
                     }
                     .padding(10)
                     .background(
@@ -244,7 +244,7 @@ private struct StatusSection: View {
 
     var body: some View {
         switch (appState.sharingState, appState.connectionState) {
-        case (.active, _): SharingCard()
+        case (.sharing, _): SharingCard()
         case (_, .viewing): ViewingCard()
         case (.starting, _): StartingShareCard()
         case (_, .connecting): ConnectingCard()
@@ -289,7 +289,7 @@ private struct ConnectingCard: View {
     }
 }
 
-/// Transitional state between display click and `sharingState == .active`.
+/// Transitional state between display click and `sharingState == .sharing`.
 /// SCStream bring-up can take 5–10 s when replayd is unhappy
 /// (multiple retries, watchdog timeouts). Without this card the
 /// popover sits silently on the display picker the whole time and
@@ -1395,6 +1395,18 @@ private struct DisplayPickerSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            // A start that failed, said where the button that retries it is.
+            // The alert fired once and is gone; without this the card is back
+            // to offering the picker with no trace of why the last attempt
+            // did not work. Same split as `nodeFailure` on the sign-in card,
+            // and the same wording the other two hubs' share cards carry.
+            if let why = appState.sharingState.failureReason {
+                Text(L("Share failed: \(why)"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 4)
+            }
             if appState.anotherInstanceSharing {
                 // Another Tailscreen instance on this Mac is currently
                 // capturing. macOS's `replayd` only allows one SCStream
