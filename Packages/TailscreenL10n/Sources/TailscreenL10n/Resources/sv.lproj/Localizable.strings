@@ -569,7 +569,6 @@
 "slowest stage: %@" = "långsammaste steget: %@";
 "Could not open the capture picker: %@" = "Kunde inte öppna skärmväljaren: %@";
 "Could not change the shared source: %@" = "Kunde inte byta delad källa: %@";
-"Could not start sharing: %@" = "Kunde inte börja dela: %@";
 "Not listening for share requests: %@" = "Lyssnar inte efter delningsförfrågningar: %@";
 "Remote control isn't available for this share." = "Fjärrstyrning är inte tillgängligt för den här delningen.";
 

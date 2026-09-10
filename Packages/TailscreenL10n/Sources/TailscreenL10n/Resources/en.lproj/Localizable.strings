@@ -584,7 +584,6 @@
 "slowest stage: %@" = "slowest stage: %@";
 "Could not open the capture picker: %@" = "Could not open the capture picker: %@";
 "Could not change the shared source: %@" = "Could not change the shared source: %@";
-"Could not start sharing: %@" = "Could not start sharing: %@";
 "Not listening for share requests: %@" = "Not listening for share requests: %@";
 "Remote control isn't available for this share." = "Remote control isn't available for this share.";
 
