@@ -1033,6 +1033,7 @@ final class AppUIState: ObservableObject {
         return ShareCard(
             statusLine: shareStatusLine,
             isSharing: sharing.isSharing,
+            isStarting: sharing.phase == .starting,
             canShare: watching == nil,
             // Signed out, the button says what it will actually do: there is
             // no tailnet to share to, so the share comes up over the guest

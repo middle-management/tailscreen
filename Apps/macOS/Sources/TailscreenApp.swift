@@ -37,7 +37,11 @@ enum MenubarIconState: Equatable {
             return .sharing
         }
         if connection == .viewing { return .viewing }
-        if hasPendingRequests && sharing == .idle && connection == .idle {
+        // `!sharing.isLive`, matching the popover's own banner gate: after a
+        // failed start the requests are listed in the popover, and an icon
+        // that does not badge them is the one surface saying there is nothing
+        // to look at.
+        if hasPendingRequests && !sharing.isLive && connection == .idle {
             return .requestPending
         }
         return .idle

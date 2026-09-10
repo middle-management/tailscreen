@@ -81,6 +81,16 @@ public struct HubLoginCard: View {
 public struct ShareCard: View {
     let statusLine: String
     let isSharing: Bool
+    /// A share is coming up but not live yet — `ShareBringUpPhase.starting`.
+    ///
+    /// Only the action row reads it, and only to render NOTHING: there is no
+    /// Stop to offer for a share that has not started, and the Start button
+    /// this used to draw was inert (both hosts guard their start on
+    /// `canStart`, which `starting` fails). A control that is visibly
+    /// pressable and does nothing is the one thing worse than no control.
+    /// Live STYLING deliberately still keys off `isSharing`, because the card
+    /// should not go green until frames are actually going out.
+    let isStarting: Bool
     let canShare: Bool
     let startLabel: String
     let stopLabel: String
@@ -160,6 +170,7 @@ public struct ShareCard: View {
         statusLine: String,
         statusDetail: String? = nil,
         isSharing: Bool,
+        isStarting: Bool = false,
         canShare: Bool,
         startLabel: String = L("Share my screen"),
         stopLabel: String = L("Stop Sharing"),
@@ -182,6 +193,7 @@ public struct ShareCard: View {
     ) {
         self.statusLine = statusLine
         self.isSharing = isSharing
+        self.isStarting = isStarting
         self.canShare = canShare
         self.startLabel = startLabel
         self.stopLabel = stopLabel
@@ -329,7 +341,7 @@ public struct ShareCard: View {
                             onToggle: microphone.toggle)
                     }
                     Button(stopLabel, action: onStop)
-                } else {
+                } else if !isStarting {
                     Button(startLabel, action: onStart)
                     // Only while idle: mid-share this would start a second
                     // one, and the card has a Stop button in that state

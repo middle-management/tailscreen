@@ -1143,6 +1143,7 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             statusDetail: sharer.statusDetail,
             isSharing: sharer.phase == .sharing,
+            isStarting: sharer.phase == .starting,
             canShare: sharer.canShare,
             // Signed out, the button says what it will actually do: there is
             // no tailnet to share to, so the share comes up over the guest

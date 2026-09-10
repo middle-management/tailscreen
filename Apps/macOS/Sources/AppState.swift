@@ -2681,6 +2681,15 @@ class AppState: ObservableObject {
             connectionState = .idle
             isAwaitingAdmission = false
             syncViewerPresentationEffects()
+            // Show the window the pane was just written into. Only the
+            // SUCCESS path ordered it front, so on a FIRST attempt — the
+            // common case for a refused dial — `ensureViewer()` had built the
+            // window and nothing had ever revealed it: "Connection Failed"
+            // rendered into a window nobody could see, and dismissing the
+            // alert left the person with no explanation at all. A reconnect
+            // was fine only because the window was already up.
+            viewerWindow?.orderFrontRegardless()
+            viewerWindow?.makeKeyAndOrderFront(nil)
             presentError(.connectionFailed(host: host, underlying: error))
         }
     }

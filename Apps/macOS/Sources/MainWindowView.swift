@@ -717,6 +717,22 @@ private struct ShareLinkCard: View {
                 EmptyView()
             }
 
+            // Why the last link-only start did not happen, under the button
+            // that would try again.
+            //
+            // The hub's share card carries this too, but the hub is not where
+            // a signed-out start lands: that flow comes back HERE, and
+            // without this the alert was the whole explanation and it is
+            // dismissed and gone. The GTK hub says it through
+            // `welcomeShareNote` and the WinUI one through `shareNote`; this
+            // is the third, off the same `failureReason`.
+            if let why = appState.sharingState.failureReason {
+                Text(L("Share failed: \(why)"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Text(L("Guests join over an encrypted tunnel, and the sharer approves every one."))
                 .font(.caption)
                 .foregroundStyle(.tertiary)

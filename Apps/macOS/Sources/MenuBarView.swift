@@ -53,7 +53,15 @@ struct MenuBarView: View {
         // Signed out but SHARING (a guest-only, link-only share) → the full
         // popover: the sharing card is the sharer tool, and its approval
         // prompts must be reachable regardless of sign-in state.
-        if !appState.tailscaleAuth.isAuthenticated && !appState.sharingState.isLive {
+        //
+        // `== .idle`, NOT `!isLive`, and this is the one gate in the app
+        // where the difference matters. Everywhere else the question is "is
+        // anything running"; here it is "is there anything to SAY". A failed
+        // link-only start has nothing running and plenty to say — its reason
+        // lives on the sharing card in this very popover — so routing it to
+        // the signed-out pointer buries the only explanation the person gets
+        // once the alert is dismissed.
+        if !appState.tailscaleAuth.isAuthenticated && appState.sharingState == .idle {
             SignedOutMenuView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
