@@ -2674,7 +2674,14 @@ class AppState: ObservableObject {
             viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
             await c.disconnect()
-            guard viewerPresentation.fail(String(describing: error), for: sessionID) else { return }
+            // Build the AppError FIRST and carry its message into the
+            // lifecycle. `String(describing:)` is an implementation detail —
+            // it was never on screen while a failure was projected to
+            // "connection lost", and making the failure its own visible
+            // state put the raw transport error in front of people, beside
+            // an alert wording the same failure properly.
+            let failure = AppError.connectionFailed(host: host, underlying: error)
+            guard viewerPresentation.fail(failure.message, for: sessionID) else { return }
             if client === c {
                 client = nil
             }
@@ -2690,7 +2697,7 @@ class AppState: ObservableObject {
             // was fine only because the window was already up.
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
-            presentError(.connectionFailed(host: host, underlying: error))
+            presentError(failure)
         }
     }
 
@@ -4129,12 +4136,6 @@ class AppState: ObservableObject {
             let node = try await getOrCreateNode()
             await tailscaleAuth.checkAuthStatus(node: node)
             if tailscaleAuth.isAuthenticated {
-                // Kept for the THROW, not the value: a node that
-                // authenticates but cannot report its own addresses is not a
-                // usable restore, and this is what makes that land in the
-                // catch below rather than presenting a signed-in hub over a
-                // node that is not really up.
-                _ = try await node.addrs()
                 noteProfileIdentityFromAuth()
                 logger.log("Restored signed-in Tailscale session")
             } else {
@@ -4177,12 +4178,6 @@ class AppState: ObservableObject {
             logger.log("Login completed, checking auth status...")
             // Update auth status after login
             await tailscaleAuth.checkAuthStatus(node: node)
-
-            // Kept for the THROW, not the value — the same post-bring-up
-            // liveness check `attemptSessionRestore` makes: a node that
-            // cannot report its own addresses fails the login rather than
-            // reporting success over a node that is not really up.
-            _ = try await node.addrs()
 
             // Label the active profile with the identity that just signed
             // in, so the account menu can name it while it's inactive.
