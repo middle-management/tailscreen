@@ -20,6 +20,11 @@ struct MainWindowView: View {
         VStack(spacing: 0) {
             HubHeader()
             Divider()
+            // Deliberately the two flags, not `appState.nodePhase`: this app
+            // renders an account switch as a pane of its own and a sign-in as
+            // a spinner on the card that started it, where the other two hubs
+            // show a status pane for both. Branching on `nodePhase.isSignedOut`
+            // here would put the hub up mid-sign-in. See `AppState.nodePhase`.
             if appState.isSwitchingProfile {
                 ProfileSwitchingPane()
             } else if appState.tailscaleAuth.isAuthenticated {
@@ -567,6 +572,29 @@ private struct WelcomeCard<Content: View>: View {
 private struct TailnetSignInCard: View {
     @EnvironmentObject var appState: AppState
 
+    /// The card's body copy: the pitch by default, or the reason the last
+    /// bring-up failed once there is one.
+    ///
+    /// Substituting rather than adding a line is what both other hubs do
+    /// (`welcomeTailnetMessage` on each), and it puts the reason on the card
+    /// whose button retries it instead of only in an alert that is dismissed
+    /// and gone. Hoisted out of the body so the pitch keeps its own
+    /// indentation — nested in the view tree the literal runs past the
+    /// formatter's column limit.
+    private var bodyCopy: String {
+        if let reason = appState.nodePhase.failureReason { return reason }
+        return L(
+            "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
+        )
+    }
+
+    /// The button's label: a retry once a bring-up has failed, the first-run
+    /// call to action otherwise. Named after the `HubSignInPane.signInLabel`
+    /// the other two hubs pass the same two strings into.
+    private var signInLabel: String {
+        appState.nodePhase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
+    }
+
     var body: some View {
         WelcomeCard {
             Label {
@@ -577,17 +605,13 @@ private struct TailnetSignInCard: View {
                     .foregroundStyle(Color.accentColor)
             }
 
-            Text(
-                L(
-                    "Every Tailscreen on your tailnet, listed by name — connect with one click, no link to pass around."
-                )
-            )
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(bodyCopy)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Group {
-                if appState.tailscaleAuth.isLoading {
+                if appState.nodePhase == .startingNode {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text(L("Signing in…"))
@@ -599,7 +623,7 @@ private struct TailnetSignInCard: View {
                     Button {
                         Task { await appState.initializeTailscaleAndLogin() }
                     } label: {
-                        Text(L("Sign in with Tailscale"))
+                        Text(signInLabel)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -1228,9 +1252,13 @@ private struct PeerListSection: View {
     /// Show the skeleton while there is nothing to list *and* no settled
     /// answer yet — a discovery pass is in flight, or the first frame
     /// rendered before `onAppear` could kick one off.
+    ///
+    /// That pair of conditions is exactly what `NodeBringUpPhase.discovering`
+    /// names, so this reads the phase rather than re-deriving it from the two
+    /// flags. Doing so also folds in the signed-in check, which this section
+    /// is already nested under and so cannot change the answer.
     private var showsLoadingSkeleton: Bool {
-        appState.availablePeers.isEmpty
-            && (appState.isDiscovering || !appState.hasCompletedInitialDiscovery)
+        appState.availablePeers.isEmpty && appState.nodePhase == .discovering
     }
 
     @ViewBuilder

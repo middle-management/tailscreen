@@ -810,6 +810,21 @@ class AppState: ObservableObject {
     /// answer yet", not "no devices". Reset on sign-out with the rest of
     /// the discovery state.
     @Published var hasCompletedInitialDiscovery = false
+    /// Why the last node bring-up failed, as the person is told it — the
+    /// payload of `NodeBringUpPhase.failed`.
+    ///
+    /// New here: this app reported a failed sign-in only as an alert, which
+    /// is dismissed and gone, so coming back to the welcome pane afterwards
+    /// showed the first-run wording for a tailnet that had just refused to
+    /// come up. Both other hubs put the reason on the card whose button
+    /// retries it, and now so does this one. The alert stays — it fires once,
+    /// at the moment of failure, and carries the `TS-AUTH-001` code; this is
+    /// the state that outlives it.
+    ///
+    /// Cleared when a fresh attempt starts and by every teardown, so a reason
+    /// can never outlive the attempt it describes or follow an account switch
+    /// into the next profile.
+    @Published private(set) var nodeFailure: String?
     private var peerDiscovery: TailscalePeerDiscovery?
     /// The node the current `peerDiscovery` (and its IPN watcher) is bound
     /// to. There's one tsnet node per process, but sign-out replaces it —
@@ -4049,6 +4064,11 @@ class AppState: ObservableObject {
             return
         }
         isLoggingIn = true
+        // A new attempt is not the old attempt's failure. Cleared here
+        // rather than on success so the reason goes the moment the retry
+        // starts, which is also what stops `nodeBringUpPhase` having to
+        // choose between a live sign-in and a stale reason.
+        nodeFailure = nil
         // Allow the IPN BrowseToURL handler to actually open a browser
         // tab — we're here because the user explicitly asked to sign in.
         interactiveLoginRequested = true
@@ -4083,6 +4103,13 @@ class AppState: ObservableObject {
             _ = silent
         } catch {
             logger.log("Login error: \(error)")
+            // Both, and they are not redundant: the alert fires once at the
+            // moment of failure and carries the error code, while this is
+            // the state the welcome pane reads afterwards — without it,
+            // returning to that pane showed first-run wording for a tailnet
+            // that had just refused to come up. Same key as the alert's own
+            // message, so the catalog gains nothing to translate.
+            nodeFailure = L("Failed to log in: \(error.localizedDescription)")
             presentError(.loginFailed(error))
         }
     }
@@ -4316,10 +4343,80 @@ class AppState: ObservableObject {
             peerShareInfo = [:]
             hasCompletedInitialDiscovery = false
             tailscaleIPs = []
+            nodeFailure = nil
 
         } catch {
             presentError(.signOutFailed(error))
         }
+    }
+
+    // MARK: - Node bring-up phase
+
+    /// Where this hub's tailnet node is, in the vocabulary all three hubs
+    /// share (`NodeBringUpPhase`, TailscreenProtocol).
+    ///
+    /// A **projection**, not a stored slot, and that is the difference
+    /// between this host and the other two. The GTK picker and the WinUI
+    /// hub own their bring-up state outright, so there the enum IS the
+    /// truth. Here the truth lives in `TailscaleAuth` — a portable object
+    /// this app shares rather than owns — plus the discovery flags. A
+    /// stored phase beside those would be one more value to keep in step
+    /// with `isAuthenticated`, i.e. exactly the two-values-that-can-disagree
+    /// problem that folding GTK's `signInNote` into `failed` removed. So the
+    /// hub reads its phase instead of maintaining one, and the mapping is
+    /// stated once, below, where a test can pin it.
+    ///
+    /// What this deliberately does NOT drive is which pane the window shows.
+    /// `MainWindowView` still branches on `isSwitchingProfile` and
+    /// `isAuthenticated`, because this app renders two of these phases
+    /// differently from the other two hubs — `startingNode` as a spinner on
+    /// the sign-in card that started it (they show a status pane), and an
+    /// account switch as a pane of its own. Both are presentation choices
+    /// layered on the phase, which is what `NodeBringUpPhase`'s own doc
+    /// comment says about the switching pane.
+    var nodePhase: NodeBringUpPhase {
+        Self.nodeBringUpPhase(
+            isAuthenticated: tailscaleAuth.isAuthenticated,
+            isSigningIn: tailscaleAuth.isLoading,
+            failure: nodeFailure,
+            isDiscovering: isDiscovering,
+            hasCompletedInitialDiscovery: hasCompletedInitialDiscovery)
+    }
+
+    /// The pure mapping behind `nodePhase`, extracted for the same reason
+    /// `canSwitchProfile` is: the precedence is the whole content, and read
+    /// off five booleans at a call site it is inferred rather than pinned.
+    ///
+    /// **Authenticated wins first, and that ordering is load-bearing.** The
+    /// obvious order — in-flight before settled — lets any window in which
+    /// `isLoading` is still set while `isAuthenticated` has already flipped
+    /// report `startingNode` for somebody who is signed in and looking at
+    /// their screens list. Everything gated on the phase would take that as
+    /// "not settled yet": the list would drop back to a spinner mid-session.
+    /// Reading the settled case first makes that unrepresentable rather than
+    /// merely unlikely.
+    ///
+    /// Among the signed-out cases a sign-in that is RUNNING outranks a
+    /// failure, so a retry shows its spinner rather than the reason it is
+    /// retrying. `login()` clears `nodeFailure` before it starts, so the two
+    /// should not overlap anyway; this is the belt to that's braces.
+    nonisolated static func nodeBringUpPhase(
+        isAuthenticated: Bool,
+        isSigningIn: Bool,
+        failure: String?,
+        isDiscovering: Bool,
+        hasCompletedInitialDiscovery: Bool
+    ) -> NodeBringUpPhase {
+        if isAuthenticated {
+            // The list is still being built on the first pass after bring-up
+            // — the same test the peer list's loading skeleton makes, now
+            // said once. An empty list before that pass is "no answer yet",
+            // never "no devices".
+            return isDiscovering || !hasCompletedInitialDiscovery ? .discovering : .ready
+        }
+        if isSigningIn { return .startingNode }
+        if let failure { return .failed(failure) }
+        return .signedOut
     }
 
     // MARK: - Account profiles
@@ -4368,6 +4465,11 @@ class AppState: ObservableObject {
         tailscaleIPs = []
         tailscaleAuth.isAuthenticated = false
         tailscaleAuth.userProfile = nil
+        // The reason belonged to the profile being left. Carrying it across
+        // would open the next account's welcome pane on the last one's
+        // failure — the account-boundary rule `forgetViewerForAccountTeardown`
+        // applies to reconnect identity, for the same reason.
+        nodeFailure = nil
     }
 
     /// True while a session is active enough that yanking the node out
