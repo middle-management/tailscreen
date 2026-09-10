@@ -13,6 +13,11 @@ public struct PickerContent: View {
     /// True once discovery has settled and there is a list to show; false while
     /// the node is coming up, discovering, or connecting.
     let isPicking: Bool
+    /// The first peer list is being built right now — render placeholder rows
+    /// rather than a lone status line. Distinct from `!isPicking`, which is
+    /// also true while the node is still coming up, when there is nothing to
+    /// promise rows about yet.
+    var isDiscovering = false
     let screens: [HubScreen]
     let loginURL: String?
     /// Handed the tapped screen's `id`, which the host resolves back to
@@ -60,6 +65,7 @@ public struct PickerContent: View {
         isPicking: Bool,
         screens: [HubScreen],
         loginURL: String?,
+        isDiscovering: Bool = false,
         autoExpandFirst: Bool = false,
         emptyMessage: String = L("No Tailscreen screens found on your tailnet."),
         emptyAction: HubAction? = nil,
@@ -74,6 +80,7 @@ public struct PickerContent: View {
     ) {
         self.statusLine = statusLine
         self.isPicking = isPicking
+        self.isDiscovering = isDiscovering
         self.screens = screens
         self.loginURL = loginURL
         self.emptyMessage = emptyMessage
@@ -125,6 +132,8 @@ public struct PickerContent: View {
                         listContent
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                } else if isDiscovering {
+                    HubScreenSkeleton()
                 } else {
                     HubStatusPane(status: statusLine)
                 }

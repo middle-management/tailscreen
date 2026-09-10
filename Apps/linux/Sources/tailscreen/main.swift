@@ -1574,6 +1574,14 @@ struct ViewerApp: App {
                     PickerContent(
                         statusLine: picker.statusLine,
                         isPicking: showingPickerList,
+                        // Placeholder rows while a list is being built. The
+                        // phase names the state, so there is nothing to
+                        // derive; `.discovering` already sets `isPicking`
+                        // false and takes the rows off screen, so this
+                        // changes what fills the gap rather than whether
+                        // there is one. The quiet 10 s re-list never enters
+                        // this phase and so never blanks anything.
+                        isDiscovering: picker.phase == .discovering,
                         screens: hubScreens,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,

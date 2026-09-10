@@ -404,6 +404,12 @@ struct TailscreenWindowsApp: App {
         return PickerContent(
             statusLine: state.status,
             isPicking: state.phase.isReady && !state.isSearching,
+            // This hub never enters `.discovering` — it goes straight to
+            // `ready` and reports its sweep through `isSearching` — so that
+            // flag is what names the state here. Ungated on purpose: a sweep
+            // already sets `isPicking` false and takes the rows off screen,
+            // so this changes what fills the gap, not whether there is one.
+            isDiscovering: state.isSearching,
             screens: state.hubScreens,
             loginURL: state.loginURL,
             emptyMessage: L("No Tailscreen screens found on your tailnet."),
