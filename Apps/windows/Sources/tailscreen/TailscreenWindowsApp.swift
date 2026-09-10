@@ -292,6 +292,14 @@ struct TailscreenWindowsApp: App {
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
+            // Something to say about a session that is still going — today
+            // the decode-stall ladder's last rung. Above the video and below
+            // the bar that can end it, so the sentence and the way out sit
+            // together; the picture underneath is untouched, which is the
+            // whole reason this is a strip and not a placard.
+            if let notice = state.viewerNotice {
+                ViewerNoticeBanner(message: notice) { model.viewerNotice = nil }
+            }
             // The annotation toolbar owns the stats toggle, which is why this
             // merge collapsed two of them into one. 4.3 landed a `Stats`
             // button in the top bar while this branch was open; keeping both
@@ -501,6 +509,17 @@ final class AppUIState: ObservableObject {
     /// beside it. Cleared when a fresh attempt starts, so a retry never
     /// carries the last one's reason.
     @Published var shareDetail: String?
+    /// A non-modal notice about a session that is still RUNNING — rendered as
+    /// a strip above the video by `ViewerNoticeBanner`, never in place of it.
+    /// Nil when there is nothing to say.
+    ///
+    /// Its own slot rather than `detail`, which is the HUB's line: the stall
+    /// notice used to be written there, on a surface that is not on screen
+    /// while this window is watching a stream, so the one thing it had to say
+    /// was said to nobody. It is not a `sessionPhase` case either — every
+    /// phase is a state the session is IN, and this is a remark about one
+    /// still in `viewing`.
+    @Published var viewerNotice: String?
     @Published var loginURL: String?
     /// The RAW discovery result. Stays unfiltered on purpose: the filter menu
     /// enumerates its tags, `connect(toID:)` resolves against it, and a filter
@@ -1514,6 +1533,7 @@ final class AppUIState: ObservableObject {
         let sessionID = viewerLifecycle.begin(target)
         status = L("Connecting to \(target.displayName)…")
         detail = ""
+        viewerNotice = nil
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
@@ -1524,6 +1544,14 @@ final class AppUIState: ObservableObject {
             // its C shim.
             let sink = FrameStoreVideoSink(
                 store: frameStore,
+                // What makes a stall RECOVERABLE rather than merely
+                // survivable: announcing one re-arms this latch, so the next
+                // frame that decodes takes the banner away by itself. A notice
+                // about a stream that is visibly running again is worse than
+                // no notice.
+                onFirstFrame: { [weak self] in
+                    Task { @MainActor in self?.viewerNotice = nil }
+                },
                 onFrame: { [weak self] in
                     Task { @MainActor in self?.frameGeneration &+= 1 }
                 },
@@ -1616,10 +1644,14 @@ final class AppUIState: ObservableObject {
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: { [weak self] in
                         guard let self, self.viewerLifecycle.isActive(sessionID) else { return }
-                        // Terminal rung: name the stall on the hub's detail
-                        // line — the same surface a decline or session error
-                        // uses — instead of a silently frozen last frame.
-                        self.detail = L(
+                        // Terminal rung: say so over the frozen frame. It used
+                        // to be written to `detail`, the hub's line, which is
+                        // not on screen while this window is watching — so the
+                        // stall was announced to nobody. Unlatch the sink
+                        // first, so a frame that decodes later re-announces
+                        // video and clears the banner by itself.
+                        sink.resetForNewSession()
+                        self.viewerNotice = L(
                             "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
                         )
                     }
@@ -1630,6 +1662,7 @@ final class AppUIState: ObservableObject {
             }
             sessionTask = nil
             detachVoice()
+            viewerNotice = nil
             // Before the status line, so a stale grant or armed tool can never
             // outlive the session that produced it.
             interaction.endSession()

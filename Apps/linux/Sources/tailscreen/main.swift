@@ -564,10 +564,12 @@ if gSelfTest {
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: {
                         guard gViewerLifecycle.isActive(sessionID) else { return }
-                        // Terminal rung: name the stall on the session placard
-                        // instead of leaving a frozen last frame. Unlatch the
-                        // sink first so a frame that somehow decodes later
-                        // re-announces video and clears the placard.
+                        // Terminal rung: say so over the frozen frame rather
+                        // than taking it away (`noteVideoStalled` owns that
+                        // rule, including the one case that still fails the
+                        // session). Unlatch the sink first, so a frame that
+                        // decodes later re-announces video and clears the
+                        // banner by itself.
                         sink.resetForNewSession()
                         gUIState.noteVideoStalled(
                             L(
@@ -1454,6 +1456,15 @@ struct ViewerApp: App {
                 .frame(maxWidth: .infinity)
                 .background(HubStyle.barFill)
                 Divider()
+                // Something to say about a session that is still going —
+                // today the decode-stall ladder's last rung. Above the video
+                // and below the bar that can end it, so the sentence and the
+                // way out sit together; the picture underneath is untouched,
+                // which is the whole reason this is a strip and not a placard.
+                if let notice = ui.notice {
+                    ViewerNoticeBanner(message: notice) { gUIState.notice = nil }
+                    Divider()
+                }
                 if ui.annotationsAvailable {
                     AnnotationToolbar(
                         activeTool: ui.activeTool,

@@ -24,6 +24,16 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// flows ("Connecting…", "Waiting for the sharer to accept…", etc.).
     @Published public var status = L("Connecting…")
 
+    /// A non-modal notice about a session that is still RUNNING — rendered as
+    /// a strip above the video by `ViewerNoticeBanner`, never in place of it.
+    /// Nil when there is nothing to say.
+    ///
+    /// Deliberately not a `sessionPhase` case: every phase is a state the
+    /// session is IN, and this is a remark about a session that is still in
+    /// `viewing`. The one thing that posts it today is the decode-stall
+    /// ladder's terminal rung, whose whole point is that the picture stays.
+    @Published public var notice: String?
+
     /// True once the sharer's HELLO_ACK advertised `ScreenShareCaps.remoteControl`
     /// (bit3) — the viewer only offers Request Control then, matching the mac
     /// viewer (a non-injection sharer omits the bit and we hide the affordance).
@@ -157,6 +167,7 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async {
             self.inSession = true
             self.hasVideo = false
+            self.notice = nil
             self.sessionPhase = .connecting
             self.controlState = .idle
             self.closeRequested = false
@@ -169,6 +180,7 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async {
             self.hasVideo = false
             self.inSession = false
+            self.notice = nil
             self.remoteControlAvailable = false
             self.annotationsAvailable = false
             self.controlState = .idle
@@ -202,8 +214,17 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     }
 
     /// Mark video as flowing on the main thread (safe to call from anywhere).
+    ///
+    /// Also clears any notice, which is what makes a stall RECOVERABLE rather
+    /// than merely survivable: the sink's first-frame latch is re-armed when
+    /// the stall is announced, so the next frame that decodes lands here and
+    /// takes the banner away by itself. A notice about a stream that is
+    /// visibly running again is worse than no notice.
     public func markVideoFlowing() {
-        DispatchQueue.main.async { self.hasVideo = true }
+        DispatchQueue.main.async {
+            self.hasVideo = true
+            self.notice = nil
+        }
     }
 
     /// Record the sharer's advertised capabilities (from admission) on the main
@@ -227,16 +248,33 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Video decoding has fatally stalled (the portable escalation ladder's
-    /// terminal rung): drop back to the session placard with `message`, so the
-    /// failure is a sentence rather than a silently frozen last frame — the
-    /// video branch wins on `hasVideo`, which is why it must flip too. If
-    /// decoding somehow recovers, the sink's next frame re-announces video and
-    /// the placard clears (the caller unlatches the sink alongside this).
+    /// Video decoding has fatally stalled — the portable escalation ladder's
+    /// terminal rung. Say so without taking the picture away.
+    ///
+    /// This used to flip `hasVideo` off and fail the session, which put the
+    /// sentence on the placard at the cost of the frozen last frame and of the
+    /// session's own UI — for a condition the ladder calls terminal only in
+    /// the sense that IT has run out of moves. One decode puts the stream
+    /// back, the last frame is still the most useful thing on screen until
+    /// then, and the macOS viewer has answered this with a non-modal banner
+    /// over the frame since it stopped raising alerts mid-session.
+    ///
+    /// The placard is still right when there is nothing to keep. On this host
+    /// `hasVideo` and the `viewing` phase flip together on the first decoded
+    /// frame (`GtkVideoSink`'s `onFirstFrame`), so a stall with `hasVideo`
+    /// false is a session that has never shown a frame at all — a decoder that
+    /// cannot read this stream, where a banner would hang over a connecting
+    /// spinner that is never going to resolve, with no Reconnect and no way
+    /// back. That case fails the session, as before. The Windows viewer needs
+    /// no such branch: its video surface is up from admission, so the banner
+    /// always has somewhere to be.
     public func noteVideoStalled(_ message: String) {
         DispatchQueue.main.async {
-            self.hasVideo = false
-            self.sessionPhase = .failed(message)
+            if self.hasVideo {
+                self.notice = message
+            } else {
+                self.sessionPhase = .failed(message)
+            }
         }
     }
 
