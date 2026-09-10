@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-isolation sil sil-isolation-report lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -215,6 +215,74 @@ endef
 # Existing violations are frozen in .swiftlint-baseline.json; only NEW
 # warnings/errors fail the run. Refresh baseline via `make lint-baseline`
 # after a real cleanup pass.
+# Reject closures that inherit actor isolation and are then handed to a
+# framework callback that fires off that actor — the SE-0423 dynamic executor
+# precondition, which is a SIGTRAP at runtime and, verified against Swift 6.3,
+# not a diagnostic at any strictness or under any frontend flag. Its own target
+# rather than a SwiftLint custom rule because the decision needs the enclosing
+# type's isolation and the enclosing function's `nonisolated`, which a regex
+# rule cannot see. No toolchain: python3 and the source tree.
+#
+# The fixtures run first. A checker that fails open turns "nobody looked" into
+# "CI says it is fine", and this one failed open twice while it was written.
+# The other half of the isolation gate, and the exact one. `lint-isolation`
+# looks for the SHAPE of the bug in source, against a list of framework
+# callbacks we happen to know about; this asks the COMPILER where it planted
+# an SE-0423 dynamic executor precondition, which is the bug itself. No API
+# list, no regex, and it names the closure.
+#
+# `-Xswiftc -emit-sil` prints SIL to stdout while STILL emitting objects and
+# modules, so the build is a real one — but it invalidates the normal build's
+# flags, hence its own scratch path rather than churning `.build`.
+#
+# `--target Tailscreen` is load-bearing, not a narrowing: `-Xswiftc` reaches
+# EVERY swiftc invocation, including the one that links the executable, and
+# `swiftc -emit-sil` handed a list of .o files fails with "unexpected input
+# file". Building the target rather than the product stops before the link,
+# while still compiling the app module and every library it depends on — so
+# the SIL stream covers more, not less. (A library-only package never hit
+# this: its dependencies are archived with `ar`, not linked with swiftc.)
+#
+# macOS only in practice: the trap needs an imported ObjC block, and the app
+# is where those are. Its own scratch path costs a full rebuild, which is why
+# this is not folded into `build`.
+SIL_SCRATCH := $(CURDIR)/Apps/macOS/.build-sil
+SIL_OUT := $(SIL_SCRATCH)/app.sil
+SIL_ERR := $(SIL_SCRATCH)/app.sil.err
+
+# SwiftPM writes its DIAGNOSTICS to stdout, which is also where the SIL goes —
+# so a plain redirect buries the compiler error in a 100MB file and leaves the
+# recipe failing with nothing on screen. Surface both streams on failure.
+sil: tailscale ## Build the app emitting SIL (into .build-sil/app.sil)
+	@mkdir -p $(SIL_SCRATCH)
+	@cd Apps/macOS && swift build --target Tailscreen --scratch-path $(SIL_SCRATCH) -Xswiftc -emit-sil \
+		> $(SIL_OUT) 2> $(SIL_ERR) || { \
+		echo "swift build -Xswiftc -emit-sil failed."; \
+		echo "--- stderr ---"; tail -40 $(SIL_ERR); \
+		echo "--- diagnostics found in the SIL stream ---"; \
+		grep -E "error:|warning:|fatal|Fatal|cannot|unsupported" $(SIL_OUT) | tail -40; \
+		exit 1; }
+	@echo "SIL: $(SIL_OUT) ($$(wc -l < $(SIL_OUT)) lines)"
+
+# Fixtures first, for the reason they exist in lint-isolation: a checker that
+# fails open turns "nobody looked" into "CI says it is fine". They need no
+# toolchain — the check keys on mangled symbols on purpose.
+#
+# REPORT only, and not in CI. This was built to be the exact gate and it
+# cannot be one: on the macOS app it reports 524 functions, of which 370 are
+# SwiftUI view bodies and ~150 are `filter`/`map`/`sort` closures handed to
+# the stdlib — all benign. See .claude/rules/ci.md for the numbers and why.
+# It answers one question well: run it either side of a change that adds a
+# framework callback, and diff.
+sil-isolation-report: sil ## List every SE-0423 precondition (diagnostic, not a gate)
+	@python3 scripts/test-sil-isolation.py
+	@python3 scripts/check-sil-isolation.py $(SIL_OUT) --report
+
+lint-isolation: ## Reject callbacks that inherit actor isolation (see scripts/)
+	@python3 scripts/test-callback-isolation.py
+	@python3 scripts/check-callback-isolation.py
+	@echo "callback isolation: clean"
+
 lint: ## Run SwiftLint (baseline-gated; new violations fail)
 	$(call require-pinned-swiftlint,\
 		"$$SWIFTLINT" lint --baseline .swiftlint-baseline.json --strict --quiet)

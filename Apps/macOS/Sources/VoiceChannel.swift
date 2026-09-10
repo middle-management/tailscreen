@@ -1180,8 +1180,19 @@ final class MicCapture {
         scheduledCount += 1
         pendingBuffers += 1
         let generation = playbackGeneration
-        player.scheduleBuffer(buffer) { [weak self] in
-            // Completion fires on AVAudioPlayer's render thread.
+        // AVFAudio runs this on its own `CompletionHandlerQueue`, never the
+        // main queue — and not only when a buffer finishes playing: a buffer
+        // still pending when `stop()` tears the node down is discarded, and
+        // the command destructor invokes the handler synchronously on that
+        // queue. `scheduleBuffer`'s handler isn't `@Sendable`, so the
+        // compiler infers MainActor isolation from this class and Swift 6's
+        // runtime traps on the off-main executor check
+        // (dispatch_assert_queue_fail → SIGTRAP). Typing the closure
+        // `@Sendable` makes it non-isolated, so it runs on AVFAudio's queue
+        // with no executor assertion and the `Task` below does the hop — the
+        // same trap, and the same fix, as `installTap` and
+        // `SharerNoticeCenter.ensureAuthorization`.
+        let onBufferConsumed: @Sendable () -> Void = { [weak self] in
             // Hop to MainActor before mutating @MainActor state.
             Task { @MainActor [weak self] in
                 guard let self, self.playbackGeneration == generation else { return }
@@ -1195,6 +1206,7 @@ final class MicCapture {
                 }
             }
         }
+        player.scheduleBuffer(buffer, completionHandler: onBufferConsumed)
         // Defer the first play() until we have a small queue ahead.
         if !player.isPlaying && scheduledCount >= targetDepth {
             player.play()
@@ -1225,12 +1237,17 @@ final class MicCapture {
         }
         systemAudioPendingBuffers += 1
         let generation = playbackGeneration
-        player.scheduleBuffer(buffer) { [weak self] in
+        // `@Sendable` for the reason `scheduleSamples`' handler is: AVFAudio
+        // calls it on its own queue (including synchronously from the command
+        // destructor when `stop()` discards a pending buffer), and an
+        // inferred-MainActor closure traps there under Swift 6.
+        let onBufferConsumed: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, self.playbackGeneration == generation else { return }
                 self.systemAudioPendingBuffers -= 1
             }
         }
+        player.scheduleBuffer(buffer, completionHandler: onBufferConsumed)
         // Defer the first play() until a small queue is buffered ahead.
         if !player.isPlaying && systemAudioPendingBuffers >= VoiceChannel.initialJitterTargetDepth {
             player.play()

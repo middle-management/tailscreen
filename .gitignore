@@ -1,5 +1,8 @@
 # Swift Package Manager
 .build/
+# `make sil` builds into its own scratch path: `-Xswiftc -emit-sil` changes
+# the flags, which would otherwise invalidate the normal build every time.
+.build-sil/
 .swiftpm/
 *.xcodeproj
 *.xcworkspace
