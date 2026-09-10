@@ -823,13 +823,18 @@ if gSelfTest {
         // — the node stays parked in `up()` waiting on exactly that page, so
         // the button opens it rather than starting a second bring-up behind
         // the first.
-        @Sendable func bringUp(profile: ViewerProfile, restoring: Bool = false) {
+        @Sendable func bringUp(
+            profile: ViewerProfile, restoring: Bool = false, switching: Bool = false
+        ) {
             Task { @MainActor in
                 await transport.teardown()
                 gPicker.loginURL = nil
                 gPicker.sharers = []
                 gPicker.shareInfo = [:]
                 gPicker.endDialing()
+                // Set on every path through here, so a plain sign-in after a
+                // switch clears it rather than inheriting the last one's word.
+                gPicker.isSwitchingAccount = switching
                 gPicker.phase = .startingNode
                 var config = baseConfig
                 config.statePath = stateDir(for: profile)
@@ -876,16 +881,20 @@ if gSelfTest {
         gSwitchProfile = { id in
             guard id != gProfiles.activeID else { return }
             gProfiles.setActive(id)
-            bringUp(profile: gProfiles.active)
+            bringUp(profile: gProfiles.active, switching: true)
         }
         gAddAccount = {
-            bringUp(profile: gProfiles.addProfile())
+            // Also a switch as far as the window is concerned: the node this
+            // one is on goes down and another comes up in its place.
+            bringUp(profile: gProfiles.addProfile(), switching: true)
         }
         // The welcome pane's button. A parked login URL means a node is
         // already blocked in `up()` waiting on that page — opening it is the
         // way through; a second bring-up would only queue behind it.
         gSignIn = {
             if gPicker.loginURL != nil {
+                // Not a switch: this is the parked login being opened.
+                gPicker.isSwitchingAccount = false
                 gPicker.phase = .startingNode
                 gOpenLogin?()
                 return

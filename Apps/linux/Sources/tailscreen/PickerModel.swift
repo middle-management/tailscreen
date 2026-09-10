@@ -43,6 +43,17 @@ final class PickerModel: ObservableObject {
     /// without claiming to be a bring-up state that it is not.
     @Published private(set) var isDialing = false
 
+    /// Whether the bring-up in flight is an ACCOUNT SWITCH rather than a
+    /// fresh sign-in.
+    ///
+    /// The phase cannot carry this and should not: `startingNode` is the
+    /// same state either way — a node coming up — and what differs is only
+    /// why, which is a sentence rather than a transition. macOS keeps the
+    /// same distinction beside its own phase (`isSwitchingProfile`); this is
+    /// its counterpart, and the WinUI hub says the same sentence through its
+    /// own `status` slot.
+    @Published var isSwitchingAccount = false
+
     @Published var sharers: [DiscoveredSharer] = []
     /// An interactive-login URL to show in-window (nil once logged in).
     @Published var loginURL: String?
@@ -171,6 +182,7 @@ final class PickerModel: ObservableObject {
         switch phase {
         case .signedOut: return L("Not signed in")
         case .startingNode:
+            if isSwitchingAccount { return L("Switching account…") }
             return loginURL == nil ? L("Starting Tailscale…") : L("Waiting for login…")
         case .discovering: return L("Looking for screens…")
         case .ready:
