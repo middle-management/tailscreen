@@ -656,6 +656,10 @@ class AppState: ObservableObject {
     /// viewer window between HELLO_PENDING and the first decoded frame.
     /// Hidden by default; toggled by `viewerAwaitingApproval`.
     private var viewerWaitingPlacard: NSView?
+    /// The placard's text field, so the one placard can say both of the
+    /// phases it now covers. Weak: the placard view owns it, and this app
+    /// holds the placard.
+    private weak var viewerPlacardLabel: NSTextField?
 
     /// Set by `onDeniedBySharer` when a HELLO_DENY arrives — including while
     /// `connect()` is still `.connecting`. Read once by `connect()` after
@@ -697,6 +701,43 @@ class AppState: ObservableObject {
         viewerPresentation.ending
     }
 
+    /// A terminal pane is on screen — ended OR failed. What the callers that
+    /// used to test `viewerSessionEnding != nil` meant before `failed` became
+    /// a state of its own rather than being reported as connection-lost.
+    var viewerSessionIsOver: Bool {
+        viewerPresentation.isOver
+    }
+
+    /// What the in-window placard says right now, or nil to hide it.
+    ///
+    /// Two phases, one placard. `connecting` is new here: it is the phase
+    /// every session passes through, and this app showed nothing for it —
+    /// the window title carried "Connecting to X…" over an empty window,
+    /// which is the one platform where that moment was invisible on the
+    /// surface being looked at.
+    private var viewerPlacardText: String? {
+        switch viewerPresentation.placardPhase {
+        case .connecting:
+            let host = viewerPresentation.lifecycle.target?.displayName ?? ""
+            return host.isEmpty ? L("Connecting…") : L("Connecting to \(host)…")
+        case .awaitingApproval:
+            return L("Waiting for the sharer to accept your connection…")
+        default:
+            return nil
+        }
+    }
+
+    /// The terminal pane's copy: an end reason worded by `sessionEndedPresentation`,
+    /// or a failure in its own words.
+    private func viewerTerminalPresentation() -> ViewerSessionEndedModel.EndedState? {
+        if let reason = viewerSessionEnding { return sessionEndedPresentation(reason) }
+        guard let message = viewerPresentation.failureMessage else { return nil }
+        // Its own title rather than "Session Ended": nothing ended, the
+        // session never opened. The alert still fires for the same failure —
+        // this is what stays on the window behind it.
+        return .init(title: L("Connection Failed"), message: message)
+    }
+
     /// True while the viewer session (current or connecting) runs over a
     /// guest tunnel. Drives the stats overlay's connection row and the
     /// join-flavored copy.
@@ -708,10 +749,10 @@ class AppState: ObservableObject {
     /// observe `ViewerPresentationState` themselves. Call once after every
     /// accepted lifecycle transition rather than maintaining parallel flags.
     private func syncViewerPresentationEffects() {
-        viewerWaitingPlacard?.isHidden = !viewerAwaitingApproval
-        viewerSessionEndedHost?.model.state = viewerSessionEnding.map {
-            sessionEndedPresentation($0)
-        }
+        let placardText = viewerPlacardText
+        viewerWaitingPlacard?.isHidden = placardText == nil
+        if let placardText { setViewerPlacardText(placardText) }
+        viewerSessionEndedHost?.model.state = viewerTerminalPresentation()
         viewerRenderer?.statsModel.isGuestSession = viewerIsGuestSession
         refreshViewerWindowTitle()
     }
@@ -1181,7 +1222,7 @@ class AppState: ObservableObject {
                     guard let self = self else { return }
                     if self.connectionState == .viewing {
                         await self.disconnect()
-                    } else if self.viewerSessionEnding != nil {
+                    } else if self.viewerSessionIsOver {
                         self.dismissViewerWindow()
                     }
                 }
@@ -3255,7 +3296,7 @@ class AppState: ObservableObject {
     /// viewing, controlling, and ended states can't disagree.
     private func refreshViewerWindowTitle() {
         guard let win = viewerWindow else { return }
-        if viewerSessionEnding != nil {
+        if viewerSessionIsOver {
             win.title = L("Session Ended")
             return
         }
@@ -5450,6 +5491,17 @@ class AppState: ObservableObject {
     /// translations grow it instead of truncating. Held by AppState and
     /// synchronized from the lifecycle by `syncViewerPresentationEffects`.
     @MainActor
+    /// Retitle the placard, and its VoiceOver group label with it.
+    ///
+    /// Both, or the two disagree: the group's label is what a screen reader
+    /// announces when focus lands on the placard, and a stale one would say
+    /// "waiting for the sharer" over a window that is still dialling.
+    private func setViewerPlacardText(_ text: String) {
+        guard viewerPlacardLabel?.stringValue != text else { return }
+        viewerPlacardLabel?.stringValue = text
+        viewerWaitingPlacard?.setAccessibilityLabel(text)
+    }
+
     private func makeWaitingPlacard() -> NSView {
         let effect = NSVisualEffectView()
         effect.material = .hudWindow
@@ -5466,8 +5518,12 @@ class AppState: ObservableObject {
         spinner.isIndeterminate = true
         spinner.startAnimation(nil)
 
+        // Seeded with the approval wording; `setViewerPlacardText` replaces
+        // it per phase, and the placard is hidden whenever there is no phase
+        // to say, so the seed is never what anybody reads.
         let waitingText = L("Waiting for the sharer to accept your connection…")
         let label = NSTextField(wrappingLabelWithString: waitingText)
+        viewerPlacardLabel = label
         label.alignment = .center
         label.font = .preferredFont(forTextStyle: .body)
         label.textColor = .labelColor
