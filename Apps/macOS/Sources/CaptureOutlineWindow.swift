@@ -179,9 +179,23 @@ final class CaptureOutlineWindow {
     /// Strokes the border inset by half the line width, so the whole stroke
     /// lands *inside* the panel. Stroking on the bounds edge would clip the
     /// outer half and render as a 2pt line that looks like a mistake.
+    ///
+    /// **No `isFlipped` override, deliberately.** The stroke is a rect inset
+    /// symmetrically from `bounds`, which is the same rect either way up, so
+    /// the override this view used to carry changed nothing on screen — and it
+    /// cost something real. An `@objc` member of a `@MainActor` type carries a
+    /// dynamic executor precondition, and `isFlipped` is asked for by AppKit's
+    /// hit-test/tracking machinery on every mouse move over this panel: a
+    /// borderless, `screenSaver`-level window covering the whole shared
+    /// region, i.e. most of where the pointer ever is. v0.10.0-rc.12 died
+    /// there (`swift_task_isCurrentExecutorWithFlags` → `swift_getObjectType`
+    /// on a wild pointer, SIGBUS, `_NSTrackingAreaAKManager` → hit test →
+    /// `isFlipped`). `draw(_:)` below is the one `@objc` member left and it is
+    /// reached from display, not from hit testing; before adding another, ask
+    /// whether AppKit calls it from a geometry path — `nonisolated` is the
+    /// escape hatch when the override is genuinely needed (see
+    /// `RemoteControlInputView`).
     private final class OutlineView: NSView {
-        override var isFlipped: Bool { true }
-
         override func draw(_ dirtyRect: NSRect) {
             let inset = CaptureOutlineWindow.lineWidth / 2
             let path = NSBezierPath(rect: bounds.insetBy(dx: inset, dy: inset))

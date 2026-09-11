@@ -270,7 +270,7 @@ MSIX install), and pasting always works:
   `tailscreen:` link or the bare token into it. Chrome, Edge and Firefox
   decode the share; Safari has not been checked yet. The page waits at the same
   approval placard, then shows the screen, plays audio once you click
-  **Enable audio** (browsers insist on a click), lets you **draw** when the
+  **Enable Audio** (browsers insist on a click), lets you **draw** when the
   sharer renders annotations and **request control** when the sharer can
   inject — the same capability gates as the apps. No microphone from a
   browser, and no zoom. Two things to know: the token stays in the URL

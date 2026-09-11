@@ -279,15 +279,19 @@ and its failure modes are mostly the browser's:
   decode; serve it over TLS, or use the single-file bundle
   (`make web-viewer-bundle`) straight from disk.
 - **Video but no sound.** Browsers refuse to play audio until the page has
-  been clicked; press **Enable audio**. If there is still nothing, the
-  Stats overlay's audio line says where it stops: `voice` and `system`
-  count the packets of each kind that arrived (zero means the sharer is
-  not sending that kind — the microphone is off, or Share System Audio
-  is), `decoded` counts what the browser turned into sound, and `ctx`
-  is the browser's audio output: `running` is right, `suspended` means
-  the browser is still blocking playback — click anywhere on the page,
-  and check the site's autoplay permission — and `unsupported` means
-  this browser has no WebCodecs audio decoder.
+  been clicked; press **Enable Audio**. If there is still nothing, the
+  Stats overlay's audio line says where it stops, left to right. `rtp` is
+  every audio packet that arrived, counted before the page decides what to
+  do with it: **`rtp 0` means nothing was sent**, so the answer is on the
+  sharer's machine — their microphone starts muted and stays muted until
+  they unmute it, and Share System Audio is a separate switch. Past that,
+  `voice` and `system` split what was accepted by kind, `decoded` counts
+  what the browser turned into sound, `MUTED` appears when the button on
+  this page is what is silencing it, and `ctx` is the browser's audio
+  output: `running` is right, `suspended` means the browser is still
+  blocking playback — click anywhere on the page, and check the site's
+  autoplay permission — and `unsupported` means this browser has no
+  WebCodecs audio decoder.
 - **It stutters more than the apps do.** A browser cannot hole-punch, so
   everything it receives crosses a DERP relay, at screen-share bitrate,
   for the whole session — and on a stream, packet loss shows up as delay

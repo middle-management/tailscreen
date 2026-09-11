@@ -42,7 +42,16 @@ final class RemoteControlInputView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     // Flipped so top-left origin matches the normalized video space.
-    override var isFlipped: Bool { true }
+    //
+    // `nonisolated` because AppKit asks for this from its hit-test and
+    // tracking-area machinery on every mouse move over the view, and an
+    // `@objc` member of a `@MainActor` type carries a dynamic executor
+    // precondition that is pure overhead on a getter returning a literal —
+    // the same frame v0.10.0-rc.12 crashed in on the capture outline (see
+    // `CaptureOutlineWindow.OutlineView`, which simply dropped its override).
+    // Returning a constant touches no state, so dropping the isolation is
+    // safe by inspection; the rest of this view stays `@MainActor`.
+    nonisolated override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 

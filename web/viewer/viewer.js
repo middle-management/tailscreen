@@ -316,7 +316,7 @@ class AudioPath {
     this.muted = false;
   }
 
-  // Called from the Enable audio click — the gesture browsers require before
+  // Called from the Enable Audio click — the gesture browsers require before
   // an AudioContext may run. The state is tracked because a context that
   // stays (or falls back to) "suspended" is the one failure that looks like
   // nothing: packets arrive, the decoder runs, and no sound comes out. So
@@ -365,6 +365,11 @@ class AudioPath {
       } catch (e) {
         if (!viewer.audioUnsupported) log(`audio decoder unavailable: ${e?.message ?? e}`);
         viewer.audioUnsupported = true;
+        // A decoder that fails on the first packet rather than at `enable()`
+        // leaves a button promising a mute that would do nothing.
+        setAudioLabel();
+        const b = $("btn-audio");
+        if (b) b.disabled = true;
         return;
       }
       this.decoders.set(fr.ssrc, d);
@@ -422,6 +427,27 @@ class AudioPath {
   }
 }
 
+// The page's one audio path, module-scoped so the button can be labelled
+// before a session exists (the bar is on screen from the first paint, join
+// field and all) — built in `run` once there is something to decode.
+let audio = null;
+
+// One place decides the audio button's words, so it can never say "system
+// audio" for a control that mutes the sharer's voice just as much, and so all
+// four states come out of the catalog instead of three out of it and one
+// hard-coded in English.
+const setAudioLabel = () => {
+  const b = $("btn-audio");
+  if (!b) return;
+  b.textContent = viewer.audioUnsupported
+    ? t("Audio Unavailable")
+    : !audio?.enabled
+      ? t("Enable Audio")
+      : audio.muted
+        ? t("Unmute Audio")
+        : t("Mute Audio");
+};
+
 // --- the session ---------------------------------------------------------------------------------
 
 async function run(token) {
@@ -436,7 +462,7 @@ async function run(token) {
 
   const session = tailscreenNewSession({});
   const video = new VideoPath(session, $("stage"));
-  const audio = new AudioPath();
+  audio = new AudioPath();
   const send = (dgram) => conn.write(tailscreenFrameEncode(MD, dgram)).catch(() => {});
 
   // Who are we watching? Same connection, answered on it (§13.2).
@@ -593,15 +619,14 @@ async function run(token) {
   $("btn-audio").onclick = () => {
     if (!audio.enabled) {
       if (!audio.enable()) {
-        $("btn-audio").textContent = "Audio unavailable";
+        setAudioLabel();
         $("btn-audio").disabled = true;
         return;
       }
-      $("btn-audio").textContent = t("Mute System Audio");
     } else {
       audio.muted = !audio.muted;
-      $("btn-audio").textContent = audio.muted ? "Unmute audio" : t("Mute System Audio");
     }
+    setAudioLabel();
   };
   $("btn-stats").onclick = () => ($("hud").hidden = !$("hud").hidden);
   $("btn-log").onclick = () => ($("log").hidden = !$("log").hidden);
@@ -650,8 +675,15 @@ async function run(token) {
         `${viewer.fps} fps  ${viewer.kbps} kbps  decoded ${viewer.decodedFrames}  dropped ${viewer.droppedAUs}  errors ${viewer.decodeErrors}\n` +
         `AUs ${s.stats.videoAUs}  key ${s.stats.keyframes}  torn ${s.stats.tornAUs}  gaps ${s.stats.skippedGaps}  ` +
         `PLI ${s.stats.pliSent}  RR ${s.stats.reports}\n` +
-        `audio voice ${viewer.audioVoice}  system ${viewer.audioSystem}  decoded ${viewer.audioPlayed}` +
+        // `rtp` is the RAW count of audio datagrams off the wire, before the
+        // enabled/muted gate in `AudioPath.handle` — without it "voice 0" is
+        // ambiguous between "the sharer's mic is muted, nothing was sent" and
+        // "packets are arriving and this page is dropping them", which is the
+        // first question anyone asks when a share is silent.
+        `audio rtp ${s.stats.rtpAudio}  voice ${viewer.audioVoice}  system ${viewer.audioSystem}  ` +
+        `decoded ${viewer.audioPlayed}` +
         (viewer.audioPlayErrors ? `  errors ${viewer.audioPlayErrors}` : "") +
+        (audio?.muted ? "  MUTED" : "") +
         `  ctx ${viewer.audioContextState ?? (viewer.audioUnsupported ? "unsupported" : "off")}`;
     }
   };
@@ -728,6 +760,7 @@ async function run(token) {
 (async () => {
   try {
     await loadStrings();
+    setAudioLabel();
     placard("Tailscreen", "Loading…");
     await loadWasm();
     const token = tokenFromLocation();
