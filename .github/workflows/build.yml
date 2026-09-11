@@ -784,6 +784,11 @@ jobs:
           # touching legs need the submodule, and cloning it costs the others
           # nothing they use.
           submodules: ${{ matrix.submodules || 'false' }}
+      - name: Use the runner-local apt mirror
+        # Same condition as the install below: a leg with nothing to install
+        # has no apt to speed up.
+        if: matrix.apt != ''
+        uses: ./.github/actions/apt-mirror
       - name: Install ${{ matrix.apt }}
         # The swift:*-noble images are slim, so every leg brings its own
         # system libraries. One apt invocation, one place to fix.
@@ -828,6 +833,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Use the runner-local apt mirror
+        uses: ./.github/actions/apt-mirror
       - name: Install build tools + A/V dev libraries
         # golang-go/make/gcc for the libtailscale c-archive (see
         # linux-tailscalekit); the rest are the viewer's decode/audio system
@@ -945,6 +952,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Use the runner-local apt mirror
+        uses: ./.github/actions/apt-mirror
       - name: Install build tools, A/V dev libraries, Xvfb, Node
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
@@ -994,6 +1003,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Use the runner-local apt mirror
+        uses: ./.github/actions/apt-mirror
       - name: Install GTK4 + GL + headless display + A/V + Go
         # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
         # its bindings); CGtkVideo links epoxy + gtk-4; the render self-test runs
