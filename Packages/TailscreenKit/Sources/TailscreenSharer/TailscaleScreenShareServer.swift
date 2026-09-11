@@ -353,6 +353,24 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private let viewers = Mutex<[String: Viewer]>([:])
     private let parameterSets = Mutex<CodecParameterSets?>(nil)
+    /// Consecutive media-send failures per viewer address, and whether we
+    /// have already said so. Touched ONLY when a send actually throws, so
+    /// the healthy path pays nothing.
+    ///
+    /// This exists because `try?` on the fan-out hid a whole class of
+    /// failure. Dropping a packet is normal — UDP loses one, a PLI asks for
+    /// a keyframe, the picture comes back. Failing EVERY packet is not: the
+    /// socket rejects each one (EMSGSIZE on a path that cannot carry a full
+    /// media datagram, ENOBUFS, a torn-down flow), the viewer stays in the
+    /// roster, the share card stays green, and the viewer sits on a black
+    /// window forever with nothing logged anywhere. A sharer cannot report
+    /// that and a maintainer cannot diagnose it.
+    private let mediaSendFailures = Mutex<[String: MediaSendFailureState]>([:])
+
+    struct MediaSendFailureState {
+        var consecutive = 0
+        var lastLoggedAt = 0
+    }
     /// Per-connection set of annotation UUIDs the viewer has produced.
     /// Keyed by the control-listener's connection UUID; the value is every
     /// annotation `.id` that's still considered live on this viewer's
@@ -2272,6 +2290,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             viewerCaps.withLock { $0[addr] = caps }
             registerOrRefresh(addr: addr, isNew: true)
+            // A fresh admission is judged on its own evidence.
+            clearMediaSendFailures(addr: addr)
             if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
                 let ack = helloAckDatagram(for: addr, ssrc: assignedSSRC)
                 Task { [weak self] in
@@ -2330,6 +2350,36 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // FEC parity is server→viewer only. Ignore from viewers.
             return
         }
+    }
+
+    /// Record a media-send failure and say so — the first one immediately,
+    /// then geometrically, so a persistent fault is loud once and quiet
+    /// after rather than a line per packet at video rates.
+    ///
+    /// Kept off the success path deliberately: clearing a counter per packet
+    /// would put a lock acquisition on the hot fan-out for a value almost
+    /// always zero. A run of failures that stops simply leaves its count
+    /// behind, which costs nothing and still reads correctly in the log.
+    private func noteMediaSendFailure(addr: String, error: Error) {
+        let shouldLog = mediaSendFailures.withLock { states -> Int? in
+            var state = states[addr] ?? MediaSendFailureState()
+            state.consecutive += 1
+            // 1, 10, 100, 1000, … — enough to prove it is systematic
+            // without flooding a log at several hundred packets a second.
+            let due = state.consecutive == 1 || state.consecutive == state.lastLoggedAt * 10
+            if due { state.lastLoggedAt = state.consecutive }
+            states[addr] = state
+            return due ? state.consecutive : nil
+        }
+        guard let count = shouldLog else { return }
+        logger.log(
+            "Media send to \(addr) FAILED \(count)x (viewer sees nothing): \(error)")
+    }
+
+    /// Forget a viewer's failure history — on admission and on removal, so a
+    /// reconnect is judged on its own evidence rather than the last one's.
+    private func clearMediaSendFailures(addr: String) {
+        mediaSendFailures.withLock { _ = $0.removeValue(forKey: addr) }
     }
 
     /// Build the HELLO_ACK for `addr`: the 6-byte extended form (carrying the
@@ -3169,6 +3219,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let removed = viewers.withLock { state -> Bool in
             state.removeValue(forKey: addr) != nil
         }
+        clearMediaSendFailures(addr: addr)
         if removed {
             // Prune the departed viewer's audio send chain (video chains
             // self-prune on the next broadcast's rebuild).
@@ -4035,8 +4086,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                     for (i, template) in templates.enumerated() {
                         var pkt = template
                         Self.rewriteRTPHeader(&pkt, sequence: startSeq &+ UInt16(i), ssrc: ssrc)
-                        // UDP is allowed to fail; a viewer PLI recovers it.
-                        try? await pl.send(pkt, to: addr)
+                        // Losing a packet is fine — a viewer PLI recovers
+                        // it. Failing to HAND IT TO THE SOCKET is not, and
+                        // `try?` here used to make the two indistinguishable.
+                        do {
+                            try await pl.send(pkt, to: addr)
+                        } catch {
+                            self?.noteMediaSendFailure(addr: addr, error: error)
+                        }
                         // Each group's parity goes out IMMEDIATELY after
                         // that group's last media packet — never after the
                         // whole batch. A keyframe batch can run to hundreds
