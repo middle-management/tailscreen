@@ -115,6 +115,8 @@ jobs:
           ref: ${{ inputs.ref }}
           submodules: recursive
 
+      - name: Use the runner-local apt mirror
+        uses: ./.github/actions/apt-mirror
       - name: Install GTK4 + GL + headless display + A/V + Go
         # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
         # its bindings); CGtkVideo links epoxy + gtk-4; the render self-test runs

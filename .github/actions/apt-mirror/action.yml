@@ -1,0 +1,96 @@
+name: Fast apt mirror
+description: >-
+  Point a container job's apt at the runner-local Ubuntu mirror, and bound
+  every fetch, so an install step cannot eat a job's whole timeout.
+
+# WHY THIS EXISTS.
+#
+# The Linux legs run inside `swift:6.3-noble` / `swift:6.3-jammy`, which are
+# plain Ubuntu images: their apt sources point at the GLOBAL
+# archive.ubuntu.com. The hosted runner underneath them is an Azure VM, whose
+# own image points at azure.archive.ubuntu.com — a mirror on the same network,
+# which is why the runner's host apt is fast and the container's is at the
+# mercy of whatever the global archive is doing today.
+#
+# On 2026-09-11 it was doing ~55 KB/s. `linux-tsan` spent 20 minutes (its
+# entire timeout) downloading gcc and golang-src, and `linux-app` spent 30,
+# both cancelled before a single test body ran, twice each. Nothing was wrong
+# with either PR.
+#
+# The cost of being wrong here is every Linux leg at once, so the swap checks
+# itself: it rewrites the sources, runs `apt-get update`, and puts the
+# originals back if that fails. A runner outside Azure, or a mirror having its
+# own bad day, therefore degrades to exactly today's behaviour rather than to
+# a red matrix.
+#
+# Call it AFTER actions/checkout (a local action has to be on disk) and BEFORE
+# the job's first apt-get. Once per job: it rewrites files, so later apt steps
+# in the same job inherit it.
+
+runs:
+  using: composite
+  steps:
+    - name: Point apt at the runner-local Ubuntu mirror
+      shell: bash
+      run: |
+        set -uo pipefail
+
+        if [ ! -w /etc/apt ]; then
+          echo "::notice::/etc/apt is not writable — keeping the default mirror"
+          exit 0
+        fi
+
+        # Bound every fetch for the rest of the job, mirror swap or not. A
+        # stalled connection is the failure mode that costs a whole timeout;
+        # three bounded tries beat one unbounded wait.
+        cat > /etc/apt/apt.conf.d/99-tailscreen-ci <<'CONF'
+        Acquire::Retries "3";
+        Acquire::http::Timeout "15";
+        Acquire::https::Timeout "15";
+        CONF
+
+        # noble keeps its sources in deb822 (/etc/apt/sources.list.d/ubuntu.sources)
+        # and leaves /etc/apt/sources.list as a comment pointing there; jammy
+        # uses the one-line format in sources.list. Rewrite whichever this
+        # image actually has, so one action covers both containers.
+        files=()
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+          files+=(/etc/apt/sources.list.d/ubuntu.sources)
+        fi
+        if grep -qs '^deb ' /etc/apt/sources.list; then
+          files+=(/etc/apt/sources.list)
+        fi
+
+        if [ ${#files[@]} -eq 0 ]; then
+          echo "::notice::no Ubuntu apt sources found — keeping the default mirror"
+          exit 0
+        fi
+
+        for f in "${files[@]}"; do
+          cp -a "$f" "$f.tailscreen-orig"
+          # security.ubuntu.com as well as archive: the Azure mirror carries
+          # the -security pocket too, and a job that fetches half its packages
+          # from the slow host has not been helped.
+          #
+          # `.tailscreen-orig` beside a file in sources.list.d/ is inert — apt
+          # reads only *.list and *.sources — but the successful path removes
+          # it anyway rather than leaving litter in /etc.
+          sed -i -E \
+            's,https?://(archive|security)\.ubuntu\.com/ubuntu,http://azure.archive.ubuntu.com/ubuntu,g' \
+            "$f"
+        done
+
+        if apt-get update -qq; then
+          for f in "${files[@]}"; do
+            rm -f "$f.tailscreen-orig"
+          done
+          echo "apt now fetching from azure.archive.ubuntu.com"
+        else
+          echo "::warning::azure.archive.ubuntu.com did not answer — restoring the default mirror"
+          for f in "${files[@]}"; do
+            mv -f "$f.tailscreen-orig" "$f"
+          done
+          # Leave the index in a usable state for the install step that follows;
+          # if this fails too, that step's own update will report it.
+          apt-get update -qq || true
+        fi
