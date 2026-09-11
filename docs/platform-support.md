@@ -58,7 +58,7 @@ what the partial case *is*, because that is the part a reader can act on.
 | `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² | ⚠️ the web link opens the page; `tailscreen:` needs an app |
 
 ³ Browsers refuse to play audio until the page has been clicked; the
-**Enable audio** button is that click. ⁴ In a browser, **Join** means opening
+**Enable Audio** button is that click. ⁴ In a browser, **Join** means opening
 the **web link** (`https://tailscreen.dev/view/#tc…`, from **Copy Web
 Link** on any of the three apps' share cards) — or
 opening the page bare and pasting any form of the link, or the bare

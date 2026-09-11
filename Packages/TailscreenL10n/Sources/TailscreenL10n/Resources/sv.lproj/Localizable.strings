@@ -676,3 +676,13 @@
 "Open the sign-in page" = "Öppna inloggningssidan";
 "Your saved Tailscale sign-in needs renewing." = "Din sparade Tailscale-inloggning behöver förnyas.";
 "Could not start Tailscale: %@" = "Kunde inte starta Tailscale: %@";
+
+/* MARK: - Browser viewer audio button (web/viewer/viewer.js).
+   The only keys in this catalog with no Swift call site — the page is the one
+   viewer with no app around it, and the only one whose audio starts off (a
+   browser will not run an AudioContext until someone clicks). Listed in
+   web/viewer/tools/strings.txt and in LocalizationCatalogTests. */
+"Enable Audio" = "Aktivera ljud";
+"Mute Audio" = "Stäng av ljud";
+"Unmute Audio" = "Slå på ljud";
+"Audio Unavailable" = "Ljud är inte tillgängligt";

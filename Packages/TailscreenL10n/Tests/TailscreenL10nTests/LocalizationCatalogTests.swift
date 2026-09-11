@@ -142,7 +142,18 @@ final class LocalizationCatalogTests: XCTestCase {
     /// Catalog keys that legitimately have no `L("…")` call site in any scanned
     /// tree. Each needs a reason: the point of the list is that it stays short
     /// enough to read, not that it absorbs whatever the test finds.
-    static let keysWithoutASwiftCallSite: Set<String> = []
+    static let keysWithoutASwiftCallSite: Set<String> = [
+        // The browser viewer's audio button (web/viewer/viewer.js, listed in
+        // web/viewer/tools/strings.txt). It is the one viewer with no app
+        // around it and the only one whose audio starts off — a browser will
+        // not run an AudioContext until someone clicks — so these four words
+        // exist nowhere in Swift. The page reads the same catalog through
+        // `export_strings.py`, which fails if a key here goes missing.
+        "Enable Audio",
+        "Mute Audio",
+        "Unmute Audio",
+        "Audio Unavailable"
+    ]
 
     /// A translation may lag the base catalog — a missing key falls back to
     /// English by design — but it may not contain keys the base does not, and

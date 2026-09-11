@@ -1,5 +1,8 @@
 # Catalog keys the browser viewer renders (see export_strings.py). Keys are
-# the English source text, exactly as the apps pass to L(...).
+# the English source text, exactly as the apps pass to L(...). A key only this
+# page says (the audio button) still lives in the catalog, and needs a line in
+# LocalizationCatalogTests.keysWithoutASwiftCallSite — that test scans Swift
+# trees, not this one.
 Connecting…
 Waiting for approval
 The sharer needs to accept you as a viewer.
@@ -13,7 +16,10 @@ Reconnect
 Watching %@
 Shared screen
 Stats
-Mute System Audio
+Enable Audio
+Mute Audio
+Unmute Audio
+Audio Unavailable
 Join a shared screen
 Paste a share link or token from the person sharing their screen.
 tailscreen: link or token
