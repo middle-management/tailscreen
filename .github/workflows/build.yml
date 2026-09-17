@@ -352,7 +352,16 @@ jobs:
           # PR. Free — no apt, no submodules, no Go, no libtailscale: the
           # package depends on Foundation and nothing at all.
           - name: linux-l10n
-            cmd: swift test --package-path Packages/TailscreenL10n
+            # Twice: once plain, once under TSan. The catalog is a
+            # process-wide singleton with a lazy first load, and this package
+            # carries its own copy of `Guarded` because it is deliberately
+            # dependency-free — so this is the only job that can observe that
+            # lock. Still free: the sanitised pass needs no apt, submodule or
+            # Go either, which is why it rides here rather than in linux-tsan
+            # (that leg builds TailscreenKit, a different package).
+            cmd: >-
+              swift test --package-path Packages/TailscreenL10n &&
+              swift test --package-path Packages/TailscreenL10n --sanitize=thread
 
           # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
           # libopus — see Packages/OpusKit/README.md) must build and pass its

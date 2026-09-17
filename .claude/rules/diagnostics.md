@@ -89,8 +89,8 @@ replacing the path wholesale would throw away the one value that lets two
 bundles show they used the same link; a login URL that also carried a token has
 an opaque `/a/<secret>` left after the subtraction and is still redacted.
 
-**Lock with `Guarded`, never `Synchronization.Mutex`** — and that is a
-repo-wide rule now, not a `Diagnostics/` one. TSan learns happens-before from
+**Never `Synchronization.Mutex`** — and that is a repo-wide rule now, not a
+`Diagnostics/` one. TSan learns happens-before from
 the pthread primitives it interposes on, not from `Mutex`'s futex, so it reads
 every `withLock` body as an unsynchronised access and reports a race on correct
 code; the cost that matters is that a `Mutex`-guarded type cannot be checked by

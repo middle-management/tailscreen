@@ -22,11 +22,20 @@ make test
 ## ThreadSanitizer (`linux-tsan`, and `test-tsan` on macOS)
 
 ```bash
+make tailscale   # once per checkout — see below
 PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
   swift test --package-path Packages/TailscreenKit --sanitize=thread
 ```
 
-That command IS the `linux-tsan` job. Unlike the macOS `test-tsan` job — which
+`make tailscale` first, and it is not optional on a fresh checkout: the
+`TailscreenSharerTests` bundle links `TailscreenSharer` → `TailscaleKit`, so
+`libtailscale.a` is a link-time input even though no test here calls tsnet.
+`PKG_CONFIG_PATH` only says where the archive *is*; without the build the link
+fails on `undefined reference to 'tailscale_close'` and friends, which reads
+like a broken toolchain rather than a missing step. (CI gets this from the leg's
+`libtailscale: host` bootstrap, which is why the job definition doesn't show it.)
+
+The `swift test` line is otherwise the `linux-tsan` job verbatim. Unlike the macOS `test-tsan` job — which
 runs the app target, trips over third-party C nothing here can fix
 (libtailscale's Go runtime, ScreenCaptureKit's XPC) and is `continue-on-error`
 for exactly that reason — this package imports no Apple framework and calls no
@@ -43,10 +52,22 @@ reports a **"Swift access race" inside the lock body**, on correct code.
 The noise is not the problem. The problem is that **a `Mutex`-guarded type is
 invisible to this gate**: it does not fail the check, the check has nothing to
 say about it, and a green `linux-tsan` is silent about every race it might
-hold. So the whole repo locks with `TailscreenProtocol.Guarded` — `Mutex`'s
-`withLock { $0 … }` shape over an `NSLock` — and `Guarded.swift` carries the
-argument. (`TailscreenL10n` keeps a private copy of the type; that package has
-no dependencies on purpose.)
+hold. So **no type in this repo is guarded by `Mutex` any more**:
+`TailscreenProtocol.Guarded` — `Mutex`'s `withLock { $0 … }` shape over an
+`NSLock` — replaced every one of them, and `Guarded.swift` carries the argument.
+(`TailscreenL10n` keeps a private copy of the type; that package has no
+dependencies on purpose.)
+
+This is a rule about `Mutex`, not a claim that everything is a `Guarded`.
+Plenty of production types hold a bare `NSLock` beside their state —
+`FrameStore`, `VoiceDownlink`, `DiagnosticsRecorder` and about thirty others —
+and that stays correct and is not a migration backlog: `NSLock` is what the
+sanitiser can see, which is the property this whole section is about. What
+`Guarded` adds on top is that the state cannot be reached without taking the
+lock, so it is the default for new lock-guarded state and the automatic answer
+for anything that was a `Mutex`. Reach for a bare `NSLock` when the locking
+genuinely isn't one scoped body — `DiagnosticsRecorder.record` releases early,
+`DiagnosticsBundle` guards two separate statics.
 
 Reproduce it in thirty seconds, with no repo code involved, in a throwaway
 package built with `swift build --sanitize=thread`:

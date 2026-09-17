@@ -90,6 +90,13 @@ test-differential: libtailscreen ## Run the Swift↔Go differential pipeline sui
 # Swift does; CI's linux-l10n job runs exactly this.
 test-l10n: ## Build + test the shared localization catalog package
 	swift test --package-path Packages/TailscreenL10n
+	# Again under ThreadSanitizer. The catalog is a process-wide singleton
+	# whose table is resolved lazily from whichever thread reads a label
+	# first, and this package keeps its OWN copy of `Guarded` (it has no
+	# dependencies on purpose) — so without this run that copy is the one
+	# lock in the repo no TSan job ever observes. Free to add: no apt, no
+	# submodule, no Go, just a second build of a Foundation-only package.
+	swift test --package-path Packages/TailscreenL10n --sanitize=thread
 
 # The protocol conformance vectors (conformance/), run against the Go
 # implementation in conformance/go — which was written from docs/spec.md and

@@ -173,9 +173,11 @@ Two things make a thread-safe type silently fall outside it:
   the pthread primitives it interposes on, not from `Mutex`'s futex, so it
   reads every `withLock` body as an unsynchronised access and reports a "Swift
   access race" on correct code — and a type it reports that way is one it
-  cannot verify at all. Lock with **`TailscreenProtocol.Guarded`** instead
-  (same `withLock { $0 … }` shape over an `NSLock`; a one-word change at the
-  declaration, none at the call sites). Checked on Swift 6.3 and a 6.5
+  cannot verify at all. Use **`TailscreenProtocol.Guarded`** instead (same
+  `withLock { $0 … }` shape over an `NSLock`; a one-word change at the
+  declaration, none at the call sites). A bare `NSLock` is fine too — it is
+  NSLock-backed either way that the sanitiser needs; the rule is about
+  `Mutex`, not about which NSLock-backed shape you pick. Checked on Swift 6.3 and a 6.5
   snapshot — this is not a toolchain bug to wait out.
 - **Nothing ever touches it from two threads.** The sanitiser only reports
   races it watches execute, so a lock-guarded type with a single-threaded

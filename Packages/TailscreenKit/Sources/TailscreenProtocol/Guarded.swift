@@ -4,8 +4,10 @@ import Foundation
 /// machinery: guarded state reachable only from inside `withLock`, but behind
 /// a lock ThreadSanitizer actually understands.
 ///
-/// **This is the lock to reach for in any type touched by more than one
-/// thread.** Not `Synchronization.Mutex`, for the reason below.
+/// **Never `Synchronization.Mutex`**, for the reason below — this type
+/// replaced every one the repo held. It is also the default for new
+/// lock-guarded state, though a bare `NSLock` beside the state it guards
+/// stays correct and stays common here (see *Why not a bare `NSLock`*).
 ///
 /// ### Why not `Synchronization.Mutex`
 ///

@@ -163,8 +163,10 @@ inside a `swift:6.3-noble` container on every PR — that job is what
    `Darwin` (use a Glibc shim behind `canImport`), no
    AppKit/VideoToolbox/CoreMedia/Combine (`PortabilityShims.swift`
    provides `ObservableObject`/`@Published` stand-ins off-Apple).
-2. **Lock with `Guarded`, not `Synchronization.Mutex`** (and not
-   `OSAllocatedUnfairLock`, which isn't portable anyway). `Guarded` —
+2. **Never `Synchronization.Mutex`** (and not `OSAllocatedUnfairLock`,
+   which isn't portable anyway) — use `Guarded`, which replaced every
+   `Mutex` the repo held and is the default for new lock-guarded state.
+   `Guarded` —
    `TailscreenProtocol/Guarded.swift` — is `Mutex`'s `withLock { $0 … }`
    shape over an `NSLock`, so switching is a one-word change at the
    declaration and nothing at the call sites. The reason is
