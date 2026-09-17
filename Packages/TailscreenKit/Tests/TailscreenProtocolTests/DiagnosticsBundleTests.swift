@@ -590,6 +590,70 @@ final class DiagnosticsBundleTests: XCTestCase {
             "a clock step inside one bundle defeated the handshake pairing")
     }
 
+    // MARK: - Sessions
+
+    /// **The pairing must not reach back into an earlier session.**
+    ///
+    /// A process shares or views several times and a bundle retains the last
+    /// few, so a session whose own HELLO was evicted — its prologue released
+    /// under the retention cap — still has its ACK. `last(where: seq <= ack)`
+    /// then happily walks back past the session boundary and pairs that ACK
+    /// with a HELLO from an hour earlier, producing an offset out by the whole
+    /// gap between them. Refusing is right: a confidently wrong clock
+    /// correction is worse than saying the two bundles could not be aligned.
+    func testHandshakePairingDoesNotReachIntoAnEarlierSession() {
+        func viewerEvent(
+            _ seq: UInt64, _ name: DiagnosticEventName, _ session: UInt32,
+            _ offset: TimeInterval, _ fields: [String: DiagnosticValue] = [:]
+        ) -> DiagnosticEvent {
+            DiagnosticEvent(
+                seq: seq, monotonicNs: UInt64(max(0, offset) * 1_000_000_000),
+                wallClock: epoch.addingTimeInterval(offset), session: session,
+                role: .viewer, category: name.category, name: name.rawValue,
+                severity: name.defaultSeverity, fields: fields)
+        }
+        // Session 0's HELLO survived; session 1's did not, but its ACK did.
+        let viewer = bundle(
+            role: .viewer, device: "viewer-pc",
+            events: [
+                viewerEvent(1, .helloSent, 0, 0),
+                viewerEvent(9, .helloAckReceived, 1, 3600.04, ["ssrc": .int(7)])
+            ])
+        let sharer = bundle(
+            role: .sharer, device: "sharer-mac",
+            events: [
+                event(
+                    seq: 1, .helloReceived, role: .sharer, atOffset: 3600.02,
+                    fields: ["addr": "100.64.0.3"]),
+                event(
+                    seq: 2, .helloAckSent, role: .sharer, atOffset: 3600.025,
+                    fields: ["ssrc": .int(7), "addr": "100.64.0.3"])
+            ])
+
+        XCTAssertNil(
+            DiagnosticsMerge.estimateOffset(of: viewer, against: sharer),
+            "paired an ACK with a HELLO from the previous session")
+    }
+
+    /// Applying one offset to a multi-session bundle is disclosed rather than
+    /// silently papered over — the later sessions are corrected by an estimate
+    /// taken during an earlier one.
+    func testASingleOffsetOverManySessionsIsDisclosed() {
+        let pair = handshakePair(skew: 2.5)
+        var viewer = pair.viewer
+        viewer.events.append(
+            DiagnosticEvent(
+                seq: 9, monotonicNs: 3_600_000_000_000,
+                wallClock: epoch.addingTimeInterval(3600), session: 1,
+                role: .viewer, category: DiagnosticEventName.transportSummary.category,
+                name: DiagnosticEventName.transportSummary.rawValue, severity: .info))
+
+        let timeline = DiagnosticsMerge.merge([pair.sharer, viewer])
+        XCTAssertTrue(
+            timeline.clockNotes.contains { $0.contains("applied to all of them") },
+            "\(timeline.clockNotes)")
+    }
+
     // MARK: - Holes in a stream
 
     /// **The rendered timeline must not present a hole as adjacency.** Once

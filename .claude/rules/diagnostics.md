@@ -156,6 +156,16 @@ because the start paths can run back to back on a failed start and a retry.
 A released prologue's events are counted into `droppedCount` like any other
 eviction.
 
+**Every event carries its session ordinal**, and it is exported. Without it the
+stream is one undifferentiated run: a reader cannot tell where the share that
+went wrong began — and "easy to follow" is the whole point of the format. The
+ordinal survives the retention cap rather than being renumbered down, so a
+bundle whose lowest session is 2 says two sessions were released instead of
+erasing that. It scopes to ONE bundle: the two sides number their sessions
+independently, and what joins them across machines is still the SSRC in the
+handshake. `renderTimeline` marks each boundary, per device and only on a
+change, so a single-session bundle says nothing about sessions at all.
+
 That split is also why `events()` **sorts by `seq`** rather than concatenating
 the two containers. Once a second prologue exists they interleave in time —
 session one's tail is in the ring, session two's opening events are in a
@@ -278,6 +288,15 @@ Two things the merge has to get right and can get wrong silently:
   datagrams, and it can make the round trip come out negative and have the
   alignment refuse a perfectly good handshake. The proactive ack is gated on
   `!isNew`.
+- **Scope the pairing to the ack's own session.** A session whose HELLO was
+  evicted still has its ACK, and `last(where: seq <= ack)` walks straight back
+  past the boundary and pairs it with an hour-old HELLO from the previous
+  share — an offset out by the whole gap. Refusing to align is right there: a
+  confidently wrong correction is worse than none. Note what this does NOT
+  fix — sessions are per bundle, so an SSRC that repeats across the two sides'
+  independently-numbered sessions is still ambiguous across bundles. Closing
+  that needs an identifier on the wire, which is the OTLP trace-context
+  endgame under *Formats* and deliberately not today's answer.
 - **Pair the sharer's HELLO by `addr`, not just by time.** A share with several
   people joining at once has many `hello.received` interleaved, and the latest
   one before the ack is frequently a different viewer's retry — giving an offset

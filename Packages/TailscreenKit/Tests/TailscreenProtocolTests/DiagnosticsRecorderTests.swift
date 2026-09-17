@@ -342,6 +342,56 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().droppedCount, 0)
     }
 
+    /// Events carry the session they belong to, and `beginSession` advances
+    /// it. Without this the exported stream is one undifferentiated run: a
+    /// reader cannot tell where the share that went wrong began, and the merge
+    /// has nothing to scope a handshake pairing to.
+    func testEventsCarryTheirSession() {
+        let recorder = makeRecorder(prologue: 8, ring: 8)
+        recorder.record(.helloSent)
+        recorder.beginSession()
+        recorder.record(.helloSent)
+        recorder.beginSession()
+        recorder.record(.helloSent)
+
+        XCTAssertEqual(recorder.events().map(\.session), [0, 1, 2])
+    }
+
+    /// The ordinal survives the retention cap rather than being renumbered
+    /// down. A bundle whose lowest session is 2 is saying two sessions were
+    /// released — renumbering to 0 would erase that, and quietly.
+    func testSessionOrdinalsSurviveTheRetentionCap() {
+        let recorder = DiagnosticsRecorder(
+            defaultRole: .sharer,
+            deviceLabel: "test-device",
+            enabled: true,
+            prologueCapacity: 2,
+            ringCapacity: 16,
+            retainedSessionPrologues: 2)
+        for _ in 0..<3 {
+            recorder.record(.helloSent)
+            recorder.beginSession()
+        }
+        recorder.record(.helloSent)
+
+        // Sessions 0 and 1 were released by the cap; what is left is numbered
+        // 2 and 3, NOT renumbered down to 0 and 1.
+        XCTAssertEqual(recorder.events().map(\.session), [2, 3])
+        XCTAssertEqual(recorder.snapshot().droppedCount, 2)
+    }
+
+    /// A repeated `beginSession` with nothing in between does not advance it
+    /// either — same rule as the prologue it rides on.
+    func testRepeatedBeginSessionDoesNotAdvanceTheOrdinal() {
+        let recorder = makeRecorder()
+        recorder.record(.helloSent)
+        recorder.beginSession()
+        recorder.beginSession()
+        recorder.record(.helloSent)
+
+        XCTAssertEqual(recorder.events().map(\.session), [0, 1])
+    }
+
     // MARK: - Staging the export marker
 
     /// The marker is staged into the SNAPSHOT and never committed. A write

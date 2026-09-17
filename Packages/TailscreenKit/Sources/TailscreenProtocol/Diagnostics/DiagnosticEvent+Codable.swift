@@ -9,13 +9,14 @@ import Foundation
 //
 //     {"at":"2026-09-17T10:04:02.117Z","category":"handshake","elapsed_ms":1841.2,
 //      "event":"hello.ack.sent","fields":{"addr":"100.64.0.3","caps":"nack|rr|fec","ssrc":2},
-//      "role":"sharer","seq":42,"severity":"info"}
+//      "role":"sharer","seq":42,"session":0,"severity":"info"}
 //
 // (`sortedKeys` puts them in alphabetical order, which is why `at` leads.)
 
 extension DiagnosticEvent: Codable {
     enum CodingKeys: String, CodingKey {
         case seq
+        case session
         case elapsedMs = "elapsed_ms"
         case at
         case role
@@ -28,6 +29,10 @@ extension DiagnosticEvent: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(seq, forKey: .seq)
+        // Always written, even for the common single-session bundle. This is a
+        // key a reader FILTERS on — "show me only the share that failed" — and
+        // a key that is absent until it matters is one nobody discovers.
+        try container.encode(session, forKey: .session)
         // Milliseconds with one decimal, not raw nanoseconds. This is the
         // column a reader's eye actually runs down — "how long after the start
         // did this happen" — and 1841.2 answers it at a glance where
@@ -51,6 +56,9 @@ extension DiagnosticEvent: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         seq = try container.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
+        // Absent in bundles written before sessions were stamped, which read
+        // correctly as the one session they in fact describe.
+        session = try container.decodeIfPresent(UInt32.self, forKey: .session) ?? 0
         // Clamped, not converted directly. `UInt64(someDouble)` TRAPS for NaN,
         // infinity, and anything past `UInt64.max` — and `"elapsed_ms":1e300`
         // is valid JSON that reaches here, so a bundle from a corrupt writer or

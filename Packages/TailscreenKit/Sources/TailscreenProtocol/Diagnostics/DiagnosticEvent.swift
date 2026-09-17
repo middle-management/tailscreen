@@ -60,6 +60,24 @@ public struct DiagnosticEvent: Sendable, Equatable {
     /// orders by it.
     public var wallClock: Date
 
+    /// Which session of this process the event belongs to, from 0.
+    ///
+    /// A process shares and views more than once, and every one of those is a
+    /// separate story about a separate pair of machines. Without this the
+    /// exported stream is one undifferentiated run: a reader cannot tell where
+    /// the share that went wrong began, and the merge could pair a HELLO from
+    /// one session with the ACK of another if an SSRC ever repeated — a
+    /// confidently wrong clock correction built out of two unrelated
+    /// handshakes.
+    ///
+    /// An ordinal rather than a UUID, because it is read by a person and an
+    /// agent far more often than it is joined on, and `session=2` is
+    /// legible where a random 128-bit value is not. It scopes to ONE bundle:
+    /// the two sides of a share number their sessions independently, and the
+    /// thing that joins them across machines is still the SSRC in the
+    /// handshake. ``DiagnosticsRecorder/beginSession()`` advances it.
+    public var session: UInt32
+
     /// Which half of the session recorded this.
     public var role: DiagnosticRole
 
@@ -80,6 +98,7 @@ public struct DiagnosticEvent: Sendable, Equatable {
         seq: UInt64,
         monotonicNs: UInt64,
         wallClock: Date,
+        session: UInt32 = 0,
         role: DiagnosticRole,
         category: DiagnosticCategory,
         name: String,
@@ -89,6 +108,7 @@ public struct DiagnosticEvent: Sendable, Equatable {
         self.seq = seq
         self.monotonicNs = monotonicNs
         self.wallClock = wallClock
+        self.session = session
         self.role = role
         self.category = category
         self.name = name

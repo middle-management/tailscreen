@@ -121,6 +121,40 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertTrue(rows[gapRow].contains("pc"), rows[gapRow])
     }
 
+    /// A session boundary is marked where one share gives way to the next.
+    /// Without it the stream reads as one long run and a reader draws
+    /// conclusions between two events belonging to different shares.
+    func testSessionBoundaryIsMarked() throws {
+        var second = line(device: "pc", .helloSent, at: 30)
+        second.event.session = 1
+        let rendered = DiagnosticsExport.renderTimeline(
+            DiagnosticsMerge.Timeline(
+                lines: [line(device: "pc", .helloSent, at: 0), second],
+                referenceDevice: "pc",
+                clockNotes: []))
+        let rows = rendered.split(separator: "\n").map(String.init)
+
+        let marker = try XCTUnwrap(
+            rows.firstIndex { $0.contains("session 1 begins") }, rendered)
+        let following = try XCTUnwrap(
+            rows.lastIndex { $0.contains("hello.sent") }, rendered)
+        XCTAssertEqual(marker + 1, following)
+    }
+
+    /// The ordinary single-session bundle says nothing about sessions at all.
+    func testASingleSessionRendersNoBoundary() {
+        let rendered = DiagnosticsExport.renderTimeline(
+            DiagnosticsMerge.Timeline(
+                lines: [
+                    line(device: "pc", .helloSent, at: 0),
+                    line(device: "pc", .helloAckReceived, at: 1)
+                ],
+                referenceDevice: "pc",
+                clockNotes: []))
+
+        XCTAssertFalse(rendered.contains("session"), rendered)
+    }
+
     /// A complete recording says nothing about drops. A timeline that cried
     /// loss on an intact one would cost a reader's trust in the marker exactly
     /// when it does appear.

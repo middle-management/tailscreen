@@ -166,6 +166,24 @@ public enum DiagnosticsMerge {
                         + "its timestamps are shown as recorded and may be skewed.")
             }
 
+            // Disclosed rather than silently papered over. ONE offset is
+            // estimated per bundle, from one handshake, and applied to every
+            // session in it — so on a bundle spanning several sessions the
+            // later ones are corrected by an estimate taken during an earlier
+            // one, off by whatever the two clocks drifted in between. Drift
+            // over an hour is milliseconds and the sessions are usually
+            // minutes apart, so a per-session offset would be machinery for a
+            // correction smaller than the round trip already quoted beside it
+            // — but a reader comparing two sessions to the millisecond deserves
+            // to know which one the number came from.
+            let sessions = Set(bundle.events.map(\.session))
+            if sessions.count > 1, offset != 0 {
+                notes.append(
+                    "\(bundle.header.device): that offset was measured in one of "
+                        + "\(sessions.count) sessions and applied to all of them; sessions far "
+                        + "apart in time may have drifted since.")
+            }
+
             // Each side is replayed from ONE wall-clock anchor plus its own
             // monotonic elapsed, not from each event's recorded wall clock.
             // The anchor is derived from the HANDSHAKE, not from the session
@@ -341,14 +359,24 @@ public enum DiagnosticsMerge {
             // not happen. The four timestamps below are still wall clocks,
             // because the offset is a statement about wall clocks; it is only
             // the SELECTION that must not be.
+            //
+            // And both are scoped to the ack's own SESSION. A process shares or
+            // views several times, and a bundle retains the last few, so
+            // without this the pairing could reach back into an earlier
+            // session's HELLO — two unrelated handshakes averaged into one
+            // confidently wrong offset. The scope is per bundle, since the two
+            // sides number their sessions independently; what joins them across
+            // machines is still the SSRC.
             let ackAddr = ackSent.fields["addr"]
             guard
                 let helloSent = client.events.last(where: {
                     $0.name == DiagnosticEventName.helloSent.rawValue
+                        && $0.session == ackReceived.session
                         && $0.seq <= ackReceived.seq
                 }),
                 let helloReceived = server.events.last(where: {
                     $0.name == DiagnosticEventName.helloReceived.rawValue
+                        && $0.session == ackSent.session
                         && $0.seq <= ackSent.seq
                         // Older bundles predate the addr field on one side or
                         // the other; falling back to time-only there keeps them

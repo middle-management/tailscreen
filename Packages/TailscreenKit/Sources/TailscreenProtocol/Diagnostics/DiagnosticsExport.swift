@@ -126,8 +126,21 @@ public enum DiagnosticsExport {
             }
         }
 
+        // Where one device's session gives way to the next. A process shares
+        // or views several times and a bundle retains the last few, so without
+        // this the stream reads as one long run and a reader draws conclusions
+        // between two events belonging to different shares. Per device, and
+        // only on a CHANGE, so the ordinary single-session bundle says nothing.
+        var lastSession: [String: UInt32] = [:]
         for line in timeline.lines {
             emitGaps(upTo: line.event.wallClock)
+            if let previous = lastSession[line.device], previous != line.event.session {
+                out += String(
+                    format: "%@ %9.3fs  ", " ",
+                    line.event.wallClock.timeIntervalSince(start))
+                out += "=== \(line.device): session \(line.event.session) begins ===\n"
+            }
+            lastSession[line.device] = line.event.session
             let offset = line.event.wallClock.timeIntervalSince(start)
             let marker: String
             switch line.event.severity {

@@ -83,6 +83,11 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         /// is the exact failure the one-lock-acquisition marker design exists
         /// to prevent.
         var generation: UInt64 = 0
+        /// Which session events are stamped with now. Advances with each
+        /// prologue, so it survives the retention cap: the ordinals a bundle
+        /// carries stay the ones the process actually used, and a bundle whose
+        /// lowest is 3 says so rather than renumbering the loss away.
+        var session: UInt32 = 0
         /// One prologue per session, oldest first. See ``beginSession()``.
         var prologues: [[DiagnosticEvent]] = [[]]
         /// Fixed-size circular storage. `ringStart` is the index of the oldest
@@ -253,6 +258,7 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         state.prologues = [[]]
+        state.session = 0
         state.ring.removeAll(keepingCapacity: true)
         state.ringStart = 0
         state.nextSeq = 1
@@ -278,6 +284,7 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         // An untouched trailing segment is reused rather than stacked, so a
         // host that calls this twice before anything happens gets one session.
         if state.prologues.last?.isEmpty == true { return }
+        state.session &+= 1
         state.prologues.append([])
         while state.prologues.count > retainedSessionPrologues {
             let dropped = state.prologues.removeFirst()
@@ -368,6 +375,7 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
             seq: state.nextSeq,
             monotonicNs: elapsed,
             wallClock: wall,
+            session: state.session,
             role: pending.role,
             category: name.category,
             name: name.rawValue,
@@ -492,6 +500,7 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
                 seq: state.nextSeq,
                 monotonicNs: mono >= start ? mono &- start : 0,
                 wallClock: wall,
+                session: state.session,
                 role: defaultRole,
                 category: name.category,
                 name: name.rawValue,
