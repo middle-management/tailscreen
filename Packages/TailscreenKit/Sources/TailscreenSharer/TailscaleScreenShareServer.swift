@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import TailscaleKit
 import TailscreenProtocol
 import TailscreenTransport
@@ -117,7 +116,7 @@ public struct PendingViewerInfo: Sendable, Identifiable, Hashable {
 }
 
 /// `@unchecked Sendable`: every mutable field lives behind a
-/// `Synchronization.Mutex` — the roster/policy/adaptive state each behind
+/// `Guarded` — the roster/policy/adaptive state each behind
 /// its own, and the share's lifecycle state (node, listeners, capture
 /// backend, `isRunning`) together behind the single `lifecycle` lock —
 /// with one deliberate exception: the public callback properties
@@ -208,7 +207,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// order, before its first encoded AU broadcasts.
         var helperCodec: VideoCodec?
     }
-    private let lifecycle = Mutex<Lifecycle>(Lifecycle())
+    private let lifecycle = Guarded<Lifecycle>(Lifecycle())
 
     /// The tsnet node the share is running on (nil when stopped). Backed by
     /// the guarded lifecycle storage; the setter exists to keep the public
@@ -248,9 +247,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // At least one socket, or nil: a stopped share must read as nil
             // so every send site no-ops instead of holding an empty pair.
             guard lc.packetListener != nil || lc.guestPacketListener != nil else { return nil }
-            // `guestAddrs` is a ~Copyable Mutex, so the closure captures self
-            // (weakly — a snapshot outliving the server routes to primary,
-            // whose send then fails the same way it always has).
+            // The closure captures self weakly rather than `guestAddrs`
+            // directly — a snapshot outliving the server then routes to
+            // primary, whose send fails the same way it always has.
+            // (`guestAddrs` was a ~Copyable `Mutex` when this was written,
+            // which forced the capture; `Guarded` is a class and would
+            // allow either, but weak-self is still the behaviour wanted.)
             return MediaSockets(
                 primary: lc.packetListener,
                 guest: lc.guestPacketListener,
@@ -351,8 +353,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         var info: ViewerInfo
     }
 
-    private let viewers = Mutex<[String: Viewer]>([:])
-    private let parameterSets = Mutex<CodecParameterSets?>(nil)
+    private let viewers = Guarded<[String: Viewer]>([:])
+    private let parameterSets = Guarded<CodecParameterSets?>(nil)
     /// Per-connection set of annotation UUIDs the viewer has produced.
     /// Keyed by the control-listener's connection UUID; the value is every
     /// annotation `.id` that's still considered live on this viewer's
@@ -366,7 +368,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// UUID so the sharer's overlay (and every other viewer, via
     /// `broadcastAnnotation`) stops showing strokes nobody is around to
     /// clean up.
-    private let annotationsByConnection = Mutex<[UUID: Set<UUID>]>([:])
+    private let annotationsByConnection = Guarded<[UUID: Set<UUID>]>([:])
 
     /// Maps a TCP annotation connection's `UUID` to the peer IP it dialed
     /// from (stripped of the ephemeral port). Populated on the first
@@ -376,7 +378,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// UDP, so without this a pending/denied/blocked peer could still inject
     /// annotations over TCP), and lets `expelViewer` sever a blocked peer's
     /// back-channel by IP.
-    private let annotationConnectionIP = Mutex<[UUID: String]>([:])
+    private let annotationConnectionIP = Guarded<[UUID: String]>([:])
 
     /// One annotation fan-out, and the ordered outbox in front of it.
     ///
@@ -402,7 +404,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     }
     private let annotationOutbox: AsyncStream<AnnotationBroadcast>
     private let annotationOutboxContinuation: AsyncStream<AnnotationBroadcast>.Continuation
-    private let annotationDrain = Mutex<Task<Void, Never>?>(nil)
+    private let annotationDrain = Guarded<Task<Void, Never>?>(nil)
 
     /// Test-only: fires for each op as the drain takes it, in fan-out order,
     /// before the (listener-less, and so no-op) broadcast. Lets a test assert
@@ -418,7 +420,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `RemoteControlPolicy.shouldInject`), so a NAT rebind can't inherit it
     /// and a non-grantee can't inject. At most one grant exists — granting a
     /// new viewer implicitly revokes the old.
-    private let controlGrant = Mutex<GrantState>(GrantState())
+    private let controlGrant = Guarded<GrantState>(GrantState())
 
     /// `TAILSCREEN_DEBUG_INPUT=1` arrival statistics: the gap since the
     /// previous input event, and a 1 Hz summary. The far end of the viewer's
@@ -430,7 +432,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         var lastNs: UInt64?
         var sampler = InputDebugLog.Sampler()
     }
-    private let inputArrival = Mutex<InputArrivalState>(InputArrivalState())
+    private let inputArrival = Guarded<InputArrivalState>(InputArrivalState())
 
     /// Grant + a monotonic mutation counter, mutated under one lock so
     /// `notifyControlGrantChanged` can hand callbacks a `(generation,
@@ -446,10 +448,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     }
     /// Viewers that asked for control and are awaiting the sharer's Grant /
     /// Deny, keyed by their TCP control connection's `UUID`.
-    private let controlRequests = Mutex<[UUID: ControlRequestInfo]>([:])
+    private let controlRequests = Guarded<[UUID: ControlRequestInfo]>([:])
     /// Per-share event-rate ceiling on injected input (defense against a
     /// malicious grantee flooding the injector). Reset in `stop()`.
-    private let inputRateLimiter = Mutex<EventRateLimiter>(EventRateLimiter())
+    private let inputRateLimiter = Guarded<EventRateLimiter>(EventRateLimiter())
     /// Injects the grantee's events on this host, if this host can inject at
     /// all. Supplied by the embedder (macOS passes its `CGEvent` injector);
     /// `nil` means no remote control — the `.remoteControl` capability is then
@@ -457,11 +459,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// sending requests nothing can serve.
     private let remoteControlInjector: (any InputInjecting)?
     /// Log a dropped (non-grantee) input event at most once per share.
-    private let droppedInputLogged = Mutex<Bool>(false)
+    private let droppedInputLogged = Guarded<Bool>(false)
     /// Sharer preference gate on `.controlRequest` (see
     /// `setAllowControlRequests`). Defaults on; when off, requests are
     /// declined immediately with `.controlRevoked` so the viewer's UI clears.
-    private let controlRequestsAllowed = Mutex<Bool>(true)
+    private let controlRequestsAllowed = Guarded<Bool>(true)
 
     /// Fires whenever the set of pending control requests changes. Snapshot;
     /// replace the UI list wholesale. Runs on any thread — bounce to MainActor.
@@ -502,7 +504,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// `Viewer.info`: lifecycle and projection are one atomic entry.
         var info: PendingViewerInfo
     }
-    private let pendingViewers = Mutex<[String: PendingViewer]>([:])
+    private let pendingViewers = Guarded<[String: PendingViewer]>([:])
     /// Hard cap on the pending-approval set. A peer that HELLOs while the
     /// gate is on pins server state (and a LocalAPI resolver) until the
     /// sharer answers or the 60 s sweep collects it; without a cap a flood
@@ -511,7 +513,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public static let maxPendingViewers = 32
     /// One-shot latch so the "pending set full" line logs at most once per
     /// saturation episode instead of on every dropped HELLO.
-    private let pendingCapLogged = Mutex<Bool>(false)
+    private let pendingCapLogged = Guarded<Bool>(false)
 
     /// When true, a HELLO from a previously-unseen viewer parks them in
     /// `pendingViewers` and fires `onPendingViewersChanged` instead of
@@ -519,7 +521,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `denyViewer` to resolve the request. Set via `setRequireApproval`
     /// while a share is live; defaults off so test fixtures and existing
     /// callers see unchanged behavior.
-    private let requireApproval = Mutex<Bool>(false)
+    private let requireApproval = Guarded<Bool>(false)
     /// Pending viewers go stale eventually too — pruned by the same idle
     /// sweep as connected viewers, using a longer timeout so the sharer
     /// has plausibly enough time to react. Matches the typical macOS
@@ -529,7 +531,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// IP → hostname cache. Filled lazily by the resolve tasks from the
     /// LocalAPI backend status. Avoids re-querying tsnet on every
     /// reconnect / KEEPALIVE storm. Cleared in `stop()`.
-    private let peerNameCache = Mutex<[String: String]>([:])
+    private let peerNameCache = Guarded<[String: String]>([:])
     /// IP → StableNodeID cache, filled alongside `peerNameCache`. A cached
     /// ID lets `registerOrRefresh` apply the remembered allow/deny policy
     /// synchronously on a re-HELLO instead of re-parking the peer behind
@@ -542,7 +544,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// rare consent-bypass. Accepted for now (ephemeral-IP churn on a live
     /// share is uncommon and the share is short-lived); a short TTL on cache
     /// entries would close it if it ever bites.
-    private let peerStableIDCache = Mutex<[String: String]>([:])
+    private let peerStableIDCache = Guarded<[String: String]>([:])
 
     /// Remembered per-peer policies, keyed by StableNodeID. The server is
     /// `@unchecked Sendable` and must never reach into `UserDefaults` or
@@ -550,7 +552,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `setAccessPolicies` — at share start and on every store change.
     /// Empty when no policies exist (tests, standalone callers), in which
     /// case every path below degrades to the pre-policy behavior.
-    private let accessPolicies = Mutex<[String: PeerPolicy]>([:])
+    private let accessPolicies = Guarded<[String: PeerPolicy]>([:])
 
     /// One-time admit list keyed by peer IP. After the sharer accepts a
     /// named request-to-share (explicit per-peer consent), AppState
@@ -558,13 +560,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// immediately instead of parking behind a second approval prompt.
     /// Consumed on first matching HELLO. A remembered `deny` still outranks
     /// it — a pre-approval never un-blocks a blocked peer.
-    private let preApprovedIPs = Mutex<Set<String>>([])
+    private let preApprovedIPs = Guarded<Set<String>>([])
 
     /// Addrs whose datagrams arrive on the guest (share-by-token) listener.
     /// Populated by the guest receive loop, consulted by send routing, the
     /// admission gate (guests always require approval), and eviction.
     /// Grows for the share's life; cleared by `stop()`.
-    private let guestAddrs = Mutex<Set<String>>([])
+    private let guestAddrs = Guarded<Set<String>>([])
 
     private func isGuestAddr(_ addr: String) -> Bool {
         guestAddrs.withLock { $0.contains(addr) }
@@ -584,9 +586,9 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Populated on the first `.mediaDatagram` frame of a connection,
     /// cleared when that connection closes (TS-STM-004: close is BYE) and
     /// by `stop()`.
-    private let streamRoutes = Mutex<[String: StreamRoute]>([:])
+    private let streamRoutes = Guarded<[String: StreamRoute]>([:])
     /// Reverse index for the close path: connection UUID → synthetic addr.
-    private let streamAddrByConnection = Mutex<[UUID: String]>([:])
+    private let streamAddrByConnection = Guarded<[UUID: String]>([:])
 
     /// Fired (with the guest's tunnel IP, no port) when a guest viewer is
     /// denied or expelled by remembered-deny — the moments the rejection
@@ -608,7 +610,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// additionally covered by its remembered-deny policy; the one-time
     /// `disconnectViewer` kick has only this. Entries age out after
     /// `expelledQuietNs` so the map stays bounded.
-    private let expelledAddrs = Mutex<[String: UInt64]>([:])
+    private let expelledAddrs = Guarded<[String: UInt64]>([:])
 
     /// How long a kicked addr's KEEPALIVEs are ignored (and re-answered
     /// with denial datagrams) before the entry ages out. Generous vs. the
@@ -623,14 +625,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// snapshot so respawns spawn with the ceiling the user last set.
     /// Locked: written from `start()`/`updateQualityCeiling` (MainActor)
     /// and read from `startHelperCapture` and the helper's reader thread.
-    private let sessionQuality = Mutex<QualitySettings>(.default)
+    private let sessionQuality = Guarded<QualitySettings>(.default)
 
     /// Raw encoder-formula baseline (`w × h × bpp × fpsCap`) anchored on
     /// each parameter-sets emit, *before* the user ceiling is applied.
     /// Kept separate from `baselineBitrate` so raising or removing the
     /// ceiling mid-share can recompute the effective baseline without
     /// waiting for the next encoder reinit.
-    private let anchoredBaselineBitrate = Mutex<Int>(0)
+    private let anchoredBaselineBitrate = Guarded<Int>(0)
 
     /// Inputs that produced the current adaptive-bitrate anchor. Parameter
     /// sets — and therefore `onEncoderResolution` — re-emit on *every* IDR
@@ -650,19 +652,19 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let fpsCap: Int
         var ceilingBps: Int?
     }
-    private let lastAnchorInputs = Mutex<AnchorInputs?>(nil)
+    private let lastAnchorInputs = Guarded<AnchorInputs?>(nil)
 
     /// Effective adaptive-sweep ceiling: the anchored formula baseline
     /// clamped by the user's bandwidth ceiling. The sweep never raises
     /// above it. Recomputed on every encoder reinit (resolution change)
     /// and on `updateQualityCeiling`.
-    private let baselineBitrate = Mutex<Int>(0)
+    private let baselineBitrate = Guarded<Int>(0)
     /// Current applied bitrate. Set equal to baseline at encoder setup,
     /// then cut/raised by the adaptive sweep.
-    private let currentBitrate = Mutex<Int>(0)
+    private let currentBitrate = Guarded<Int>(0)
     /// Last time the sweep changed the bitrate. Used for hysteresis so we
     /// don't oscillate.
-    private let lastBitrateChangeNs = Mutex<UInt64>(0)
+    private let lastBitrateChangeNs = Guarded<UInt64>(0)
 
     /// Per-viewer video send chain: the tail send `Task` plus a count of
     /// frames queued behind it. Each viewer's frame N+1 awaits only its own
@@ -682,7 +684,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         var droppedFrames: Int = 0
     }
     /// Keyed by viewer addr; pruned to the live viewer set on each broadcast.
-    private let videoSendTails = Mutex<[String: ViewerSendChain]>([:])
+    private let videoSendTails = Guarded<[String: ViewerSendChain]>([:])
     /// Drop a viewer's frame once this many are already queued behind a stalled
     /// send, so a viewer that can't keep up sheds frames (UDP video tolerates
     /// loss; a PLI recovers) rather than accumulating unbounded latency/memory.
@@ -698,7 +700,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// prune (that would drop a non-recipient's live chain and break its
     /// order); they're pruned at viewer-removal points instead
     /// (`removeViewer` / `expelViewer` / idle sweep / `stop`).
-    private let audioSendTails = Mutex<[String: ViewerSendChain]>([:])
+    private let audioSendTails = Guarded<[String: ViewerSendChain]>([:])
     /// Drop a viewer's audio packet once this many are already queued behind
     /// a stalled send (drop-newest, matching video). ~0.5 s at one AU/21.3 ms.
     private static let maxQueuedAudioPacketsPerViewer = TransportTuning.maxQueuedAudioPacketsPerViewer
@@ -730,7 +732,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Locked: written from `start()` and the nonisolated-async
     /// `changeSource`, read inside the detached restart tasks — cross-thread
     /// like the class's other locked mutables.
-    private let lastFilterData = Mutex<Data?>(nil)
+    private let lastFilterData = Guarded<Data?>(nil)
 
     // (`helperCapture` lives in `Lifecycle` above — detached via
     // `takeHelperCapture()` by every teardown leg.)
@@ -755,7 +757,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// the user again. That is right for a restart and useless for a
     /// deliberate source change, so `changeSource` lets a host hand over a new
     /// factory along with the new data.
-    private let captureFactory = Mutex<(@Sendable () -> any CaptureEncoding)?>(nil)
+    private let captureFactory = Guarded<(@Sendable () -> any CaptureEncoding)?>(nil)
 
     // (`helperCodec` lives in `Lifecycle` above.)
 
@@ -767,7 +769,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// on a black screen forever; falling the *whole* share back to H.264 is
     /// the safe recovery. Locked: read in `startHelperCapture` on the
     /// cooperative pool, written from the control-receive loop.
-    private let forceH264 = Mutex<Bool>(false)
+    private let forceH264 = Guarded<Bool>(false)
 
     /// Latched on when a viewer reports (via PROFILE_NO) that it can decode
     /// the codec but not its bit depth — a 10-bit HEVC Main 10 stream reaching
@@ -776,7 +778,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// capture-helper pins its `ColorInfo` to 8-bit (staying on HEVC). A
     /// lighter fallback than `forceH264`: we keep HEVC's efficiency, just drop
     /// the extra two bits. Locked for the same reason as `forceH264`.
-    private let force8bit = Mutex<Bool>(false)
+    private let force8bit = Guarded<Bool>(false)
 
     /// Whether the host asked for the 10-bit capture path at all (macOS
     /// Settings → Color; every other sharer leaves it false). Set through
@@ -788,7 +790,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// when the share was never going to send 10-bit in the first place. An
     /// 8-bit share is the overwhelmingly common case and every libavcodec
     /// viewer joining one would otherwise cost everybody a capture restart.
-    private let tenBitRequested = Mutex<Bool>(false)
+    private let tenBitRequested = Guarded<Bool>(false)
 
     /// Whether the sharer is sharing system/computer audio to viewers. Gates
     /// *emission* in the helper (the audio SCStream output is always configured
@@ -796,7 +798,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// MainActor via `setShareSystemAudio`, read in `startHelperCapture` to
     /// re-send the latch after each (re)spawn — mirrors the `forceH264` pattern
     /// so helper restarts preserve the toggle.
-    private let shareSystemAudio = Mutex<Bool>(false)
+    private let shareSystemAudio = Guarded<Bool>(false)
 
     /// Packetizes helper-produced system-audio AUs into RTP with the reserved
     /// system SSRC + PT 99. Not thread-safe; the helper's reader thread is the
@@ -824,7 +826,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// addr so it survives the pending→approve promotion. Governs whether the
     /// server sends an extended HELLO_ACK, records retransmit ranges for it,
     /// and pings it for RTT. Empty (legacy 1-byte HELLO) keeps the PLI path.
-    private let viewerCaps = Mutex<[String: ScreenShareCaps]>([:])
+    private let viewerCaps = Guarded<[String: ScreenShareCaps]>([:])
 
     /// Transport capabilities every build advertises back to cap-aware
     /// viewers. Platform-independent: all three ride the portable
@@ -868,24 +870,24 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// per sweep window by `fecSweepDecision`. `groupSize == 0` means FEC
     /// is off (clean links pay zero overhead). Locked: written by the sweep,
     /// read by `broadcast` and `applyAdaptiveBitrate`.
-    private let fecState = Mutex<FECState>(FECState())
+    private let fecState = Guarded<FECState>(FECState())
 
     /// Viewers currently gated for parity delivery: `.fec`-negotiated AND
     /// their own decayed loss/RTT pass the on-gate this window. Per-viewer so
     /// a clean-link viewer pays zero overhead even mid-share with a lossy
     /// peer — the same isolate-don't-globalize stance as `congestionInputs`.
     /// Rebuilt by every sweep; read by `broadcast`.
-    private let fecGatedAddrs = Mutex<Set<String>>([])
+    private let fecGatedAddrs = Guarded<Set<String>>([])
 
     /// Current capture frame-rate tier (60 / 30 / 15), the second congestion
     /// lever below the bitrate floor. Seeded from the session fps cap at
     /// `start()`; stepped by the adaptive sweep's `nextCongestionDecision`.
-    private let currentFpsTier = Mutex<Int>(60)
+    private let currentFpsTier = Guarded<Int>(60)
 
     /// Total non-timeout receive-loop errors survived this session. Feeds
     /// the give-up log line and `stop()`'s summary. Locked: bumped from the
     /// receive task, read from `stop()`.
-    private let receiveLoopErrorTotal = Mutex<Int>(0)
+    private let receiveLoopErrorTotal = Guarded<Int>(0)
 
     /// Sliding-window restart counter for helper-process crashes.
     /// Each unexpected exit pushes its timestamp; we tolerate up to
@@ -894,13 +896,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// it's mutated from the helper's `terminationHandler` queue *and*
     /// the restart `Task` on the cooperative pool — concurrent
     /// `append`/`removeAll` on a bare `Array` is heap corruption.
-    private let helperCrashTimestampsNs = Mutex<[UInt64]>([])
+    private let helperCrashTimestampsNs = Guarded<[UInt64]>([])
 
     /// Uptime-ns of the last message received from the capture helper — AUs,
     /// params, logs, or the ~1 Hz heartbeat. The hung-helper watchdog compares
     /// `now` against this. Seeded to "now" when a helper spawns so SCStream
     /// bring-up gets a full grace window; 0 means no helper is running.
-    private let lastHelperActivityNs = Mutex<UInt64>(0)
+    private let lastHelperActivityNs = Guarded<UInt64>(0)
     /// If the helper emits nothing for this long while a share is live, the
     /// watchdog assumes capture wedged — SCStream stopped delivering without
     /// the process exiting, which process-death detection can't catch — and
@@ -930,7 +932,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// nulled out `helperCapture`, leaving an orphaned child process
     /// holding replayd's slot — visible as the macOS screen-recording
     /// badge stuck on after the user clicked Stop Sharing.
-    private let restartTask = Mutex<Task<Error?, Never>?>(nil)
+    private let restartTask = Guarded<Task<Error?, Never>?>(nil)
 
     /// Fires when a viewer sends an annotation op over the back-channel.
     /// AppState routes these into the sharer's overlay window; the drawings
@@ -1558,7 +1560,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     ///      stopped meanwhile. This post-spawn check — not just the await — is
     ///      what prevents a Stop-Sharing that races the respawn from orphaning
     ///      a child process holding replayd's recording slot. Both the flag
-    ///      and the backend slot live behind the `lifecycle` Mutex: `stop()`
+    ///      and the backend slot live behind the `lifecycle` lock: `stop()`
     ///      writes `isRunning = false` under the lock before draining this
     ///      chain, so the post-spawn check here reads the real value rather
     ///      than a data-racy stale one — and every teardown leg claims the
@@ -1589,7 +1591,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 _ = await previous?.value
                 guard let self else { return nil }
                 // Claim the outgoing backend atomically, stop it outside
-                // the lock (stop() awaits — never inside a Mutex hold).
+                // the lock (stop() awaits — never inside a lock hold).
                 if let existing = self.takeHelperCapture() {
                     await existing.stop()
                 }
@@ -1633,7 +1635,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Log a dropped (ungated) annotation at most once per share so a peer
     /// spamming the back-channel can't flood the log.
-    private let droppedAnnotationLogged = Mutex<Bool>(false)
+    private let droppedAnnotationLogged = Guarded<Bool>(false)
     private func logDroppedAnnotation(peerAddress: String?) {
         let firstTime = droppedAnnotationLogged.withLock { logged -> Bool in
             if logged { return false }
@@ -3402,7 +3404,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// missed: the runner re-loops whenever the generation advanced during a
     /// pass (a genuinely-unresolvable peer doesn't bump it, so it can't spin).
     private let resolveGeneration =
-        Mutex<(running: Bool, requested: UInt64)>((false, 0))
+        Guarded<(running: Bool, requested: UInt64)>((false, 0))
 
     private func cachePeer(ip: String, hostname: String?, stableID: String?) {
         if let hostname, !hostname.isEmpty {

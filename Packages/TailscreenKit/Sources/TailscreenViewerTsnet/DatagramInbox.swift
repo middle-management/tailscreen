@@ -1,5 +1,5 @@
 import Foundation
-import Synchronization
+import TailscreenProtocol
 
 /// Bounded hand-off between the task that reads the UDP socket and the
 /// `@MainActor` run loop that feeds `ViewerPipeline`.
@@ -51,7 +51,7 @@ final class DatagramInbox: Sendable {
     }
 
     private let capacity: Int
-    private let state = Mutex(State())
+    private let state = Guarded(State())
 
     init(capacity: Int = DatagramInbox.defaultCapacity) {
         self.capacity = capacity
@@ -126,7 +126,7 @@ final class DatagramInbox: Sendable {
 /// socket forever: the loop kept ticking against an inbox that would never
 /// fill again, and the viewer froze on its last frame with a live-looking UI.
 final class ReceiveFailureFlag: Sendable {
-    private let raised = Mutex(false)
+    private let raised = Guarded(false)
 
     /// Called from the receive task, once, when the socket is declared dead.
     func raise() {

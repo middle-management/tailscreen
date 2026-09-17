@@ -89,6 +89,22 @@ replacing the path wholesale would throw away the one value that lets two
 bundles show they used the same link; a login URL that also carried a token has
 an opaque `/a/<secret>` left after the subtraction and is still redacted.
 
+**Never `Synchronization.Mutex`** — and that is a repo-wide rule now, not a
+`Diagnostics/` one. TSan learns happens-before from
+the pthread primitives it interposes on, not from `Mutex`'s futex, so it reads
+every `withLock` body as an unsynchronised access and reports a race on correct
+code; the cost that matters is that a `Mutex`-guarded type cannot be checked by
+the sanitiser **at all**, which is exactly wrong for a recorder written to from
+the capture callbacks, both UDP receive loops, the sweep timers and the UI
+thread. `Guarded` (tier 1) packages an `NSLock` behind `Mutex`'s
+`withLock { $0 … }` shape and is the default; `Guarded.swift` carries the full
+argument and `.claude/rules/testing.md` the reproduction. The types here hold a
+bare `NSLock` instead, which is the carve-out rather than an exception to the
+rule: `DiagnosticsRecorder` releases its lock early in `record` and
+`DiagnosticsBundle` guards two separate statics, and neither shape fits a
+single scoped `withLock`. Both are still NSLock-backed, so both are visible to
+the gate — which is the whole point.
+
 ## Record availability, not just the selection
 
 "They couldn't hear me" has two causes that look identical from outside: the

@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// Small per-packetizer pool of reusable `Data` buffers for RTP packet
 /// construction. The brief: at 60 fps × N viewers the packetizer emits
@@ -44,8 +43,9 @@ import Synchronization
 ///
 /// ### Thread safety
 ///
-/// `recycled` lives behind a `Mutex` (the same `Synchronization` primitive
-/// `RetransmitBuffer` uses), so `acquire` / `handOver` / `recycledCount`
+/// `recycled` lives behind a `Guarded` (the same NSLock-backed box
+/// `RetransmitBuffer` uses — see `Guarded.swift` for why not
+/// `Synchronization.Mutex`), so `acquire` / `handOver` / `recycledCount`
 /// are safe from any thread: each `acquire` pops its entry under the lock,
 /// so two concurrent calls can never receive the same `Data` value, and
 /// `Data`'s COW handles the cross-batch alias safety exactly as above.
@@ -64,7 +64,7 @@ public final class RTPPacketBufferPool: Sendable {
     /// either uniquely held by the pool (consumer released) or shared
     /// (consumer still holding). Either way, the mutating
     /// `removeAll(keepingCapacity:)` a popped entry receives is safe.
-    private let recycled = Mutex<[Data]>([])
+    private let recycled = Guarded<[Data]>([])
 
     /// Default target capacity for a freshly-allocated buffer. Set just
     /// above one MTU's worth of RTP packet (RTP header 12 + payload 1100

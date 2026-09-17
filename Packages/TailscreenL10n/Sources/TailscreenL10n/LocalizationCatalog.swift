@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// The loaded translation table, and the one-time work of finding it.
 ///
@@ -53,7 +52,7 @@ final class LocalizationCatalog: @unchecked Sendable {
         var normalized: [String: String] = [:]
     }
 
-    private let lock = Mutex<State>(State())
+    private let lock = Guarded<State>(State())
 
     /// Look the key up and substitute its arguments.
     ///

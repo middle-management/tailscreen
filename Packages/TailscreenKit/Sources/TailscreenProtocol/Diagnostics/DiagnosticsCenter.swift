@@ -32,9 +32,10 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         var environment: DiagnosticsEnvironment?
     }
 
-    /// `NSLock` for the reason spelled out on ``DiagnosticsRecorder`` — TSan
-    /// cannot see through `Synchronization.Mutex` on Linux, and the log tee
-    /// below is called from every thread in the process.
+    /// `NSLock` for the reason spelled out on ``Guarded`` — TSan cannot see
+    /// through `Synchronization.Mutex`, so a type behind one cannot be checked
+    /// by the sanitiser at all, and the log tee below is called from every
+    /// thread in the process.
     private let lock = NSLock()
     private var state = State()
 
