@@ -285,9 +285,11 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     /// so a plain `static let` does not compile under this package's strict
     /// concurrency — correctly, because two threads exporting at once would
     /// share its internal state. `NSLock` rather than `Synchronization.Mutex`
-    /// for the reason spelled out on ``DiagnosticsRecorder`` (TSan cannot see
-    /// through `Mutex` on Linux); the contention is nothing either way, since
-    /// formatting happens on export and parse, not on the recording path.
+    /// for the reason spelled out on ``Guarded`` (TSan cannot see through
+    /// `Mutex`, so it cannot check a type behind one) — and bare rather than a
+    /// ``Guarded`` because this guards two separate statics, not one value.
+    /// The contention is nothing either way, since formatting happens on
+    /// export and parse, not on the recording path.
     ///
     /// Two formatters because the fractional-seconds option is not tolerant —
     /// a formatter configured `.withFractionalSeconds` returns nil for a

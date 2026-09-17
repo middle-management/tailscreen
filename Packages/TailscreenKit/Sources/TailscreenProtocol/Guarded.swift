@@ -47,6 +47,13 @@ import Foundation
 /// `withLock` — which is also why moving a type across is a one-word change
 /// at the declaration and no change at all at the call sites.
 ///
+/// A bare `NSLock` is still right where the locking genuinely isn't one
+/// scoped body: `DiagnosticsRecorder` releases its lock early inside
+/// `record`, and `DiagnosticsBundle` guards two separate statics rather than
+/// one value. Neither fits `withLock`, and neither needs to — they are
+/// NSLock-backed either way, so the sanitiser can check them, which is the
+/// property this whole file is about. Prefer `Guarded` otherwise.
+///
 /// ### Cost
 ///
 /// One class allocation per guarded property, and `pthread_mutex` rather than

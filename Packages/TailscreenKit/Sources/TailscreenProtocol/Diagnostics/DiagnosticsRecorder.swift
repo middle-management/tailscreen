@@ -100,31 +100,19 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         var startMonotonicNs: UInt64?
     }
 
-    /// `NSLock`, not `Synchronization.Mutex`, and the reason is worth keeping.
+    /// `NSLock`, never `Synchronization.Mutex` — ThreadSanitizer cannot see
+    /// through the latter, so a `Mutex`-guarded type is not merely noisy under
+    /// the sanitiser but unverifiable by it. That argument is the repo-wide
+    /// one and lives on ``Guarded`` in this tier; this file no longer restates
+    /// it. (When this was written the rule was local to `Diagnostics/` and the
+    /// hot RTP types were still on `Mutex`; they are on ``Guarded`` now, with
+    /// concurrency tests, so there is no remaining `Mutex` in the repo.)
     ///
-    /// **ThreadSanitizer cannot see through `Mutex` on Linux.** Its lock is
-    /// futex-based, which TSan does not model as establishing happens-before,
-    /// so every `withLock` body reads to TSan as an unsynchronised `inout`
-    /// access and it reports a "Swift access race" on correct code. Verified
-    /// in isolation: a bare `Mutex<S>` hammered by `concurrentPerform`, with
-    /// none of this app's code involved, reports the identical warning, while
-    /// the same hammer over `NSLock` is clean.
-    ///
-    /// That matters here more than anywhere else in this tier. This recorder
-    /// is written to from the capture callbacks, both UDP receive loops, the
-    /// sweep timers and the UI thread, which is exactly the shape of type
-    /// `linux-tsan` exists to check — and behind a `Mutex` that check silently
-    /// cannot run. Using a lock the sanitiser understands keeps the guarantee
-    /// real instead of assumed.
-    ///
-    /// `NSLock` is already the pattern `WindowsShareSession` uses one tier up,
-    /// so this is a choice the codebase has made before, not a new one.
-    ///
-    /// Note for anyone extending this tier: `RTPBufferPool` and
-    /// `RetransmitBuffer` are on `Mutex` and are therefore equally invisible
-    /// to TSan today. Nothing exercises them concurrently under the sanitiser
-    /// yet, so nothing fails — but a concurrency test added to either will hit
-    /// this same wall, and the answer will be this same one.
+    /// Bare `NSLock` here rather than ``Guarded`` because this recorder does
+    /// not take the lock in a single scoped body: `record` deliberately
+    /// releases it early (see `appendLocked`'s ONE-acquisition note below),
+    /// which `withLock` cannot express. ``Guarded`` is the default for new
+    /// code; a hand-held `NSLock` is the carve-out for exactly this shape.
     /// One event's ingredients, assembled outside the lock and handed in as a
     /// single value — both callers build the same set, and passing them
     /// individually made `appendLocked` a six-parameter function for no gain.

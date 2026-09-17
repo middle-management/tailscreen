@@ -177,6 +177,12 @@ inside a `swift:6.3-noble` container on every PR — that job is what
    (what CI runs) and on a Swift 6.5 development snapshot: same report, so
    this is not a toolchain bug to wait out. The full argument and the
    reproduction are in `Guarded.swift` and `.claude/rules/testing.md`.
+   A hand-held `NSLock` is the one carve-out, for state whose locking is not
+   a single scoped body — `DiagnosticsRecorder` releases its lock early,
+   `DiagnosticsBundle` guards two separate statics. Both are still
+   NSLock-backed and therefore still visible to the sanitiser, which is the
+   part that matters; what `Guarded` adds on top is that the state cannot be
+   reached without taking the lock.
 3. **Adding a file to the set:** `git mv` it from `Sources/` into the
    right target here, mark what the app uses `public` (explicit inits for
    app-constructed structs — Swift never synthesizes memberwise inits as
