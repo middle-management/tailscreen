@@ -53,13 +53,32 @@ public enum AudioDeviceDiagnostics {
         return "\(shown), +\(names.count - maximumNamedDevices) more"
     }
 
+    /// One enumeration of the machine's audio devices.
+    ///
+    /// A named type rather than a pair of arrays because the host has to hold
+    /// the previous one to compare against, and "not enumerated yet" is a real
+    /// state that needs somewhere to live. As an optional *struct* it has a
+    /// name; as an optional *array* it would have been an empty-versus-absent
+    /// ambiguity of exactly the kind swiftlint's `discouraged_optional_collection`
+    /// exists to prevent — and the ambiguity is real here, since a machine
+    /// with genuinely no inputs is a thing that happens and is worth recording.
+    public struct Snapshot: Equatable, Sendable {
+        public var inputs: [String]
+        public var outputs: [String]
+
+        public init(inputs: [String], outputs: [String]) {
+            self.inputs = inputs
+            self.outputs = outputs
+        }
+    }
+
     /// Whether the device list changed in a way worth recording.
     ///
     /// Compares as an ordered list, not a set: a reordering means the system
     /// default moved, which changes what an unselected ("System Default") pick
     /// resolves to — a real change in what the session is recording from, and
     /// exactly the kind that otherwise goes unexplained.
-    public static func changed(from previous: [String]?, to current: [String]) -> Bool {
+    public static func changed(from previous: Snapshot?, to current: Snapshot) -> Bool {
         guard let previous else {
             // Nothing recorded yet: the first enumeration is the baseline, and
             // is always worth one event.

@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// One side's recording, packaged for somebody else to read.
 ///
@@ -130,26 +129,25 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     /// tier does not.
     ///
     /// `BuildInfo` deliberately stays a per-app file (it is stamped by each
-    /// platform's own workflow), so those values arrive as parameters rather
-    /// than being read here.
+    /// platform's own workflow), so those values arrive in a
+    /// ``DiagnosticsEnvironment`` rather than being read here.
     public static func make(
         from snapshot: DiagnosticsSnapshot,
-        platform: String,
-        appVersion: String,
-        commit: String,
-        configuration: String,
-        architecture: String,
+        environment: DiagnosticsEnvironment,
         exportedAt: Date = Date()
     ) -> DiagnosticsBundle {
         let header = Header(
             role: snapshot.role,
+            // The recorder's label, not the environment's: the snapshot is what
+            // actually recorded these events, and if the two ever disagree the
+            // events are the ones telling the truth.
             device: snapshot.deviceLabel,
-            platform: platform,
-            appVersion: appVersion,
-            commit: commit,
-            configuration: configuration,
-            architecture: architecture,
-            channel: ReleaseChannel.classify(version: appVersion),
+            platform: environment.platform,
+            appVersion: environment.appVersion,
+            commit: environment.commit,
+            configuration: environment.configuration,
+            architecture: environment.architecture,
+            channel: environment.channel,
             startedAt: snapshot.startedAt,
             exportedAt: exportedAt,
             eventCount: snapshot.events.count,
@@ -161,7 +159,24 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     // MARK: - Serialization
 
     /// The whole bundle as JSON Lines text, header first.
+    ///
+    /// Built as `Data` by ``jsonLinesData()`` and converted once at the end.
+    /// The bytes are what gets written to disk, so producing them directly and
+    /// converting only for callers that want text is both the cheaper order
+    /// and the one that keeps a single definition of the format.
     public func jsonLines() throws -> String {
+        guard let text = String(bytes: try jsonLinesData(), encoding: .utf8) else {
+            // JSONEncoder emits valid UTF-8, so this is unreachable in
+            // practice — but a failable conversion beats one that silently
+            // substitutes U+FFFD into a file somebody is going to read.
+            throw DiagnosticsBundleError.encodingFailed
+        }
+        return text
+    }
+
+    /// The whole bundle as JSON Lines bytes, header first. What is written to
+    /// disk.
+    public func jsonLinesData() throws -> Data {
         let encoder = JSONEncoder()
         // Sorted keys so two exports of the same events are byte-identical and
         // a bundle diffs against itself usefully. ISO-8601 with fractional
@@ -173,15 +188,18 @@ public struct DiagnosticsBundle: Sendable, Equatable {
             try container.encode(DiagnosticsBundle.format(date))
         }
 
-        var lines: [String] = []
-        lines.reserveCapacity(events.count + 1)
-        lines.append(String(decoding: try encoder.encode(HeaderLine(header: header)), as: UTF8.self))
+        // Trailing newline after every line, including the last: the file is a
+        // stream of lines, and a reader that appends to it must not land on the
+        // same line as the last event.
+        let newline = Data([0x0A])
+        var out = Data()
+        out.append(try encoder.encode(HeaderLine(header: header)))
+        out.append(newline)
         for event in events {
-            lines.append(String(decoding: try encoder.encode(event), as: UTF8.self))
+            out.append(try encoder.encode(event))
+            out.append(newline)
         }
-        // Trailing newline: the file is a stream of lines, and a reader that
-        // appends to it must not land on the same line as the last event.
-        return lines.joined(separator: "\n") + "\n"
+        return out
     }
 
     /// Parse a bundle back.
@@ -252,15 +270,21 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     /// `ISO8601DateFormatter` is a mutable class and therefore not `Sendable`,
     /// so a plain `static let` does not compile under this package's strict
     /// concurrency — correctly, because two threads exporting at once would
-    /// share its internal state. A `Mutex` is the same answer `RTPBufferPool`
-    /// and `RetransmitBuffer` give one tier over, and the contention is
-    /// nothing: formatting happens on export and on parse, not on the
-    /// recording path.
+    /// share its internal state. `NSLock` rather than `Synchronization.Mutex`
+    /// for the reason spelled out on ``DiagnosticsRecorder`` (TSan cannot see
+    /// through `Mutex` on Linux); the contention is nothing either way, since
+    /// formatting happens on export and parse, not on the recording path.
     ///
     /// Two formatters because the fractional-seconds option is not tolerant —
     /// a formatter configured `.withFractionalSeconds` returns nil for a
     /// stamp without them, so reading needs both and tries them in order.
-    private static let formatters = Mutex<Formatters>(Formatters())
+    private static let formattersLock = NSLock()
+    /// `nonisolated(unsafe)` because `formattersLock` is what makes it safe,
+    /// and the compiler cannot see that. Same bargain as the `@unchecked
+    /// Sendable` conformances elsewhere in this repo: we own the invariant,
+    /// the compiler is not checking it — and here the invariant is one lock
+    /// around two accessors, both in this file.
+    nonisolated(unsafe) private static let formatters = Formatters()
 
     private final class Formatters {
         let fractional: ISO8601DateFormatter
@@ -277,20 +301,25 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     /// Render a timestamp in the bundle's one format: RFC 3339 UTC with
     /// milliseconds, e.g. `2026-09-17T10:04:02.117Z`.
     static func format(_ date: Date) -> String {
-        formatters.withLock { $0.fractional.string(from: date) }
+        formattersLock.lock()
+        defer { formattersLock.unlock() }
+        return formatters.fractional.string(from: date)
     }
 
     static func parseDate(_ text: String) -> Date? {
-        formatters.withLock {
-            // Tolerate a stamp without fractional seconds — hand-edited
-            // bundles and other producers exist, and losing a whole file over
-            // a missing `.123` would be absurd.
-            $0.fractional.date(from: text) ?? $0.plain.date(from: text)
-        }
+        formattersLock.lock()
+        defer { formattersLock.unlock() }
+        // Tolerate a stamp without fractional seconds — hand-edited bundles
+        // and other producers exist, and losing a whole file over a missing
+        // `.123` would be absurd.
+        return formatters.fractional.date(from: text) ?? formatters.plain.date(from: text)
     }
 }
 
 public enum DiagnosticsBundleError: Error, Equatable {
     case missingHeader
     case malformedDate(String)
+    /// The encoded bundle was not valid UTF-8. Unreachable with `JSONEncoder`,
+    /// carried so the conversion can stay failable rather than lossy.
+    case encodingFailed
 }

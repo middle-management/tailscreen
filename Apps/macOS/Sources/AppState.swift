@@ -2323,7 +2323,7 @@ class AppState: ObservableObject {
     /// rather than on every enumeration. This runs whenever a picker is about
     /// to render, which is many times a session and almost always the same
     /// answer — see `AudioDeviceDiagnostics` for why change beats poll here.
-    private var lastRecordedAudioDevices: (inputs: [String], outputs: [String])?
+    private var lastRecordedAudioDevices: AudioDeviceDiagnostics.Snapshot?
 
     /// Record which audio devices exist and which are selected, when that
     /// changed.
@@ -2333,20 +2333,17 @@ class AppState: ObservableObject {
     /// never have been picked, and that is a different problem from picking
     /// the wrong one. Recording only the selection is silent about it.
     private func recordAudioDevicesIfChanged() {
-        let inputs = availableInputDevices.map(\.name)
-        let outputs = availableOutputDevices.map(\.name)
-        guard
-            AudioDeviceDiagnostics.changed(
-                from: lastRecordedAudioDevices?.inputs, to: inputs)
-                || AudioDeviceDiagnostics.changed(
-                    from: lastRecordedAudioDevices?.outputs, to: outputs)
+        let current = AudioDeviceDiagnostics.Snapshot(
+            inputs: availableInputDevices.map(\.name),
+            outputs: availableOutputDevices.map(\.name))
+        guard AudioDeviceDiagnostics.changed(from: lastRecordedAudioDevices, to: current)
         else { return }
-        lastRecordedAudioDevices = (inputs, outputs)
+        lastRecordedAudioDevices = current
         AppDiagnostics.recorder?.record(
             .audioDevicesChanged,
             fields: AudioDeviceDiagnostics.fields(
-                inputs: inputs,
-                outputs: outputs,
+                inputs: current.inputs,
+                outputs: current.outputs,
                 selectedInput: selectedInputDeviceName,
                 selectedOutput: selectedOutputDeviceName))
     }

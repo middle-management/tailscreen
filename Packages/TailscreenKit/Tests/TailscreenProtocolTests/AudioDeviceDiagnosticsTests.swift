@@ -64,8 +64,36 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
     // MARK: - Change detection
 
     /// The first enumeration is the baseline and always worth one event.
+    private func snapshot(
+        _ inputs: [String], _ outputs: [String] = []
+    ) -> AudioDeviceDiagnostics.Snapshot {
+        AudioDeviceDiagnostics.Snapshot(inputs: inputs, outputs: outputs)
+    }
+
     func testFirstEnumerationIsAChange() {
-        XCTAssertTrue(AudioDeviceDiagnostics.changed(from: nil, to: ["Built-in"]))
+        XCTAssertTrue(AudioDeviceDiagnostics.changed(from: nil, to: snapshot(["Built-in"])))
+    }
+
+    /// A machine with genuinely no inputs is a real state — and a diagnostic
+    /// one — that must not read as "never enumerated". This is exactly the
+    /// ambiguity the named `Snapshot` exists to remove, and why an optional
+    /// array was the wrong shape for it.
+    func testNoDevicesIsDistinctFromNeverEnumerated() {
+        let empty = snapshot([])
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(from: nil, to: empty),
+            "the first enumeration is a change even when it finds nothing")
+        XCTAssertFalse(
+            AudioDeviceDiagnostics.changed(from: empty, to: empty),
+            "a second enumeration finding nothing is not a change")
+    }
+
+    /// The two lists are one snapshot: an output-only change still counts.
+    func testOutputOnlyChangeIsAChange() {
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Mic"], ["Speakers"]),
+                to: snapshot(["Mic"], ["Speakers", "Headphones"])))
     }
 
     /// The common case: a picker re-rendering must not emit an event. This is
@@ -73,15 +101,20 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
     /// almost always gets the same answer.
     func testUnchangedListIsNotRecordedAgain() {
         XCTAssertFalse(
-            AudioDeviceDiagnostics.changed(from: ["Built-in", "Jabra"], to: ["Built-in", "Jabra"]))
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in", "Jabra"]), to: snapshot(["Built-in", "Jabra"])))
     }
 
     /// A device arriving or leaving mid-session is frequently the entire
     /// diagnosis — a Bluetooth headset dropping out is invisible to the user
     /// beyond "it stopped working".
     func testDeviceArrivalAndDepartureAreChanges() {
-        XCTAssertTrue(AudioDeviceDiagnostics.changed(from: ["Built-in"], to: ["Built-in", "Jabra"]))
-        XCTAssertTrue(AudioDeviceDiagnostics.changed(from: ["Built-in", "Jabra"], to: ["Built-in"]))
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in"]), to: snapshot(["Built-in", "Jabra"])))
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in", "Jabra"]), to: snapshot(["Built-in"])))
     }
 
     /// Compared as an ordered list, not a set. A reordering means the system
@@ -90,7 +123,8 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
     /// exactly the kind that otherwise goes unexplained.
     func testReorderingCountsAsAChange() {
         XCTAssertTrue(
-            AudioDeviceDiagnostics.changed(from: ["Built-in", "Jabra"], to: ["Jabra", "Built-in"]))
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in", "Jabra"]), to: snapshot(["Jabra", "Built-in"])))
     }
 
     // MARK: - Fields

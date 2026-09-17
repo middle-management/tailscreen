@@ -54,17 +54,20 @@ public enum DiagnosticsRedaction {
     /// format is for.
     public static func scrub(_ fields: [String: DiagnosticValue]) -> [String: DiagnosticValue] {
         // The common case is a field set with no strings in it at all, or with
-        // strings that need nothing done. Mapping unconditionally would
-        // allocate a new dictionary on every recorded event for no reason.
-        var scrubbed: [String: DiagnosticValue]?
+        // strings that need nothing done, and it must not pay for a copy.
+        // `var scrubbed = fields` does not copy: Swift dictionaries are
+        // copy-on-write, so the buffer is shared until the first mutation —
+        // which only happens when something actually needed redacting.
+        var scrubbed = fields
+        var changed = false
         for (key, value) in fields {
             guard case .string(let text) = value else { continue }
             let clean = scrub(text)
             guard clean != text else { continue }
-            if scrubbed == nil { scrubbed = fields }
-            scrubbed?[key] = .string(clean)
+            scrubbed[key] = .string(clean)
+            changed = true
         }
-        return scrubbed ?? fields
+        return changed ? scrubbed : fields
     }
 
     /// Scrub one free-text string.

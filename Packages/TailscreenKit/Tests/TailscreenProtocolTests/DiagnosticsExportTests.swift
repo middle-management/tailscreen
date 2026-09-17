@@ -65,8 +65,10 @@ final class DiagnosticsExportTests: XCTestCase {
 
         let bundle = DiagnosticsBundle.make(
             from: recorder.snapshot(),
-            platform: "linux", appVersion: "0.10.0-rc.2", commit: "abc1234",
-            configuration: "release", architecture: "x86_64")
+            environment: DiagnosticsEnvironment(
+                platform: "linux", appVersion: "0.10.0-rc.2", commit: "abc1234",
+                configuration: "release", architecture: "x86_64",
+                deviceLabel: "viewer-pc"))
 
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("diagnostics-test-\(UUID().uuidString)/nested")
@@ -101,8 +103,9 @@ final class DiagnosticsExportTests: XCTestCase {
                 from: DiagnosticsSnapshot(
                     role: role, deviceLabel: device, wasRecording: true,
                     startedAt: events.first?.wallClock, droppedCount: 0, events: events),
-                platform: "test", appVersion: "0.10.0-rc.2", commit: "abc1234",
-                configuration: "release", architecture: "arm64")
+                environment: DiagnosticsEnvironment(
+                    platform: "test", appVersion: "0.10.0-rc.2", commit: "abc1234",
+                    configuration: "release", architecture: "arm64", deviceLabel: device))
         }
 
         let sharer = bundle(
@@ -212,8 +215,9 @@ final class DiagnosticsExportTests: XCTestCase {
                 from: DiagnosticsSnapshot(
                     role: role, deviceLabel: device, wasRecording: true,
                     startedAt: epoch, droppedCount: 0, events: events),
-                platform: "test", appVersion: "0.10.0", commit: "abc1234",
-                configuration: "release", architecture: "arm64")
+                environment: DiagnosticsEnvironment(
+                    platform: "test", appVersion: "0.10.0", commit: "abc1234",
+                    configuration: "release", architecture: "arm64", deviceLabel: device))
         }
         let timeline = DiagnosticsMerge.merge([
             bundle(.sharer, "a-mac", sharerEvents),

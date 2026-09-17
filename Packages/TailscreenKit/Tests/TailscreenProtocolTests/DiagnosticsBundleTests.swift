@@ -48,11 +48,9 @@ final class DiagnosticsBundleTests: XCTestCase {
                 startedAt: events.first?.wallClock,
                 droppedCount: 0,
                 events: events),
-            platform: "test",
-            appVersion: version,
-            commit: "abc1234",
-            configuration: "release",
-            architecture: "arm64",
+            environment: DiagnosticsEnvironment(
+                platform: "test", appVersion: version, commit: "abc1234",
+                configuration: "release", architecture: "arm64", deviceLabel: device),
             exportedAt: epoch.addingTimeInterval(100))
     }
 

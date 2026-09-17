@@ -42,7 +42,7 @@ public enum DiagnosticsExport {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
-        try Data(bundle.jsonLines().utf8).write(to: url, options: .atomic)
+        try bundle.jsonLinesData().write(to: url, options: .atomic)
         return url
     }
 

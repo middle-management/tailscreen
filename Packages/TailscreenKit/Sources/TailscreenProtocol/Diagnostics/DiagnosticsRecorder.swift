@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// The in-memory event log one side of a session keeps about itself.
 ///
@@ -69,7 +68,33 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         var startMonotonicNs: UInt64?
     }
 
-    private let state: Mutex<State>
+    /// `NSLock`, not `Synchronization.Mutex`, and the reason is worth keeping.
+    ///
+    /// **ThreadSanitizer cannot see through `Mutex` on Linux.** Its lock is
+    /// futex-based, which TSan does not model as establishing happens-before,
+    /// so every `withLock` body reads to TSan as an unsynchronised `inout`
+    /// access and it reports a "Swift access race" on correct code. Verified
+    /// in isolation: a bare `Mutex<S>` hammered by `concurrentPerform`, with
+    /// none of this app's code involved, reports the identical warning, while
+    /// the same hammer over `NSLock` is clean.
+    ///
+    /// That matters here more than anywhere else in this tier. This recorder
+    /// is written to from the capture callbacks, both UDP receive loops, the
+    /// sweep timers and the UI thread, which is exactly the shape of type
+    /// `linux-tsan` exists to check — and behind a `Mutex` that check silently
+    /// cannot run. Using a lock the sanitiser understands keeps the guarantee
+    /// real instead of assumed.
+    ///
+    /// `NSLock` is already the pattern `WindowsShareSession` uses one tier up,
+    /// so this is a choice the codebase has made before, not a new one.
+    ///
+    /// Note for anyone extending this tier: `RTPBufferPool` and
+    /// `RetransmitBuffer` are on `Mutex` and are therefore equally invisible
+    /// to TSan today. Nothing exercises them concurrently under the sanitiser
+    /// yet, so nothing fails — but a concurrency test added to either will hit
+    /// this same wall, and the answer will be this same one.
+    private let lock = NSLock()
+    private var state: State
 
     /// - Parameters:
     ///   - defaultRole: the role for events that do not name one.
@@ -99,13 +124,17 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         // worth crashing the app it is recording.
         self.prologueCapacity = max(0, prologueCapacity)
         self.ringCapacity = max(1, ringCapacity)
-        self.state = Mutex(State(enabled: enabled))
+        self.state = State(enabled: enabled)
     }
 
     // MARK: - Switching
 
     /// Whether events are being kept right now.
-    public var isRecording: Bool { state.withLock { $0.enabled } }
+    public var isRecording: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return state.enabled
+    }
 
     /// Turn recording on or off.
     ///
@@ -114,7 +143,9 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     /// what just happened, and a switch that also erased it would be a trap.
     /// ``clear()`` is the separate, explicit way to discard.
     public func setRecording(_ enabled: Bool) {
-        state.withLock { $0.enabled = enabled }
+        lock.lock()
+        defer { lock.unlock() }
+        state.enabled = enabled
     }
 
     /// Discard everything recorded so far, including the drop count and the
@@ -125,15 +156,15 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     /// and two bundles that share a device and a numbering but not a session
     /// would merge into nonsense.
     public func clear() {
-        state.withLock {
-            $0.prologue.removeAll(keepingCapacity: true)
-            $0.ring.removeAll(keepingCapacity: true)
-            $0.ringStart = 0
-            $0.nextSeq = 1
-            $0.dropped = 0
-            $0.startWallClock = nil
-            $0.startMonotonicNs = nil
-        }
+        lock.lock()
+        defer { lock.unlock() }
+        state.prologue.removeAll(keepingCapacity: true)
+        state.ring.removeAll(keepingCapacity: true)
+        state.ringStart = 0
+        state.nextSeq = 1
+        state.dropped = 0
+        state.startWallClock = nil
+        state.startMonotonicNs = nil
     }
 
     // MARK: - Recording
@@ -162,53 +193,59 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     ) {
         // Read the switch before touching `fields`: the whole point of the
         // autoclosure is that a disabled recorder never builds the dictionary.
-        guard state.withLock({ $0.enabled }) else { return }
+        guard isRecording else { return }
 
         let mono = nowNs ?? Self.monotonicNowNs()
         let wall = wallClock ?? Date()
         let redacted = DiagnosticsRedaction.scrub(fields())
 
-        state.withLock { s in
-            // Re-check under the same lock that appends. Without this a
-            // `setRecording(false)` racing an in-flight record could still
-            // land an event after the user asked it to stop, which is the one
-            // promise this switch has to keep.
-            guard s.enabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
 
-            if s.startMonotonicNs == nil {
-                s.startMonotonicNs = mono
-                s.startWallClock = wall
-            }
-            // Elapsed against the session start, not a raw uptime: a reader
-            // should see `0` on the first line, and `&-` because a clock that
-            // appears to step backwards must not wrap into an enormous number.
-            let elapsed = mono >= (s.startMonotonicNs ?? mono) ? mono &- (s.startMonotonicNs ?? mono) : 0
+        // Re-check under the same lock that appends. Without this a
+        // `setRecording(false)` racing an in-flight record could still land an
+        // event after the user asked it to stop, which is the one promise this
+        // switch has to keep.
+        guard state.enabled else { return }
 
-            let event = DiagnosticEvent(
-                seq: s.nextSeq,
-                monotonicNs: elapsed,
-                wallClock: wall,
-                role: role ?? defaultRole,
-                category: name.category,
-                name: name.rawValue,
-                severity: severity ?? name.defaultSeverity,
-                fields: redacted)
-            s.nextSeq &+= 1
-
-            if s.prologue.count < prologueCapacity {
-                s.prologue.append(event)
-                return
-            }
-            if s.ring.count < ringCapacity {
-                s.ring.append(event)
-                return
-            }
-            // Full: overwrite the oldest and advance. This is the only place
-            // an event is lost, so it is the only place `dropped` moves.
-            s.ring[s.ringStart] = event
-            s.ringStart = (s.ringStart + 1) % ringCapacity
-            s.dropped &+= 1
+        let start: UInt64
+        if let existing = state.startMonotonicNs {
+            start = existing
+        } else {
+            state.startMonotonicNs = mono
+            state.startWallClock = wall
+            start = mono
         }
+        // Elapsed against the session start, not a raw uptime: a reader should
+        // see `0` on the first line. The ordering guard is why this is not a
+        // bare `&-` — a clock that appears to step backwards must not wrap into
+        // an enormous number.
+        let elapsed = mono >= start ? mono &- start : 0
+
+        let event = DiagnosticEvent(
+            seq: state.nextSeq,
+            monotonicNs: elapsed,
+            wallClock: wall,
+            role: role ?? defaultRole,
+            category: name.category,
+            name: name.rawValue,
+            severity: severity ?? name.defaultSeverity,
+            fields: redacted)
+        state.nextSeq &+= 1
+
+        if state.prologue.count < prologueCapacity {
+            state.prologue.append(event)
+            return
+        }
+        if state.ring.count < ringCapacity {
+            state.ring.append(event)
+            return
+        }
+        // Full: overwrite the oldest and advance. This is the only place an
+        // event is lost, so it is the only place `dropped` moves.
+        state.ring[state.ringStart] = event
+        state.ringStart = (state.ringStart + 1) % ringCapacity
+        state.dropped &+= 1
     }
 
     // MARK: - Reading
@@ -220,26 +257,31 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     /// ``snapshot()`` is what carries the drop count, and it is what export
     /// and any UI should use.
     public func events() -> [DiagnosticEvent] {
-        state.withLock { s in
-            guard s.ring.count == ringCapacity, s.ringStart > 0 else {
-                return s.prologue + s.ring
-            }
-            return s.prologue + Array(s.ring[s.ringStart...]) + Array(s.ring[..<s.ringStart])
+        lock.lock()
+        defer { lock.unlock() }
+        guard state.ring.count == ringCapacity, state.ringStart > 0 else {
+            return state.prologue + state.ring
         }
+        return state.prologue
+            + Array(state.ring[state.ringStart...])
+            + Array(state.ring[..<state.ringStart])
     }
 
     /// Everything held, plus what it took to hold it.
     public func snapshot() -> DiagnosticsSnapshot {
-        let (dropped, start, enabled) = state.withLock {
-            ($0.dropped, $0.startWallClock, $0.enabled)
-        }
+        // `events()` takes the lock itself, so it is called BEFORE this one
+        // does — `NSLock` is not recursive and re-entering it here would
+        // deadlock the exporting thread.
+        let events = events()
+        lock.lock()
+        defer { lock.unlock() }
         return DiagnosticsSnapshot(
             role: defaultRole,
             deviceLabel: deviceLabel,
-            wasRecording: enabled,
-            startedAt: start,
-            droppedCount: dropped,
-            events: events())
+            wasRecording: state.enabled,
+            startedAt: state.startWallClock,
+            droppedCount: state.dropped,
+            events: events)
     }
 
     /// The process uptime clock — monotonic, and the same one

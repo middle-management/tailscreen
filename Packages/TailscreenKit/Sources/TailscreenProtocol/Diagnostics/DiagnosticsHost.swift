@@ -144,15 +144,18 @@ public enum DiagnosticsHost {
         let snapshot = recorder.snapshot()
         guard !snapshot.events.isEmpty else { throw DiagnosticsHostError.nothingRecorded }
 
-        let environment = DiagnosticsCenter.shared.environment
+        // `start` installs the environment alongside the recorder, so a
+        // recorder without one cannot normally exist. The fallback names the
+        // unknowns rather than inventing plausible values — a header claiming
+        // a version it never knew is worse than one that says it does not know.
+        let environment =
+            DiagnosticsCenter.shared.environment
+            ?? DiagnosticsEnvironment(
+                platform: "unknown", appVersion: "dev", commit: "unknown",
+                configuration: "unknown", architecture: "unknown",
+                deviceLabel: snapshot.deviceLabel)
         let bundle = DiagnosticsBundle.make(
-            from: snapshot,
-            platform: environment?.platform ?? "unknown",
-            appVersion: environment?.appVersion ?? "dev",
-            commit: environment?.commit ?? "dev",
-            configuration: environment?.configuration ?? "unknown",
-            architecture: environment?.architecture ?? "unknown",
-            exportedAt: date)
+            from: snapshot, environment: environment, exportedAt: date)
         let url = directory.appendingPathComponent(
             DiagnosticsExport.filename(
                 role: snapshot.role, device: snapshot.deviceLabel, at: date))

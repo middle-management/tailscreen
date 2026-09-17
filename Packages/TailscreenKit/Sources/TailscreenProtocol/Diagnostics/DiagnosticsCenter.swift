@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// The process's diagnostics recorder, and the one place the existing
 /// `print`-backed logging is teed into it.
@@ -33,7 +32,11 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         var environment: DiagnosticsEnvironment?
     }
 
-    private let state = Mutex<State>(State())
+    /// `NSLock` for the reason spelled out on ``DiagnosticsRecorder`` — TSan
+    /// cannot see through `Synchronization.Mutex` on Linux, and the log tee
+    /// below is called from every thread in the process.
+    private let lock = NSLock()
+    private var state = State()
 
     private init() {}
 
@@ -52,18 +55,26 @@ public final class DiagnosticsCenter: @unchecked Sendable {
     /// makes both directions work everywhere at once — and costs nothing,
     /// because a disabled recorder's `record` returns on a Boolean load
     /// without evaluating its arguments.
-    public var recorder: DiagnosticsRecorder? { state.withLock { $0.recorder } }
+    public var recorder: DiagnosticsRecorder? {
+        lock.lock()
+        defer { lock.unlock() }
+        return state.recorder
+    }
 
     /// The build facts for this process, for an exported bundle's header.
-    public var environment: DiagnosticsEnvironment? { state.withLock { $0.environment } }
+    public var environment: DiagnosticsEnvironment? {
+        lock.lock()
+        defer { lock.unlock() }
+        return state.environment
+    }
 
     /// Install the process recorder and the build facts. Hosts call this once,
     /// during start-up, through ``DiagnosticsHost/start(environment:defaults:processEnvironment:)``.
     public func install(recorder: DiagnosticsRecorder?, environment: DiagnosticsEnvironment?) {
-        state.withLock {
-            $0.recorder = recorder
-            $0.environment = environment
-        }
+        lock.lock()
+        defer { lock.unlock() }
+        state.recorder = recorder
+        state.environment = environment
     }
 
     /// Record one line from the `LogSink` plumbing.
@@ -82,7 +93,7 @@ public final class DiagnosticsCenter: @unchecked Sendable {
     /// to be load-bearing in an investigation, give it a registry case and
     /// record it properly.
     public func captureLog(source: String, message: String) {
-        guard let recorder = state.withLock({ $0.recorder }) else { return }
+        guard let recorder else { return }
         recorder.record(
             .logLine,
             severity: Self.severity(of: message),
