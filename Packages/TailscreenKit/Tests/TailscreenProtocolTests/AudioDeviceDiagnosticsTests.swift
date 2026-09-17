@@ -47,7 +47,7 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
         XCTAssertFalse(rendered.contains("Device 30"))
 
         let fields = AudioDeviceDiagnostics.fields(
-            inputs: names, outputs: [], selectedInput: nil, selectedOutput: nil)
+            snapshot: snapshot(names), selectedInput: nil, selectedOutput: nil)
         XCTAssertEqual(
             fields["input_count"], .int(30),
             "the count must stay exact even when the names are truncated")
@@ -65,9 +65,14 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
 
     /// The first enumeration is the baseline and always worth one event.
     private func snapshot(
-        _ inputs: [String], _ outputs: [String] = []
+        _ inputs: [String],
+        _ outputs: [String] = [],
+        defaultInput: String? = nil,
+        defaultOutput: String? = nil
     ) -> AudioDeviceDiagnostics.Snapshot {
-        AudioDeviceDiagnostics.Snapshot(inputs: inputs, outputs: outputs)
+        AudioDeviceDiagnostics.Snapshot(
+            inputs: inputs, outputs: outputs,
+            defaultInput: defaultInput, defaultOutput: defaultOutput)
     }
 
     func testFirstEnumerationIsAChange() {
@@ -132,8 +137,7 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
     /// Both halves are present: what existed, and what was chosen.
     func testFieldsCarryAvailabilityAndSelection() {
         let fields = AudioDeviceDiagnostics.fields(
-            inputs: ["Built-in", "Jabra"],
-            outputs: ["Built-in Output"],
+            snapshot: snapshot(["Built-in", "Jabra"], ["Built-in Output"]),
             selectedInput: "Jabra",
             selectedOutput: nil)
 
@@ -144,12 +148,68 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
         XCTAssertEqual(fields["selected_input"], .string("Jabra"))
     }
 
+    /// The case that costs the most time: the user chose nothing, so the
+    /// record has to say which microphone "nothing" actually resolved to.
+    /// `selected_input` alone names the choice, not the device.
+    func testSystemDefaultIsResolvedToARealDevice() {
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(
+                ["MacBook Pro Microphone", "Jabra Evolve2 65"],
+                defaultInput: "MacBook Pro Microphone"),
+            selectedInput: nil,
+            selectedOutput: nil)
+
+        XCTAssertEqual(fields["selected_input"], .string("system default"))
+        XCTAssertEqual(
+            fields["effective_input"], .string("MacBook Pro Microphone"),
+            "the bundle must name the microphone that was actually live")
+    }
+
+    /// An explicit pick outranks the default, and `effective` agrees with it —
+    /// otherwise the two fields would contradict each other on the common case.
+    func testExplicitPickIsTheEffectiveDevice() {
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(["Built-in", "Jabra"], defaultInput: "Built-in"),
+            selectedInput: "Jabra",
+            selectedOutput: nil)
+
+        XCTAssertEqual(fields["selected_input"], .string("Jabra"))
+        XCTAssertEqual(fields["effective_input"], .string("Jabra"))
+    }
+
+    /// No pick and no resolvable default is a real outcome — no input devices
+    /// at all, or a HAL query that failed — and "unknown" says so. An absent
+    /// field would read as "nobody looked", which is a different answer.
+    func testUnresolvableDefaultIsNamedUnknown() {
+        XCTAssertEqual(
+            AudioDeviceDiagnostics.effective(selected: nil, systemDefault: nil), "unknown")
+
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot([]), selectedInput: nil, selectedOutput: nil)
+        XCTAssertEqual(fields["effective_input"], .string("unknown"))
+    }
+
+    /// The reason the default belongs in the snapshot rather than only in the
+    /// fields: macOS moves it on its own. Plugging a headset in, or changing
+    /// it in System Settings, can shift what an unselected pick uses **without
+    /// the device lists changing at all** — and that silent shift is exactly
+    /// what a session bundle is for.
+    func testDefaultMovingIsAChangeEvenWhenTheListsAreIdentical() {
+        let before = snapshot(["Built-in", "Jabra"], defaultInput: "Built-in")
+        let after = snapshot(["Built-in", "Jabra"], defaultInput: "Jabra")
+
+        XCTAssertEqual(before.inputs, after.inputs, "the lists are deliberately identical")
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(from: before, to: after),
+            "a default that moved under the user must be recorded")
+    }
+
     /// No explicit pick is spelled out rather than omitted. "System default"
     /// is a real state and a common answer to "why was it using the built-in
     /// mic", where a missing field would just look like missing data.
     func testNoExplicitSelectionIsNamedNotOmitted() {
         let fields = AudioDeviceDiagnostics.fields(
-            inputs: ["Built-in"], outputs: ["Built-in"],
+            snapshot: snapshot(["Built-in"], ["Built-in"]),
             selectedInput: nil, selectedOutput: nil)
 
         XCTAssertEqual(fields["selected_input"], .string("system default"))
@@ -160,8 +220,7 @@ final class AudioDeviceDiagnosticsTests: XCTestCase {
     /// somebody expected was not on the machine at all.
     func testAMissingDeviceIsVisibleInTheRecord() {
         let fields = AudioDeviceDiagnostics.fields(
-            inputs: ["MacBook Pro Microphone"],
-            outputs: ["MacBook Pro Speakers"],
+            snapshot: snapshot(["MacBook Pro Microphone"], ["MacBook Pro Speakers"]),
             selectedInput: nil,
             selectedOutput: nil)
 

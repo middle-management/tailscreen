@@ -90,6 +90,16 @@ and the line saying the device left is the whole diagnosis. Lists compare as
 ordered, not as sets, because a reorder means the system default moved, which
 changes what an unselected pick resolves to.
 
+`selected_*` and `effective_*` are both recorded and answer different
+questions: `selected` is the user's choice (possibly "system default", meaning
+they chose nothing), `effective` is the device that choice resolves to. The
+expensive case is `selected` reading "system default" while `effective` is not
+the device the person assumed, which neither field answers alone. The system
+default is part of the `Snapshot` — and therefore of change detection —
+because **macOS moves it on its own**: plugging a headset in, or a change in
+System Settings, shifts what an unselected pick uses with the device lists
+completely unchanged.
+
 Devices are recorded **by name**, never by `AudioDeviceID`: the ID is a
 machine-local CoreAudio handle that changes across reboots and means nothing to
 a reader, while the name is what the person saw in the picker and what they

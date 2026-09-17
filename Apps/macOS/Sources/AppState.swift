@@ -2335,15 +2335,16 @@ class AppState: ObservableObject {
     private func recordAudioDevicesIfChanged() {
         let current = AudioDeviceDiagnostics.Snapshot(
             inputs: availableInputDevices.map(\.name),
-            outputs: availableOutputDevices.map(\.name))
+            outputs: availableOutputDevices.map(\.name),
+            defaultInput: systemDefaultInputName,
+            defaultOutput: systemDefaultOutputName)
         guard AudioDeviceDiagnostics.changed(from: lastRecordedAudioDevices, to: current)
         else { return }
         lastRecordedAudioDevices = current
         AppDiagnostics.recorder?.record(
             .audioDevicesChanged,
             fields: AudioDeviceDiagnostics.fields(
-                inputs: current.inputs,
-                outputs: current.outputs,
+                snapshot: current,
                 selectedInput: selectedInputDeviceName,
                 selectedOutput: selectedOutputDeviceName))
     }
@@ -2361,6 +2362,30 @@ class AppState: ObservableObject {
         return availableOutputDevices.first { $0.id == id }?.name
     }
 
+    /// What the system default input currently resolves to, by name.
+    ///
+    /// Recorded because "system default" names the user's *choice* and not the
+    /// *device*. Someone who never opened the picker is on whatever macOS has
+    /// decided is default at that moment — and macOS moves it on its own when
+    /// a headset is plugged in or pulled out. Without this, a bundle says
+    /// "system default" for a session that started on a headset and finished
+    /// on the built-in mic, and the thing that actually changed is invisible.
+    private var systemDefaultInputName: String? {
+        guard let id = AudioDevices.defaultInputID() else { return nil }
+        return availableInputDevices.first { $0.id == id }?.name
+    }
+
+    private var systemDefaultOutputName: String? {
+        guard let id = AudioDevices.defaultOutputID() else { return nil }
+        return availableOutputDevices.first { $0.id == id }?.name
+    }
+
+    /// The input actually in use: the explicit pick, else the system default.
+    private var effectiveInputDeviceName: String {
+        AudioDeviceDiagnostics.effective(
+            selected: selectedInputDeviceName, systemDefault: systemDefaultInputName)
+    }
+
     func selectInputDevice(_ deviceID: AudioDeviceID?) {
         selectedInputDeviceID = deviceID
         // By name, not by `AudioDeviceID`: the ID is a machine-local CoreAudio
@@ -2371,7 +2396,8 @@ class AppState: ObservableObject {
             .actionAudioDeviceSelected,
             [
                 "direction": .string("input"),
-                "device": .string(selectedInputDeviceName ?? "system default")
+                "device": .string(selectedInputDeviceName ?? "system default"),
+                "effective": .string(effectiveInputDeviceName)
             ])
         guard let cap = micCapture else { return }
         Task { @MainActor in await cap.setInputDevice(deviceID) }
@@ -2411,7 +2437,13 @@ class AppState: ObservableObject {
             // "they turned it on and it came up on the wrong device".
             AppDiagnostics.recorder?.record(
                 .micAttached,
-                fields: ["device": .string(selectedInputDeviceName ?? "system default")])
+                fields: [
+                    // The device that actually went live, resolved through the
+                    // system default when nothing was picked — "system default"
+                    // alone would name the choice and not the microphone.
+                    "device": .string(effectiveInputDeviceName),
+                    "selection": .string(selectedInputDeviceName ?? "system default")
+                ])
         } catch {
             // Recorded as well as surfaced. `presentError` records the fault
             // with its `TS-…` code, but not which device failed — and the
@@ -2419,7 +2451,8 @@ class AppState: ObservableObject {
             AppDiagnostics.recorder?.record(
                 .micFailed,
                 fields: [
-                    "device": .string(selectedInputDeviceName ?? "system default"),
+                    "device": .string(effectiveInputDeviceName),
+                    "selection": .string(selectedInputDeviceName ?? "system default"),
                     "error": .string(String(describing: error))
                 ])
             presentError(.microphoneUnavailable(error))

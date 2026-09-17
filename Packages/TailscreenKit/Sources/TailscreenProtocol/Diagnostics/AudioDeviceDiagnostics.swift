@@ -66,9 +66,30 @@ public enum AudioDeviceDiagnostics {
         public var inputs: [String]
         public var outputs: [String]
 
-        public init(inputs: [String], outputs: [String]) {
+        /// What the system default resolves to right now, by name.
+        ///
+        /// Part of the snapshot, and therefore part of change detection, on
+        /// purpose. **The default moves on its own.** Plugging in a headset
+        /// makes it the default; unplugging it hands the session back to the
+        /// built-in mic; changing it in System Settings moves it with no
+        /// device arriving or leaving at all. Someone who never touched
+        /// Tailscreen's picker is on whatever the default is *at that moment*,
+        /// so a default that shifts mid-session changes what the share records
+        /// from — silently, and with nothing in the device lists to show it.
+        /// That is exactly the kind of invisible change worth an event.
+        public var defaultInput: String?
+        public var defaultOutput: String?
+
+        public init(
+            inputs: [String],
+            outputs: [String],
+            defaultInput: String? = nil,
+            defaultOutput: String? = nil
+        ) {
             self.inputs = inputs
             self.outputs = outputs
+            self.defaultInput = defaultInput
+            self.defaultOutput = defaultOutput
         }
     }
 
@@ -92,22 +113,44 @@ public enum AudioDeviceDiagnostics {
     /// Counts alongside the names so a truncated list still answers "how many
     /// were there", and the two are always consistent because they come from
     /// one place.
+    /// **`selected_*` and `effective_*` both appear, and they answer different
+    /// questions.** `selected` is what the user chose — possibly "system
+    /// default", meaning they chose nothing. `effective` is the device that
+    /// choice actually resolves to. A reader chasing "they couldn't hear me"
+    /// wants the second; one asking "did they pick the wrong one" wants the
+    /// first; and the case that costs the most time is `selected` reading
+    /// "system default" while `effective` is not the device the person
+    /// assumed — which neither field answers on its own.
     public static func fields(
-        inputs: [String],
-        outputs: [String],
+        snapshot: Snapshot,
         selectedInput: String?,
         selectedOutput: String?
     ) -> [String: DiagnosticValue] {
         [
-            "inputs": .string(describe(inputs)),
-            "input_count": DiagnosticValue(inputs.count),
-            "outputs": .string(describe(outputs)),
-            "output_count": DiagnosticValue(outputs.count),
+            "inputs": .string(describe(snapshot.inputs)),
+            "input_count": DiagnosticValue(snapshot.inputs.count),
+            "outputs": .string(describe(snapshot.outputs)),
+            "output_count": DiagnosticValue(snapshot.outputs.count),
             // "system default" rather than an absent field: the user made no
             // explicit pick, which is a real state and a common answer to
             // "why was it using the built-in mic".
             "selected_input": .string(selectedInput ?? "system default"),
-            "selected_output": .string(selectedOutput ?? "system default")
+            "selected_output": .string(selectedOutput ?? "system default"),
+            "effective_input": .string(
+                effective(selected: selectedInput, systemDefault: snapshot.defaultInput)),
+            "effective_output": .string(
+                effective(selected: selectedOutput, systemDefault: snapshot.defaultOutput))
         ]
+    }
+
+    /// The device actually in use: the explicit pick if there was one, else
+    /// whatever the system default currently resolves to.
+    ///
+    /// `"unknown"` when there is no explicit pick and the default could not be
+    /// resolved — a real outcome (no input devices at all, a HAL query that
+    /// failed) and worth naming rather than leaving the field absent, because
+    /// "we could not tell" and "nobody looked" are different answers.
+    public static func effective(selected: String?, systemDefault: String?) -> String {
+        selected ?? systemDefault ?? "unknown"
     }
 }
