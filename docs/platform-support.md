@@ -310,6 +310,28 @@ That is the point of the split: a bug fixed in the loss-recovery path is fixed
 everywhere, and the platform code stays down to capture, encode, decode, render,
 audio I/O and input injection.
 
+## Diagnostics
+
+Recording a session — handshakes, admission decisions, user actions, active
+views, failures — and exporting it as a file you can send to whoever is
+helping. Two sides' files merge into one ordered timeline, with the clock
+difference between the machines solved from the handshake itself. See
+[Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}#recording-diagnostics).
+
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| Record a session (handshakes, actions, failures) | ✅ | ✅ | ✅ | ❌ |
+| On by default in release candidates | ✅ | ✅ | ✅ | — |
+| Settings toggle | ✅ | ❌ not yet surfaced | ❌ not yet surfaced | — |
+| Export to a file | ✅ Settings → Diagnostics | ❌ not yet surfaced | ❌ not yet surfaced | — |
+
+The recording itself is in the portable core, so all three platforms capture
+the same events on the same terms. What is macOS-only so far is the **user
+interface** to it: the toggle and the export button. On Linux and Windows the
+recording happens and can be switched with `TAILSCREEN_DIAGNOSTICS=1` / `=0`,
+but there is no button yet — exporting from those apps is tracked as
+follow-up work.
+
 ## Distribution
 
 | | macOS | Linux | Windows | Browser |

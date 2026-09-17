@@ -1,4 +1,5 @@
 import Foundation
+import TailscreenProtocol
 
 /// Which build this is.
 ///
@@ -31,4 +32,46 @@ enum BuildInfo {
 
     /// `abc1234 release`, or `dev debug` from a local build.
     static var summary: String { "\(commit) \(configuration)" }
+
+    /// Marketing version. Not stamped by `app-windows.yml` today — only
+    /// `commit` is — so a released build currently reads `dev` here and
+    /// therefore counts as a `development` build for `releaseChannel`, which
+    /// records diagnostics by default. That is the safe direction to be wrong
+    /// in, but it does mean a released Windows build records where a released
+    /// macOS build would not; worth fixing when the stamping step widens.
+    static let version = "dev"
+
+    static var architecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    /// Whether this is a shipped release, a candidate for one, or a working
+    /// copy — by the same rule `scripts/release-version.sh` uses on the tag.
+    static var releaseChannel: ReleaseChannel {
+        ReleaseChannel.classify(version: version)
+    }
+
+    /// What names this machine in a merged diagnostics bundle.
+    static var deviceLabel: String {
+        let host = ProcessInfo.processInfo.hostName
+        return host.isEmpty ? "windows-device" : host
+    }
+
+    /// The build and machine facts an exported bundle's header carries.
+    static var diagnosticsEnvironment: DiagnosticsEnvironment {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        return DiagnosticsEnvironment(
+            platform: "Windows \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
+            appVersion: version,
+            commit: commit,
+            configuration: configuration,
+            architecture: architecture,
+            deviceLabel: deviceLabel)
+    }
 }

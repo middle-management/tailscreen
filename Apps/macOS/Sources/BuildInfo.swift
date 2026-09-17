@@ -50,4 +50,25 @@ enum BuildInfo {
 
     /// `abc1234 release`, or `dev debug` from a local build.
     static var summary: String { "\(commit) \(configuration)" }
+
+    /// Marketing version from the bundle, or `dev` for a binary built without
+    /// an Info.plist (a local `make build`, which runs the executable
+    /// directly).
+    static var marketingVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
+    }
+
+    /// Whether this is a shipped release, a candidate for one, or a working
+    /// copy — derived from ``marketingVersion`` by the same rule
+    /// `scripts/release-version.sh` uses on the tag.
+    ///
+    /// Read by `DiagnosticsPreference` to decide whether diagnostics recording
+    /// starts on: a candidate exists to be tested and records by default, a
+    /// shipped release does not. That is the one place a wrong answer here is
+    /// user-visible, so it is worth knowing that an *unstamped* build reads as
+    /// `development` and therefore records — which is right for the person
+    /// running their own build, and is also what every `swift run` does.
+    static var releaseChannel: ReleaseChannel {
+        ReleaseChannel.classify(version: marketingVersion)
+    }
 }

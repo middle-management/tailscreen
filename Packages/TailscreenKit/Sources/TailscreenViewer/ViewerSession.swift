@@ -77,6 +77,21 @@ public final class ViewerSession {
     /// Called each time the session recovers a packet via FEC.
     public var onFECRecovered: (() -> Void)?
 
+    /// Where this session records its handshake for later troubleshooting.
+    ///
+    /// Host-installed and optional: nil means no recording, which is the
+    /// stable-release default (``DiagnosticsPreference``). Named `recorder`
+    /// rather than `diagnostics` because ``ViewerSession/diagnostics`` is
+    /// already taken by the live counter snapshot the stats overlay reads —
+    /// a different thing entirely, kept for a different purpose.
+    ///
+    /// Only the handshake and the terminal transitions are recorded here, not
+    /// the per-packet paths: the events worth keeping are the ones that
+    /// explain a session, and `receiveRTP` runs hundreds of times a second.
+    /// The counters in ``ViewerSession/diagnostics`` already summarize that
+    /// traffic, and the host samples them into `transport.summary`.
+    public var recorder: DiagnosticsRecorder?
+
     // MARK: Decode-recovery ladder opt-in (optional; host cooperation)
 
     /// Installing EITHER callback below opts the session into the shared
@@ -269,6 +284,7 @@ public final class ViewerSession {
     /// returned bytes to the sharer; the sharer replies with a HELLO_ACK
     /// (handled in `receiveRTP`).
     public func start() {
+        recorder?.record(.helloSent, role: .viewer, fields: ["caps": .string(caps.diagnosticDescription)])
         onControlToSend(ScreenShareControlMessage.encodeHello(caps: caps))
     }
 
@@ -462,17 +478,51 @@ public final class ViewerSession {
         switch kind {
         case .helloAck:
             if let (ssrc, caps) = ScreenShareControlMessage.decodeHelloAckCaps(data) {
+                // Recorded before the assignment so a re-ack (a reconnect
+                // onto the same session) still shows both values.
+                //
+                // `ssrc` is what pairs this event with the sharer's
+                // `hello.ack.sent`, which is how `DiagnosticsMerge` aligns the
+                // two machines' clocks. It is the one identifier both ends
+                // already agree on, so nothing had to be added to the wire to
+                // make the merge work — see that type's doc comment.
+                recorder?.record(
+                    .helloAckReceived,
+                    role: .viewer,
+                    fields: [
+                        "ssrc": DiagnosticValue(ssrc),
+                        "server_caps": .string(caps.diagnosticDescription),
+                        "was_pending": .bool(isPendingApproval)
+                    ])
                 assignedSSRC = ssrc
                 serverCaps = caps
                 isPendingApproval = false
             }
         case .helloPending:
+            // Only on the transition. A sharer re-sends HELLO_PENDING for
+            // every keepalive while the viewer sits on the approval prompt,
+            // and an event per keepalive would push the rest of the session
+            // out of the ring.
+            if !isPendingApproval {
+                recorder?.record(.helloPendingReceived, role: .viewer)
+            }
             isPendingApproval = true
         case .helloDenied:
+            recorder?.record(
+                .helloDeniedReceived,
+                role: .viewer,
+                fields: ["was_pending": .bool(isPendingApproval)])
             wasDenied = true
             isStopped = true
             if closeReason == nil { closeReason = .deniedOrKicked }
         case .serverBye, .bye:
+            // `closeReason == nil` is the "this is the first cause" test the
+            // line below already makes — recording inside it keeps the
+            // SERVER_BYE that chases a HELLO_DENY from writing a second,
+            // contradictory ending into the timeline.
+            if closeReason == nil {
+                recorder?.record(.serverByeReceived, role: .viewer)
+            }
             isStopped = true
             // First cause wins — the SERVER_BYE that chases a HELLO_DENY must
             // not relabel the deny as an ordinary sharer stop.

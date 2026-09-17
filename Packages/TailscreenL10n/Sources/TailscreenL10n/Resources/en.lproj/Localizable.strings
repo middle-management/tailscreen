@@ -701,3 +701,18 @@
 "Mute Audio" = "Mute Audio";
 "Unmute Audio" = "Unmute Audio";
 "Audio Unavailable" = "Audio Unavailable";
+
+/* MARK: - Diagnostics (Apps/macOS SettingsView.swift + AppState.swift).
+   The recording toggle, its per-channel caption, and the export. The caption
+   varies by release channel because what it has to disclose varies: a
+   candidate records by default and the user is owed that fact plainly, a
+   shipped release does not. */
+"Diagnostics" = "Diagnostics";
+"Record diagnostics for troubleshooting" = "Record diagnostics for troubleshooting";
+"On by default in a release candidate, so a problem you hit while testing can be explained afterwards. Turning it off here keeps it off in future candidates." = "On by default in a release candidate, so a problem you hit while testing can be explained afterwards. Turning it off here keeps it off in future candidates.";
+"Off by default. Turn it on before reproducing a problem, then export the recording." = "Off by default. Turn it on before reproducing a problem, then export the recording.";
+"On by default in a local build." = "On by default in a local build.";
+"Export Diagnostics…" = "Export Diagnostics…";
+"Writes a file naming this device, the devices it connected to, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable." = "Writes a file naming this device, the devices it connected to, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable.";
+"Couldn't Export Diagnostics" = "Couldn't Export Diagnostics";
+"The diagnostics file could not be written: %@" = "The diagnostics file could not be written: %@";

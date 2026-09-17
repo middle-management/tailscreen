@@ -839,6 +839,13 @@ public final class TsnetTransport {
             audioSink: audioSink,
             onControlToSend: { data in outboundContinuation.yield(data) }
         )
+        // The one recorder the host installed, if any. Unconditional, and
+        // deliberately NOT folded into the decode-recovery opt-in below:
+        // whether a host wired up a decoder reset has nothing to do with
+        // whether the handshake should be recorded, and nesting it there would
+        // silently leave the GTK and WinUI viewers unrecorded on every path
+        // that does not install one.
+        pipeline.session.recorder = DiagnosticsCenter.shared.recorder
         // Decode-recovery ladder opt-in. The session fires these synchronously
         // from `receiveRTP`, which the loop below only ever calls on this
         // actor — `assumeIsolated` names that contract (a hop would be wrong:

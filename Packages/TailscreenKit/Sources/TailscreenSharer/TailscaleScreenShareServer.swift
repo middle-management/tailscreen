@@ -953,6 +953,20 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// viewers.
     public var onAudioReceived: ((Data) -> Void)?
 
+    /// Where this share records its handshakes and admission decisions.
+    ///
+    /// Host-installed and optional: nil means no recording, which is the
+    /// stable-release default (``DiagnosticsPreference``). The server records
+    /// only the decisions — who asked, what was negotiated, who was let in and
+    /// who was not — never the per-packet paths, which run hundreds of times a
+    /// second and are summarized by the counters the host already samples.
+    ///
+    /// The admission events are the sharer half of the most common support
+    /// question there is: a viewer that sees nothing and a sharer that thinks
+    /// it is sharing fine. Whether the HELLO arrived at all, and what happened
+    /// to it if it did, is the whole answer, and it is only visible here.
+    public var recorder: DiagnosticsRecorder?
+
     /// Test-only: fires with the viewer's address each time a PLI is recorded.
     /// In production, a PLI also triggers `helperCapture?.requestKeyframe()`,
     /// but with no capture-helper (synthetic test mode) that's a no-op and the
@@ -2271,14 +2285,60 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 caps = Self.streamHelloCaps(caps)
             }
             viewerCaps.withLock { $0[addr] = caps }
+            // Sampled BEFORE `registerOrRefresh`, which is what parks a new
+            // viewer: afterwards every arrival looks like it was already
+            // pending, and the "newly parked" test below would never fire.
+            let wasAlreadyPending = pendingViewers.withLock { $0[addr] != nil }
+            recorder?.record(
+                .helloReceived,
+                role: .sharer,
+                fields: [
+                    "addr": .string(addr),
+                    "caps": .string(caps.diagnosticDescription),
+                    "transport": .string(transport == .stream ? "stream" : "datagram"),
+                    "guest": .bool(isGuestAddr(addr))
+                ])
             registerOrRefresh(addr: addr, isNew: true)
             if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
                 let ack = helloAckDatagram(for: addr, ssrc: assignedSSRC)
+                // `ssrc` is the field `DiagnosticsMerge` pairs this event with
+                // the viewer's `hello.ack.received` on, which is what lets two
+                // bundles' clocks be aligned without anything extra on the
+                // wire. Recorded here rather than inside the send `Task` so
+                // the stamp is the moment the sharer decided, not the moment
+                // an async hop got around to it — the clock estimate is only
+                // as good as that stamp.
+                recorder?.record(
+                    .helloAckSent,
+                    role: .sharer,
+                    fields: [
+                        "addr": .string(addr),
+                        "ssrc": DiagnosticValue(assignedSSRC),
+                        // Mirrors `helloAckDatagram`'s own branch rather than
+                        // reporting `serverCaps` unconditionally: a viewer that
+                        // sent a legacy capability-less HELLO gets the 5-byte
+                        // ack with NO caps in it, and recording the sharer's
+                        // full set there would state the opposite of what went
+                        // out. That branch is the answer to "why did this
+                        // viewer never get FEC", so it is the one thing this
+                        // event has to get right.
+                        "server_caps": .string(
+                            caps.isEmpty ? "none (legacy ack)" : serverCaps.diagnosticDescription)
+                    ])
                 Task { [weak self] in
                     guard let pl = self?.media else { return }
                     try? await pl.send(ack, to: addr)
                 }
             } else if (pendingViewers.withLock { $0[addr] != nil }) {
+                // Only on the transition into the pending state. The resend
+                // below fires on every HELLO retry for as long as the viewer
+                // sits on the approval prompt, and an event per retry would
+                // push the rest of the session out of the buffer while saying
+                // nothing the first one did not.
+                if !wasAlreadyPending {
+                    recorder?.record(
+                        .helloPendingSent, role: .sharer, fields: ["addr": .string(addr)])
+                }
                 // Parked behind the approval gate. Echo HELLO_PENDING so
                 // the viewer can flip its UI from "Connecting…" to
                 // "Waiting for approval"; resend on every HELLO retry in
@@ -2918,6 +2978,19 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         if identityMissing {
             scheduleIdentityResolve()
         }
+        // The same choke point is the right place to record admission, and
+        // for the same reason: both the open-door path and `approveViewer`
+        // land here, so one event covers every way a viewer can end up
+        // watching. Recording at the two callers instead would mean a third
+        // admission route added later is silently unrecorded.
+        recorder?.record(
+            .viewerAdmitted,
+            role: .sharer,
+            fields: [
+                "addr": .string(addr),
+                "guest": .bool(isGuestAddr(addr)),
+                "identity_pending": .bool(identityMissing)
+            ])
         // One choke point for "a viewer entered the admitted set" (both the
         // open-door path and `approveViewer` land here), which is exactly when
         // a 10-bit share has to find out whether its newest audience can
@@ -2983,6 +3056,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         guard existed else { return }
         notifyPendingViewersChanged()
         logger.log("Viewer denied \(addr)")
+        recorder?.record(
+            .viewerDenied,
+            role: .sharer,
+            fields: ["addr": .string(addr), "guest": .bool(isGuestAddr(addr))])
+        recorder?.record(.helloDeniedSent, role: .sharer, fields: ["addr": .string(addr)])
         sendDenialDatagrams(to: addr)
         if isGuestAddr(addr) {
             onGuestViewerDenied?(Self.ipFromAddr(addr))
@@ -3112,6 +3190,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         revokeControlIfHeld(byIP: Self.ipFromAddr(addr), reason: reason)
         notifyViewersChanged()
         logger.log("Viewer expelled (\(reason)) \(addr)")
+        // After the `removed` guard above, so an unknown addr — which is a
+        // no-op — does not write an expulsion that never happened. `reason` is
+        // free text from the caller, so it goes through the same scrubbing as
+        // every other string field.
+        recorder?.record(
+            .viewerExpelled,
+            role: .sharer,
+            fields: [
+                "addr": .string(addr),
+                "reason": .string(reason),
+                "guest": .bool(isGuestAddr(addr))
+            ])
         sendDenialDatagrams(to: addr)
         // A policy-driven expel is a standing rejection: close the guest
         // tunnel too. A one-time disconnect is not — the guest may knock

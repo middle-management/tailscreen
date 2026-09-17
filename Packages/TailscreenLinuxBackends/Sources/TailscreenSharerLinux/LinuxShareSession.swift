@@ -454,6 +454,10 @@ public final class LinuxShareSession {
             // failure Phase 0 flipped this default to prevent.
             rendersAnnotations: overlay != nil
         )
+        // The one recorder the host installed, if any. Same seam the macOS app
+        // and the WinUI engine use; nil when diagnostics are off, which is the
+        // stable-release default.
+        server.recorder = DiagnosticsCenter.shared.recorder
         // Fires on the server's control-channel thread; the overlay marshals
         // onto the GTK main thread itself.
         server.onAnnotationReceived = { [overlay] op in overlay?.apply(op) }

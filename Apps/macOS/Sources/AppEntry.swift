@@ -32,6 +32,13 @@ enum TailscreenEntry {
             PickerHelperMain.run()
         }
         installMainProcessSignalHandlers()
+        // Before the observers and the scene, so the session record opens with
+        // the build stamp rather than with whatever happened to be recorded
+        // first. Placed after the two helper routes above on purpose: the
+        // capture and picker helpers are short-lived subprocesses that never
+        // return, and a helper writing its own session record would produce a
+        // second bundle nobody asked for.
+        AppDiagnostics.start()
         installLaunchNotificationObservers()
         TailscreenApp.main()
     }

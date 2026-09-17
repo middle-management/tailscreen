@@ -1,5 +1,6 @@
 import Foundation
 import TailscaleKit
+import TailscreenProtocol
 
 /// The one `print`-backed `LogSink` behind this package's per-file loggers.
 ///
@@ -42,5 +43,10 @@ package struct PrintLogSink: LogSink {
     package func log(_ message: String) {
         if dropListeningNoise, message.hasPrefix("Listening for ") { return }
         print("[\(prefix)] \(message)")
+        // Tee into the process recorder, if a host installed one. Free
+        // coverage of every existing log call site in this package and the
+        // sharer — see `DiagnosticsCenter.captureLog` for what that is and is
+        // not worth.
+        DiagnosticsCenter.shared.captureLog(source: prefix, message: message)
     }
 }

@@ -227,6 +227,52 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Diagnostics
+
+    /// Whether session diagnostics are being recorded.
+    ///
+    /// Read from `DiagnosticsPreference`, which resolves an explicit choice
+    /// against the build's release channel: **on by default in a release
+    /// candidate**, off in a shipped release, on in a local build. An explicit
+    /// choice outranks the channel in both directions and survives into the
+    /// next candidate.
+    ///
+    /// Not a `didSet`, unlike `requireViewerApproval` above: flipping this has
+    /// to persist the choice AND move the live recorder AND attach or detach
+    /// the log tee, in that order, and a `didSet` that a stored-property
+    /// initialiser can also trigger is the wrong place for three effects.
+    /// `setRecordDiagnostics(_:)` is the one way in.
+    @Published private(set) var recordDiagnostics: Bool =
+        DiagnosticsPreference.load(channel: BuildInfo.releaseChannel)
+
+    /// Turn recording on or off, persist the choice, and move the recorder.
+    func setRecordDiagnostics(_ enabled: Bool) {
+        guard enabled != recordDiagnostics else { return }
+        AppDiagnostics.setRecording(enabled)
+        recordDiagnostics = enabled
+    }
+
+    /// Write the current recording out and show the user where it went.
+    ///
+    /// Reveals the file in Finder rather than only naming its path: the next
+    /// thing the user does is attach it to a message, and a path in an alert
+    /// is something they then have to go and find. A failure here goes through
+    /// `presentError` like everything else — an export that silently does
+    /// nothing would be a particularly cruel bug in a feature whose whole
+    /// purpose is explaining failures.
+    func exportDiagnostics() {
+        do {
+            let url = try AppDiagnostics.export()
+            logger.log("Diagnostics exported to \(url.path)")
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            presentError(
+                .legacy(
+                    title: L("Couldn't Export Diagnostics"),
+                    message: L("The diagnostics file could not be written: \(error)")))
+        }
+    }
+
     // MARK: - Link sharing (share-by-token guests)
 
     /// Settings feature gate for sharing via link. Default on but inert —
@@ -1583,6 +1629,7 @@ class AppState: ObservableObject {
         // refuse our SCStream with -3805 anyway — bail with a clear
         // alert instead of letting the user watch the bring-up
         // dance through and fail.
+        AppDiagnostics.action(.actionShareStart)
         guard shareLock.tryAcquire() else {
             anotherInstanceSharing = true
             showAlertMessage(
@@ -1667,6 +1714,7 @@ class AppState: ObservableObject {
             if server == nil {
                 let hostname = Self.localHostname()
                 let srv = TailscaleScreenShareServer()
+                srv.recorder = AppDiagnostics.recorder
                 server = srv
 
                 // SCStream can die from two distinct causes:
@@ -2028,6 +2076,8 @@ class AppState: ObservableObject {
         isStoppingShare = true
         defer { isStoppingShare = false }
         logger.log("stopSharing: called by \(caller) (reason=\(reason))")
+        AppDiagnostics.action(
+            .actionShareStop, ["reason": .string(reason), "caller": .string(caller)])
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
         if let cont = pendingFirstPreview {
@@ -2306,6 +2356,7 @@ class AppState: ObservableObject {
     /// covers SCK audio. No-op when not sharing.
     func toggleSystemAudio() {
         isSystemAudioOn.toggle()
+        AppDiagnostics.action(.actionSystemAudioToggle, ["on": .bool(isSystemAudioOn)])
         server?.setShareSystemAudio(isSystemAudioOn)
     }
 
@@ -2317,6 +2368,7 @@ class AppState: ObservableObject {
     /// `shareLinkBusy` guarding double-fires.
     func setShareLinkActive(_ on: Bool) {
         guard !shareLinkBusy else { return }
+        AppDiagnostics.action(.actionLinkToggle, ["on": .bool(on)])
         // A guest-only share IS its link: the UI hides the off-toggle there,
         // and this guard is the belt to that suspender — turning the link off
         // would leave a share running that nobody can reach.
@@ -2473,7 +2525,18 @@ class AppState: ObservableObject {
         // fires neither, and must not inherit the previous session's zoom.
         viewerHost?.zoomState = ViewerZoomState()
         let c = TailscaleScreenShareClient(renderer: renderer)
+        c.recorder = AppDiagnostics.recorder
         client = c
+        AppDiagnostics.action(
+            .actionConnect,
+            [
+                "peer": .string(displayName ?? host),
+                // The token itself never goes near the recorder — only whether
+                // this was a link join, which is the part that changes how the
+                // rest of the timeline should be read (guest admission is
+                // mandatory-approval and identity is a node key, not a host).
+                "via_link": .bool(guestToken != nil)
+            ])
         do {
             // HELLO_PENDING means the sharer parked us behind the approval
             // gate. Surface the placard so the viewer doesn't sit on a
@@ -4860,6 +4923,13 @@ class AppState: ObservableObject {
     /// the user can read it again after copying.
     func presentError(_ error: AppError) {
         logger.log("AppError[\(error.code)] \(error.title) — \(error.message)")
+        // Every alert-shaped failure in the app funnels through here, so one
+        // call records them all — including failures added later by someone
+        // who has never heard of this file. The stable `TS-…` code is what
+        // joins a bundle onto the error registry; the message is not recorded
+        // because it is prose that varies with interpolated detail, and the
+        // code plus the surrounding events say more.
+        AppDiagnostics.fault(code: error.code, title: error.title)
 
         NSApp.activate(ignoringOtherApps: true)
 
@@ -4910,6 +4980,7 @@ class AppState: ObservableObject {
     /// documented on `presentError`.
     func presentNotice(title: String, message: String) {
         logger.log("Notice: \(title) — \(message)")
+        AppDiagnostics.recorder?.record(.noticeShown, fields: ["title": .string(title)])
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title
@@ -5381,12 +5452,14 @@ class AppState: ObservableObject {
     /// Admit a pending viewer — hands off to the live server which
     /// emits the deferred HELLO_ACK and forces a keyframe.
     func approvePendingViewer(_ id: String) {
+        AppDiagnostics.action(.actionViewerApprove, ["addr": .string(id)])
         server?.approveViewer(addr: id)
     }
 
     /// Reject a pending viewer — server sends HELLO_DENY + SERVER_BYE so
     /// the viewer tears their session down immediately.
     func denyPendingViewer(_ id: String) {
+        AppDiagnostics.action(.actionViewerDeny, ["addr": .string(id)])
         server?.denyViewer(addr: id)
     }
 
@@ -5396,6 +5469,7 @@ class AppState: ObservableObject {
     /// persistent variant, use "Deny & Block" on the pending row (or
     /// remove/deny via Settings → Viewers).
     func disconnectConnectedViewer(_ id: String) {
+        AppDiagnostics.action(.actionViewerKick, ["addr": .string(id)])
         server?.disconnectViewer(addr: id)
     }
 
@@ -5404,6 +5478,8 @@ class AppState: ObservableObject {
     /// yet, queue the intent so it's persisted the instant resolution lands
     /// — the peer is admitted one-time in the meantime.
     func approvePendingViewerAlways(_ id: String) {
+        AppDiagnostics.action(
+            .actionViewerApprove, ["addr": .string(id), "remembered": .bool(true)])
         if !persistPendingViewerPolicy(id, policy: .allow) {
             policyIntents.queue(id: id, policy: .allow)
             logger.log("Queued 'always allow' for \(id): StableNodeID unresolved — persist on resolve")
@@ -5418,6 +5494,7 @@ class AppState: ObservableObject {
     /// the block is persisted the instant resolution lands, rather than
     /// silently degrading to a one-time deny the peer could re-HELLO past.
     func denyPendingViewerAndBlock(_ id: String) {
+        AppDiagnostics.action(.actionViewerBlock, ["addr": .string(id)])
         if persistPendingViewerPolicy(id, policy: .deny) {
             server?.denyViewer(addr: id)
         } else {
