@@ -8,8 +8,7 @@ The platform-portable core of Tailscreen, in six targets/tiers:
   loops (NACK scheduling, retransmit budgeting, FEC codec/buffering,
   receiver-report accounting, receive-loop retry policy, remote-control
   gate/coalescing, zoom math, tuning constants). **No Apple frameworks and
-  no dependencies** — Foundation (+ the stdlib `Synchronization` module)
-  only.
+  no dependencies** — Foundation only.
 - **`TailscreenTransport`** — the tsnet-facing layer
   (`TailscalePeerDiscovery`, `TailscaleIPNWatcher`, `TailscaleAuth`, and
   `TsnetNodeFactory` — the one node bring-up every site goes through, with
@@ -158,22 +157,35 @@ inside a `swift:6.3-noble` container on every PR — that job is what
 
 ## Rules for files in the portable set
 
-1. **No Apple-framework imports.** Foundation, `Synchronization`, and
+1. **No Apple-framework imports.** Foundation and
    `#if canImport(CoreGraphics)` (the CG geometry value types come from
-   swift-corelibs-foundation on Linux) are the whitelist. No `os` (use
-   `Synchronization.Mutex`, not `OSAllocatedUnfairLock`), no `Darwin`
-   (use a Glibc shim behind `canImport`), no
+   swift-corelibs-foundation on Linux) are the whitelist. No `os`, no
+   `Darwin` (use a Glibc shim behind `canImport`), no
    AppKit/VideoToolbox/CoreMedia/Combine (`PortabilityShims.swift`
    provides `ObservableObject`/`@Published` stand-ins off-Apple).
-2. **Adding a file to the set:** `git mv` it from `Sources/` into the
+2. **Lock with `Guarded`, not `Synchronization.Mutex`** (and not
+   `OSAllocatedUnfairLock`, which isn't portable anyway). `Guarded` —
+   `TailscreenProtocol/Guarded.swift` — is `Mutex`'s `withLock { $0 … }`
+   shape over an `NSLock`, so switching is a one-word change at the
+   declaration and nothing at the call sites. The reason is
+   ThreadSanitizer: it learns happens-before from the pthread primitives it
+   interposes on, not from `Mutex`'s futex, so **every** `withLock` body on
+   a `Mutex` reads to it as an unsynchronised access and it reports a
+   "Swift access race" on correct code. The cost isn't the noise — it's
+   that a `Mutex`-guarded type cannot be checked by the sanitiser at all,
+   so `linux-tsan` passing says nothing about it. Verified on Swift 6.3
+   (what CI runs) and on a Swift 6.5 development snapshot: same report, so
+   this is not a toolchain bug to wait out. The full argument and the
+   reproduction are in `Guarded.swift` and `.claude/rules/testing.md`.
+3. **Adding a file to the set:** `git mv` it from `Sources/` into the
    right target here, mark what the app uses `public` (explicit inits for
    app-constructed structs — Swift never synthesizes memberwise inits as
    public), and confirm `make test-protocol` and `make build` still pass.
-3. **A portable file may only reference portable files.** If a declaration
+4. **A portable file may only reference portable files.** If a declaration
    it needs lives in a mac-bound app file, move that declaration into this
    package first — that's how `VideoCodecTypes.swift`,
    `TailscreenWireTypes.swift`, and `TimeoutError` (in `Timeout.swift`)
    came to be.
-4. **Wire changes still follow the registry rule:** a new wire byte means a
+5. **Wire changes still follow the registry rule:** a new wire byte means a
    `WireByteRegistryTests` row in the same commit (that suite lives in the
    main package).

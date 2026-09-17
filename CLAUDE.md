@@ -58,6 +58,7 @@ The **normative** definition — RFC 2119 MUST/SHOULD/MAY with stable requiremen
 
 - `@MainActor` on all UI-touching state and anywhere that constructs an `NSWindow`.
 - `@unchecked Sendable` on networking classes that handle their own thread safety. We're owning the invariants, the compiler isn't checking them.
+- **Lock with `Guarded`, not `Synchronization.Mutex`.** `Guarded` (TailscreenProtocol) is `Mutex`'s `withLock { $0 … }` shape over an `NSLock`. ThreadSanitizer can't see through `Mutex` — it reports a race *inside* the lock body on correct code, and worse, a `Mutex`-guarded type can't be checked by the sanitiser at all, so `linux-tsan` passing says nothing about it. `Guarded.swift` has the argument, `.claude/rules/testing.md` the reproduction. A genuinely multi-threaded type also needs a test that touches it from several threads, or the gate has nothing to watch.
 - `CVPixelBuffer` is **not** `Sendable` — convert to `CGImage` *before* hopping to `@MainActor` (e.g. for preview thumbnails).
 - No `Task { … self … }` in `deinit` — do synchronous cleanup; capturing `self` after deinit starts is undefined.
 - `ObservableObject` + `@Published` for UI-bound state; `@StateObject` to own, `@EnvironmentObject` to consume.

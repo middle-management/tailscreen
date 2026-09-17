@@ -19,6 +19,63 @@ make test
 #     cd Apps/macOS && swift test
 ```
 
+## ThreadSanitizer (`linux-tsan`, and `test-tsan` on macOS)
+
+```bash
+PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
+  swift test --package-path Packages/TailscreenKit --sanitize=thread
+```
+
+That command IS the `linux-tsan` job. Unlike the macOS `test-tsan` job — which
+runs the app target, trips over third-party C nothing here can fix
+(libtailscale's Go runtime, ScreenCaptureKit's XPC) and is `continue-on-error`
+for exactly that reason — this package imports no Apple framework and calls no
+tsnet, so it carries no tolerated noise and **a warning here is a real race**.
+
+### Lock with `Guarded`, never `Synchronization.Mutex`
+
+TSan cannot see through `Mutex`. It learns happens-before from the pthread
+primitives it interposes on; `Mutex` bypasses those and parks on the futex
+directly, so the sanitiser never observes the release/acquire pair and reads
+every `withLock { $0.field = … }` as an unsynchronised `inout` access. It then
+reports a **"Swift access race" inside the lock body**, on correct code.
+
+The noise is not the problem. The problem is that **a `Mutex`-guarded type is
+invisible to this gate**: it does not fail the check, the check has nothing to
+say about it, and a green `linux-tsan` is silent about every race it might
+hold. So the whole repo locks with `TailscreenProtocol.Guarded` — `Mutex`'s
+`withLock { $0 … }` shape over an `NSLock` — and `Guarded.swift` carries the
+argument. (`TailscreenL10n` keeps a private copy of the type; that package has
+no dependencies on purpose.)
+
+Reproduce it in thirty seconds, with no repo code involved, in a throwaway
+package built with `swift build --sanitize=thread`:
+
+```swift
+struct State { var counter: UInt64 = 0; var items: [UInt64] = [] }
+let lock = Mutex<State>(State())
+DispatchQueue.concurrentPerform(iterations: 8) { _ in
+    for _ in 0..<250 { lock.withLock { $0.counter &+= 1; $0.items.append($0.counter) } }
+}
+```
+
+That reports the race. The same hammer over `NSLock` — or over `Guarded` — is
+clean, and a genuinely unsynchronised race through the same shape is still
+caught, so the swap costs no detection. **Do not wait for a toolchain fix:**
+this was checked on Swift 6.3 (what CI runs) and on a Swift 6.5 development
+snapshot two majors ahead, which reports the identical warnings.
+
+### A lock nothing exercises concurrently proves nothing
+
+TSan only reports races it watches execute, so a thread-safe type whose whole
+suite is single-threaded passes the gate without ever being checked. When you
+add a type that is genuinely touched from several threads, add a case that
+hammers it from several threads — `RTPBufferPoolTests` and
+`RetransmitBufferTests` each carry one, and both assert
+interleaving-independent invariants (an acquired buffer is always reset; a
+retransmit template always comes back whole) rather than a particular ordering,
+so they are deterministic rather than flaky.
+
 ## E2E connectivity (real tsnet transport)
 
 Two paths:

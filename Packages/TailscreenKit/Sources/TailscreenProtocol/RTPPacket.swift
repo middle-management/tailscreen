@@ -573,7 +573,7 @@ public struct VideoAccessUnit {
 ///
 /// `Sendable`, checked: the packetizer's only cross-call state is the
 /// buffer pool, and `RTPPacketBufferPool` synchronizes itself with a
-/// `Mutex` — everything else (`seq`, the output array) is per-call locals,
+/// `Guarded` — everything else (`seq`, the output array) is per-call locals,
 /// with the sequence space owned by the caller. Concurrent `packetize`
 /// calls are therefore memory-safe; at worst an interleaved batch forfeits
 /// buffer reuse (COW allocates fresh). In practice the screen-share server
@@ -1130,7 +1130,7 @@ public final class H264Depacketizer {
 ///
 /// Buffer-pool semantics mirror `H264Packetizer`, and so does the
 /// `Sendable` rationale: the pool is the only cross-call state and it
-/// locks itself (`RTPPacketBufferPool`'s `Mutex`), so concurrent
+/// locks itself (`RTPPacketBufferPool`'s `Guarded`), so concurrent
 /// `packetize` calls are memory-safe and merely forfeit buffer reuse —
 /// there is no `broadcastTail`-style caller-side serialization to lean on
 /// anymore.

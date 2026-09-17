@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import TailscaleKit
 import TailscreenProtocol
 import TailscreenTransport
@@ -138,11 +137,11 @@ public final class SharerAskToShareCoordinator {
     }
 
     /// The listener's whole lifecycle behind one lock, in the style of
-    /// `TailscaleScreenShareServer`'s `Mutex<Lifecycle>`: every transition is
+    /// `TailscaleScreenShareServer`'s `Guarded<Lifecycle>`: every transition is
     /// a single take-and-clear, so a supersede can never be split into a read
     /// and a write with an `await` in between (which is what a `@MainActor`
     /// alone does not stop — the actor releases across every suspension).
-    private let listenerState = Mutex(ListenerState())
+    private let listenerState = Guarded(ListenerState())
 
     /// A bring-up this coordinator has committed to. Handed back by
     /// `beginBringUp` so the caller can start the listener and report the

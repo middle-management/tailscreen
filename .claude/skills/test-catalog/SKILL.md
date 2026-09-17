@@ -163,6 +163,33 @@ Added for the above:
 - **Parsing/framing:** `ScreenShareMessageParser.isCorrupt` + `ScreenShareMessage.maxPayloadLength` (the frame-length DoS guard); `HelperScreenCapture.decodeParameterSets` (internal static, slice-safe); `PickerHelperFraming.writeFramedPayload` + `PickerHelperClient.readFramed` (the picker framing round-trip seam); `RTPHeader.firstViewerSSRC` / `.sharerVoiceSSRC` (the extracted reserved-SSRC constants) and `RTPHeader.allPayloadTypes` / `ScreenShareCaps.allKnown` (production-side lists the registry cross-checks — append new PTs/caps there).
 - **Harnesses:** `ParserFuzzHarness` (in `Apps/macOS/Tests/`, budget-scalable fuzz engine shared with `SoakTests`); shared bring-up helpers in `TailscreenE2EHelpers.swift` (`encodeSyntheticAUs`, multi-dir `makeStateDirs`, and the capture-test quartet `skipCaptureTestOnCI` / `overrideHelperExecutable` / `mainDisplayFilterData` / `startCursorJiggle`).
 
+## Concurrency cases, and what the TSan gate can actually see
+
+`linux-tsan` runs the whole package under ThreadSanitizer and, unlike the
+macOS `test-tsan` job, tolerates no noise — a warning there is a real race.
+Two things make a thread-safe type silently fall outside it:
+
+- **It is guarded by `Synchronization.Mutex`.** TSan learns happens-before from
+  the pthread primitives it interposes on, not from `Mutex`'s futex, so it
+  reads every `withLock` body as an unsynchronised access and reports a "Swift
+  access race" on correct code — and a type it reports that way is one it
+  cannot verify at all. Lock with **`TailscreenProtocol.Guarded`** instead
+  (same `withLock { $0 … }` shape over an `NSLock`; a one-word change at the
+  declaration, none at the call sites). Checked on Swift 6.3 and a 6.5
+  snapshot — this is not a toolchain bug to wait out.
+- **Nothing ever touches it from two threads.** The sanitiser only reports
+  races it watches execute, so a lock-guarded type with a single-threaded
+  suite passes the gate without being checked.
+
+So a type that is genuinely multi-threaded wants a case that hammers it from
+several threads. `RTPBufferPoolTests.testConcurrentAcquireAndHandOverHoldsTheContract`
+and `RetransmitBufferTests.testConcurrentRecordAndLookupNeverYieldsATornTemplate`
+are the worked examples. Assert **interleaving-independent invariants** — an
+acquired buffer is always reset, a retransmit template always comes back whole
+— never a particular ordering, or the case is flaky rather than a gate. Both
+were mutation-checked: with the lock removed from `Guarded`, each reports
+against its own type; with it restored, the full 1221-test run is clean.
+
 ## Where a suite lives
 
 Suites whose subject types live entirely in `TailscreenProtocol`/`TailscreenAudio` belong to the package's `TailscreenProtocolTests` target so Linux CI (`linux-protocol`) runs them. The sharer-tier decision suites — `CongestionDecisionTests`, `FECOverheadDecisionTests`, `PerViewerFairnessDecisionTests`, `HelperRestartDecisionTests`, `ViewerLifecycleDecisionTests`, whose subject is `TailscaleScreenShareServer`'s public `static func` decisions — live in the package's `TailscreenSharerTests` target (plain `import TailscreenSharer`, no `@testable`: the decision surface is deliberately public, see the package README's carve-out — `SharerAskToShareCoordinatorTests` and `ViewerLabelTests` are the exceptions, `@testable` for the internal reply-send seam and for `ViewerInfo`/`PendingViewerInfo`'s non-public memberwise inits respectively), so the same job runs them too. Suites that touch mac-only symbols stay in `Apps/macOS/Tests/TailscreenTests`: anything importing an Apple framework, the `AppState`/`VideoDecoder` decision suites, and the impairment/fuzz cluster (`RTPLossyChannelTests`, `ParserFuzzTests`, `SoakTests`) whose shared `LossyChannel`/`ParserFuzzHarness` helpers still have mac consumers. (The former `VoiceChannel` decision suite moved with its subject: `VoiceResilienceDecisionTests` now pins the portable `VoiceReceiveDecisions` from the package target.) Suites about **strings** are a third home: they belong to `Packages/TailscreenL10n/Tests`, since the catalog serves every app and the checks have to run where all four source trees are visible. See `.claude/rules/portable-packages.md` for the full migrated list.

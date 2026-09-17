@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import TailscaleKit
 import TailscreenProtocol
 
@@ -27,8 +26,10 @@ public final class TailscreenControlListener: @unchecked Sendable {
     private let logger: PrintLogSink
     private var listener: Listener?
     private var isRunning = false
-    // `Mutex` (not `OSAllocatedUnfairLock`) keeps this file portable.
-    private let connections = Mutex<[UUID: IncomingConnection]>([:])
+    // `Guarded` (not `OSAllocatedUnfairLock`) keeps this file portable, and
+    // not `Synchronization.Mutex` so ThreadSanitizer can see the lock — see
+    // `Guarded.swift`.
+    private let connections = Guarded<[UUID: IncomingConnection]>([:])
 
     /// Fires for every `.annotation` message. Arguments are the op, the
     /// `UUID` of the connection it arrived on (so the sharer can avoid
