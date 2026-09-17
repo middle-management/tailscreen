@@ -92,19 +92,45 @@ public final class DiagnosticsCenter: @unchecked Sendable {
     /// Classify a log line by its own text, because `LogSink` has no levels —
     /// every message is one unstructured string.
     ///
-    /// Crude, and deliberately biased toward **under**-classifying: a line
-    /// wrongly marked `error` sends a reader chasing a non-problem, which
-    /// costs more than a real problem sitting at `info` next to the named
-    /// event that already reports it properly.
+    /// Deliberately biased toward **under**-classifying. A line wrongly marked
+    /// `error` sends a reader chasing a non-problem, which costs more than a
+    /// real problem sitting at `info` next to the named event that already
+    /// reports it properly — these lines are a safety net under the registry
+    /// events, not the thing anybody should be triaging from.
+    ///
+    /// Three rules, in order:
+    ///
+    /// 1. **The author's own marker wins.** This codebase already prefixes log
+    ///    lines with `❌` and `⚠`/`⚠️` where it means them, which is real
+    ///    severity information written by someone who knew what the line meant.
+    ///    Guessing from prose while ignoring that would be strictly worse.
+    /// 2. **A line about surviving errors is not an error.** "receive loop
+    ///    survived 3 error(s) this session" is a *success* message and the one
+    ///    false positive a plain keyword scan produces against the current call
+    ///    sites. Cheap to exclude, and the exclusion is safe: a line that says
+    ///    something survived or recovered is reporting the good outcome.
+    /// 3. Otherwise, keywords.
     static func severity(of message: String) -> DiagnosticSeverity {
+        // 1. Explicit markers.
+        if message.contains("❌") { return .error }
+        if message.contains("⚠") { return .warning }
+
         let lowered = message.lowercased()
+
+        // 2. The good-outcome exclusion.
+        let reportsRecovery =
+            lowered.contains("survived") || lowered.contains("recovered")
+            || lowered.contains("no error")
+        if reportsRecovery { return .info }
+
+        // 3. Keywords.
         if lowered.contains("error") || lowered.contains("failed")
-            || lowered.contains("failure")
+            || lowered.contains("failure") || lowered.contains("fatal")
         {
             return .error
         }
         if lowered.contains("warn") || lowered.contains("retry")
-            || lowered.contains("timeout")
+            || lowered.contains("timeout") || lowered.contains("unavailable")
         {
             return .warning
         }

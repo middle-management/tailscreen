@@ -220,8 +220,38 @@ final class DiagnosticsHostTests: XCTestCase {
     /// chasing a non-problem.
     func testLogSeverityIsInferredConservatively() {
         XCTAssertEqual(DiagnosticsCenter.severity(of: "node up failed: timeout"), .error)
+        XCTAssertEqual(DiagnosticsCenter.severity(of: "acceptLoop fatal: broken pipe"), .error)
         XCTAssertEqual(DiagnosticsCenter.severity(of: "retrying in 2s"), .warning)
         XCTAssertEqual(DiagnosticsCenter.severity(of: "Listening for connections"), .info)
         XCTAssertEqual(DiagnosticsCenter.severity(of: "Viewer admitted 100.64.0.3"), .info)
+    }
+
+    /// The author's own marker outranks the prose. This codebase prefixes log
+    /// lines with `❌` and `⚠` where it means them, and that is real severity
+    /// information written by someone who knew what the line meant — guessing
+    /// from keywords while ignoring it would be strictly worse.
+    func testExplicitMarkersOutrankKeywords() {
+        XCTAssertEqual(
+            DiagnosticsCenter.severity(of: "⚠ Microphone did not start (busy)"), .warning,
+            "an author-marked warning must not be promoted to an error")
+        XCTAssertEqual(
+            DiagnosticsCenter.severity(
+                of: "⚠ Voice uplink unavailable (no device) — continuing without a mic"),
+            .warning)
+        XCTAssertEqual(
+            DiagnosticsCenter.severity(of: "❌ Failed to check auth status: denied"), .error)
+    }
+
+    /// A line about *surviving* errors is a success message. This is the one
+    /// false positive a plain keyword scan produces against the real call
+    /// sites, and it is the shape that would send a reader chasing a
+    /// non-problem in every clean session's bundle.
+    func testGoodOutcomesAreNotReportedAsFailures() {
+        XCTAssertEqual(
+            DiagnosticsCenter.severity(
+                of: "Server stop: receive loop survived 3 error(s) this session"),
+            .info)
+        XCTAssertEqual(
+            DiagnosticsCenter.severity(of: "recovered 4 packets from parity"), .info)
     }
 }
