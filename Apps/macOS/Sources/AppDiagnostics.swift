@@ -65,11 +65,30 @@ enum AppDiagnostics {
     /// themselves, through `View.recordsDiagnosticSurface(_:)`. Deriving it
     /// centrally instead would mean re-implementing the pane logic in a second
     /// place, where it would silently fall out of step with the first.
+    /// Record a surface directly, for the ones SwiftUI's modifier cannot
+    /// reach — today the viewer's own `NSWindow`.
+    ///
+    /// `@MainActor` and routed through `DiagnosticSurfaceTracker` so these
+    /// share the SwiftUI surfaces' bookkeeping: without it a `view.hidden`
+    /// could be recorded for a window that was never opened, and a reader
+    /// counting shows against hides would find them unbalanced.
+    @MainActor
     static func viewShown(_ surface: String) {
+        DiagnosticSurfaceTracker.shared.shown(surface)
+    }
+
+    @MainActor
+    static func viewHidden(_ surface: String) {
+        DiagnosticSurfaceTracker.shared.hidden(surface)
+    }
+
+    /// The raw emit the tracker calls once it has decided the transition is
+    /// real. Not for direct use — go through `viewShown` / `viewHidden`.
+    static func emitViewShown(_ surface: String) {
         recorder?.record(.viewShown, fields: ["surface": .string(surface)])
     }
 
-    static func viewHidden(_ surface: String) {
+    static func emitViewHidden(_ surface: String) {
         recorder?.record(.viewHidden, fields: ["surface": .string(surface)])
     }
 

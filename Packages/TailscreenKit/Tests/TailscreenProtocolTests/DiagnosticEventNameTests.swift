@@ -25,13 +25,74 @@ final class DiagnosticEventNameTests: XCTestCase {
         XCTAssertEqual(DiagnosticEventName.helloAckReceived.rawValue, "hello.ack.received")
     }
 
-    /// Every name is unique. `CaseIterable` over a `String` raw value makes a
-    /// duplicate a compile error, but only for an exact collision — this also
-    /// catches the near-miss where two cases were meant to differ and a
-    /// copy-paste left them the same.
-    func testNamesAreUnique() {
-        let names = DiagnosticEventName.allCases.map(\.rawValue)
-        XCTAssertEqual(Set(names).count, names.count)
+    /// **The registry itself**, as a literal list, exactly as
+    /// `WireByteRegistryTests` pins the wire bytes.
+    ///
+    /// Uniqueness alone does not pin anything — a duplicate raw value is
+    /// already a compile error, so a suite that only checks for duplicates
+    /// passes happily while a name is renamed or deleted underneath it. That
+    /// is the failure mode this contract exists to prevent: a rename still
+    /// compiles, still records, still reads correctly in English, and breaks
+    /// every saved query and every old bundle.
+    ///
+    /// So changing this list is the deliberate act. Adding a case means adding
+    /// a line here; a rename or a removal means editing one, which is the
+    /// moment to ask whether bundles already in the wild just became
+    /// unreadable. Retiring an event is fine — stop recording it, keep the
+    /// line.
+    func testRegistryContentsArePinned() {
+        let expected: Set<String> = [
+            "recording.started", "recording.stopped", "recording.exported",
+            "node.bringup.started", "node.bringup.ready", "node.bringup.failed",
+            "node.signin.url_issued", "node.signin.completed", "node.stopped",
+            "peer.discovery.completed", "node.phase.changed",
+            "link.enabled", "link.disabled", "link.rotated",
+            "link.guest.joined", "link.guest.evicted",
+            "hello.sent", "hello.ack.received", "hello.pending.received",
+            "hello.denied.received", "hello.server_bye.received",
+            "hello.received", "hello.ack.sent", "hello.pending.sent",
+            "hello.denied.sent", "hello.bye.received",
+            "viewer.admitted", "viewer.approved", "viewer.denied",
+            "viewer.expelled", "viewer.pre_approved", "viewer.policy.applied",
+            "viewer.disconnected",
+            "share.phase.changed", "viewer.session.phase.changed",
+            "capture.started", "capture.stopped", "capture.restarted",
+            "capture.failed", "capture.source.changed",
+            "encode.codec.selected", "encode.bitrate.changed",
+            "encode.frame_interval.changed", "encode.keyframe.forced",
+            "encode.bit_depth.downgraded",
+            "decode.first_frame", "decode.failed", "decode.recovery.action",
+            "render.size.changed", "video.stalled",
+            "transport.summary", "fec.armed", "fec.disarmed",
+            "congestion.arm", "transport.receive_loop.failed",
+            "audio.devices.changed",
+            "mic.attached", "mic.detached", "mic.failed", "mic.mute.changed",
+            "system_audio.started", "system_audio.stopped", "voice.ssrc.assigned",
+            "control.requested", "control.granted", "control.denied",
+            "control.revoked", "control.released",
+            "action.share.start", "action.share.stop", "action.connect",
+            "action.disconnect", "action.viewer.approve", "action.viewer.deny",
+            "action.viewer.block", "action.viewer.kick", "action.mic.toggle",
+            "action.audio_device.selected", "action.system_audio.toggle",
+            "action.link.toggle", "action.link.rotate",
+            "action.control.request", "action.control.grant",
+            "action.control.deny", "action.control.revoke",
+            "action.annotation.stroke", "action.annotation.cleared",
+            "action.setting.changed", "action.account.switched",
+            "action.share_request.sent", "action.share_request.answered",
+            "view.shown", "view.hidden",
+            "permission.prompted", "permission.resolved",
+            "fault.surfaced", "notice.shown", "log.line"
+        ]
+        let actual = Set(DiagnosticEventName.allCases.map(\.rawValue))
+
+        XCTAssertEqual(
+            actual.subtracting(expected), [],
+            "new event name(s) — add them to this list in the same commit")
+        XCTAssertEqual(
+            expected.subtracting(actual), [],
+            "event name(s) renamed or removed — old bundles reference these")
+        XCTAssertEqual(DiagnosticEventName.allCases.count, expected.count)
     }
 
     /// The shape a reader relies on when filtering by prefix: lowercase,

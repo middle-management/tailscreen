@@ -131,7 +131,19 @@ public enum DiagnosticsRedaction {
 
     /// The three shapes, in the order they are cheapest to rule out.
     private static func redactCore(_ core: String) -> String? {
-        // 1. An interactive login URL. Tailscale's is
+        // 1. Share tokens, FIRST and anywhere in the word.
+        //
+        //    These are the sharpest thing this scrubber handles: possession of
+        //    one is permission to join the share. They almost never appear as
+        //    a bare word — the shapes that actually reach a log line are
+        //    `token=tc…`, `"token":"tc…"`, `tailscreen://join?token=tc…` and
+        //    `https://tailscreen.dev/view/#tc…`. An earlier version tested only
+        //    whether the whole word was a token, so every one of those passed
+        //    through untouched, which is precisely the guarantee the bundle
+        //    header makes to the person sending the file.
+        if let redacted = redactTokens(in: core) { return redacted }
+
+        // 2. An interactive login URL. Tailscale's is
         //    `https://login.tailscale.com/a/<secret>`, and a self-hosted
         //    control server's is the same shape on another host — so the
         //    scheme-and-path shape is matched rather than the hostname, which
@@ -152,15 +164,6 @@ public enum DiagnosticsRedaction {
             return nil
         }
 
-        // 2. A share token. Fingerprinted rather than dropped: the fingerprint
-        //    is what makes a merged bundle joinable — the sharer minted this
-        //    link and the guest joined with it, and "the same link" is the
-        //    fact being established. It is a truncated hash, so it identifies
-        //    without admitting.
-        if ShareLinkFormat.isPlausibleToken(core) {
-            return "tc:\(fingerprint(core))"
-        }
-
         // 3. A tailnet auth key: `tskey-auth-…`, `tskey-client-…`, and the
         //    bare `tskey-…` older forms. Prefix kept (which kind of key was
         //    used is diagnostic), secret dropped.
@@ -174,6 +177,63 @@ public enum DiagnosticsRedaction {
         }
 
         return nil
+    }
+
+    /// Characters that can precede a token and still leave it a token.
+    ///
+    /// A token is only recognised at the start of the word or straight after
+    /// one of these, which is what keeps ordinary prose intact: without the
+    /// rule, any long word containing `tc` would be a candidate. They are the
+    /// separators the real carriers use — `token=`, `"token":`, `?token=`,
+    /// `&token=`, and the `#` of a web-viewer fragment.
+    private static let tokenDelimiters: Set<Character> = ["=", ":", "\"", "'", "?", "#", "&", "/"]
+
+    /// Replace every share token embedded anywhere in `word`, or nil when
+    /// there is none.
+    ///
+    /// Returns the word with each token swapped for its fingerprint and
+    /// everything around it — the key, the punctuation, the rest of the URL —
+    /// left intact, because that surrounding text is what tells a reader
+    /// *which* thing was redacted.
+    private static func redactTokens(in word: String) -> String? {
+        let characters = Array(word)
+        var out = ""
+        var index = 0
+        var found = false
+
+        while index < characters.count {
+            guard
+                characters[index] == "t", index + 1 < characters.count,
+                characters[index + 1] == "c",
+                index == 0 || tokenDelimiters.contains(characters[index - 1])
+            else {
+                out.append(characters[index])
+                index += 1
+                continue
+            }
+            // Take the longest base64url run from here; that is the token's
+            // own alphabet, so it stops exactly where the token does.
+            var end = index
+            while end < characters.count, isBase64URL(characters[end]) { end += 1 }
+            let candidate = String(characters[index..<end])
+            // `isPlausibleToken` is the repo's one definition of the shape,
+            // shared with the join field — deliberately not a second opinion
+            // about what a token looks like.
+            if ShareLinkFormat.isPlausibleToken(candidate) {
+                out += "tc:\(fingerprint(candidate))"
+                found = true
+                index = end
+            } else {
+                out.append(characters[index])
+                index += 1
+            }
+        }
+        return found ? out : nil
+    }
+
+    private static func isBase64URL(_ character: Character) -> Bool {
+        character.isASCII
+            && (character.isLetter || character.isNumber || character == "-" || character == "_")
     }
 
     /// Links the app itself puts in front of the user — docs, the project

@@ -573,10 +573,16 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            // Deliberately NOT disabled while recording is off. Stopping keeps
+            // what was already recorded — that is the whole point of the
+            // switch not erasing — and the documented workflow is exactly
+            // "reproduce the problem, stop recording, hand the file over".
+            // Gating export on the toggle blocked that, and the only way out
+            // was to turn recording back on, which writes a misleading fresh
+            // `recording.started` into the very bundle being exported.
             Button(L("Export Diagnostics…")) {
                 appState.exportDiagnostics()
             }
-            .disabled(!appState.recordDiagnostics)
 
             Text(
                 L(

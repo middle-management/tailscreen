@@ -2323,7 +2323,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                         // viewer never get FEC", so it is the one thing this
                         // event has to get right.
                         "server_caps": .string(
-                            caps.isEmpty ? "none (legacy ack)" : serverCaps.diagnosticDescription)
+                            caps.isEmpty ? "none (legacy ack)" : serverCaps.diagnosticDescription),
+                        // The counterpart flag to `approveViewer`'s: whether
+                        // this viewer waited on a person.
+                        "deferred": .bool(false)
                     ])
                 Task { [weak self] in
                     guard let pl = self?.media else { return }
@@ -3037,6 +3040,25 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Viewer approved \(addr) (total=\(viewerCount))")
         // Send the deferred HELLO_ACK and request a keyframe so video
         // starts flowing on the next encoded AU.
+        //
+        // Recorded with the same fields as the immediate-ack branch in
+        // `handleIncoming`, and that is not bookkeeping: approval is ON by
+        // default, so THIS is the path most real sessions take. Recording only
+        // the immediate branch left every approval-gated session with a
+        // viewer-side `hello.ack.received` and no server-side match, which is
+        // what `DiagnosticsMerge` pairs on — so cross-device clock alignment
+        // silently did not run for exactly the sessions people report.
+        let ackCaps = viewerCaps.withLock { $0[addr] } ?? []
+        recorder?.record(
+            .helloAckSent,
+            role: .sharer,
+            fields: [
+                "addr": .string(addr),
+                "ssrc": DiagnosticValue(pending.audioSSRC),
+                "server_caps": .string(
+                    ackCaps.isEmpty ? "none (legacy ack)" : serverCaps.diagnosticDescription),
+                "deferred": .bool(true)
+            ])
         let ack = helloAckDatagram(for: addr, ssrc: pending.audioSSRC)
         Task { [weak self] in
             guard let pl = self?.media else { return }

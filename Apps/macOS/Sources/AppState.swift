@@ -2076,8 +2076,22 @@ class AppState: ObservableObject {
         isStoppingShare = true
         defer { isStoppingShare = false }
         logger.log("stopSharing: called by \(caller) (reason=\(reason))")
-        AppDiagnostics.action(
-            .actionShareStop, ["reason": .string(reason), "caller": .string(caller)])
+        // A lifecycle event, NOT `action.share.stop`. This function is the
+        // teardown funnel for capture failure, a dead receive loop, an
+        // unrecoverable helper, the shared window closing, a failed restart,
+        // sign-out and quit — eleven call sites, of which two are the Stop
+        // button. Recording every one as a user action made the `action.`
+        // stream claim the person stopped the share when the app had actually
+        // fallen over, which is the single most misleading thing that stream
+        // could say. The two real Stop affordances record the action
+        // themselves; `caller` and `reason` say which of the others this was.
+        AppDiagnostics.recorder?.record(
+            .sharePhaseChanged,
+            fields: [
+                "to": .string("idle"),
+                "reason": .string(reason),
+                "caller": .string(caller)
+            ])
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
         if let cont = pendingFirstPreview {
@@ -2922,6 +2936,11 @@ class AppState: ObservableObject {
     func ensureViewer() -> MetalViewerRenderer {
         if let r = viewerRenderer { return r }
 
+        // The viewer is its own `NSWindow`, so the SwiftUI
+        // `recordsDiagnosticSurface` modifier cannot reach it — it reports
+        // itself here instead, at the one place the window is built. The early
+        // return above means this fires once per window, not once per call.
+        AppDiagnostics.viewShown("ViewerWindow")
         let r = MetalViewerRenderer()
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
@@ -3324,6 +3343,10 @@ class AppState: ObservableObject {
         if invalidatePendingConnects {
             viewerConnectRequestID &+= 1
         }
+        // Paired with the `viewShown` in `ensureViewer`. The tracker suppresses
+        // a hide for a surface it never saw shown, so a disconnect with no
+        // viewer window open records nothing.
+        AppDiagnostics.viewHidden("ViewerWindow")
         // Invalidate presentation and ownership before the first suspension:
         // a superseding connect can then await transport cleanup without the
         // old connect task or a queued notification changing current state.

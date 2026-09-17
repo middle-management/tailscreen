@@ -69,6 +69,22 @@ enum BuildInfo {
     /// `development` and therefore records — which is right for the person
     /// running their own build, and is also what every `swift run` does.
     static var releaseChannel: ReleaseChannel {
-        ReleaseChannel.classify(version: marketingVersion)
+        // An explicit marker beats inferring from the version, and for macOS
+        // it is the only thing that works: a PR artifact is stamped
+        // `0.0.<PR>` because CFBundleShortVersionString must be numeric, and
+        // that parses as a perfectly ordinary stable release. Inferring alone
+        // therefore turned diagnostics OFF for exactly the builds testers are
+        // handed, which is the opposite of the intent.
+        if let overridden = ReleaseChannel(rawValue: channelOverride) { return overridden }
+        return ReleaseChannel.classify(version: marketingVersion)
     }
+
+    /// Set by CI for a build it knows is not a release — today, a PR artifact.
+    ///
+    /// **Rewritten by the "Stamp the build" step** in
+    /// `.github/workflows/app-macos.yml`, which fills it in whenever the build
+    /// carries a `label` (the PR-artifact path) and leaves it empty for a real
+    /// release. Empty means "no opinion — classify from the version", which is
+    /// what a local build and a tagged release both want.
+    static let channelOverride = ""
 }

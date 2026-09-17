@@ -320,17 +320,23 @@ difference between the machines solved from the handshake itself. See
 
 | | macOS | Linux | Windows | Browser |
 | :--- | :---: | :---: | :---: | :---: |
-| Record a session (handshakes, actions, failures) | ✅ | ✅ | ✅ | ❌ |
+| Record handshakes and admission decisions | ✅ | ✅ | ✅ | ❌ |
+| Record user actions, active views, surfaced failures | ✅ | ❌ | ❌ | ❌ |
 | On by default in release candidates | ✅ | ✅ | ✅ | — |
-| Settings toggle | ✅ | ❌ not yet surfaced | ❌ not yet surfaced | — |
-| Export to a file | ✅ Settings → Diagnostics | ❌ not yet surfaced | ❌ not yet surfaced | — |
+| Settings toggle | ✅ | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | — |
+| Export to a file | ✅ Settings → Diagnostics | ❌ | ❌ | — |
 
-The recording itself is in the portable core, so all three platforms capture
-the same events on the same terms. What is macOS-only so far is the **user
-interface** to it: the toggle and the export button. On Linux and Windows the
-recording happens and can be switched with `TAILSCREEN_DIAGNOSTICS=1` / `=0`,
-but there is no button yet — exporting from those apps is tracked as
-follow-up work.
+The **protocol half** is in the portable core, so all three platforms record
+handshakes, admission decisions and the package's own log lines identically —
+that is the half two bundles are merged on, and it works between any pair of
+platforms.
+
+The **app half** is macOS-only so far: which button a person pressed, which
+screen was in front of them, and which failures were shown to them are
+instrumented in the macOS app and nowhere else yet. So a Linux or Windows
+bundle explains what the connection did but not what the person did, and
+there is no export button on those platforms — both are tracked as follow-up
+work.
 
 ## Distribution
 

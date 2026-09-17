@@ -259,6 +259,20 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     public func events() -> [DiagnosticEvent] {
         lock.lock()
         defer { lock.unlock() }
+        return orderedEventsLocked()
+    }
+
+    /// The ordered event list. **Caller must hold `lock`.**
+    ///
+    /// Split out so ``snapshot()`` can take the events and the metadata under
+    /// ONE acquisition. `NSLock` is not recursive, so the alternative — having
+    /// `snapshot` call `events()` and then re-lock — both risks a deadlock and
+    /// opens a window: a record, a ring overwrite, a toggle or a `clear()`
+    /// landing between the two acquisitions would produce a bundle whose
+    /// header describes a different moment than its events. Export is
+    /// deliberately allowed while recording continues, so that window is a
+    /// real one, not a theoretical one.
+    private func orderedEventsLocked() -> [DiagnosticEvent] {
         guard state.ring.count == ringCapacity, state.ringStart > 0 else {
             return state.prologue + state.ring
         }
@@ -268,11 +282,12 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     }
 
     /// Everything held, plus what it took to hold it.
+    /// Everything held, plus what it took to hold it — read atomically.
+    ///
+    /// One lock acquisition covers both the events and the counters that
+    /// describe them, so `droppedCount`, `startedAt` and `wasRecording` always
+    /// describe the exact event list they ship with.
     public func snapshot() -> DiagnosticsSnapshot {
-        // `events()` takes the lock itself, so it is called BEFORE this one
-        // does — `NSLock` is not recursive and re-entering it here would
-        // deadlock the exporting thread.
-        let events = events()
         lock.lock()
         defer { lock.unlock() }
         return DiagnosticsSnapshot(
@@ -281,7 +296,7 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
             wasRecording: state.enabled,
             startedAt: state.startWallClock,
             droppedCount: state.dropped,
-            events: events)
+            events: orderedEventsLocked())
     }
 
     /// The process uptime clock — monotonic, and the same one

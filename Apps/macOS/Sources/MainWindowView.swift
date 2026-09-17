@@ -788,6 +788,28 @@ private struct ShareStatusSection: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
+        paneContent
+            .recordsDiagnosticSurface(paneName)
+    }
+
+    /// Which pane a reader should be told is on screen.
+    ///
+    /// Derived from the same pair the `switch` below branches on, and kept
+    /// directly beside it so the two cannot drift unnoticed. The macOS app has
+    /// no stored "current view" — `.claude/rules/macos-app.md` is explicit
+    /// that even `NodeBringUpPhase` is a projection — so this is the honest
+    /// place to name it.
+    private var paneName: String {
+        switch (appState.sharingState, appState.connectionState) {
+        case (.sharing, _): return "Hub/Sharing"
+        case (.starting, _): return "Hub/StartingShare"
+        case (_, .viewing): return "Hub/Viewing"
+        default: return "Hub/Idle"
+        }
+    }
+
+    @ViewBuilder
+    private var paneContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch (appState.sharingState, appState.connectionState) {
             case (.sharing, _):
@@ -973,7 +995,11 @@ private struct ActiveShareCard: View {
                 }
                 Spacer(minLength: 8)
                 Button(L("Stop Sharing")) {
-                    Task { await appState.stopSharing(reason: "MainWindowStopButton") }
+                    Task {
+                        AppDiagnostics.action(
+                            .actionShareStop, ["surface": .string("MainWindow")])
+                        await appState.stopSharing(reason: "MainWindowStopButton")
+                    }
                 }
                 .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
             }

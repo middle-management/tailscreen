@@ -135,7 +135,13 @@ public enum DiagnosticsMerge {
                 lines.append(
                     Line(
                         device: bundle.header.device,
-                        role: bundle.header.role,
+                        // The EVENT's role, not the bundle header's. The header
+                        // carries the recorder's *default*, which in production
+                        // is `.app` precisely because one process can share and
+                        // view at once — so taking it here labelled every line
+                        // `.app` and threw away the per-event role the rest of
+                        // this type is built on.
+                        role: event.role,
                         event: shifted,
                         originalWallClock: event.wallClock,
                         appliedOffsetSeconds: offset))

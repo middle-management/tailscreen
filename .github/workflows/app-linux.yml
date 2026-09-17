@@ -226,6 +226,32 @@ jobs:
           restore-keys: |
             linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
 
+      - name: Stamp the build
+        # The macOS and Windows jobs have carried this for a while; the Linux
+        # app had no stamp at all, so its binary always said "dev".
+        #
+        # That is not only cosmetic now. `BuildInfo.releaseChannel` reads the
+        # version to decide whether diagnostics record by default, so an
+        # unstamped release classifies as a development build and records —
+        # contrary to the documented stable-release opt-in. An EMPTY version
+        # input means a per-push or PR build and deliberately stays "dev":
+        # that is a build under test, and recording by default is right for it.
+        run: |
+          set -euo pipefail
+          file=Apps/linux/Sources/tailscreen/BuildInfo.swift
+          short=$(git rev-parse --short HEAD)
+          sed -i "s/static let commit = \"dev\"/static let commit = \"$short\"/" "$file"
+          grep -q "static let commit = \"$short\"" "$file" \
+            || { echo "build stamp did not apply — refusing to ship a binary labelled 'dev'" >&2; exit 1; }
+          echo "stamped $short"
+          version="${{ inputs.version }}"
+          if [ -n "$version" ]; then
+            sed -i "s/static let version = \"dev\"/static let version = \"$version\"/" "$file"
+            grep -q "static let version = \"$version\"" "$file" \
+              || { echo "version stamp did not apply — a release would record diagnostics by default" >&2; exit 1; }
+            echo "stamped version $version"
+          fi
+
       - name: Build the app
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
         # building the executable PRODUCT specifically prunes SwiftPM to the

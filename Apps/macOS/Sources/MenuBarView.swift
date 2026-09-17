@@ -651,7 +651,13 @@ struct ShareSessionControls: View {
 
     private var stopButton: some View {
         Button {
-            Task { await appState.stopSharing(reason: "StopSharingButton") }
+            Task {
+                // Recorded here rather than inside `stopSharing`, which is also
+                // the teardown funnel for failures and quit — see the comment
+                // there. This is the one in the menubar that a person pressed.
+                AppDiagnostics.action(.actionShareStop, ["surface": .string("MenuBar")])
+                await appState.stopSharing(reason: "StopSharingButton")
+            }
         } label: {
             Text(L("Stop Sharing")).frame(maxWidth: .infinity)
         }
@@ -1011,6 +1017,15 @@ struct PendingViewersList: View {
     let viewers: [PendingViewerInfo]
 
     var body: some View {
+        listBody
+            // The approval prompt is the surface most worth knowing was on
+            // screen: "the sharer never saw it" and "the sharer saw it and did
+            // nothing" are the two halves of the commonest stuck session, and
+            // only this distinguishes them.
+            .recordsDiagnosticSurface("PendingViewersList")
+    }
+
+    private var listBody: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(viewers) { viewer in
                 HStack(spacing: 6) {

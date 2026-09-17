@@ -27,6 +27,65 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.hasSuffix(" now"), "surrounding text must survive")
     }
 
+    /// **The shapes a token actually arrives in.** A bare token in a log line
+    /// is the rare case; what really reaches one is a key/value pair, a JSON
+    /// fragment, or a URL. An earlier version tested only whether the *whole
+    /// word* was a token, so every one of these passed through untouched —
+    /// which is exactly the guarantee the bundle header makes to whoever is
+    /// about to send the file.
+    func testEmbeddedTokensAreRedactedInEveryCarrierShape() {
+        let token = "tcAAAABBBBCCCCDDDDEEEEFFFF"
+        let carriers = [
+            "token=\(token)",
+            "{\"token\":\"\(token)\"}",
+            "tailscreen://join?token=\(token)",
+            "https://tailscreen.dev/view/#\(token)",
+            "joining with token=\(token) now",
+            "?token=\(token)&retry=1"
+        ]
+        for carrier in carriers {
+            let scrubbed = DiagnosticsRedaction.scrub(carrier)
+            XCTAssertFalse(
+                scrubbed.contains(token),
+                "token survived in \(carrier.debugDescription) → \(scrubbed)")
+            XCTAssertTrue(
+                scrubbed.contains("tc:"),
+                "expected a fingerprint in \(scrubbed)")
+        }
+    }
+
+    /// The text around a token survives, because that is what tells a reader
+    /// WHICH thing was redacted — `token=tc:9f21…` is diagnostic where a bare
+    /// `<redacted>` is not.
+    func testSurroundingTextSurvivesEmbeddedRedaction() {
+        let scrubbed = DiagnosticsRedaction.scrub(
+            "guest joined with token=tcQQQQ1111WWWW2222EEEE and was approved")
+        XCTAssertTrue(scrubbed.hasPrefix("guest joined with token=tc:"))
+        XCTAssertTrue(scrubbed.hasSuffix(" and was approved"))
+    }
+
+    /// The same token in two places fingerprints identically, so a merged
+    /// bundle can still show that both sides used one link.
+    func testSameTokenFingerprintsIdenticallyWhereverItAppears() {
+        let token = "tcZZZZ9999YYYY8888XXXX"
+        let bare = DiagnosticsRedaction.scrub(token)
+        let embedded = DiagnosticsRedaction.scrub("token=\(token)")
+        XCTAssertTrue(embedded.hasSuffix(bare), "\(embedded) vs \(bare)")
+    }
+
+    /// Ordinary words containing "tc" are not candidates: a token is only
+    /// recognised at a word boundary or straight after a real delimiter, so
+    /// prose and paths keep their shape.
+    func testOrdinaryWordsContainingTCAreNotRedacted() {
+        for text in [
+            "watch the patch land",
+            "matched 3 of 4 packets",
+            "/etc/os-release could not be read"
+        ] {
+            XCTAssertEqual(DiagnosticsRedaction.scrub(text), text)
+        }
+    }
+
     /// A fingerprint has to be stable, or the two sides of a merged bundle
     /// cannot be shown to have used the same link — which is the only reason
     /// it is a fingerprint rather than a flat `<redacted>`.

@@ -374,16 +374,23 @@ the next one.
 
 ### Getting a recording out
 
-1. **Settings → Diagnostics → Export Diagnostics…** on each machine.
-   The file lands in `~/Library/Logs/Tailscreen/` on macOS and Finder
-   opens on it.
-2. **Get one from both ends.** This is the part that matters. One side's
+1. **On macOS: Settings → Diagnostics → Export Diagnostics…** The file
+   lands in `~/Library/Logs/Tailscreen/` and Finder opens on it. You can
+   export whether or not recording is still on — stopping keeps what was
+   already recorded, so "reproduce it, stop, export" works.
+2. **On Linux and Windows there is no export button yet.** Those apps
+   record, and `TAILSCREEN_DIAGNOSTICS=1` / `=0` switches it, but getting
+   the file out is still to come — see
+   [Platform support]({{ site.baseurl }}{% link platform-support.md %}#diagnostics).
+   Until then, a macOS bundle from one end plus the other end's console
+   output is what to send.
+3. **Get one from both ends where you can.** This is the part that matters. One side's
    file says what your machine did; the pair says what *happened*. A
    viewer that waited thirty seconds and gave up looks identical whether
    the sharer never saw the connection at all or saw it and parked it on
    an approval prompt nobody was looking at — and those are completely
    different problems. Only the two files together tell them apart.
-3. Attach both to the issue.
+4. Attach what you have to the issue.
 
 Each file is named for the machine it came from
 (`tailscreen-app-roberts-macbook-pro-20260917-100402.jsonl`), so a pair

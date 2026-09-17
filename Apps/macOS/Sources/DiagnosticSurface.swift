@@ -33,26 +33,41 @@ private struct DiagnosticSurfaceModifier: ViewModifier {
         content
             .onAppear { DiagnosticSurfaceTracker.shared.shown(name) }
             .onDisappear { DiagnosticSurfaceTracker.shared.hidden(name) }
+            // A surface whose NAME changes while the view stays mounted is the
+            // normal case for a host that derives its pane from state — the
+            // hub swaps between idle, starting, sharing and viewing without
+            // ever unmounting the container. Without this the recorder would
+            // report the first pane of the session and nothing after it.
+            .onChange(of: name) { previous, current in
+                DiagnosticSurfaceTracker.shared.hidden(previous)
+                DiagnosticSurfaceTracker.shared.shown(current)
+            }
     }
 }
 
-/// Suppresses repeat `view.shown` events for a surface that is already showing.
+/// Suppresses repeat `view.shown` events for a surface that is already showing,
+/// and a `view.hidden` for one that never was.
+///
+/// Not private: `AppState` reports the viewer's `NSWindow` through it too. That
+/// window is AppKit, so the SwiftUI modifier cannot reach it, but it must go
+/// through the same bookkeeping or its shown/hidden pairing would not hold
+/// against the SwiftUI surfaces'.
 ///
 /// `@MainActor` because SwiftUI's `onAppear`/`onDisappear` already run there,
-/// so the isolation is free and buys the plain non-locking `Set`.
+/// so the isolation is free and buys a plain non-locking `Set`.
 @MainActor
-private final class DiagnosticSurfaceTracker {
+final class DiagnosticSurfaceTracker {
     static let shared = DiagnosticSurfaceTracker()
 
     private var visible: Set<String> = []
 
     func shown(_ name: String) {
         guard visible.insert(name).inserted else { return }
-        AppDiagnostics.viewShown(name)
+        AppDiagnostics.emitViewShown(name)
     }
 
     func hidden(_ name: String) {
         guard visible.remove(name) != nil else { return }
-        AppDiagnostics.viewHidden(name)
+        AppDiagnostics.emitViewHidden(name)
     }
 }

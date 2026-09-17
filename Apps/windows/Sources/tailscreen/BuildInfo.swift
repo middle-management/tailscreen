@@ -33,12 +33,15 @@ enum BuildInfo {
     /// `abc1234 release`, or `dev debug` from a local build.
     static var summary: String { "\(commit) \(configuration)" }
 
-    /// Marketing version. Not stamped by `app-windows.yml` today — only
-    /// `commit` is — so a released build currently reads `dev` here and
-    /// therefore counts as a `development` build for `releaseChannel`, which
-    /// records diagnostics by default. That is the safe direction to be wrong
-    /// in, but it does mean a released Windows build records where a released
-    /// macOS build would not; worth fixing when the stamping step widens.
+    /// Marketing version. **Rewritten by the "Stamp the build" step** in
+    /// `.github/workflows/app-windows.yml`, alongside `commit`.
+    ///
+    /// Load-bearing beyond display: `releaseChannel` reads it to decide
+    /// whether diagnostics record by default, so an unstamped release would
+    /// classify as a development build and record — contrary to the documented
+    /// stable-release opt-in. An empty `version` input means a per-push or PR
+    /// build and deliberately leaves this "dev": that is a build under test,
+    /// and recording by default is right for it.
     static let version = "dev"
 
     static var architecture: String {

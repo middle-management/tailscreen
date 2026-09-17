@@ -10,19 +10,21 @@ import TailscreenProtocol
 /// TailscreenKit: the value is *stamped by CI*, and each platform's workflow
 /// rewrites its own copy.
 enum BuildInfo {
-    /// Short commit SHA. A local `make` build legitimately reads "dev".
-    ///
-    /// Not yet rewritten by `app-linux.yml` — unlike the macOS and Windows
-    /// copies, which their workflows stamp and fail the job over. Until it is,
-    /// a Linux build reads `dev`, which makes it a `development` build for
-    /// `releaseChannel` below and therefore records diagnostics by default.
-    /// That is the safe direction to be wrong in (a tester gets a recording
-    /// rather than not getting one), but it does mean a released Linux build
-    /// currently records where a released macOS build would not — worth fixing
-    /// when the stamping step lands.
+    /// Short commit SHA. **Rewritten by the "Stamp the build" step** in
+    /// `.github/workflows/app-linux.yml`, which fails the job if the
+    /// placeholder survives rather than shipping a binary that lies about
+    /// which commit it is. A local `make` build legitimately reads "dev".
     static let commit = "dev"
 
-    /// Marketing version. Same caveat as `commit`.
+    /// Marketing version, stamped by the same step from the workflow's
+    /// `version` input.
+    ///
+    /// Load-bearing beyond display: `releaseChannel` reads it to decide
+    /// whether diagnostics record by default, so an unstamped release would
+    /// classify as a development build and record — contrary to the documented
+    /// stable-release opt-in. An empty `version` input means a per-push or PR
+    /// build and deliberately leaves this "dev": that is a build under test,
+    /// and recording by default is right for it.
     static let version = "dev"
 
     /// Derived, not stamped, so it cannot go stale: SwiftPM defines `DEBUG` in
