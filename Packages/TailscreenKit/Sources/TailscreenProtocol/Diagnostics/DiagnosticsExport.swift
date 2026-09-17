@@ -93,6 +93,10 @@ public enum DiagnosticsExport {
         out += "Tailscreen diagnostics — merged timeline\n"
         out += "Reference clock: \(timeline.referenceDevice)\n"
         out += "Events: \(timeline.lines.count)\n"
+        if !timeline.gaps.isEmpty {
+            let dropped = timeline.gaps.reduce(UInt64(0)) { $0 &+ $1.missing }
+            out += "Dropped: \(dropped) event(s) in \(timeline.gaps.count) gap(s)\n"
+        }
         if !timeline.clockNotes.isEmpty {
             out += "\nClock alignment:\n"
             for note in timeline.clockNotes { out += "  - \(note)\n" }
@@ -107,7 +111,23 @@ public enum DiagnosticsExport {
         let nameWidth = min(timeline.lines.map(\.event.name.count).max() ?? 0, 36)
         let start = first.event.wallClock
 
+        // Gap markers are interleaved rather than only summarized above,
+        // because a total at the top does not tell a reader whether the hole is
+        // anywhere near the two events they are drawing a conclusion between.
+        // The list is sorted the same way `lines` is, so one index walks it.
+        var nextGap = timeline.gaps.startIndex
+        func emitGaps(upTo moment: Date) {
+            while nextGap < timeline.gaps.endIndex, timeline.gaps[nextGap].at <= moment {
+                let gap = timeline.gaps[nextGap]
+                out += String(
+                    format: "%@ %9.3fs  ", "!", gap.at.timeIntervalSince(start))
+                out += "--- \(gap.device): \(gap.missing) event(s) dropped here ---\n"
+                nextGap += 1
+            }
+        }
+
         for line in timeline.lines {
+            emitGaps(upTo: line.event.wallClock)
             let offset = line.event.wallClock.timeIntervalSince(start)
             let marker: String
             switch line.event.severity {
@@ -124,6 +144,8 @@ public enum DiagnosticsExport {
             }
             out += "\n"
         }
+        // A gap after the last retained event — everything since is missing.
+        emitGaps(upTo: .distantFuture)
         return out
     }
 

@@ -199,6 +199,15 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        // A no-op transition writes NOTHING. The marker describes a transition,
+        // and under `TAILSCREEN_DIAGNOSTICS=0` there is never one: every toggle
+        // of the macOS switch resolves back to `false` and arrives here while
+        // already disabled, so each flip appended another `recording.stopped`
+        // and `export` then saw a non-empty recorder for a run that was forced
+        // to record nothing. The session-opening marker is unaffected — `start`
+        // writes that through `recordLifecycle`, not through here.
+        guard state.enabled != enabled else { return }
+
         func appendMarker(_ name: DiagnosticEventName) {
             appendLocked(
                 PendingEvent(

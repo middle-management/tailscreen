@@ -75,6 +75,66 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertEqual(DiagnosticsExport.slug(exact), exact)
     }
 
+    /// One line of a hand-built timeline, for the gap tests below.
+    private func line(
+        device: String, _ name: DiagnosticEventName, at offset: TimeInterval
+    ) -> DiagnosticsMerge.Line {
+        let moment = epoch.addingTimeInterval(offset)
+        return DiagnosticsMerge.Line(
+            device: device,
+            role: .viewer,
+            event: DiagnosticEvent(
+                seq: 1, monotonicNs: UInt64(max(0, offset) * 1_000_000_000),
+                wallClock: moment, role: .viewer, category: name.category,
+                name: name.rawValue, severity: name.defaultSeverity),
+            originalWallClock: moment,
+            appliedOffsetSeconds: 0)
+    }
+
+    /// The gap reaches the rendered output, inline AND in the header. A total
+    /// at the top alone would not tell a reader whether the hole is anywhere
+    /// near the two events they are drawing a conclusion between — and drawing
+    /// that conclusion straight across a hole is the exact failure the drop
+    /// counter exists to prevent.
+    func testDroppedEventsAreMarkedWhereTheyHappened() throws {
+        let timeline = DiagnosticsMerge.Timeline(
+            lines: [
+                line(device: "pc", .helloSent, at: 0),
+                line(device: "pc", .transportSummary, at: 30)
+            ],
+            referenceDevice: "pc",
+            clockNotes: [],
+            gaps: [
+                DiagnosticsMerge.Gap(
+                    device: "pc", missing: 39, at: epoch.addingTimeInterval(30))
+            ])
+        let rendered = DiagnosticsExport.renderTimeline(timeline)
+        let rows = rendered.split(separator: "\n").map(String.init)
+
+        XCTAssertTrue(rendered.contains("Dropped: 39 event(s) in 1 gap(s)"), rendered)
+        let gapRow = try XCTUnwrap(rows.firstIndex { $0.contains("dropped here") }, rendered)
+        let followingRow = try XCTUnwrap(
+            rows.firstIndex { $0.contains("transport.summary") }, rendered)
+        XCTAssertEqual(
+            gapRow + 1, followingRow,
+            "the marker belongs immediately before the first surviving event")
+        XCTAssertTrue(rows[gapRow].contains("pc"), rows[gapRow])
+    }
+
+    /// A complete recording says nothing about drops. A timeline that cried
+    /// loss on an intact one would cost a reader's trust in the marker exactly
+    /// when it does appear.
+    func testACompleteTimelineRendersNoGapNotice() {
+        let rendered = DiagnosticsExport.renderTimeline(
+            DiagnosticsMerge.Timeline(
+                lines: [line(device: "pc", .helloSent, at: 0)],
+                referenceDevice: "pc",
+                clockNotes: []))
+
+        XCTAssertFalse(rendered.contains("Dropped:"), rendered)
+        XCTAssertFalse(rendered.contains("dropped here"), rendered)
+    }
+
     // MARK: - Writing
 
     /// Round-trip through the filesystem, including creating the directory.

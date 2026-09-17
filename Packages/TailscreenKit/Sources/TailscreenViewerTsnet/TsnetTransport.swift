@@ -112,6 +112,15 @@ struct StderrLogger: LogSink {
     var logFileHandle: Int32? { STDERR_FILENO }
     func log(_ message: String) {
         FileHandle.standardError.write(Data("[tsnet] \(message)\n".utf8))
+        // Teed into the process recorder exactly as `PrintLogSink` is. The
+        // stderr destination is the only thing that differs between the two
+        // sinks, and it has nothing to do with whether the line belongs in a
+        // bundle: these are the node bring-up lines, and the GTK and WinUI
+        // VIEWERS reach tsnet through here rather than through the print sink.
+        // Without this a Linux or Windows viewer bundle carried no package log
+        // lines at all, while `docs/platform-support.md` says every platform
+        // records them.
+        DiagnosticsCenter.shared.captureLog(source: "tsnet", message: message)
     }
 }
 

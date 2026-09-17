@@ -69,6 +69,34 @@ public enum DiagnosticsMerge {
         }
     }
 
+    /// A hole in one device's stream, where the recorder evicted events.
+    ///
+    /// The whole point of the drop counter is that a reader must not read the
+    /// retained prologue and the recent ring as ADJACENT and infer causality
+    /// across however long is missing — and until this existed the rendered
+    /// timeline printed them adjacent with nothing between, which is exactly
+    /// that failure. The JSONL header carried the count all along; nothing
+    /// carried it into the thing people actually read.
+    ///
+    /// Located from a discontinuity in `seq`, not from the header's total:
+    /// sequence numbers are dense by construction, so a jump says not just how
+    /// many events are missing but WHERE, which is the part that lets a reader
+    /// know whether the hole is anywhere near what they are looking at.
+    public struct Gap: Sendable, Equatable {
+        public var device: String
+        /// How many events the recorder dropped here.
+        public var missing: UInt64
+        /// The corrected time of the first event AFTER the hole, which is where
+        /// the marker belongs in the merged order.
+        public var at: Date
+
+        public init(device: String, missing: UInt64, at: Date) {
+            self.device = device
+            self.missing = missing
+            self.at = at
+        }
+    }
+
     /// The merged result: the lines, plus what had to be assumed to order them.
     public struct Timeline: Sendable, Equatable {
         public var lines: [Line]
@@ -78,11 +106,19 @@ public enum DiagnosticsMerge {
         /// estimated, from which handshake, and what was left uncorrected.
         /// Written into the rendered timeline so no reader has to wonder.
         public var clockNotes: [String]
+        /// Where events were dropped, in merged order. See ``Gap``.
+        public var gaps: [Gap]
 
-        public init(lines: [Line], referenceDevice: String, clockNotes: [String]) {
+        public init(
+            lines: [Line],
+            referenceDevice: String,
+            clockNotes: [String],
+            gaps: [Gap] = []
+        ) {
             self.lines = lines
             self.referenceDevice = referenceDevice
             self.clockNotes = clockNotes
+            self.gaps = gaps
         }
     }
 
@@ -112,6 +148,7 @@ public enum DiagnosticsMerge {
         var notes: [String] = []
 
         var lines: [Line] = []
+        var gaps: [Gap] = []
         for (index, bundle) in bundles.enumerated() {
             let offset: TimeInterval
             if index == referenceIndex {
@@ -145,6 +182,7 @@ public enum DiagnosticsMerge {
             // is applied on top exactly as before.
             let anchor = Self.anchor(for: bundle)
 
+            var previousSeq: UInt64?
             for event in bundle.events {
                 var shifted = event
                 if let anchor {
@@ -153,6 +191,20 @@ public enum DiagnosticsMerge {
                 } else {
                     shifted.wallClock = event.wallClock.addingTimeInterval(offset)
                 }
+                // Sequence numbers are dense, so any jump is an eviction. The
+                // leading case (`previousSeq == nil` and the first event is not
+                // seq 1) is a whole session prologue released under the
+                // retention cap — a hole with no event before it to hang off,
+                // and the one a reader is least likely to suspect.
+                let expected = previousSeq.map { $0 &+ 1 } ?? 1
+                if event.seq > expected {
+                    gaps.append(
+                        Gap(
+                            device: bundle.header.device,
+                            missing: event.seq &- expected,
+                            at: shifted.wallClock))
+                }
+                previousSeq = event.seq
                 lines.append(
                     Line(
                         device: bundle.header.device,
@@ -181,10 +233,19 @@ public enum DiagnosticsMerge {
             return lhs.event.seq < rhs.event.seq
         }
 
+        // Sorted the same way the lines are, so the renderer can walk both in
+        // one pass and a marker always lands immediately before the event it
+        // precedes.
+        gaps.sort { lhs, rhs in
+            if lhs.at != rhs.at { return lhs.at < rhs.at }
+            return lhs.device < rhs.device
+        }
+
         return Timeline(
             lines: lines,
             referenceDevice: reference.header.device,
-            clockNotes: notes)
+            clockNotes: notes,
+            gaps: gaps)
     }
 
     /// A clock-offset estimate and the handshake it came from.
@@ -270,15 +331,25 @@ public enum DiagnosticsMerge {
             // viewer's retry as `t2` — yielding an offset that looks entirely
             // plausible and is wrong. The ack carries the addr it answered, so
             // the pairing is available; it just was not being used.
+            //
+            // Both "before" tests compare `seq`, not `wallClock`. They are
+            // WITHIN one bundle, where sequence is exact, local and monotonic
+            // by construction — while the wall clock is the very thing that can
+            // step, and a backward step between the HELLO and the ACK made the
+            // legitimate HELLO compare LATER than the ack, so the pair was
+            // rejected and the alignment this function exists for silently did
+            // not happen. The four timestamps below are still wall clocks,
+            // because the offset is a statement about wall clocks; it is only
+            // the SELECTION that must not be.
             let ackAddr = ackSent.fields["addr"]
             guard
                 let helloSent = client.events.last(where: {
                     $0.name == DiagnosticEventName.helloSent.rawValue
-                        && $0.wallClock <= ackReceived.wallClock
+                        && $0.seq <= ackReceived.seq
                 }),
                 let helloReceived = server.events.last(where: {
                     $0.name == DiagnosticEventName.helloReceived.rawValue
-                        && $0.wallClock <= ackSent.wallClock
+                        && $0.seq <= ackSent.seq
                         // Older bundles predate the addr field on one side or
                         // the other; falling back to time-only there keeps them
                         // readable rather than refusing to align them at all.

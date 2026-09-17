@@ -524,6 +524,109 @@ final class DiagnosticsBundleTests: XCTestCase {
             "a backwards clock step reordered one device's own events")
     }
 
+    /// **A backward clock step on the SHARER, between receiving the HELLO and
+    /// answering it, must not lose the pairing.**
+    ///
+    /// The "which HELLO came before this ack" tests are WITHIN one bundle,
+    /// where `seq` is exact and monotonic by construction. Comparing wall
+    /// clocks there let a step make the legitimate `hello.received` look later
+    /// than the ack that answered it, so it was excluded and the whole pairing
+    /// was abandoned — on exactly the bundles whose clocks most needed
+    /// aligning. (The viewer-side version of the step is caught anyway by the
+    /// negative-round-trip guard, which is right: a `t1` and `t4` on two
+    /// different clock bases make the formula itself invalid.)
+    func testBackwardClockStepOnTheSharerStillPairs() {
+        let viewer = bundle(
+            role: .viewer, device: "viewer-pc",
+            events: [
+                event(seq: 1, .helloSent, role: .viewer, atOffset: 0),
+                event(
+                    seq: 2, .helloAckReceived, role: .viewer, atOffset: 0.04,
+                    fields: ["ssrc": .int(7)])
+            ])
+        // The sharer's clock steps back 3 s in the 5 ms between the two.
+        let sharer = bundle(
+            role: .sharer, device: "sharer-mac",
+            events: [
+                event(
+                    seq: 1, .helloReceived, role: .sharer, atOffset: 0.02,
+                    fields: ["addr": "100.64.0.3"]),
+                event(
+                    seq: 2, .helloAckSent, role: .sharer, atOffset: -2.975,
+                    fields: ["ssrc": .int(7), "addr": "100.64.0.3"])
+            ])
+
+        XCTAssertNotNil(
+            DiagnosticsMerge.estimateOffset(of: viewer, against: sharer),
+            "a clock step inside one bundle defeated the handshake pairing")
+    }
+
+    // MARK: - Holes in a stream
+
+    /// **The rendered timeline must not present a hole as adjacency.** Once
+    /// the ring wraps, the retained prologue and the recent ring sit next to
+    /// each other with an unknown interval between them, and a reader will
+    /// draw a causal line straight across it. The JSONL header carried the
+    /// drop count all along; nothing carried it into what people read.
+    func testDroppedEventsBecomeAGapInTheMergedTimeline() {
+        let events = [
+            event(seq: 1, .helloSent, role: .viewer, atOffset: 0),
+            // seq 2...40 were evicted.
+            event(seq: 41, .transportSummary, role: .viewer, atOffset: 30)
+        ]
+        let timeline = DiagnosticsMerge.merge([bundle(role: .viewer, device: "pc", events: events)])
+
+        XCTAssertEqual(timeline.gaps.count, 1)
+        XCTAssertEqual(timeline.gaps.first?.missing, 39)
+        XCTAssertEqual(timeline.gaps.first?.device, "pc")
+    }
+
+    /// A gap is located by WHERE it is, not just counted. The marker sits at
+    /// the first event after the hole, which is what tells a reader whether
+    /// the missing interval is anywhere near the two events they are drawing
+    /// a conclusion between.
+    func testGapIsPlacedAtTheEventThatFollowsIt() {
+        let events = [
+            event(seq: 1, .helloSent, role: .viewer, atOffset: 0),
+            event(seq: 2, .helloAckReceived, role: .viewer, atOffset: 1),
+            event(seq: 9, .transportSummary, role: .viewer, atOffset: 12)
+        ]
+        let timeline = DiagnosticsMerge.merge([bundle(role: .viewer, device: "pc", events: events)])
+
+        XCTAssertEqual(timeline.gaps.count, 1)
+        XCTAssertEqual(
+            timeline.gaps.first?.at, timeline.lines[2].event.wallClock,
+            "the marker belongs immediately before the first surviving event")
+    }
+
+    /// A bundle that starts at a sequence above 1 lost a whole session
+    /// prologue to the retention cap — a hole with no event in front of it,
+    /// and the one a reader is least likely to suspect.
+    func testAReleasedLeadingPrologueIsAGapToo() {
+        let events = [
+            event(seq: 12, .helloSent, role: .viewer, atOffset: 0),
+            event(seq: 13, .helloAckReceived, role: .viewer, atOffset: 1)
+        ]
+        let timeline = DiagnosticsMerge.merge([bundle(role: .viewer, device: "pc", events: events)])
+
+        XCTAssertEqual(timeline.gaps.count, 1)
+        XCTAssertEqual(timeline.gaps.first?.missing, 11)
+    }
+
+    /// And a dense stream reports no gap at all. A timeline that cried loss on
+    /// a complete recording would cost a reader's trust in the marker exactly
+    /// when it does appear.
+    func testADenseStreamHasNoGaps() {
+        let events = [
+            event(seq: 1, .helloSent, role: .viewer, atOffset: 0),
+            event(seq: 2, .helloAckReceived, role: .viewer, atOffset: 1),
+            event(seq: 3, .transportSummary, role: .viewer, atOffset: 2)
+        ]
+        let timeline = DiagnosticsMerge.merge([bundle(role: .viewer, device: "pc", events: events)])
+
+        XCTAssertTrue(timeline.gaps.isEmpty)
+    }
+
     // MARK: - Where each side's timeline is anchored
 
     /// A bundle whose wall clock stepped between start-up and the handshake.

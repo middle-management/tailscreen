@@ -135,7 +135,14 @@ drops the oldest, which here deletes the answer and keeps the complaint — the
 handshake is in the first two seconds and the symptom arrives an hour later. So
 a **prologue** (first 256 events, never evicted) sits in front of a **ring**
 (most recent 4096), with the drop count between them exported rather than
-swallowed.
+swallowed — and rendered, which is a separate thing and was the part missing.
+`DiagnosticsMerge` finds each hole from a **discontinuity in `seq`** (dense by
+construction, so a jump says not just how many events are gone but *where*,
+including the leading case of a whole released prologue) and
+`renderTimeline` prints a marker in place, immediately before the first
+surviving event. A total in a header nobody reads does not stop a reader
+drawing a causal line straight across the hole, which is the one failure the
+counter exists to prevent.
 
 There is **one prologue per session**, not one per process, and the last four
 are retained. A single process-wide prologue quietly stopped protecting
@@ -175,6 +182,14 @@ that would open a window for every other writer in the process to land an event
 the user asked not to be recorded. `export` also tests emptiness BEFORE writing
 the marker, or the marker is what makes the bundle non-empty and the
 "nothing recorded" guard can never fire.
+
+A **no-op transition writes nothing**: the marker describes a transition, and
+`setRecording` returns before appending when the state already matches. Under
+`TAILSCREEN_DIAGNOSTICS=0` there is never a transition — every toggle resolves
+back to `false` and arrives while already disabled — so without the guard each
+flip appended another `recording.stopped`, and `export` then saw a non-empty
+recorder for a run that was forced to record nothing. The session-opening marker
+is unaffected: `start` writes it through `recordLifecycle`.
 
 The marker and the switch move in **one** lock acquisition
 (`setRecording(_:markerName:markerFields:)`). As two calls, a transport or
@@ -254,6 +269,16 @@ Two things the merge has to get right and can get wrong silently:
   against each other — a causal inversion inside a single machine's story, which
   is the one thing a timeline must never invent. This is what `monotonicNs` is
   recorded for.
+- **Compare `seq`, not wall clocks, for the WITHIN-bundle "which HELLO came
+  before this ack" tests.** Sequence is exact, local and monotonic by
+  construction; the wall clock is the very thing that steps. A backward step on
+  the sharer between `hello.received` and `hello.ack.sent` made the legitimate
+  HELLO compare later than the ack, so it was excluded and the pairing
+  abandoned — on exactly the bundles whose clocks most needed aligning. The
+  four timestamps in the formula stay wall clocks, because the offset is a
+  statement about wall clocks; only the SELECTION must not be. (The viewer-side
+  version of that step is rejected anyway by the negative-round-trip guard, and
+  rightly: a `t1` and `t4` on two clock bases make the formula invalid.)
 - **Take that anchor from the handshake, not from the session start**
   (`DiagnosticsMerge.anchor(for:)`). The offset is estimated from handshake
   timestamps, so it already contains any clock step that happened before them;
@@ -293,7 +318,11 @@ session's handshake, silently.
 
 `PrintLogSink` tees every existing package log line into the recorder, which is
 where most of the coverage comes from for free (~35 call sites across the
-transport and sharer tiers, none of them touched). Those are prose and
+transport and sharer tiers, none of them touched). `TsnetTransport.StderrLogger`
+tees too, and has to: it is a second sink only because viewer executables
+reserve stdout for the data path, and the GTK and WinUI **viewers** reach tsnet
+through it rather than through the print sink — so before it teed, a Linux or
+Windows viewer bundle carried no package log lines at all. Those are prose and
 therefore the weakest kind of event — a safety net **under** the named
 registry events, never a substitute. When a log line turns out to be
 load-bearing in an investigation, give it a registry case.

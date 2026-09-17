@@ -169,6 +169,43 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().droppedCount, 1)
     }
 
+    /// **A no-op transition writes nothing.** The marker describes a
+    /// transition, and under `TAILSCREEN_DIAGNOSTICS=0` there is never one:
+    /// every toggle resolves back to `false` and arrives here while already
+    /// disabled, so each flip used to append another `recording.stopped` —
+    /// and `export` then saw a non-empty recorder for a run that was forced to
+    /// record nothing at all.
+    func testSameStateSetRecordingWritesNoMarker() {
+        let recorder = makeRecorder(enabled: false)
+        for _ in 0..<5 {
+            recorder.setRecording(false, markerName: .recordingStopped)
+        }
+        XCTAssertTrue(recorder.events().isEmpty, "a forced-off run accumulated markers")
+    }
+
+    /// The same both ways: an already-recording recorder told to record does
+    /// not re-open the session it is already in.
+    func testSameStateSetRecordingOnWritesNoMarker() {
+        let recorder = makeRecorder(enabled: true)
+        recorder.setRecording(true, markerName: .recordingStarted)
+        XCTAssertTrue(recorder.events().isEmpty)
+    }
+
+    /// A REAL transition still writes its marker — the guard must not swallow
+    /// the one event it exists to place correctly.
+    func testRealTransitionStillWritesItsMarker() {
+        let recorder = makeRecorder(enabled: true)
+        recorder.record(.helloSent)
+        recorder.setRecording(false, markerName: .recordingStopped)
+
+        XCTAssertEqual(
+            recorder.events().map(\.name),
+            [
+                DiagnosticEventName.helloSent.rawValue,
+                DiagnosticEventName.recordingStopped.rawValue
+            ])
+    }
+
     // MARK: - One prologue per session
 
     /// The reason this stopped being "the first N events of the process": a
