@@ -439,9 +439,10 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     /// `anchor + monotonicNs`, so a marker that borrowed the previous event's
     /// elapsed would render at that event's moment — an export done minutes
     /// later appearing to have happened minutes ago.
-    public func snapshotStaging(_ name: DiagnosticEventName, nowNs: UInt64? = nil)
-        -> DiagnosticsSnapshot
-    {
+    public func snapshotStaging(
+        _ name: DiagnosticEventName,
+        nowNs: UInt64? = nil
+    ) -> DiagnosticsSnapshot {
         let mono = nowNs ?? Self.monotonicNowNs()
         let wall = Date()
 
