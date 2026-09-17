@@ -845,6 +845,7 @@ public final class TsnetTransport {
         // whether the handshake should be recorded, and nesting it there would
         // silently leave the GTK and WinUI viewers unrecorded on every path
         // that does not install one.
+        DiagnosticsCenter.shared.recorder?.beginSession()
         pipeline.session.recorder = DiagnosticsCenter.shared.recorder
         // Decode-recovery ladder opt-in. The session fires these synchronously
         // from `receiveRTP`, which the loop below only ever calls on this

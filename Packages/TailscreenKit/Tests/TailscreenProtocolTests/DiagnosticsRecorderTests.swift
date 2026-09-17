@@ -169,6 +169,144 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().droppedCount, 1)
     }
 
+    // MARK: - One prologue per session
+
+    /// The reason this stopped being "the first N events of the process": a
+    /// SECOND share's handshake has to be protected exactly as the first
+    /// one's was. With a single process-wide prologue, filling it once meant
+    /// every later session's HELLO landed in the evictable ring — so using
+    /// the app twice was enough to export a bundle missing the events
+    /// ``DiagnosticsMerge`` pairs the two sides on.
+    func testSecondSessionsHandshakeSurvivesRingPressure() {
+        let recorder = makeRecorder(prologue: 2, ring: 3)
+        recorder.record(.helloReceived)
+        recorder.record(.helloAckSent)
+        for _ in 0..<20 { recorder.record(.transportSummary) }
+
+        recorder.beginSession()
+        recorder.record(.helloReceived)
+        recorder.record(.helloAckSent)
+        for _ in 0..<20 { recorder.record(.transportSummary) }
+
+        let acks = recorder.events().filter {
+            $0.name == DiagnosticEventName.helloAckSent.rawValue
+        }
+        XCTAssertEqual(acks.count, 2, "the second session's HELLO_ACK was evicted")
+    }
+
+    /// Order across the two containers is by sequence, not by container. Once
+    /// a second prologue exists the prologues and the ring INTERLEAVE in time
+    /// — session one's tail is in the ring, session two's opening events are
+    /// in a prologue recorded after it — so concatenating them would print the
+    /// second handshake before the first session's last events. That is the
+    /// plausible-looking reordering this whole feature exists to avoid.
+    func testEventsStayOrderedAcrossInterleavedProloguesAndRing() {
+        let recorder = makeRecorder(prologue: 2, ring: 4)
+        recorder.record(.helloSent)
+        recorder.record(.helloAckReceived)
+        for _ in 0..<3 { recorder.record(.transportSummary) }
+        recorder.beginSession()
+        recorder.record(.helloSent)
+        recorder.record(.helloAckReceived)
+        recorder.record(.transportSummary)
+
+        XCTAssertEqual(recorder.events().map(\.seq), [1, 2, 3, 4, 5, 6, 7, 8])
+        XCTAssertEqual(recorder.snapshot().droppedCount, 0)
+    }
+
+    /// Two `beginSession` calls with nothing in between are one session. Hosts
+    /// call it from paths that can run back to back — a share that fails to
+    /// start, then the retry — and stacking empty segments would evict a real
+    /// prologue to make room for nothing.
+    func testRepeatedBeginSessionDoesNotStackEmptyPrologues() {
+        let recorder = makeRecorder(prologue: 2, ring: 4)
+        recorder.record(.helloSent)
+        recorder.beginSession()
+        recorder.beginSession()
+        recorder.beginSession()
+        recorder.record(.helloAckReceived)
+
+        XCTAssertEqual(recorder.events().map(\.seq), [1, 2])
+        XCTAssertEqual(recorder.snapshot().droppedCount, 0)
+    }
+
+    /// Retention is bounded, and releasing the oldest session's prologue is an
+    /// eviction like any other: it is counted, so a reader still sees that the
+    /// stream has a hole rather than reading two distant sessions as adjacent.
+    func testOldestSessionPrologueIsReleasedAndCounted() {
+        let recorder = DiagnosticsRecorder(
+            defaultRole: .sharer,
+            deviceLabel: "test-device",
+            enabled: true,
+            prologueCapacity: 2,
+            ringCapacity: 16,
+            retainedSessionPrologues: 2)
+        recorder.record(.helloSent)
+        recorder.beginSession()
+        recorder.record(.helloSent)
+        recorder.beginSession()
+        recorder.record(.helloSent)
+
+        let snapshot = recorder.snapshot()
+        XCTAssertEqual(snapshot.events.map(\.seq), [2, 3], "session one's prologue should be gone")
+        XCTAssertEqual(snapshot.droppedCount, 1)
+    }
+
+    /// `clear` collapses back to a single session, so a recorder reused after
+    /// an explicit discard starts out like a fresh one instead of carrying
+    /// empty segments that count against retention.
+    func testClearCollapsesToOneSession() {
+        let recorder = makeRecorder(prologue: 1, ring: 4)
+        recorder.record(.helloSent)
+        recorder.beginSession()
+        recorder.record(.helloSent)
+        recorder.clear()
+
+        recorder.record(.helloSent)
+        recorder.record(.transportSummary)
+        XCTAssertEqual(recorder.events().map(\.seq), [1, 2])
+        XCTAssertEqual(recorder.snapshot().droppedCount, 0)
+    }
+
+    // MARK: - Staging the export marker
+
+    /// The marker is staged into the SNAPSHOT and never committed. A write
+    /// that fails — a full disk, an undeletable directory — must not leave
+    /// `recording.exported` behind for the next bundle that DOES succeed to
+    /// claim as its own.
+    func testStagedMarkerIsNotCommittedToTheRecorder() {
+        let recorder = makeRecorder()
+        recorder.record(.helloSent)
+
+        let staged = recorder.snapshotStaging(.recordingExported)
+        XCTAssertEqual(
+            staged.events.last?.name, DiagnosticEventName.recordingExported.rawValue)
+        XCTAssertEqual(recorder.events().count, 1, "the marker must not reach the buffer")
+    }
+
+    /// The marker carries the elapsed time of the EXPORT, not of the last
+    /// event before it. The merge renders every event at `anchor + elapsed`,
+    /// so a marker borrowing its predecessor's elapsed puts an export done
+    /// minutes later back at that event's moment.
+    func testStagedMarkerCarriesTheCurrentElapsedNotThePreviousEvents() {
+        let recorder = makeRecorder()
+        recorder.record(.helloSent, nowNs: 1_000_000_000)
+        recorder.record(.transportSummary, nowNs: 2_000_000_000)
+
+        let staged = recorder.snapshotStaging(.recordingExported, nowNs: 60_000_000_000)
+        XCTAssertEqual(staged.events.last?.monotonicNs, 59_000_000_000)
+    }
+
+    /// Its sequence number continues the stream. The merge breaks ties on
+    /// `seq`, so a marker repeating the previous number would sort arbitrarily
+    /// against the event it must follow.
+    func testStagedMarkerContinuesTheSequence() {
+        let recorder = makeRecorder()
+        recorder.record(.helloSent)
+        recorder.record(.transportSummary)
+        XCTAssertEqual(recorder.snapshotStaging(.recordingExported).events.last?.seq, 3)
+    }
+
     // MARK: - Stamping
 
     /// The first event reads zero elapsed and the rest are relative to it.

@@ -131,6 +131,8 @@ public enum DiagnosticsMerge {
 
             // Each side is replayed from ONE wall-clock anchor plus its own
             // monotonic elapsed, not from each event's recorded wall clock.
+            // The anchor is derived from the HANDSHAKE, not from the session
+            // start — see `anchor(for:)`.
             //
             // This is what `monotonicNs` was recorded for, and until now the
             // merge did not use it. A wall clock can step mid-session — NTP
@@ -141,7 +143,7 @@ public enum DiagnosticsMerge {
             // that. The anchor is the first event's wall clock, so the timeline
             // still sits at the real time of day, and the cross-device offset
             // is applied on top exactly as before.
-            let anchor = bundle.header.startedAt ?? bundle.events.first?.wallClock
+            let anchor = Self.anchor(for: bundle)
 
             for event in bundle.events {
                 var shifted = event
@@ -300,6 +302,32 @@ public enum DiagnosticsMerge {
             return HandshakePair(serverLead: serverLead, roundTrip: roundTrip, ssrc: ssrc)
         }
         return nil
+    }
+
+    /// The wall-clock time this bundle's monotonic zero corresponds to.
+    ///
+    /// Derived from the **handshake** event where there is one, not from the
+    /// session start, and the difference matters whenever a clock steps
+    /// between the two. The offset is estimated from handshake timestamps, so
+    /// it already contains any step that happened before them; anchoring at
+    /// `startedAt` — a reading taken *before* the step — then replays the whole
+    /// side from a pre-step origin while correcting it by a post-step offset,
+    /// leaving the timeline shifted by exactly that discontinuity.
+    ///
+    /// Anchoring on the handshake makes the two consistent: the same event
+    /// that produced the offset also fixes the origin. `startedAt` remains the
+    /// fallback for a bundle that never completed one, where there is nothing
+    /// better to use.
+    static func anchor(for bundle: DiagnosticsBundle) -> Date? {
+        let handshakeNames: Set<String> = [
+            DiagnosticEventName.helloAckSent.rawValue,
+            DiagnosticEventName.helloAckReceived.rawValue
+        ]
+        if let handshake = bundle.events.first(where: { handshakeNames.contains($0.name) }) {
+            return handshake.wallClock.addingTimeInterval(
+                -Double(handshake.monotonicNs) / 1_000_000_000)
+        }
+        return bundle.header.startedAt ?? bundle.events.first?.wallClock
     }
 
     private static func formatted(_ seconds: TimeInterval) -> String {

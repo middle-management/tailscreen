@@ -1660,6 +1660,9 @@ class AppState: ObservableObject {
         // refuse our SCStream with -3805 anyway — bail with a clear
         // alert instead of letting the user watch the bring-up
         // dance through and fail.
+        // A new session gets its own protected prologue, so this share's
+        // handshake cannot be evicted by an earlier one's traffic.
+        AppDiagnostics.recorder?.beginSession()
         AppDiagnostics.action(.actionShareStart)
         guard shareLock.tryAcquire() else {
             anotherInstanceSharing = true
@@ -2679,6 +2682,7 @@ class AppState: ObservableObject {
         // change — but a new sharer streaming at the *same* resolution
         // fires neither, and must not inherit the previous session's zoom.
         viewerHost?.zoomState = ViewerZoomState()
+        AppDiagnostics.recorder?.beginSession()
         let c = TailscaleScreenShareClient(renderer: renderer)
         c.recorder = AppDiagnostics.recorder
         client = c

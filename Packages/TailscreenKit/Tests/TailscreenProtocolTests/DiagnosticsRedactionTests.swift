@@ -222,6 +222,29 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertEqual(DiagnosticsRedaction.scrub(text), text)
     }
 
+    /// A URL the origin-keeping branch decides to leave WHOLE still has to go
+    /// through the auth-key scan. An exempt docs path with
+    /// `?authKey=tskey-auth-…` on the end used to return straight out of that
+    /// branch and pass the credential through untouched — an exception to
+    /// "removed wherever embedded" is the one thing this function cannot have.
+    func testExemptURLStillLosesAnEmbeddedAuthKey() {
+        let scrubbed = DiagnosticsRedaction.scrub(
+            "opened https://tailscreen.dev/install?authKey=tskey-auth-kSECRETVALUE1234")
+
+        XCTAssertFalse(scrubbed.contains("kSECRETVALUE1234"), scrubbed)
+        XCTAssertTrue(scrubbed.contains("tailscreen.dev/install"), scrubbed)
+    }
+
+    /// Same hole, reached the other way: a URL with no path at all never finds
+    /// a slash to split on, and that case fell out of the branch too.
+    func testOriginOnlyURLStillLosesAnEmbeddedAuthKey() {
+        let scrubbed = DiagnosticsRedaction.scrub(
+            "control=https://login.tailscale.com?authKey=tskey-auth-zSECRET99")
+
+        XCTAssertFalse(scrubbed.contains("zSECRET99"), scrubbed)
+        XCTAssertTrue(scrubbed.contains("login.tailscale.com"), scrubbed)
+    }
+
     // MARK: - Field-set behaviour
 
     /// Keys are instrumentation-authored and must never be scrubbed: the

@@ -219,10 +219,16 @@ public enum DiagnosticsExport {
                 lastWasDash = true
             }
         }
+        // Trimmed, capped, then trimmed AGAIN: capping after the first trim can
+        // hand back a trailing dash (a 40-character name whose 41st character
+        // was a space), which is the very thing the first trim exists to
+        // prevent.
         let trimmed = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        let capped = String(trimmed.prefix(40))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         // A name that was entirely non-ASCII would slug to nothing and produce
         // `tailscreen-viewer--20260917-100402`, which reads like a bug.
-        return trimmed.isEmpty ? "device" : String(trimmed.prefix(40))
+        return capped.isEmpty ? "device" : capped
     }
 }
 

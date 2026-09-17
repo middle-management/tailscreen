@@ -24,7 +24,12 @@ public class TailscaleAuth: ObservableObject {
     public init() {}
 
     private var localAPIClient: LocalAPIClient?
-    private let logger = PrintLogSink(prefix: "Auth")
+    /// **Not teed into diagnostics** — this logger prints the signed-in
+    /// account's display name (below), and an exported bundle promises the
+    /// person sending it that it carries no sign-in details. The auth story
+    /// reaches a bundle as the structured `node.signin.*` events recorded
+    /// alongside these lines, which say what happened without saying who.
+    private let logger = PrintLogSink(prefix: "Auth", capturesDiagnostics: false)
 
     /// Checks authentication status and fetches user profile
     public func checkAuthStatus(node: TailscaleNode) async {
@@ -49,6 +54,9 @@ public class TailscaleAuth: ObservableObject {
                 self.isAuthenticated = true
                 logger.log("✓ Authenticated as \(profile.UserProfile.DisplayName)")
                 logger.log("✓ Set isAuthenticated = true, isLoading will be set to false")
+                // The fact, not the identity: a bundle needs to know the node
+                // was signed in, never as whom.
+                DiagnosticsCenter.shared.recorder?.record(.nodeSignInCompleted)
             } else {
                 // No user logged in
                 self.isAuthenticated = false
@@ -91,6 +99,8 @@ public class TailscaleAuth: ObservableObject {
                 )
                 self.isAuthenticated = true
                 logger.log("✓ Already authenticated as \(profile.UserProfile.DisplayName)")
+                DiagnosticsCenter.shared.recorder?.record(
+                    .nodeSignInCompleted, fields: ["already": .bool(true)])
                 return
             }
         } catch {
@@ -131,6 +141,9 @@ public class TailscaleAuth: ObservableObject {
         if !authURL.isEmpty {
             self.authURL = authURL
             logger.log("🔗 Auth URL: \(authURL)")
+            // That one was issued, never what it was: the URL is a bearer
+            // credential for the tailnet.
+            DiagnosticsCenter.shared.recorder?.record(.nodeSignInURLIssued)
 
             // Hand the URL to the host app to open (browser policy is
             // host-specific — see onOpenAuthURL).

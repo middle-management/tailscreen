@@ -78,8 +78,9 @@ public struct DiagnosticsBundle: Sendable, Equatable {
             device and the devices it talked to, including their tailnet \
             addresses, and the microphones and speakers attached to this \
             machine. It does NOT contain share links, auth keys, sign-in URLs, \
-            screen contents, audio, or keystrokes. Share it with someone you \
-            would be comfortable telling which machines you connected to.
+            your Tailscale account name, screen contents, audio, or \
+            keystrokes. Share it with someone you would be comfortable telling \
+            which machines you connected to.
             """
 
         public init(

@@ -55,6 +55,26 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertEqual(DiagnosticsExport.slug(""), "device")
     }
 
+    /// The 40-character cap runs BEFORE the final trim. Capping after it can
+    /// hand back a trailing dash — a name whose 41st slug character is the
+    /// dash a space produced — which is exactly what the trim exists to
+    /// prevent, and it would land in the filename.
+    func testSlugCapDoesNotLeaveATrailingDash() {
+        let slug = DiagnosticsExport.slug(String(repeating: "a", count: 39) + " workstation")
+
+        XCTAssertFalse(slug.hasSuffix("-"), slug)
+        XCTAssertLessThanOrEqual(slug.count, 40)
+        XCTAssertEqual(slug, String(repeating: "a", count: 39))
+    }
+
+    /// The second trim must not shorten a name that fits. An off-by-one here
+    /// would silently clip the last character off every 40-character device
+    /// name, which nothing else in the suite would notice.
+    func testSlugKeepsANameThatExactlyFitsTheCap() {
+        let exact = String(repeating: "b", count: 40)
+        XCTAssertEqual(DiagnosticsExport.slug(exact), exact)
+    }
+
     // MARK: - Writing
 
     /// Round-trip through the filesystem, including creating the directory.

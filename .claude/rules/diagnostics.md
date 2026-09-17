@@ -72,6 +72,13 @@ they are what makes a bundle legible and what the two sides merge on. What the
 feature owes the user there is disclosure, not redaction, and the bundle header
 carries it.
 
+The scrubber's URL branch keeps the **origin** of a sign-in URL (which control
+server was used is a real answer, and it is not the secret) and exempts the
+app's own docs links from path redaction — but an exempted URL still falls
+through to the auth-key scan. `https://tailscreen.dev/install?authKey=tskey-auth-…`
+is the shape that made that non-optional: "removed wherever embedded" cannot
+have an exception, whichever branch decided to leave the word whole.
+
 ## Record availability, not just the selection
 
 "They couldn't hear me" has two causes that look identical from outside: the
@@ -120,6 +127,24 @@ a **prologue** (first 256 events, never evicted) sits in front of a **ring**
 (most recent 4096), with the drop count between them exported rather than
 swallowed.
 
+There is **one prologue per session**, not one per process, and the last four
+are retained. A single process-wide prologue quietly stopped protecting
+anything the moment the app was used twice: it filled during the first share,
+so every later session's HELLO landed in the evictable ring, and a long-running
+app could export a bundle missing exactly the events the merge pairs the two
+sides on. Hosts open one with `recorder.beginSession()` — mac `AppState` at
+share start and at connect, `LinuxShareSession`, `WindowsShareSession`,
+`TsnetTransport` — and calling it twice with nothing in between is one session,
+because the start paths can run back to back on a failed start and a retry.
+A released prologue's events are counted into `droppedCount` like any other
+eviction.
+
+That split is also why `events()` **sorts by `seq`** rather than concatenating
+the two containers. Once a second prologue exists they interleave in time —
+session one's tail is in the ring, session two's opening events are in a
+prologue recorded after it — and concatenation would print the second
+handshake before the first session's last events.
+
 **`DiagnosticsCenter.recorder` is never set back to nil.** Turning recording
 off moves a Boolean *inside* the recorder instead. The sharer server and the
 viewer session copy that reference when they are constructed; nil'ing it would
@@ -148,8 +173,12 @@ logging thread can append in between — landing an event before the
 `recording.stopped` that claims to close it. Enabling writes the marker after
 the flag, disabling before it.
 
-`export` builds the marker into the **outgoing snapshot** and commits it to the
-live recorder only after the write succeeds; otherwise a failed write leaves
+`export` builds the marker into the **outgoing snapshot** (via
+`recorder.snapshotStaging(_:)`, so it carries the elapsed time of the *export*
+rather than borrowing the previous event's — the merge renders every event at
+`anchor + elapsed`, which would otherwise put an export done minutes later back
+at that event's moment) and commits it to the live recorder only after the write
+succeeds; otherwise a failed write leaves
 `recording.exported` behind and the next bundle that does succeed claims an
 export that never happened. The filename is uniquified against the directory
 too — the stamp has one-second resolution, and a double-click on Export would
@@ -205,6 +234,13 @@ Two things the merge has to get right and can get wrong silently:
   against each other — a causal inversion inside a single machine's story, which
   is the one thing a timeline must never invent. This is what `monotonicNs` is
   recorded for.
+- **Take that anchor from the handshake, not from the session start**
+  (`DiagnosticsMerge.anchor(for:)`). The offset is estimated from handshake
+  timestamps, so it already contains any clock step that happened before them;
+  anchoring at `startedAt` — a reading taken before the step — replays the side
+  from a pre-step origin while correcting it by a post-step offset, leaving the
+  whole timeline shifted by exactly that discontinuity. `startedAt` stays the
+  fallback for a bundle that never completed a handshake.
 
 The pairing is derived from **events, not header roles**. One process can be
 sharer and viewer at once (a Mac sharing to one person while watching another),
@@ -227,10 +263,13 @@ far: they are recorded from `AppState`, `SettingsView` and the surface modifier,
 and the GTK and WinUI apps have no equivalent call sites. So a Linux or Windows
 bundle explains what the connection did but not what the person did.
 
-Per-host wiring is one line each at construction:
-`server.recorder = DiagnosticsCenter.shared.recorder` in `LinuxShareSession`,
-`WindowsShareSession` and mac `AppState`; `pipeline.session.recorder = …` in
-`TsnetTransport`; mac's client forwards its own into `ViewerSession`.
+Per-host wiring is two lines each at construction — `recorder.beginSession()`,
+then `server.recorder = DiagnosticsCenter.shared.recorder` in
+`LinuxShareSession`, `WindowsShareSession` and mac `AppState`;
+`pipeline.session.recorder = …` in `TsnetTransport`; mac's client forwards its
+own into `ViewerSession`. A new host that wires up a recorder and forgets
+`beginSession` still records — it just loses the eviction protection on that
+session's handshake, silently.
 
 `PrintLogSink` tees every existing package log line into the recorder, which is
 where most of the coverage comes from for free (~35 call sites across the
@@ -238,6 +277,15 @@ transport and sharer tiers, none of them touched). Those are prose and
 therefore the weakest kind of event — a safety net **under** the named
 registry events, never a substitute. When a log line turns out to be
 load-bearing in an investigation, give it a registry case.
+
+One sink opts out: `PrintLogSink(prefix: "Auth", capturesDiagnostics: false)`
+in `TailscaleAuth`, which logs the signed-in account's display name in prose.
+Redaction cannot help there — it deliberately keeps names, and nothing in free
+text distinguishes an account name from a device name — and the bundle header
+promises the sender it carries no sign-in details. The auth story is recorded
+as `node.signin.*` registry events instead, which carry the state without the
+identity. Any new sink that logs an identity the header disclaims needs the
+same flag.
 
 ## Formats
 

@@ -524,6 +524,73 @@ final class DiagnosticsBundleTests: XCTestCase {
             "a backwards clock step reordered one device's own events")
     }
 
+    // MARK: - Where each side's timeline is anchored
+
+    /// A bundle whose wall clock stepped between start-up and the handshake.
+    /// `startedAt` is the pre-step reading; the handshake carries the
+    /// post-step one, and its elapsed says how long after start-up it
+    /// happened — so the two disagree by exactly the step.
+    private func steppedClockBundle(step: TimeInterval) -> DiagnosticsBundle {
+        let events = [
+            DiagnosticEvent(
+                seq: 1, monotonicNs: 0, wallClock: epoch, role: .sharer,
+                category: DiagnosticEventName.captureStarted.category,
+                name: DiagnosticEventName.captureStarted.rawValue, severity: .info),
+            DiagnosticEvent(
+                seq: 2, monotonicNs: 1_000_000_000,
+                wallClock: epoch.addingTimeInterval(1 + step), role: .sharer,
+                category: DiagnosticEventName.helloAckSent.category,
+                name: DiagnosticEventName.helloAckSent.rawValue, severity: .info)
+        ]
+        return DiagnosticsBundle.make(
+            from: DiagnosticsSnapshot(
+                role: .sharer, deviceLabel: "sharer-mac", wasRecording: true,
+                startedAt: epoch, droppedCount: 0, events: events),
+            environment: DiagnosticsEnvironment(
+                platform: "test", appVersion: "0.10.0-rc.2", commit: "abc1234",
+                configuration: "release", architecture: "arm64",
+                deviceLabel: "sharer-mac"),
+            exportedAt: epoch.addingTimeInterval(100))
+    }
+
+    /// The anchor comes from the HANDSHAKE, not from the session start.
+    ///
+    /// The cross-device offset is estimated from handshake timestamps, so it
+    /// already contains any step that happened before them. Anchoring at
+    /// `startedAt` — a reading taken before the step — would replay the side
+    /// from a pre-step origin while correcting it by a post-step offset,
+    /// leaving the whole timeline shifted by exactly that discontinuity.
+    func testAnchorIsDerivedFromTheHandshakeNotTheSessionStart() throws {
+        let anchor = try XCTUnwrap(DiagnosticsMerge.anchor(for: steppedClockBundle(step: 5)))
+
+        XCTAssertEqual(anchor.timeIntervalSince(epoch), 5, accuracy: 0.001)
+    }
+
+    /// The handshake therefore lands at the time it actually carries, and the
+    /// events before it move with it rather than being stretched apart.
+    func testSteppedClockDoesNotStretchTheGapBeforeTheHandshake() {
+        let timeline = DiagnosticsMerge.merge([steppedClockBundle(step: 5)])
+
+        XCTAssertEqual(timeline.lines.count, 2)
+        let gap = timeline.lines[1].event.wallClock.timeIntervalSince(
+            timeline.lines[0].event.wallClock)
+        XCTAssertEqual(gap, 1, accuracy: 0.001, "the step was replayed as elapsed time")
+    }
+
+    /// Without a handshake there is nothing better to use, so `startedAt`
+    /// remains the fallback — a bundle from a session that never connected
+    /// still has to render.
+    func testAnchorFallsBackToTheSessionStartWithoutAHandshake() throws {
+        let events = [
+            event(seq: 1, .captureStarted, role: .sharer, atOffset: 0),
+            event(seq: 2, .captureFailed, role: .sharer, atOffset: 2)
+        ]
+        let anchor = try XCTUnwrap(
+            DiagnosticsMerge.anchor(for: bundle(role: .sharer, device: "mac", events: events)))
+
+        XCTAssertEqual(anchor.timeIntervalSince(epoch), 0, accuracy: 0.001)
+    }
+
     /// An empty input is not a crash.
     func testEmptyMergeIsEmpty() {
         let timeline = DiagnosticsMerge.merge([])

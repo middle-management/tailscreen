@@ -32,8 +32,21 @@ import Foundation
 /// one — these sit on per-packet and per-frame paths.
 public final class DiagnosticsRecorder: @unchecked Sendable {
 
-    /// Events kept from the start of the session, never evicted.
+    /// Events kept from the start of each session, never evicted while that
+    /// session's prologue is retained.
     public let prologueCapacity: Int
+
+    /// How many sessions' prologues are kept.
+    ///
+    /// The prologue used to be the first N events of the PROCESS, which is not
+    /// the same thing as a session and quietly stopped protecting the handshake
+    /// the moment the app was used twice: a second share's HELLO landed in the
+    /// evictable ring, so a long-running app could export a bundle missing
+    /// exactly the events `DiagnosticsMerge` pairs on. A prologue per session
+    /// restores the guarantee for each one, and the cap keeps it bounded — four
+    /// sessions at 256 events is a few hundred kilobytes, and a report is
+    /// almost always about the last one.
+    public let retainedSessionPrologues: Int
 
     /// Most-recent events kept once the prologue is full.
     public let ringCapacity: Int
@@ -57,7 +70,8 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
 
     private struct State {
         var enabled: Bool
-        var prologue: [DiagnosticEvent] = []
+        /// One prologue per session, oldest first. See ``beginSession()``.
+        var prologues: [[DiagnosticEvent]] = [[]]
         /// Fixed-size circular storage. `ringStart` is the index of the oldest
         /// live element once `ringCount == ringCapacity`.
         var ring: [DiagnosticEvent] = []
@@ -127,7 +141,8 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         deviceLabel: String,
         enabled: Bool,
         prologueCapacity: Int = 256,
-        ringCapacity: Int = 4096
+        ringCapacity: Int = 4096,
+        retainedSessionPrologues: Int = 4
     ) {
         self.defaultRole = defaultRole
         self.deviceLabel = deviceLabel
@@ -136,6 +151,7 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         // worth crashing the app it is recording.
         self.prologueCapacity = max(0, prologueCapacity)
         self.ringCapacity = max(1, ringCapacity)
+        self.retainedSessionPrologues = max(1, retainedSessionPrologues)
         self.state = State(enabled: enabled)
     }
 
@@ -209,13 +225,37 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     public func clear() {
         lock.lock()
         defer { lock.unlock() }
-        state.prologue.removeAll(keepingCapacity: true)
+        state.prologues = [[]]
         state.ring.removeAll(keepingCapacity: true)
         state.ringStart = 0
         state.nextSeq = 1
         state.dropped = 0
         state.startWallClock = nil
         state.startMonotonicNs = nil
+    }
+
+    /// Start a new session prologue, so this session's opening events — its
+    /// handshake above all — are protected from ring eviction the way the
+    /// first session's were.
+    ///
+    /// Hosts call this when a share starts or a viewer connects. Calling it
+    /// more often than that is harmless: an empty segment costs nothing, and
+    /// the oldest is dropped once ``retainedSessionPrologues`` are held.
+    ///
+    /// Events already recorded are never moved or lost by this — a dropped
+    /// segment's events are counted into `droppedCount` like any other
+    /// eviction, so a reader still sees that the stream has a hole.
+    public func beginSession() {
+        lock.lock()
+        defer { lock.unlock() }
+        // An untouched trailing segment is reused rather than stacked, so a
+        // host that calls this twice before anything happens gets one session.
+        if state.prologues.last?.isEmpty == true { return }
+        state.prologues.append([])
+        while state.prologues.count > retainedSessionPrologues {
+            let dropped = state.prologues.removeFirst()
+            state.dropped &+= UInt64(dropped.count)
+        }
     }
 
     // MARK: - Recording
@@ -299,8 +339,8 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
             fields: pending.fields)
         state.nextSeq &+= 1
 
-        if state.prologue.count < prologueCapacity {
-            state.prologue.append(event)
+        if state.prologues[state.prologues.count - 1].count < prologueCapacity {
+            state.prologues[state.prologues.count - 1].append(event)
             return
         }
         if state.ring.count < ringCapacity {
@@ -339,12 +379,22 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     /// deliberately allowed while recording continues, so that window is a
     /// real one, not a theoretical one.
     private func orderedEventsLocked() -> [DiagnosticEvent] {
-        guard state.ring.count == ringCapacity, state.ringStart > 0 else {
-            return state.prologue + state.ring
+        let ring: [DiagnosticEvent]
+        if state.ring.count == ringCapacity, state.ringStart > 0 {
+            ring = Array(state.ring[state.ringStart...]) + Array(state.ring[..<state.ringStart])
+        } else {
+            ring = state.ring
         }
-        return state.prologue
-            + Array(state.ring[state.ringStart...])
-            + Array(state.ring[..<state.ringStart])
+        let prologue = state.prologues.flatMap { $0 }
+        // Sorted by sequence rather than concatenated. Once there is more than
+        // one session prologue the two containers INTERLEAVE in time: session
+        // one's later events are in the ring, and session two's opening events
+        // are in a prologue recorded after them. Concatenating would emit the
+        // second session's handshake before the first session's tail — the kind
+        // of plausible-looking reordering this whole feature exists to avoid.
+        // `seq` is exact and assigned under the same lock, so it is the one
+        // ordering that cannot be wrong.
+        return (prologue + ring).sorted { $0.seq < $1.seq }
     }
 
     /// Everything held, plus what it took to hold it.
@@ -379,6 +429,39 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
                 fields: redacted, mono: mono, wall: wall))
     }
 
+    /// A snapshot with one lifecycle event staged on the end but **not**
+    /// committed to the recorder.
+    ///
+    /// For export, which has to put `recording.exported` in the bundle it
+    /// writes while leaving the recorder untouched until the write succeeds.
+    /// Staging it here rather than at the call site is what gets its clock
+    /// right: the merge reconstructs each event's time as
+    /// `anchor + monotonicNs`, so a marker that borrowed the previous event's
+    /// elapsed would render at that event's moment — an export done minutes
+    /// later appearing to have happened minutes ago.
+    public func snapshotStaging(_ name: DiagnosticEventName, nowNs: UInt64? = nil)
+        -> DiagnosticsSnapshot
+    {
+        let mono = nowNs ?? Self.monotonicNowNs()
+        let wall = Date()
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        var snapshot = snapshotLocked()
+        let start = state.startMonotonicNs ?? mono
+        snapshot.events.append(
+            DiagnosticEvent(
+                seq: state.nextSeq,
+                monotonicNs: mono >= start ? mono &- start : 0,
+                wallClock: wall,
+                role: defaultRole,
+                category: name.category,
+                name: name.rawValue,
+                severity: name.defaultSeverity))
+        return snapshot
+    }
+
     /// Everything held, plus what it took to hold it — read atomically.
     ///
     /// One lock acquisition covers both the events and the counters that
@@ -387,7 +470,12 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     public func snapshot() -> DiagnosticsSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        return DiagnosticsSnapshot(
+        return snapshotLocked()
+    }
+
+    /// **Caller must hold `lock`.**
+    private func snapshotLocked() -> DiagnosticsSnapshot {
+        DiagnosticsSnapshot(
             role: defaultRole,
             deviceLabel: deviceLabel,
             wasRecording: state.enabled,

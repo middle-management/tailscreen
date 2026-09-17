@@ -183,21 +183,13 @@ public enum DiagnosticsHost {
         // front meant a failed write — a full disk, a directory that could not
         // be created — still left `recording.exported` behind, so the next
         // bundle that DID succeed claimed an export that never happened.
-        var snapshot = recorder.snapshot()
-        snapshot.events.append(
-            DiagnosticEvent(
-                seq: (snapshot.events.last?.seq ?? 0) + 1,
-                monotonicNs: snapshot.events.last?.monotonicNs ?? 0,
-                wallClock: date,
-                role: snapshot.role,
-                category: DiagnosticEventName.recordingExported.category,
-                name: DiagnosticEventName.recordingExported.rawValue,
-                severity: DiagnosticEventName.recordingExported.defaultSeverity))
+        //
+        // Staged by the RECORDER, so it carries the current monotonic elapsed:
+        // the merge reconstructs time as anchor + elapsed, and a marker
+        // borrowing the previous event's elapsed would render at that event's
+        // moment rather than now.
+        let snapshot = recorder.snapshotStaging(.recordingExported)
 
-        // `start` installs the environment alongside the recorder, so a
-        // recorder without one cannot normally exist. The fallback names the
-        // unknowns rather than inventing plausible values — a header claiming
-        // a version it never knew is worse than one that says it does not know.
         let environment =
             DiagnosticsCenter.shared.environment
             ?? DiagnosticsEnvironment(

@@ -161,7 +161,12 @@ public enum DiagnosticsRedaction {
                     return "\(origin)/\(placeholder)"
                 }
             }
-            return nil
+            // Deliberately NOT `return nil` here. A URL this branch decides to
+            // leave whole — a bare origin, or one of the app's own docs links —
+            // still has to go through the auth-key scan below: an exempt path
+            // with `?authKey=tskey-auth-…` on the end was passing the
+            // credential through untouched, which is the one thing "removed
+            // wherever embedded" cannot have an exception for.
         }
 
         // 3. A tailnet auth key, anywhere in the word for the same reason
