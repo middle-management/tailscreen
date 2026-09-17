@@ -227,6 +227,80 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Diagnostics
+
+    /// Whether session diagnostics are being recorded.
+    ///
+    /// Read from `DiagnosticsPreference`, which resolves an explicit choice
+    /// against the build's release channel: **on by default in a release
+    /// candidate**, off in a shipped release, on in a local build. An explicit
+    /// choice outranks the channel in both directions and survives into the
+    /// next candidate.
+    ///
+    /// Not a `didSet`, unlike `requireViewerApproval` above: flipping this has
+    /// to persist the choice AND move the live recorder AND attach or detach
+    /// the log tee, in that order, and a `didSet` that a stored-property
+    /// initialiser can also trigger is the wrong place for three effects.
+    /// `setRecordDiagnostics(_:)` is the one way in.
+    @Published private(set) var recordDiagnostics: Bool =
+        DiagnosticsPreference.load(channel: BuildInfo.releaseChannel)
+
+    /// Turn recording on or off, persist the choice, and move the recorder.
+    func setRecordDiagnostics(_ enabled: Bool) {
+        guard enabled != recordDiagnostics else { return }
+        AppDiagnostics.setRecording(enabled)
+        // Read back what the recorder actually did rather than assuming the
+        // request took. `TAILSCREEN_DIAGNOSTICS` pins the live value for the
+        // whole run, so under `=0` a toggle-on leaves recording off — and a
+        // switch that displays "on" while nothing is being recorded (or worse,
+        // "off" while it is) is the one lie a privacy-facing control must not
+        // tell.
+        recordDiagnostics = AppDiagnostics.recorder?.isRecording ?? enabled
+        if enabled {
+            // Forget the cached device snapshot so the next enumeration writes
+            // a fresh baseline.
+            //
+            // Without this the bundle silently loses its device inventory in
+            // the commonest flow there is: Settings opens (which enumerates and
+            // caches) while recording is off, so the event is dropped but the
+            // cache is warm; the user then turns recording on right there, and
+            // every later enumeration compares equal and records nothing. The
+            // one thing they turned it on to capture would be missing.
+            lastRecordedAudioDevices = nil
+            recordAudioDevicesIfChanged()
+            // Same shape of problem, one surface over: whatever is on screen
+            // when the switch moves reported itself through `onAppear` while
+            // recording was off, and nothing calls `onAppear` again just
+            // because a switch moved. Without this the record's first word
+            // about Settings — the very pane the user is standing in — is a
+            // `view.hidden` with no `view.shown` to match.
+            DiagnosticSurfaceTracker.shared.replayVisible()
+        }
+    }
+
+    /// Write the current recording out and show the user where it went.
+    ///
+    /// Reveals the file in Finder rather than only naming its path: the next
+    /// thing the user does is attach it to a message, and a path in an alert
+    /// is something they then have to go and find. A failure here goes through
+    /// `presentError` like everything else — an export that silently does
+    /// nothing would be a particularly cruel bug in a feature whose whole
+    /// purpose is explaining failures.
+    func exportDiagnostics() {
+        do {
+            let url = try AppDiagnostics.export()
+            logger.log("Diagnostics exported to \(url.path)")
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            presentError(
+                .legacy(
+                    title: L("Couldn't Export Diagnostics"),
+                    message: L(
+                        "The diagnostics file could not be written: \(error.localizedDescription)")
+                ))
+        }
+    }
+
     // MARK: - Link sharing (share-by-token guests)
 
     /// Settings feature gate for sharing via link. Default on but inert —
@@ -612,6 +686,18 @@ class AppState: ObservableObject {
     // orderOut the window and clear the renderer's pending frame; on connect
     // we reuse the existing instances.
     @Published var viewerWindow: NSWindow?
+
+    /// The viewer window's name in the diagnostics surface trail.
+    ///
+    /// Reported at the real `orderFront` / `orderOut` transitions rather than
+    /// at construction. The window is owned for the process lifetime and REUSED
+    /// (see the comment above), so a marker at construction fired once ever:
+    /// the first disconnect recorded a hide, and every later session recorded
+    /// no show at all. Reported through the tracker's IDEMPOTENT presence path
+    /// rather than its reference count: `orderFrontRegardless` runs on every
+    /// connect and again on every re-focus, while `orderOut` runs once, so a
+    /// count would climb and never come back to zero.
+    static let viewerWindowSurface = "ViewerWindow"
     /// Preferences window, lazily created on first ⌘, and kept for the
     /// process lifetime so reopening is instant and edits stay put.
     private var settingsWindow: NSWindow?
@@ -1583,6 +1669,10 @@ class AppState: ObservableObject {
         // refuse our SCStream with -3805 anyway — bail with a clear
         // alert instead of letting the user watch the bring-up
         // dance through and fail.
+        // A new session gets its own protected prologue, so this share's
+        // handshake cannot be evicted by an earlier one's traffic.
+        AppDiagnostics.recorder?.beginSession()
+        AppDiagnostics.action(.actionShareStart)
         guard shareLock.tryAcquire() else {
             anotherInstanceSharing = true
             showAlertMessage(
@@ -1667,6 +1757,7 @@ class AppState: ObservableObject {
             if server == nil {
                 let hostname = Self.localHostname()
                 let srv = TailscaleScreenShareServer()
+                srv.recorder = AppDiagnostics.recorder
                 server = srv
 
                 // SCStream can die from two distinct causes:
@@ -2028,6 +2119,22 @@ class AppState: ObservableObject {
         isStoppingShare = true
         defer { isStoppingShare = false }
         logger.log("stopSharing: called by \(caller) (reason=\(reason))")
+        // A lifecycle event, NOT `action.share.stop`. This function is the
+        // teardown funnel for capture failure, a dead receive loop, an
+        // unrecoverable helper, the shared window closing, a failed restart,
+        // sign-out and quit — eleven call sites, of which two are the Stop
+        // button. Recording every one as a user action made the `action.`
+        // stream claim the person stopped the share when the app had actually
+        // fallen over, which is the single most misleading thing that stream
+        // could say. The two real Stop affordances record the action
+        // themselves; `caller` and `reason` say which of the others this was.
+        AppDiagnostics.recorder?.record(
+            .sharePhaseChanged,
+            fields: [
+                "to": .string("idle"),
+                "reason": .string(reason),
+                "caller": .string(caller)
+            ])
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
         if let cont = pendingFirstPreview {
@@ -2266,16 +2373,101 @@ class AppState: ObservableObject {
         if let id = selectedOutputDeviceID, !availableOutputDevices.contains(where: { $0.id == id }) {
             selectedOutputDeviceID = nil
         }
+        recordAudioDevicesIfChanged()
+    }
+
+    /// Last device lists recorded, so the diagnostics event fires on a change
+    /// rather than on every enumeration. This runs whenever a picker is about
+    /// to render, which is many times a session and almost always the same
+    /// answer — see `AudioDeviceDiagnostics` for why change beats poll here.
+    private var lastRecordedAudioDevices: AudioDeviceDiagnostics.Snapshot?
+
+    /// Record which audio devices exist and which are selected, when that
+    /// changed.
+    ///
+    /// The **available** list is the half that is easy to leave out and is the
+    /// one people get stuck on: a headset that was never enumerated could
+    /// never have been picked, and that is a different problem from picking
+    /// the wrong one. Recording only the selection is silent about it.
+    private func recordAudioDevicesIfChanged() {
+        let current = AudioDeviceDiagnostics.Snapshot(
+            inputs: availableInputDevices.map(\.name),
+            outputs: availableOutputDevices.map(\.name),
+            defaultInput: systemDefaultInputName,
+            defaultOutput: systemDefaultOutputName)
+        guard AudioDeviceDiagnostics.changed(from: lastRecordedAudioDevices, to: current)
+        else { return }
+        lastRecordedAudioDevices = current
+        AppDiagnostics.recorder?.record(
+            .audioDevicesChanged,
+            fields: AudioDeviceDiagnostics.fields(
+                snapshot: current,
+                selectedInput: selectedInputDeviceName,
+                selectedOutput: selectedOutputDeviceName))
+    }
+
+    /// Name of the selected input, or nil for "system default" — which is a
+    /// real state, not a missing answer, and is a common explanation for a
+    /// share recording from the built-in mic.
+    private var selectedInputDeviceName: String? {
+        guard let id = selectedInputDeviceID else { return nil }
+        return availableInputDevices.first { $0.id == id }?.name
+    }
+
+    private var selectedOutputDeviceName: String? {
+        guard let id = selectedOutputDeviceID else { return nil }
+        return availableOutputDevices.first { $0.id == id }?.name
+    }
+
+    /// What the system default input currently resolves to, by name.
+    ///
+    /// Recorded because "system default" names the user's *choice* and not the
+    /// *device*. Someone who never opened the picker is on whatever macOS has
+    /// decided is default at that moment — and macOS moves it on its own when
+    /// a headset is plugged in or pulled out. Without this, a bundle says
+    /// "system default" for a session that started on a headset and finished
+    /// on the built-in mic, and the thing that actually changed is invisible.
+    private var systemDefaultInputName: String? {
+        guard let id = AudioDevices.defaultInputID() else { return nil }
+        return availableInputDevices.first { $0.id == id }?.name
+    }
+
+    private var systemDefaultOutputName: String? {
+        guard let id = AudioDevices.defaultOutputID() else { return nil }
+        return availableOutputDevices.first { $0.id == id }?.name
+    }
+
+    /// The input actually in use: the explicit pick, else the system default.
+    private var effectiveInputDeviceName: String {
+        AudioDeviceDiagnostics.effective(
+            selected: selectedInputDeviceName, systemDefault: systemDefaultInputName)
     }
 
     func selectInputDevice(_ deviceID: AudioDeviceID?) {
         selectedInputDeviceID = deviceID
+        // By name, not by `AudioDeviceID`: the ID is a machine-local CoreAudio
+        // handle that changes across reboots and means nothing to a reader,
+        // while the name is what the person saw in the picker and what they
+        // will say when describing the problem.
+        AppDiagnostics.action(
+            .actionAudioDeviceSelected,
+            [
+                "direction": .string("input"),
+                "device": .string(selectedInputDeviceName ?? "system default"),
+                "effective": .string(effectiveInputDeviceName)
+            ])
         guard let cap = micCapture else { return }
         Task { @MainActor in await cap.setInputDevice(deviceID) }
     }
 
     func selectOutputDevice(_ deviceID: AudioDeviceID?) {
         selectedOutputDeviceID = deviceID
+        AppDiagnostics.action(
+            .actionAudioDeviceSelected,
+            [
+                "direction": .string("output"),
+                "device": .string(selectedOutputDeviceName ?? "system default")
+            ])
         micCapture?.setOutputDevice(deviceID)
     }
 
@@ -2288,13 +2480,38 @@ class AppState: ObservableObject {
             cap.disableCapture()
             voice.isMuted = true
             isMicOn = false
+            AppDiagnostics.action(.actionMicToggle, ["on": .bool(false)])
+            AppDiagnostics.recorder?.record(.micDetached)
             return
         }
+        AppDiagnostics.action(.actionMicToggle, ["on": .bool(true)])
         do {
             try await cap.enableCapture()
             voice.isMuted = false
             isMicOn = true
+            // Which device actually went live. The pair — the attempt above and
+            // this — is what distinguishes "they never turned the mic on" from
+            // "they turned it on and it came up on the wrong device".
+            AppDiagnostics.recorder?.record(
+                .micAttached,
+                fields: [
+                    // The device that actually went live, resolved through the
+                    // system default when nothing was picked — "system default"
+                    // alone would name the choice and not the microphone.
+                    "device": .string(effectiveInputDeviceName),
+                    "selection": .string(selectedInputDeviceName ?? "system default")
+                ])
         } catch {
+            // Recorded as well as surfaced. `presentError` records the fault
+            // with its `TS-…` code, but not which device failed — and the
+            // device is the answer here far more often than the error is.
+            AppDiagnostics.recorder?.record(
+                .micFailed,
+                fields: [
+                    "device": .string(effectiveInputDeviceName),
+                    "selection": .string(selectedInputDeviceName ?? "system default"),
+                    "error": .string(String(describing: error))
+                ])
             presentError(.microphoneUnavailable(error))
             isMicOn = false
         }
@@ -2306,6 +2523,7 @@ class AppState: ObservableObject {
     /// covers SCK audio. No-op when not sharing.
     func toggleSystemAudio() {
         isSystemAudioOn.toggle()
+        AppDiagnostics.action(.actionSystemAudioToggle, ["on": .bool(isSystemAudioOn)])
         server?.setShareSystemAudio(isSystemAudioOn)
     }
 
@@ -2317,6 +2535,7 @@ class AppState: ObservableObject {
     /// `shareLinkBusy` guarding double-fires.
     func setShareLinkActive(_ on: Bool) {
         guard !shareLinkBusy else { return }
+        AppDiagnostics.action(.actionLinkToggle, ["on": .bool(on)])
         // A guest-only share IS its link: the UI hides the off-toggle there,
         // and this guard is the belt to that suspender — turning the link off
         // would leave a share running that nobody can reach.
@@ -2472,8 +2691,20 @@ class AppState: ObservableObject {
         // change — but a new sharer streaming at the *same* resolution
         // fires neither, and must not inherit the previous session's zoom.
         viewerHost?.zoomState = ViewerZoomState()
+        AppDiagnostics.recorder?.beginSession()
         let c = TailscaleScreenShareClient(renderer: renderer)
+        c.recorder = AppDiagnostics.recorder
         client = c
+        AppDiagnostics.action(
+            .actionConnect,
+            [
+                "peer": .string(displayName ?? host),
+                // The token itself never goes near the recorder — only whether
+                // this was a link join, which is the part that changes how the
+                // rest of the timeline should be read (guest admission is
+                // mandatory-approval and identity is a node key, not a host).
+                "via_link": .bool(guestToken != nil)
+            ])
         do {
             // HELLO_PENDING means the sharer parked us behind the approval
             // gate. Surface the placard so the viewer doesn't sit on a
@@ -2621,6 +2852,7 @@ class AppState: ObservableObject {
                     NSApp.activate(ignoringOtherApps: true)
                     self.viewerWindow?.orderFrontRegardless()
                     self.viewerWindow?.makeKeyAndOrderFront(nil)
+                    AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
                     guard self.voiceChannel == nil else { return }
                     self.micCapture?.stop()
                     self.micCapture = nil
@@ -2672,6 +2904,7 @@ class AppState: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
+            AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
         } catch {
             await c.disconnect()
             // Build the AppError FIRST and carry its message into the
@@ -2697,6 +2930,7 @@ class AppState: ObservableObject {
             // was fine only because the window was already up.
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
+            AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
             presentError(failure)
         }
     }
@@ -3151,6 +3385,7 @@ class AppState: ObservableObject {
         if invalidatePendingConnects {
             viewerConnectRequestID &+= 1
         }
+
         // Invalidate presentation and ownership before the first suspension:
         // a superseding connect can then await transport cleanup without the
         // old connect task or a queued notification changing current state.
@@ -3182,6 +3417,7 @@ class AppState: ObservableObject {
         // view of a screen that's gone.
         viewerHost?.zoomState = ViewerZoomState()
         viewerWindow?.orderOut(nil)
+        AppDiagnostics.viewVisible(Self.viewerWindowSurface, false)
         // Next connect should snap to the new sharer's dims even if the
         // user dragged the previous session's window to a custom size.
         userResizedViewer = false
@@ -3237,6 +3473,7 @@ class AppState: ObservableObject {
         viewerRenderer?.clearPendingBuffer()
         viewerHost?.zoomState = ViewerZoomState()
         viewerWindow?.orderOut(nil)
+        AppDiagnostics.viewVisible(Self.viewerWindowSurface, false)
         userResizedViewer = false
         didLogFirstViewerFrame = false
         refreshViewerWindowTitle()
@@ -4860,6 +5097,13 @@ class AppState: ObservableObject {
     /// the user can read it again after copying.
     func presentError(_ error: AppError) {
         logger.log("AppError[\(error.code)] \(error.title) — \(error.message)")
+        // Every alert-shaped failure in the app funnels through here, so one
+        // call records them all — including failures added later by someone
+        // who has never heard of this file. The stable `TS-…` code is what
+        // joins a bundle onto the error registry; the message is not recorded
+        // because it is prose that varies with interpolated detail, and the
+        // code plus the surrounding events say more.
+        AppDiagnostics.fault(code: error.code, title: error.title)
 
         NSApp.activate(ignoringOtherApps: true)
 
@@ -4910,6 +5154,7 @@ class AppState: ObservableObject {
     /// documented on `presentError`.
     func presentNotice(title: String, message: String) {
         logger.log("Notice: \(title) — \(message)")
+        AppDiagnostics.recorder?.record(.noticeShown, fields: ["title": .string(title)])
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title
@@ -5381,12 +5626,14 @@ class AppState: ObservableObject {
     /// Admit a pending viewer — hands off to the live server which
     /// emits the deferred HELLO_ACK and forces a keyframe.
     func approvePendingViewer(_ id: String) {
+        AppDiagnostics.action(.actionViewerApprove, ["addr": .string(id)])
         server?.approveViewer(addr: id)
     }
 
     /// Reject a pending viewer — server sends HELLO_DENY + SERVER_BYE so
     /// the viewer tears their session down immediately.
     func denyPendingViewer(_ id: String) {
+        AppDiagnostics.action(.actionViewerDeny, ["addr": .string(id)])
         server?.denyViewer(addr: id)
     }
 
@@ -5396,6 +5643,7 @@ class AppState: ObservableObject {
     /// persistent variant, use "Deny & Block" on the pending row (or
     /// remove/deny via Settings → Viewers).
     func disconnectConnectedViewer(_ id: String) {
+        AppDiagnostics.action(.actionViewerKick, ["addr": .string(id)])
         server?.disconnectViewer(addr: id)
     }
 
@@ -5404,6 +5652,8 @@ class AppState: ObservableObject {
     /// yet, queue the intent so it's persisted the instant resolution lands
     /// — the peer is admitted one-time in the meantime.
     func approvePendingViewerAlways(_ id: String) {
+        AppDiagnostics.action(
+            .actionViewerApprove, ["addr": .string(id), "remembered": .bool(true)])
         if !persistPendingViewerPolicy(id, policy: .allow) {
             policyIntents.queue(id: id, policy: .allow)
             logger.log("Queued 'always allow' for \(id): StableNodeID unresolved — persist on resolve")
@@ -5418,6 +5668,7 @@ class AppState: ObservableObject {
     /// the block is persisted the instant resolution lands, rather than
     /// silently degrading to a one-time deny the peer could re-HELLO past.
     func denyPendingViewerAndBlock(_ id: String) {
+        AppDiagnostics.action(.actionViewerBlock, ["addr": .string(id)])
         if persistPendingViewerPolicy(id, policy: .deny) {
             server?.denyViewer(addr: id)
         } else {

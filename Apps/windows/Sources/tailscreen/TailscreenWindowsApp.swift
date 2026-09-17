@@ -18,6 +18,7 @@ import class TailscreenProtocol.AccountProfileStore
 import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
+import enum TailscreenProtocol.DiagnosticsHost
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
 import enum TailscreenProtocol.NodeBringUpPhase
 import struct TailscreenProtocol.NoticeCandidate
@@ -105,6 +106,12 @@ struct TailscreenWindowsApp: App {
     /// WinUI state, so it cannot re-create the initializer collision above.
     init() {
         ConsoleBridge.attachOrRedirect()
+        // Open the session record straight after stdio, so the log tee has
+        // somewhere to go from the first line. Recording is on or off per
+        // `DiagnosticsPreference` — see `.claude/rules/diagnostics.md`. There
+        // is no settings toggle on this host yet; `TAILSCREEN_DIAGNOSTICS=1` /
+        // `=0` forces it either way.
+        DiagnosticsHost.start(environment: BuildInfo.diagnosticsEnvironment)
     }
 
     // The view is deliberately split into many small, individually-typed

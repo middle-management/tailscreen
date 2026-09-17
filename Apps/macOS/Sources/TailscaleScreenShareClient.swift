@@ -87,6 +87,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// arrives; the VoiceChannel waits on this before sending mic audio.
     private(set) var assignedAudioSSRC: UInt32?
 
+    /// Where this viewer records its handshake, for later troubleshooting.
+    ///
+    /// Set by `AppState` at construction and forwarded to the portable
+    /// `ViewerSession`, which is where the handshake events are actually
+    /// recorded — this class is the mac host around it.
+    var recorder: DiagnosticsRecorder?
+
     /// Fires when the sharer assigns us an audio SSRC. AppState uses this
     /// to lazily build the local VoiceChannel.
     var onAudioSSRCAssigned: ((UInt32) -> Void)?
@@ -794,6 +801,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // Stats overlay: feed the renderer's loss-recovery counters as the
         // session emits feedback. These fire on the receive task (where
         // receiveRTP/tick run), same as the legacy loop's note* calls.
+        session.recorder = recorder
         session.onPLISent = { [weak self] in self?.renderer.notePLISent() }
         session.onNACKSent = { [weak self] in self?.renderer.noteNACKSent() }
         session.onFECRecovered = { [weak self] in self?.renderer.noteFECRecovered() }

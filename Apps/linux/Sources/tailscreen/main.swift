@@ -1642,4 +1642,11 @@ struct ViewerApp: App {
     }
 }
 
+// Open the session record before the UI comes up, so a bundle starts with the
+// build stamp rather than with whatever happened to be recorded first.
+// Recording is on or off per `DiagnosticsPreference` — see
+// `.claude/rules/diagnostics.md`. There is no settings toggle on this host
+// yet; `TAILSCREEN_DIAGNOSTICS=1` / `=0` forces it either way.
+DiagnosticsHost.start(environment: BuildInfo.diagnosticsEnvironment)
+
 ViewerApp.main()

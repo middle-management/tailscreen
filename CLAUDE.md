@@ -50,6 +50,8 @@ Port **7447**, TCP **and** UDP. Video and audio are RTP over UDP (video PT 96 = 
 
 **Every wire constant is pinned by `WireByteRegistryTests`. Add a registry row in the same commit as any new wire byte, and never renumber a shipped one.** Full protocol details: `.claude/rules/protocol.md`.
 
+**Session diagnostics ride alongside, not on the wire.** All three apps record a structured event stream of one session — handshakes, admission decisions and the package's own log lines, which is the half two bundles merge on — and the macOS app additionally records user actions, active views and surfaced failures, and is the only host with a Settings toggle and an export button so far (Linux and Windows switch via `TAILSCREEN_DIAGNOSTICS`; see `docs/platform-support.md`). A bundle is JSON Lines; two sides' bundles merge into one ordered timeline, with clock skew solved from the handshake's own four timestamps and the two ends paired on the SSRC the HELLO_ACK already carries, so nothing was added to the wire for it. **On by default in release candidates**, off in stable releases, and event names are a registry with the same never-rename rule as the wire bytes (`DiagnosticEventNameTests`). See `.claude/rules/diagnostics.md`.
+
 The **normative** definition — RFC 2119 MUST/SHOULD/MAY with stable requirement IDs (`TS-CTL-001`, …) — is `docs/spec.md`, and `conformance/` carries the language-neutral vectors that pin it: `make test-conformance` runs them against `sdk/go` (the public Go SDK, written from the spec and sharing no code with ours — also buildable as `libtailscreen.a` for non-Go clients), and `make test-protocol` runs the same files against the shipping Swift codecs. The stateful pipeline (reorder, depacketizers, NACK scheduling, FEC group solving, RR accounting) is pinned the other way — vectors can't express clock-driven interleavings, so `make test-differential` links the Go SDK's c-archive and drives both implementations with identical seeded input, asserting identical output at every step. A wire change touches four things in one commit: the code, the registry test, the spec's registry appendix, and a vector.
 
 ## Swift 6 conventions used here
@@ -93,6 +95,7 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 | `.claude/rules/tailscalekit.md` | The fork submodule, how to change it, the Windows Go↔C bridge and runtime-start commits | `Packages/TailscaleKit/**` |
 | `.claude/rules/ci.md` | Shared build definitions, the linux-packages matrix, release/soak/Pages workflows | `.github/**` |
 | `.claude/rules/web-viewer.md` | The browser viewer: the wasm surface, the page, its strings, the gzip loader, hosting, the e2e's traps | `web/viewer/**` |
+| `.claude/rules/diagnostics.md` | Session diagnostics: the event registry, the recorder's prologue/ring buffer, redaction, the JSONL bundle, the cross-side merge + clock-skew correction, the on-by-default-in-RC rule | `TailscreenProtocol/Diagnostics`, the mac app's diagnostics files |
 
 One skill loads on demand rather than by path: **`test-catalog`** — the extracted pure-decision suites, the test-only seams, and which package a new suite belongs in. Invoke it when adding or moving a test.
 

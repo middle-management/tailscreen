@@ -1,0 +1,234 @@
+import Foundation
+import XCTest
+
+@testable import TailscreenProtocol
+
+/// `AudioDeviceDiagnostics` — what a bundle says about the audio devices a
+/// session had to choose from.
+///
+/// Worth pinning because the failure it exists to distinguish is one of the
+/// most common and least visible there is. "They couldn't hear me" has two
+/// causes that look identical from outside: the right device was in the list
+/// and the wrong one was selected, or the right device was **never in the
+/// list** and could not have been selected. Recording only the selection
+/// answers the first and is silent about the second.
+final class AudioDeviceDiagnosticsTests: XCTestCase {
+
+    // MARK: - Rendering
+
+    /// Order is preserved rather than sorted: the host enumerates in the order
+    /// the pickers show, and a reader comparing a bundle against a screenshot
+    /// of the picker should see the same sequence.
+    func testDescribePreservesEnumerationOrder() {
+        XCTAssertEqual(
+            AudioDeviceDiagnostics.describe(["MacBook Pro Microphone", "Jabra Evolve2 65"]),
+            "MacBook Pro Microphone, Jabra Evolve2 65")
+    }
+
+    /// "none" rather than an empty string — an empty value in a `key=value`
+    /// line reads as a bug in the recorder rather than as a machine with no
+    /// inputs, which is itself a real and diagnostic state.
+    func testEmptyListIsNamed() {
+        XCTAssertEqual(AudioDeviceDiagnostics.describe([]), "none")
+    }
+
+    /// A studio interface can enumerate dozens of channels, and one event that
+    /// is four kilobytes of device names would push the rest of the session
+    /// out of the buffer. Past the cap the names stop — but the count does
+    /// not, so the most important part stays exact.
+    func testLongListIsCappedButTheCountSurvives() {
+        let names = (1...30).map { "Device \($0)" }
+        let rendered = AudioDeviceDiagnostics.describe(names)
+
+        XCTAssertTrue(rendered.contains("Device 1"))
+        XCTAssertTrue(
+            rendered.hasSuffix("+\(30 - AudioDeviceDiagnostics.maximumNamedDevices) more"),
+            rendered)
+        XCTAssertFalse(rendered.contains("Device 30"))
+
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(names), selectedInput: nil, selectedOutput: nil)
+        XCTAssertEqual(
+            fields["input_count"], .int(30),
+            "the count must stay exact even when the names are truncated")
+    }
+
+    /// Exactly at the cap nothing is elided — an off-by-one here would add a
+    /// "+0 more" that reads as truncation which did not happen.
+    func testListExactlyAtTheCapIsNotTruncated() {
+        let names = (1...AudioDeviceDiagnostics.maximumNamedDevices).map { "Device \($0)" }
+        let rendered = AudioDeviceDiagnostics.describe(names)
+        XCTAssertFalse(rendered.contains("more"), rendered)
+    }
+
+    // MARK: - Change detection
+
+    /// The first enumeration is the baseline and always worth one event.
+    private func snapshot(
+        _ inputs: [String],
+        _ outputs: [String] = [],
+        defaultInput: String? = nil,
+        defaultOutput: String? = nil
+    ) -> AudioDeviceDiagnostics.Snapshot {
+        AudioDeviceDiagnostics.Snapshot(
+            inputs: inputs, outputs: outputs,
+            defaultInput: defaultInput, defaultOutput: defaultOutput)
+    }
+
+    func testFirstEnumerationIsAChange() {
+        XCTAssertTrue(AudioDeviceDiagnostics.changed(from: nil, to: snapshot(["Built-in"])))
+    }
+
+    /// A machine with genuinely no inputs is a real state — and a diagnostic
+    /// one — that must not read as "never enumerated". This is exactly the
+    /// ambiguity the named `Snapshot` exists to remove, and why an optional
+    /// array was the wrong shape for it.
+    func testNoDevicesIsDistinctFromNeverEnumerated() {
+        let empty = snapshot([])
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(from: nil, to: empty),
+            "the first enumeration is a change even when it finds nothing")
+        XCTAssertFalse(
+            AudioDeviceDiagnostics.changed(from: empty, to: empty),
+            "a second enumeration finding nothing is not a change")
+    }
+
+    /// The two lists are one snapshot: an output-only change still counts.
+    func testOutputOnlyChangeIsAChange() {
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Mic"], ["Speakers"]),
+                to: snapshot(["Mic"], ["Speakers", "Headphones"])))
+    }
+
+    /// The common case: a picker re-rendering must not emit an event. This is
+    /// what keeps the session legible — the host enumerates many times and
+    /// almost always gets the same answer.
+    func testUnchangedListIsNotRecordedAgain() {
+        XCTAssertFalse(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in", "Jabra"]), to: snapshot(["Built-in", "Jabra"])))
+    }
+
+    /// A device arriving or leaving mid-session is frequently the entire
+    /// diagnosis — a Bluetooth headset dropping out is invisible to the user
+    /// beyond "it stopped working".
+    func testDeviceArrivalAndDepartureAreChanges() {
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in"]), to: snapshot(["Built-in", "Jabra"])))
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in", "Jabra"]), to: snapshot(["Built-in"])))
+    }
+
+    /// Compared as an ordered list, not a set. A reordering means the system
+    /// default moved, which changes what an unselected "System Default" pick
+    /// resolves to — a real change in what the session records from, and
+    /// exactly the kind that otherwise goes unexplained.
+    func testReorderingCountsAsAChange() {
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(
+                from: snapshot(["Built-in", "Jabra"]), to: snapshot(["Jabra", "Built-in"])))
+    }
+
+    // MARK: - Fields
+
+    /// Both halves are present: what existed, and what was chosen.
+    func testFieldsCarryAvailabilityAndSelection() {
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(["Built-in", "Jabra"], ["Built-in Output"]),
+            selectedInput: "Jabra",
+            selectedOutput: nil)
+
+        XCTAssertEqual(fields["inputs"], .string("Built-in, Jabra"))
+        XCTAssertEqual(fields["input_count"], .int(2))
+        XCTAssertEqual(fields["outputs"], .string("Built-in Output"))
+        XCTAssertEqual(fields["output_count"], .int(1))
+        XCTAssertEqual(fields["selected_input"], .string("Jabra"))
+    }
+
+    /// The case that costs the most time: the user chose nothing, so the
+    /// record has to say which microphone "nothing" actually resolved to.
+    /// `selected_input` alone names the choice, not the device.
+    func testSystemDefaultIsResolvedToARealDevice() {
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(
+                ["MacBook Pro Microphone", "Jabra Evolve2 65"],
+                defaultInput: "MacBook Pro Microphone"),
+            selectedInput: nil,
+            selectedOutput: nil)
+
+        XCTAssertEqual(fields["selected_input"], .string("system default"))
+        XCTAssertEqual(
+            fields["effective_input"], .string("MacBook Pro Microphone"),
+            "the bundle must name the microphone that was actually live")
+    }
+
+    /// An explicit pick outranks the default, and `effective` agrees with it —
+    /// otherwise the two fields would contradict each other on the common case.
+    func testExplicitPickIsTheEffectiveDevice() {
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(["Built-in", "Jabra"], defaultInput: "Built-in"),
+            selectedInput: "Jabra",
+            selectedOutput: nil)
+
+        XCTAssertEqual(fields["selected_input"], .string("Jabra"))
+        XCTAssertEqual(fields["effective_input"], .string("Jabra"))
+    }
+
+    /// No pick and no resolvable default is a real outcome — no input devices
+    /// at all, or a HAL query that failed — and "unknown" says so. An absent
+    /// field would read as "nobody looked", which is a different answer.
+    func testUnresolvableDefaultIsNamedUnknown() {
+        XCTAssertEqual(
+            AudioDeviceDiagnostics.effective(selected: nil, systemDefault: nil), "unknown")
+
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot([]), selectedInput: nil, selectedOutput: nil)
+        XCTAssertEqual(fields["effective_input"], .string("unknown"))
+    }
+
+    /// The reason the default belongs in the snapshot rather than only in the
+    /// fields: macOS moves it on its own. Plugging a headset in, or changing
+    /// it in System Settings, can shift what an unselected pick uses **without
+    /// the device lists changing at all** — and that silent shift is exactly
+    /// what a session bundle is for.
+    func testDefaultMovingIsAChangeEvenWhenTheListsAreIdentical() {
+        let before = snapshot(["Built-in", "Jabra"], defaultInput: "Built-in")
+        let after = snapshot(["Built-in", "Jabra"], defaultInput: "Jabra")
+
+        XCTAssertEqual(before.inputs, after.inputs, "the lists are deliberately identical")
+        XCTAssertTrue(
+            AudioDeviceDiagnostics.changed(from: before, to: after),
+            "a default that moved under the user must be recorded")
+    }
+
+    /// No explicit pick is spelled out rather than omitted. "System default"
+    /// is a real state and a common answer to "why was it using the built-in
+    /// mic", where a missing field would just look like missing data.
+    func testNoExplicitSelectionIsNamedNotOmitted() {
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(["Built-in"], ["Built-in"]),
+            selectedInput: nil, selectedOutput: nil)
+
+        XCTAssertEqual(fields["selected_input"], .string("system default"))
+        XCTAssertEqual(fields["selected_output"], .string("system default"))
+    }
+
+    /// The case the whole type exists for: a bundle must show that the device
+    /// somebody expected was not on the machine at all.
+    func testAMissingDeviceIsVisibleInTheRecord() {
+        let fields = AudioDeviceDiagnostics.fields(
+            snapshot: snapshot(["MacBook Pro Microphone"], ["MacBook Pro Speakers"]),
+            selectedInput: nil,
+            selectedOutput: nil)
+
+        guard case .string(let inputs)? = fields["inputs"] else {
+            return XCTFail("inputs field missing")
+        }
+        XCTAssertFalse(
+            inputs.contains("Jabra"),
+            "the headset the user expected is absent, and the bundle shows it")
+    }
+}

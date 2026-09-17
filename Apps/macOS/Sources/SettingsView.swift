@@ -32,11 +32,13 @@ struct SettingsView: View {
             cloakedAppsSection
             qualitySections
             audioSection
+            diagnosticsSection
             aboutSection
         }
         .formStyle(.grouped)
         .frame(minWidth: 440, minHeight: 480)
         .onAppear { appState.refreshAudioDevices() }
+        .recordsDiagnosticSurface("Settings")
     }
 
     // MARK: - General
@@ -544,6 +546,69 @@ struct SettingsView: View {
                     Text(device.name).tag(AudioDeviceID?.some(device.id))
                 }
             }
+        }
+    }
+
+    // MARK: - Diagnostics
+
+    /// Record what happens during a session, and get it to somebody who can
+    /// read it.
+    ///
+    /// Lives next to About because that is where the build stamp is, and the
+    /// two are asked for together: "which build are you on, and what did it
+    /// do?" is one question.
+    ///
+    /// The caption states the default rather than leaving it implicit. A
+    /// candidate records by default, and a user who has not been told that is
+    /// being recorded without knowing — which is the thing the disclosure
+    /// exists to prevent, whether or not the contents are sensitive.
+    private var diagnosticsSection: some View {
+        Section(L("Diagnostics")) {
+            Toggle(
+                L("Record diagnostics for troubleshooting"),
+                isOn: Binding(
+                    get: { appState.recordDiagnostics },
+                    set: { appState.setRecordDiagnostics($0) }))
+            Text(Self.diagnosticsCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // Deliberately NOT disabled while recording is off. Stopping keeps
+            // what was already recorded — that is the whole point of the
+            // switch not erasing — and the documented workflow is exactly
+            // "reproduce the problem, stop recording, hand the file over".
+            // Gating export on the toggle blocked that, and the only way out
+            // was to turn recording back on, which writes a misleading fresh
+            // `recording.started` into the very bundle being exported.
+            Button(L("Export Diagnostics…")) {
+                appState.exportDiagnostics()
+            }
+
+            Text(
+                L(
+                    "Writes a file naming this device, the devices it connected to, your audio devices, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Why the toggle is where it is, worded for the channel this build is on
+    /// — a tester being told recording is on by default, a release user being
+    /// told it is not.
+    private static var diagnosticsCaption: String {
+        switch BuildInfo.releaseChannel {
+        case .releaseCandidate:
+            return L(
+                "On by default in a release candidate, so a problem you hit while testing can be explained afterwards. Turning it off here keeps it off in future candidates."
+            )
+        case .stable:
+            return L(
+                "Off by default. Turn it on before reproducing a problem, then export the recording."
+            )
+        case .development:
+            return L("On by default in a local build.")
         }
     }
 

@@ -686,3 +686,14 @@
 "Mute Audio" = "Stäng av ljud";
 "Unmute Audio" = "Slå på ljud";
 "Audio Unavailable" = "Ljud är inte tillgängligt";
+
+/* MARK: - Diagnostik (Apps/macOS SettingsView.swift + AppState.swift). */
+"Diagnostics" = "Diagnostik";
+"Record diagnostics for troubleshooting" = "Spela in diagnostik för felsökning";
+"On by default in a release candidate, so a problem you hit while testing can be explained afterwards. Turning it off here keeps it off in future candidates." = "På som standard i en släppkandidat, så att ett problem du stöter på under testning går att förklara efteråt. Stänger du av det här förblir det avstängt även i kommande kandidater.";
+"Off by default. Turn it on before reproducing a problem, then export the recording." = "Av som standard. Slå på det innan du återskapar ett problem och exportera sedan inspelningen.";
+"On by default in a local build." = "På som standard i ett lokalt bygge.";
+"Export Diagnostics…" = "Exportera diagnostik…";
+"Writes a file naming this device, the devices it connected to, your audio devices, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable." = "Skriver en fil som namnger den här enheten, enheterna den anslöt till, dina ljudenheter och vad som hände mellan dem — inget skärminnehåll, inget ljud, inga tangenttryckningar, inga delningslänkar och inga inloggningsuppgifter. Be personen i andra änden att exportera sin också: det är de två filerna tillsammans som gör ett problem läsbart.";
+"Couldn't Export Diagnostics" = "Kunde inte exportera diagnostik";
+"The diagnostics file could not be written: %@" = "Diagnostikfilen kunde inte skrivas: %@";

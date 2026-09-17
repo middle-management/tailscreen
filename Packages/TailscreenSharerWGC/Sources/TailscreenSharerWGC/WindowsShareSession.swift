@@ -489,6 +489,11 @@ public final class WindowsShareSession: @unchecked Sendable {
             // claim it, exactly as it must not claim `.remoteControl`.
             rendersAnnotations: annotationOverlay != nil
         )
+        // The one recorder the host installed, if any. Same seam the macOS app
+        // and the GTK engine use; nil when diagnostics are off, which is the
+        // stable-release default.
+        DiagnosticsCenter.shared.recorder?.beginSession()
+        newServer.recorder = DiagnosticsCenter.shared.recorder
         // Every callback below carries `generation`: a server this session has
         // let go of must not paint over the one that replaced it. The stop
         // that drops it can land inside the `start()` await further down, which

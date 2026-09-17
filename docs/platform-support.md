@@ -310,6 +310,34 @@ That is the point of the split: a bug fixed in the loss-recovery path is fixed
 everywhere, and the platform code stays down to capture, encode, decode, render,
 audio I/O and input injection.
 
+## Diagnostics
+
+Recording a session — handshakes, admission decisions, user actions, active
+views, failures — and exporting it as a file you can send to whoever is
+helping. Two sides' files merge into one ordered timeline, with the clock
+difference between the machines solved from the handshake itself. See
+[Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}#recording-diagnostics).
+
+| | macOS | Linux | Windows | Browser |
+| :--- | :---: | :---: | :---: | :---: |
+| Record handshakes and admission decisions | ✅ | ✅ | ✅ | ❌ |
+| Record user actions, active views, surfaced failures | ✅ | ❌ | ❌ | ❌ |
+| On by default in release candidates | ✅ | ✅ | ✅ | — |
+| Settings toggle | ✅ | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | — |
+| Export to a file | ✅ Settings → Diagnostics | ❌ | ❌ | — |
+
+The **protocol half** is in the portable core, so all three platforms record
+handshakes, admission decisions and the package's own log lines identically —
+that is the half two bundles are merged on, and it works between any pair of
+platforms.
+
+The **app half** is macOS-only so far: which button a person pressed, which
+screen was in front of them, and which failures were shown to them are
+instrumented in the macOS app and nowhere else yet. So a Linux or Windows
+bundle explains what the connection did but not what the person did, and
+there is no export button on those platforms — both are tracked as follow-up
+work.
+
 ## Distribution
 
 | | macOS | Linux | Windows | Browser |

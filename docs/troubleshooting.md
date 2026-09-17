@@ -359,12 +359,73 @@ git submodule update --init --recursive
 `Packages/TailscaleKit/upstream/libtailscale` is pinned in `.gitmodules` and
 required for the build.
 
+## Recording diagnostics
+
+Tailscreen can record what it did during a session — connections,
+handshakes, the actions you took, and anything that failed — and write it
+out as a file you can send to whoever is helping you.
+
+**In a release candidate this is on by default.** A candidate exists to be
+tested, and a problem you hit while testing is worth very little if it
+can't be explained afterwards. In a stable release it's off until you turn
+it on, under **Settings → Diagnostics**. Whatever you choose there sticks,
+including across upgrades — turn it off in a candidate and it stays off in
+the next one.
+
+### Getting a recording out
+
+1. **On macOS: Settings → Diagnostics → Export Diagnostics…** The file
+   lands in `~/Library/Logs/Tailscreen/` and Finder opens on it. You can
+   export whether or not recording is still on — stopping keeps what was
+   already recorded, so "reproduce it, stop, export" works.
+2. **On Linux and Windows there is no export button yet.** Those apps
+   record, and `TAILSCREEN_DIAGNOSTICS=1` / `=0` switches it, but getting
+   the file out is still to come — see
+   [Platform support]({{ site.baseurl }}{% link platform-support.md %}#diagnostics).
+   Until then, a macOS bundle from one end plus the other end's console
+   output is what to send.
+3. **Get one from both ends where you can.** This is the part that matters. One side's
+   file says what your machine did; the pair says what *happened*. A
+   viewer that waited thirty seconds and gave up looks identical whether
+   the sharer never saw the connection at all or saw it and parked it on
+   an approval prompt nobody was looking at — and those are completely
+   different problems. Only the two files together tell them apart.
+4. Attach what you have to the issue.
+
+Each file is named for the machine it came from
+(`tailscreen-app-roberts-macbook-pro-20260917-100402.jsonl`), so a pair
+stays straight in a chat thread.
+
+### What's in the file
+
+It's text, one event per line, and you can read it before you send it.
+
+It **does** name your device and the devices it connected to, including
+their tailnet addresses — that's what makes the two files line up with
+each other, and without it nobody can tell which viewer went black. It
+also names the microphones and speakers attached to your machine, and
+which one was selected: "they couldn't hear me" is usually either the
+wrong device being picked or the right one never showing up at all, and
+those are different problems.
+
+It **does not** contain screen contents, audio, keystrokes, share links,
+auth keys or sign-in URLs. Share links and keys in particular are
+deliberately reduced to a short fingerprint before anything is written:
+anyone holding one can join your share, so they never reach the file even
+if some component logs one by accident.
+
+Every file states this in its own first line, so if someone forwards it
+onward the next reader sees it too.
+
 ## Reporting a bug
 
 If none of the above is your problem, file an issue at
 [github.com/middle-management/tailscreen/issues](https://github.com/middle-management/tailscreen/issues).
 Include:
 
+- **Diagnostics recordings from both ends** (above). This is the single
+  most useful thing you can attach, and on a release candidate you already
+  have them.
 - OS and version on both ends (`sw_vers` on macOS, your distro, or the
   Windows build), and the machine models.
 - Tailscale version on both peers, and whether the connection is `direct`

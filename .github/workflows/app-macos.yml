@@ -244,6 +244,20 @@ jobs:
           grep -q "static let commit = \"$short\"" "$file" \
             || { echo "build stamp did not apply — refusing to ship an app labelled 'dev'" >&2; exit 1; }
           echo "stamped $short"
+          # A labelled build is a PR artifact, not a release. Say so explicitly
+          # rather than leaving it to be inferred from the version: macOS needs
+          # a numeric CFBundleShortVersionString, so a PR build is stamped
+          # `0.0.<PR>`, which reads as an ordinary stable release and would
+          # turn diagnostics recording off for precisely the builds handed to
+          # testers. Releases leave this empty and classify from the version.
+          if [ -n "${{ inputs.label }}" ]; then
+            sed -i '' \
+              "s/static let channelOverride = \"\"/static let channelOverride = \"releaseCandidate\"/" \
+              "$file"
+            grep -q 'static let channelOverride = "releaseCandidate"' "$file" \
+              || { echo "channel stamp did not apply — a PR build would ship as a stable release" >&2; exit 1; }
+            echo "stamped channel releaseCandidate"
+          fi
 
       - name: Build universal Tailscreen binary
         env:
