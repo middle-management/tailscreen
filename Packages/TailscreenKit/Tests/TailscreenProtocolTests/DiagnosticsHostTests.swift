@@ -350,6 +350,20 @@ final class DiagnosticsHostTests: XCTestCase {
         }
     }
 
+    /// **And `localizedDescription` is the only way to those sentences.**
+    /// Interpolating the error value itself renders the enum case, so a call
+    /// site writing `"…: \(error)"` puts `nothingRecorded` in front of a user
+    /// while a suite that only reads `localizedDescription` — like the one
+    /// above — stays green. That is exactly how it happened: the friendly
+    /// messages were written, tested, and then not reached by the alert.
+    func testInterpolatingTheErrorDoesNotProduceTheSentence() {
+        for error in [DiagnosticsHostError.notRecording, .nothingRecorded] {
+            XCTAssertNotEqual(
+                "\(error)", error.localizedDescription,
+                "interpolation now matches — re-check the call sites either way")
+        }
+    }
+
     // MARK: - The log tee
 
     /// The free coverage: an existing `LogSink` line lands in the record with

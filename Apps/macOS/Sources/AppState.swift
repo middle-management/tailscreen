@@ -268,6 +268,13 @@ class AppState: ObservableObject {
             // one thing they turned it on to capture would be missing.
             lastRecordedAudioDevices = nil
             recordAudioDevicesIfChanged()
+            // Same shape of problem, one surface over: whatever is on screen
+            // when the switch moves reported itself through `onAppear` while
+            // recording was off, and nothing calls `onAppear` again just
+            // because a switch moved. Without this the record's first word
+            // about Settings — the very pane the user is standing in — is a
+            // `view.hidden` with no `view.shown` to match.
+            DiagnosticSurfaceTracker.shared.replayVisible()
         }
     }
 
@@ -288,7 +295,9 @@ class AppState: ObservableObject {
             presentError(
                 .legacy(
                     title: L("Couldn't Export Diagnostics"),
-                    message: L("The diagnostics file could not be written: \(error)")))
+                    message: L(
+                        "The diagnostics file could not be written: \(error.localizedDescription)")
+                ))
         }
     }
 

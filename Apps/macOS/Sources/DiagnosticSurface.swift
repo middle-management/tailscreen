@@ -88,6 +88,25 @@ final class DiagnosticSurfaceTracker {
         AppDiagnostics.emitViewHidden(name)
     }
 
+    /// Re-emit `view.shown` for everything on screen right now.
+    ///
+    /// Called when recording turns ON. This table is kept whether or not
+    /// anything is being recorded — it has to be, or the counts would not
+    /// survive the toggle — so a surface that appeared while recording was off
+    /// is in it with no `view.shown` behind it. Neither Settings nor the hub
+    /// pane behind it calls `onAppear` again just because a switch moved, so
+    /// without this replay the first thing the record would say about that
+    /// surface is an unmatched `view.hidden`, and the bundle would never say
+    /// what the user was looking at at the moment they started recording —
+    /// which is the moment a reader most wants.
+    ///
+    /// Sorted, so two runs of the same session produce the same baseline.
+    func replayVisible() {
+        for name in visible.keys.sorted() {
+            AppDiagnostics.emitViewShown(name)
+        }
+    }
+
     /// Idempotent presence, for a surface that is ONE thing whose visibility is
     /// set rather than counted — the viewer's `NSWindow`.
     ///

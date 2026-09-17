@@ -129,8 +129,19 @@ public enum DiagnosticsRedaction {
         return word
     }
 
-    /// The three shapes, in the order they are cheapest to rule out.
+    /// The three shapes, applied in SEQUENCE — one value can carry more than
+    /// one credential.
+    ///
+    /// Returning on the first match is what this did, and
+    /// `token=tc…&authKey=tskey-auth-…` is the shape that made it a leak: the
+    /// token was fingerprinted, the function returned, and the auth key rode
+    /// out untouched. Each step now sees what the previous one left, so the
+    /// guarantee is about the value rather than about whichever credential
+    /// happened to appear first.
     private static func redactCore(_ core: String) -> String? {
+        var value = core
+        var changed = false
+
         // 1. Share tokens, FIRST and anywhere in the word.
         //
         //    These are the sharpest thing this scrubber handles: possession of
@@ -141,40 +152,69 @@ public enum DiagnosticsRedaction {
         //    whether the whole word was a token, so every one of those passed
         //    through untouched, which is precisely the guarantee the bundle
         //    header makes to the person sending the file.
-        if let redacted = redactTokens(in: core) { return redacted }
+        if let redacted = redactTokens(in: value) {
+            value = redacted
+            changed = true
+        }
 
-        // 2. An interactive login URL. Tailscale's is
-        //    `https://login.tailscale.com/a/<secret>`, and a self-hosted
-        //    control server's is the same shape on another host — so the
-        //    scheme-and-path shape is matched rather than the hostname, which
-        //    is exactly the case a hostname allowlist would miss. The origin
-        //    is KEPT: which control server was used is a real troubleshooting
-        //    answer ("they were on a headscale"), and it is not the secret.
-        if let scheme = core.range(of: "://") {
-            let afterScheme = core[scheme.upperBound...]
-            if let slash = afterScheme.firstIndex(of: "/") {
-                let origin = core[core.startIndex..<slash]
-                let path = afterScheme[slash...]
-                // A bare origin or a short, obviously-non-secret path (the
-                // docs links this app shows the user) stays whole.
-                if path.count > 8 && !isWellKnownPublicPath(String(path)) {
-                    return "\(origin)/\(placeholder)"
-                }
-            }
-            // Deliberately NOT `return nil` here. A URL this branch decides to
-            // leave whole — a bare origin, or one of the app's own docs links —
-            // still has to go through the auth-key scan below: an exempt path
-            // with `?authKey=tskey-auth-…` on the end was passing the
-            // credential through untouched, which is the one thing "removed
-            // wherever embedded" cannot have an exception for.
+        // 2. An interactive login URL.
+        if let redacted = redactLoginURLPath(in: value) {
+            value = redacted
+            changed = true
         }
 
         // 3. A tailnet auth key, anywhere in the word for the same reason
         //    tokens are: `authKey=tskey-auth-…` and JSON fragments are how one
         //    actually reaches a log line.
-        if let redacted = redactAuthKeys(in: core) { return redacted }
+        if let redacted = redactAuthKeys(in: value) {
+            value = redacted
+            changed = true
+        }
 
-        return nil
+        return changed ? value : nil
+    }
+
+    /// Replace an interactive login URL's secret path, keeping its origin.
+    ///
+    /// Tailscale's is `https://login.tailscale.com/a/<secret>`, and a
+    /// self-hosted control server's is the same shape on another host — so the
+    /// scheme-and-path shape is matched rather than the hostname, which is
+    /// exactly the case a hostname allowlist would miss. The origin is KEPT:
+    /// which control server was used is a real troubleshooting answer ("they
+    /// were on a headscale"), and it is not the secret.
+    private static func redactLoginURLPath(in word: String) -> String? {
+        guard let scheme = word.range(of: "://") else { return nil }
+        let afterScheme = word[scheme.upperBound...]
+        // No path at all is a bare origin, which carries nothing.
+        guard let slash = afterScheme.firstIndex(of: "/") else { return nil }
+        let origin = word[word.startIndex..<slash]
+        let path = String(afterScheme[slash...])
+        // The docs links this app shows the user stay whole.
+        guard !isWellKnownPublicPath(path) else { return nil }
+        // Length is measured with anything an EARLIER step already redacted
+        // subtracted out. A share link is `…/view/#tc:9f21…`: after step 1 its
+        // path is long only because the fingerprint is sitting in it, and
+        // replacing the whole path here would throw away the one value that
+        // lets two bundles show they used the same link. A login URL that also
+        // carried a token — `…/a/<secret>?token=tc…` — still has an opaque
+        // `/a/<secret>` left after the subtraction, and is redacted.
+        guard residualLength(of: path) > 8 else { return nil }
+        return "\(origin)/\(placeholder)"
+    }
+
+    /// How much of `path` is not already a redaction marker this pass wrote.
+    private static func residualLength(of path: String) -> Int {
+        var rest = path.replacingOccurrences(of: placeholder, with: "")
+        // `tc:` plus its hex fingerprint. Removing at least the marker each
+        // time guarantees this terminates.
+        while let marker = rest.range(of: "tc:") {
+            var end = marker.upperBound
+            while end < rest.endIndex, rest[end].isHexDigit {
+                end = rest.index(after: end)
+            }
+            rest.removeSubrange(marker.lowerBound..<end)
+        }
+        return rest.count
     }
 
     /// The key *kinds* Tailscale puts between `tskey-` and the secret.

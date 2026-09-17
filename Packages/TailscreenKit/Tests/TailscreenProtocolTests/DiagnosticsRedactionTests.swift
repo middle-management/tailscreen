@@ -245,6 +245,44 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("login.tailscale.com"), scrubbed)
     }
 
+    /// **Two credentials in one value.** `redactCore` used to return on the
+    /// first match, so a value carrying both a share token and an auth key
+    /// lost the token and kept the key verbatim — the function's own guarantee
+    /// defeated by which credential happened to come first.
+    func testBothCredentialsInOneValueAreRedacted() {
+        let scrubbed = DiagnosticsRedaction.scrub(
+            "join?token=tcAAAABBBBCCCCDDDD&authKey=tskey-auth-SECRETABCDEF")
+
+        XCTAssertFalse(scrubbed.contains("tcAAAABBBBCCCCDDDD"), scrubbed)
+        XCTAssertFalse(scrubbed.contains("SECRETABCDEF"), scrubbed)
+        XCTAssertTrue(scrubbed.contains("tc:"), "the token's fingerprint is still useful")
+        XCTAssertTrue(scrubbed.contains("tskey-auth-"), "the key's kind is still useful")
+    }
+
+    /// A login URL that ALSO carries a token loses both: the opaque path and
+    /// the token. Running the URL step only when nothing had matched yet left
+    /// the sign-in secret sitting next to a redacted token.
+    func testLoginURLCarryingATokenLosesBoth() {
+        let scrubbed = DiagnosticsRedaction.scrub(
+            "https://login.tailscale.com/a/f00dcafedeadbeef?token=tcAAAABBBBCCCCDDDD")
+
+        XCTAssertFalse(scrubbed.contains("f00dcafedeadbeef"), scrubbed)
+        XCTAssertFalse(scrubbed.contains("tcAAAABBBBCCCCDDDD"), scrubbed)
+        XCTAssertTrue(scrubbed.hasPrefix("https://login.tailscale.com/"), scrubbed)
+    }
+
+    /// And the share link keeps its fingerprint. Its path is long only BECAUSE
+    /// the fingerprint is in it, so a URL step that measured the path after
+    /// token redaction would replace the whole thing and destroy the one value
+    /// that lets two bundles show they used the same link.
+    func testShareLinkKeepsItsFingerprintRatherThanLosingItsWholePath() {
+        let scrubbed = DiagnosticsRedaction.scrub(
+            "https://tailscreen.dev/view/#tcAAAABBBBCCCCDDDDEEEEFFFF")
+
+        XCTAssertTrue(scrubbed.hasPrefix("https://tailscreen.dev/view/#tc:"), scrubbed)
+        XCTAssertFalse(scrubbed.contains(DiagnosticsRedaction.placeholder), scrubbed)
+    }
+
     // MARK: - Field-set behaviour
 
     /// Keys are instrumentation-authored and must never be scrubbed: the

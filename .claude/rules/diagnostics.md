@@ -72,12 +72,22 @@ they are what makes a bundle legible and what the two sides merge on. What the
 feature owes the user there is disclosure, not redaction, and the bundle header
 carries it.
 
-The scrubber's URL branch keeps the **origin** of a sign-in URL (which control
-server was used is a real answer, and it is not the secret) and exempts the
-app's own docs links from path redaction — but an exempted URL still falls
-through to the auth-key scan. `https://tailscreen.dev/install?authKey=tskey-auth-…`
-is the shape that made that non-optional: "removed wherever embedded" cannot
-have an exception, whichever branch decided to leave the word whole.
+The scrubber's three transforms — share token, login-URL path, auth key — run
+in **sequence** over one value, never first-match-wins. One value can carry two
+credentials (`token=tc…&authKey=tskey-auth-…`), and returning on the first left
+the second verbatim: the guarantee is about the value, not about whichever
+credential happened to appear first. The URL step keeps the **origin** of a
+sign-in URL (which control server was used is a real answer, and it is not the
+secret) and exempts the app's own docs links, but an exempted or origin-only URL
+still reaches the auth-key scan — `https://tailscreen.dev/install?authKey=tskey-auth-…`
+is why "removed wherever embedded" can have no exception.
+
+One subtlety in that sequence: the URL step measures the path with anything an
+earlier step already redacted **subtracted out**. A share link's path
+(`…/view/#tc:9f21…`) is long only because the fingerprint is sitting in it, and
+replacing the path wholesale would throw away the one value that lets two
+bundles show they used the same link; a login URL that also carried a token has
+an opaque `/a/<secret>` left after the subtraction and is still redacted.
 
 ## Record availability, not just the selection
 
@@ -207,6 +217,16 @@ for the viewer's `NSWindow`, which is one thing whose visibility is set:
 runs once, so a count there would climb and never return to zero. The window
 also reports at those real transitions rather than at construction — it is owned
 for the process lifetime and reused, so a marker at construction fires once ever.
+
+The table is kept whether or not anything is being recorded — it has to be, or
+the counts would not survive the toggle — so turning recording **on** replays it
+(`replayVisible()`, from `AppState.setRecordDiagnostics`). Without that, a
+surface that appeared while recording was off is in the table with no
+`view.shown` behind it: nothing calls `onAppear` again just because a switch
+moved, so the record's first word about Settings — the pane the user is standing
+in — would be a `view.hidden` with nothing to match, and the bundle would never
+say what was on screen at the moment recording started. It is the same shape as
+the audio-device baseline one section up, and it is fixed in the same place.
 
 ## The clock problem
 
