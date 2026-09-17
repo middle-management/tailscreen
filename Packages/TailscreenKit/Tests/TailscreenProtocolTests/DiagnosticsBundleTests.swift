@@ -243,6 +243,35 @@ final class DiagnosticsBundleTests: XCTestCase {
         }
     }
 
+    /// **The one thing the tolerant parser refuses.** Unknown names, unknown
+    /// categories and corrupt lines are skipped on purpose, because a reader
+    /// that rejects a newer build's bundle fails exactly when it is needed. A
+    /// schema bump is the opposite case by definition — `currentSchema` moves
+    /// only when an older reader would produce the WRONG answer — so guessing
+    /// yields a confidently incorrect timeline.
+    func testAFutureSchemaIsRefusedRatherThanMisread() throws {
+        let text = try bundle(
+            role: .sharer, device: "mac",
+            events: [event(seq: 1, .helloAckSent, role: .sharer, atOffset: 0)]
+        ).jsonLines().replacingOccurrences(of: "\"schema\":1", with: "\"schema\":2")
+
+        XCTAssertThrowsError(try DiagnosticsBundle.parse(jsonLines: text)) { error in
+            XCTAssertEqual(
+                error as? DiagnosticsBundleError, .unsupportedSchema(2), "\(error)")
+        }
+    }
+
+    /// An older schema stays readable: nothing about a bundle written by an
+    /// earlier build is beyond this reader.
+    func testAnOlderSchemaStillParses() throws {
+        let text = try bundle(
+            role: .sharer, device: "mac",
+            events: [event(seq: 1, .helloAckSent, role: .sharer, atOffset: 0)]
+        ).jsonLines().replacingOccurrences(of: "\"schema\":1", with: "\"schema\":0")
+
+        XCTAssertEqual(try DiagnosticsBundle.parse(jsonLines: text).events.count, 1)
+    }
+
     // MARK: - Merging two sides
 
     /// Build the two bundles of one handshake, with the viewer's clock

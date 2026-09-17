@@ -183,6 +183,14 @@ the user asked not to be recorded. `export` also tests emptiness BEFORE writing
 the marker, or the marker is what makes the bundle non-empty and the
 "nothing recorded" guard can never fire.
 
+`record` reads the switch **and a generation counter** together, and requires
+both to still hold when it takes the append lock. Re-checking `enabled` alone
+does not close the off→on race: fields are scrubbed outside the lock on purpose
+(scrubbing a long log line is the expensive part), so a writer can be stopped
+and restarted while it scrubs, then see `enabled == true` again and append an
+event from the closed session after the `recording.started` that opened the next
+one — carrying a timestamp from before it.
+
 A **no-op transition writes nothing**: the marker describes a transition, and
 `setRecording` returns before appending when the state already matches. Under
 `TAILSCREEN_DIAGNOSTICS=0` there is never a transition — every toggle resolves
@@ -259,6 +267,17 @@ silently applied: an offset a reader cannot see is as misleading as the skew.
 
 Two things the merge has to get right and can get wrong silently:
 
+- **One ack per join.** `registerOrRefresh` proactively acks a viewer it
+  newly added, which is what a NAT/DERP rebind (re-registering via KEEPALIVE,
+  not a fresh HELLO) needs to learn its new SSRC — but on the HELLO path the
+  handler sends its own ack straight afterwards, so a normal join put two on
+  the wire. Idempotent for the viewer, which ignores an ack matching its
+  current SSRC; **not** idempotent for the record, because the viewer stamps
+  `hello.ack.received` off whichever arrived first while the sharer stamps
+  `hello.ack.sent` for the second. That is `t3` and `t4` describing different
+  datagrams, and it can make the round trip come out negative and have the
+  alignment refuse a perfectly good handshake. The proactive ack is gated on
+  `!isNew`.
 - **Pair the sharer's HELLO by `addr`, not just by time.** A share with several
   people joining at once has many `hello.received` interleaved, and the latest
   one before the ack is frequently a different viewer's retry — giving an offset
@@ -327,8 +346,18 @@ therefore the weakest kind of event — a safety net **under** the named
 registry events, never a substitute. When a log line turns out to be
 load-bearing in an investigation, give it a registry case.
 
-One sink opts out: `PrintLogSink(prefix: "Auth", capturesDiagnostics: false)`
-in `TailscaleAuth`, which logs the signed-in account's display name in prose.
+**Two places keep an identity out of the tee, and they use different
+mechanisms because the shape of the problem differs.**
+`PrintLogSink(prefix: "Auth", capturesDiagnostics: false)` in `TailscaleAuth`
+opts the whole sink out — everything it logs is auth prose. That is not
+available in `TsnetTransport`, where one `StderrLogger` writes both the
+`Connected as <login>` line and the node bring-up lines a viewer bundle needs,
+so the exception is per-CALL: `logWithoutCapture` for the identity half, an
+ordinary `log` for the tailnet-and-node half. A new log line that names an
+account needs one or the other; which one depends on whether its sink logs
+anything else worth keeping.
+
+Why either is needed: that sink logs the signed-in account's name in prose.
 Redaction cannot help there — it deliberately keeps names, and nothing in free
 text distinguishes an account name from a device name — and the bundle header
 promises the sender it carries no sign-in details. The auth story is recorded
@@ -340,6 +369,14 @@ same flag.
 
 The bundle is JSON Lines because it greps, streams, truncates safely, diffs,
 and is legible to a person deciding whether to send it.
+
+The parser is **tolerant of everything except the schema**. Unknown event names,
+unknown categories and corrupt lines are skipped, because a reader that rejects
+a newer build's bundle fails exactly when it is needed — the person with the
+problem is the one running the newer build. `Header.currentSchema` is the
+opposite case by definition: it moves only when an older reader would produce
+the *wrong* answer, so a schema above this build's is refused
+(`unsupportedSchema`) rather than guessed at. Older schemas stay readable.
 
 Two standard formats would fit and are worth knowing about if this grows:
 **Chrome Trace Event Format** (read by Perfetto; its cross-process *flow

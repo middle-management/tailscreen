@@ -240,6 +240,19 @@ public struct DiagnosticsBundle: Sendable, Equatable {
             }
         }
         guard let header else { throw DiagnosticsBundleError.missingHeader }
+        // The ONE thing this otherwise-tolerant parser refuses.
+        //
+        // Unknown event names, unknown categories and corrupt lines are all
+        // skipped on purpose — a reader that rejects a bundle from a newer
+        // build fails exactly when it is needed, since the person with the
+        // problem is the one running the newer build. A schema bump is the
+        // opposite case by definition: `currentSchema` changes only when an
+        // older reader would produce the WRONG answer, so guessing produces a
+        // confidently incorrect timeline, which this whole feature treats as
+        // worse than no timeline. Older schemas stay readable.
+        guard header.schema <= Header.currentSchema else {
+            throw DiagnosticsBundleError.unsupportedSchema(header.schema)
+        }
         return DiagnosticsBundle(header: header, events: events)
     }
 
@@ -320,6 +333,8 @@ public struct DiagnosticsBundle: Sendable, Equatable {
 public enum DiagnosticsBundleError: Error, Equatable {
     case missingHeader
     case malformedDate(String)
+    /// The bundle declares a schema this build cannot read. See ``parse``.
+    case unsupportedSchema(Int)
     /// The encoded bundle was not valid UTF-8. Unreachable with `JSONEncoder`,
     /// carried so the conversion can stay failable rather than lossy.
     case encodingFailed

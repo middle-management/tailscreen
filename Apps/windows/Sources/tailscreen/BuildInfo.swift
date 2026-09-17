@@ -66,11 +66,27 @@ enum BuildInfo {
         return host.isEmpty ? "windows-device" : host
     }
 
+    /// The marketing name of the running Windows, which is **not** its kernel
+    /// version.
+    ///
+    /// Windows 11 still reports major 10, minor 0 — the break is the BUILD
+    /// number, 22000 — so formatting the version triple names every Windows 11
+    /// machine "Windows 10". A reader triaging a platform-specific report would
+    /// be told the opposite of the truth by the one field whose entire job is
+    /// saying which platform it was.
+    static var windowsProductName: String {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let build = os.patchVersion
+        guard os.majorVersion == 10 else {
+            return "Windows \(os.majorVersion).\(os.minorVersion).\(build)"
+        }
+        return build >= 22000 ? "Windows 11 \(build)" : "Windows 10 \(build)"
+    }
+
     /// The build and machine facts an exported bundle's header carries.
     static var diagnosticsEnvironment: DiagnosticsEnvironment {
-        let os = ProcessInfo.processInfo.operatingSystemVersion
         return DiagnosticsEnvironment(
-            platform: "Windows \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
+            platform: windowsProductName,
             appVersion: version,
             commit: commit,
             configuration: configuration,

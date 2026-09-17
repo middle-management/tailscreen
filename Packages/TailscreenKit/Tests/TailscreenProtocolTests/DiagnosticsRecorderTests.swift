@@ -206,6 +206,43 @@ final class DiagnosticsRecorderTests: XCTestCase {
             ])
     }
 
+    /// **An off→on cycle during a record must not swallow the event into the
+    /// NEW session.** Fields are scrubbed outside the lock on purpose, so a
+    /// writer can read the switch, be stopped and restarted while it scrubs,
+    /// then take the lock and see `enabled == true` again. Re-checking only the
+    /// flag appended an event from the previous session after the
+    /// `recording.started` that opened the next one, carrying a timestamp from
+    /// before it — the recorder lying about its own lifetime.
+    func testEventStraddlingAnOffOnCycleIsDropped() {
+        let recorder = makeRecorder(prologue: 16, ring: 16)
+        // The cycle happens while `fields` is being evaluated, which is exactly
+        // where the real scrubbing happens.
+        recorder.record(
+            .transportSummary,
+            fields: {
+                recorder.setRecording(false, markerName: .recordingStopped)
+                recorder.setRecording(true, markerName: .recordingStarted)
+                return ["k": 1]
+            }())
+
+        XCTAssertEqual(
+            recorder.events().map(\.name),
+            [
+                DiagnosticEventName.recordingStopped.rawValue,
+                DiagnosticEventName.recordingStarted.rawValue
+            ],
+            "an event from the closed session landed in the new one")
+    }
+
+    /// The ordinary case still records. A generation check that rejected
+    /// everything would be invisible in the suite above and catastrophic in
+    /// use, so it is worth stating separately.
+    func testAnUninterruptedRecordStillAppends() {
+        let recorder = makeRecorder()
+        recorder.record(.transportSummary, fields: ["k": 1])
+        XCTAssertEqual(recorder.events().count, 1)
+    }
+
     // MARK: - One prologue per session
 
     /// The reason this stopped being "the first N events of the process": a

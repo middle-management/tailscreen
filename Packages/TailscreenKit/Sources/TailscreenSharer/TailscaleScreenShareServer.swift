@@ -2874,15 +2874,24 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             return (true, state.count, newAudioSSRC)
         }
 
-        if added {
-            // Proactively ACK any newly-added viewer with its audio SSRC —
-            // including one whose source address changed under a NAT/DERP path
-            // migration and re-registered via KEEPALIVE rather than a fresh
-            // HELLO. Without this the rebound viewer never learns the new SSRC
-            // the server just assigned, so the SSRC-validation check silently
-            // drops its mic audio until a full reconnect. A normal HELLO join
-            // also gets the .hello case's ACK; the duplicate is idempotent
-            // (the viewer ignores an ACK that matches its current SSRC).
+        if added && !isNew {
+            // Proactively ACK a viewer that was newly ADDED without a fresh
+            // HELLO — one whose source address changed under a NAT/DERP path
+            // migration and re-registered via KEEPALIVE. Without this the
+            // rebound viewer never learns the new SSRC the server just
+            // assigned, so the SSRC-validation check silently drops its mic
+            // audio until a full reconnect.
+            //
+            // `!isNew` because the HELLO path sends its OWN ack immediately
+            // after this returns, and sending both put two acks on the wire for
+            // one join. They were idempotent for the viewer, which ignores an
+            // ack matching its current SSRC — but not for the RECORD: the
+            // viewer stamps `hello.ack.received` off whichever arrived first
+            // while the sharer stamps `hello.ack.sent` for the second, so the
+            // two ends of the handshake described different datagrams. That is
+            // `t3` and `t4` from different events, which can make the round
+            // trip come out negative and have the clock alignment refuse a
+            // handshake that was perfectly fine.
             let ack = helloAckDatagram(for: addr, ssrc: audioSSRC)
             Task { [weak self] in
                 guard let pl = self?.media else { return }

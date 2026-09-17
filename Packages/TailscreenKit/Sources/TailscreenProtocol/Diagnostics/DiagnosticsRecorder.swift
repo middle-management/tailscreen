@@ -70,6 +70,19 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
 
     private struct State {
         var enabled: Bool
+        /// Bumped on every real on/off transition.
+        ///
+        /// `enabled` alone cannot close the off→on race. A writer reads the
+        /// switch, scrubs its fields OUTSIDE the lock (deliberately — scrubbing
+        /// a long log line is the expensive part and must not hold up every
+        /// other thread), and by the time it takes the lock recording may have
+        /// been stopped and started again. Re-checking `enabled` sees `true`
+        /// and appends an event belonging to the previous session into the new
+        /// one, carrying a timestamp from before the `recording.started` that
+        /// now precedes it — the recorder lying about its own lifetime, which
+        /// is the exact failure the one-lock-acquisition marker design exists
+        /// to prevent.
+        var generation: UInt64 = 0
         /// One prologue per session, oldest first. See ``beginSession()``.
         var prologues: [[DiagnosticEvent]] = [[]]
         /// Fixed-size circular storage. `ringStart` is the index of the oldest
@@ -208,6 +221,11 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         // writes that through `recordLifecycle`, not through here.
         guard state.enabled != enabled else { return }
 
+        // A real transition, so the generation moves: a writer that read the
+        // switch before this point and has not yet taken the lock belongs to
+        // the session being closed, not the one being opened.
+        state.generation &+= 1
+
         func appendMarker(_ name: DiagnosticEventName) {
             appendLocked(
                 PendingEvent(
@@ -293,7 +311,15 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     ) {
         // Read the switch before touching `fields`: the whole point of the
         // autoclosure is that a disabled recorder never builds the dictionary.
-        guard isRecording else { return }
+        //
+        // The switch and the generation are read TOGETHER, so the re-check
+        // below can tell "still recording" from "stopped and started again
+        // while we were scrubbing" — see ``State/generation``.
+        lock.lock()
+        let wasEnabled = state.enabled
+        let generation = state.generation
+        lock.unlock()
+        guard wasEnabled else { return }
 
         let mono = nowNs ?? Self.monotonicNowNs()
         let wall = wallClock ?? Date()
@@ -305,8 +331,9 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         // Re-check under the same lock that appends. Without this a
         // `setRecording(false)` racing an in-flight record could still land an
         // event after the user asked it to stop, which is the one promise this
-        // switch has to keep.
-        guard state.enabled else { return }
+        // switch has to keep. The generation covers the subtler case where it
+        // was stopped AND restarted: still enabled, but a different session.
+        guard state.enabled, state.generation == generation else { return }
         appendLocked(
             PendingEvent(
                 name: name, role: role ?? defaultRole,

@@ -110,8 +110,26 @@ public struct ViewerConfig: Sendable {
 /// the point — viewer executables reserve stdout for data.
 struct StderrLogger: LogSink {
     var logFileHandle: Int32? { STDERR_FILENO }
-    func log(_ message: String) {
+
+    /// stderr only — **for a line that names the signed-in account.**
+    ///
+    /// The bundle header promises the person sending the file that it carries
+    /// no sign-in details, and redaction cannot enforce that: it deliberately
+    /// keeps names, and nothing in free text distinguishes an account name from
+    /// a device name. `TailscaleAuth` solves the same problem by opting its
+    /// whole sink out (`capturesDiagnostics: false`); that is not available
+    /// here, because this one sink writes both the identity line and the node
+    /// bring-up lines a viewer bundle needs. So the exception is per-CALL.
+    func logWithoutCapture(_ message: String) {
+        writeToStderr(message)
+    }
+
+    private func writeToStderr(_ message: String) {
         FileHandle.standardError.write(Data("[tsnet] \(message)\n".utf8))
+    }
+
+    func log(_ message: String) {
+        writeToStderr(message)
         // Teed into the process recorder exactly as `PrintLogSink` is. The
         // stderr destination is the only thing that differs between the two
         // sinks, and it has nothing to do with whether the line belongs in a
@@ -456,8 +474,14 @@ public final class TsnetTransport {
         let statusClient = LocalAPIClient(localNode: node, logger: logger)
         let tailnet = try? await statusClient.backendStatus().CurrentTailnet?.Name
         let namedTailnet = (tailnet?.isEmpty ?? true) ? nil : tailnet
+        // Two lines, not one, and the split is the whole point: `identity` is
+        // the signed-in login name, so the line carrying it goes to stderr
+        // ONLY. The half a bundle needs — which tailnet, which node, which
+        // address — has no identity in it and is recorded normally. Tailnet and
+        // device names are deliberately kept; a login is not one of those.
+        logger.logWithoutCapture("▶ Connected as \(identity)")
         logger.log(
-            "▶ Connected as \(identity) on \(namedTailnet ?? "an unnamed tailnet") "
+            "▶ Connected to \(namedTailnet ?? "an unnamed tailnet") "
                 + "— node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
 
         return (node, loginName, namedTailnet)
