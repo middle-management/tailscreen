@@ -2316,16 +2316,78 @@ class AppState: ObservableObject {
         if let id = selectedOutputDeviceID, !availableOutputDevices.contains(where: { $0.id == id }) {
             selectedOutputDeviceID = nil
         }
+        recordAudioDevicesIfChanged()
+    }
+
+    /// Last device lists recorded, so the diagnostics event fires on a change
+    /// rather than on every enumeration. This runs whenever a picker is about
+    /// to render, which is many times a session and almost always the same
+    /// answer — see `AudioDeviceDiagnostics` for why change beats poll here.
+    private var lastRecordedAudioDevices: (inputs: [String], outputs: [String])?
+
+    /// Record which audio devices exist and which are selected, when that
+    /// changed.
+    ///
+    /// The **available** list is the half that is easy to leave out and is the
+    /// one people get stuck on: a headset that was never enumerated could
+    /// never have been picked, and that is a different problem from picking
+    /// the wrong one. Recording only the selection is silent about it.
+    private func recordAudioDevicesIfChanged() {
+        let inputs = availableInputDevices.map(\.name)
+        let outputs = availableOutputDevices.map(\.name)
+        guard
+            AudioDeviceDiagnostics.changed(
+                from: lastRecordedAudioDevices?.inputs, to: inputs)
+                || AudioDeviceDiagnostics.changed(
+                    from: lastRecordedAudioDevices?.outputs, to: outputs)
+        else { return }
+        lastRecordedAudioDevices = (inputs, outputs)
+        AppDiagnostics.recorder?.record(
+            .audioDevicesChanged,
+            fields: AudioDeviceDiagnostics.fields(
+                inputs: inputs,
+                outputs: outputs,
+                selectedInput: selectedInputDeviceName,
+                selectedOutput: selectedOutputDeviceName))
+    }
+
+    /// Name of the selected input, or nil for "system default" — which is a
+    /// real state, not a missing answer, and is a common explanation for a
+    /// share recording from the built-in mic.
+    private var selectedInputDeviceName: String? {
+        guard let id = selectedInputDeviceID else { return nil }
+        return availableInputDevices.first { $0.id == id }?.name
+    }
+
+    private var selectedOutputDeviceName: String? {
+        guard let id = selectedOutputDeviceID else { return nil }
+        return availableOutputDevices.first { $0.id == id }?.name
     }
 
     func selectInputDevice(_ deviceID: AudioDeviceID?) {
         selectedInputDeviceID = deviceID
+        // By name, not by `AudioDeviceID`: the ID is a machine-local CoreAudio
+        // handle that changes across reboots and means nothing to a reader,
+        // while the name is what the person saw in the picker and what they
+        // will say when describing the problem.
+        AppDiagnostics.action(
+            .actionAudioDeviceSelected,
+            [
+                "direction": .string("input"),
+                "device": .string(selectedInputDeviceName ?? "system default")
+            ])
         guard let cap = micCapture else { return }
         Task { @MainActor in await cap.setInputDevice(deviceID) }
     }
 
     func selectOutputDevice(_ deviceID: AudioDeviceID?) {
         selectedOutputDeviceID = deviceID
+        AppDiagnostics.action(
+            .actionAudioDeviceSelected,
+            [
+                "direction": .string("output"),
+                "device": .string(selectedOutputDeviceName ?? "system default")
+            ])
         micCapture?.setOutputDevice(deviceID)
     }
 
@@ -2338,13 +2400,31 @@ class AppState: ObservableObject {
             cap.disableCapture()
             voice.isMuted = true
             isMicOn = false
+            AppDiagnostics.action(.actionMicToggle, ["on": .bool(false)])
+            AppDiagnostics.recorder?.record(.micDetached)
             return
         }
+        AppDiagnostics.action(.actionMicToggle, ["on": .bool(true)])
         do {
             try await cap.enableCapture()
             voice.isMuted = false
             isMicOn = true
+            // Which device actually went live. The pair — the attempt above and
+            // this — is what distinguishes "they never turned the mic on" from
+            // "they turned it on and it came up on the wrong device".
+            AppDiagnostics.recorder?.record(
+                .micAttached,
+                fields: ["device": .string(selectedInputDeviceName ?? "system default")])
         } catch {
+            // Recorded as well as surfaced. `presentError` records the fault
+            // with its `TS-…` code, but not which device failed — and the
+            // device is the answer here far more often than the error is.
+            AppDiagnostics.recorder?.record(
+                .micFailed,
+                fields: [
+                    "device": .string(selectedInputDeviceName ?? "system default"),
+                    "error": .string(String(describing: error))
+                ])
             presentError(.microphoneUnavailable(error))
             isMicOn = false
         }

@@ -77,9 +77,10 @@ public struct DiagnosticsBundle: Sendable, Equatable {
             This file records what this device did during a Tailscreen session: \
             connections, handshakes, actions taken, and errors. It names your \
             device and the devices it talked to, including their tailnet \
-            addresses. It does NOT contain share links, auth keys, sign-in \
-            URLs, screen contents, audio, or keystrokes. Share it with someone \
-            you would be comfortable telling which machines you connected to.
+            addresses, and the microphones and speakers attached to this \
+            machine. It does NOT contain share links, auth keys, sign-in URLs, \
+            screen contents, audio, or keystrokes. Share it with someone you \
+            would be comfortable telling which machines you connected to.
             """
 
         public init(

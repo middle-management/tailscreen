@@ -395,7 +395,11 @@ It's text, one event per line, and you can read it before you send it.
 
 It **does** name your device and the devices it connected to, including
 their tailnet addresses — that's what makes the two files line up with
-each other, and without it nobody can tell which viewer went black.
+each other, and without it nobody can tell which viewer went black. It
+also names the microphones and speakers attached to your machine, and
+which one was selected: "they couldn't hear me" is usually either the
+wrong device being picked or the right one never showing up at all, and
+those are different problems.
 
 It **does not** contain screen contents, audio, keystrokes, share links,
 auth keys or sign-in URLs. Share links and keys in particular are

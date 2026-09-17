@@ -580,7 +580,7 @@ struct SettingsView: View {
 
             Text(
                 L(
-                    "Writes a file naming this device, the devices it connected to, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable."
+                    "Writes a file naming this device, the devices it connected to, your audio devices, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable."
                 )
             )
             .font(.caption)

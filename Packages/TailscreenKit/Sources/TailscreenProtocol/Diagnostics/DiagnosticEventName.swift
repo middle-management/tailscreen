@@ -141,6 +141,10 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
 
     // MARK: Audio
 
+    /// The set of audio devices the session can choose from changed — or was
+    /// enumerated for the first time. Carries both lists and both selections;
+    /// see ``AudioDeviceDiagnostics``.
+    case audioDevicesChanged = "audio.devices.changed"
     case micAttached = "mic.attached"
     case micDetached = "mic.detached"
     case micFailed = "mic.failed"
@@ -168,6 +172,8 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
     case actionViewerBlock = "action.viewer.block"
     case actionViewerKick = "action.viewer.kick"
     case actionMicToggle = "action.mic.toggle"
+    /// The user picked a specific input or output device.
+    case actionAudioDeviceSelected = "action.audio_device.selected"
     case actionSystemAudioToggle = "action.system_audio.toggle"
     case actionLinkToggle = "action.link.toggle"
     case actionLinkRotate = "action.link.rotate"
@@ -241,8 +247,9 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
             .congestionArmed, .receiveLoopFailed:
             return .transport
 
-        case .micAttached, .micDetached, .micFailed, .micMuteChanged,
-            .systemAudioStarted, .systemAudioStopped, .voiceSSRCAssigned:
+        case .audioDevicesChanged, .micAttached, .micDetached, .micFailed,
+            .micMuteChanged, .systemAudioStarted, .systemAudioStopped,
+            .voiceSSRCAssigned:
             return .audio
 
         case .actionShareStart, .actionShareStop, .actionConnect,
@@ -250,7 +257,7 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
             .actionViewerBlock, .actionViewerKick, .actionMicToggle,
             .actionSystemAudioToggle, .actionLinkToggle, .actionLinkRotate,
             .actionControlRequest, .actionControlGrant, .actionControlDeny,
-            .actionControlRevoke, .actionAnnotationStroke,
+            .actionControlRevoke, .actionAnnotationStroke, .actionAudioDeviceSelected,
             .actionAnnotationCleared, .actionSettingChanged,
             .actionAccountSwitched, .actionShareRequestSent,
             .actionShareRequestAnswered:

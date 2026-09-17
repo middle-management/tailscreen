@@ -33,6 +33,7 @@ recorder is what makes it possible.
 | `DiagnosticEvent+Codable.swift` | The on-disk shape of one event line |
 | `DiagnosticsMerge.swift` | Interleaving two sides, and the clock-skew correction |
 | `DiagnosticsExport.swift` | Filenames, the write, the rendered timeline |
+| `AudioDeviceDiagnostics.swift` | Which audio devices existed and which was selected, and when that changed |
 | `DiagnosticsPreference.swift` / `ReleaseChannel.swift` | The on-by-default-in-RC rule |
 | `DiagnosticsCenter.swift` / `DiagnosticsHost.swift` | The process recorder, bring-up, the switch, export |
 
@@ -70,6 +71,29 @@ is feeding a recorder. Tailnet IPs and device names ARE recorded, deliberately:
 they are what makes a bundle legible and what the two sides merge on. What the
 feature owes the user there is disclosure, not redaction, and the bundle header
 carries it.
+
+## Record availability, not just the selection
+
+"They couldn't hear me" has two causes that look identical from outside: the
+right device was in the list and the wrong one was selected, or the right
+device was **never in the list** and could not have been selected. The second
+is a driver, permission or hot-plug problem that no amount of clicking in
+Tailscreen would have fixed, and recording only the selection is silent about
+it. So `audio.devices.changed` carries both lists, both counts, and both
+selections.
+
+It fires on **change**, not on enumeration: the host enumerates whenever a
+picker is about to render, many times a session and almost always with the same
+answer. Change is also the more informative trigger — a Bluetooth headset
+dropping out mid-session is invisible to the user beyond "it stopped working",
+and the line saying the device left is the whole diagnosis. Lists compare as
+ordered, not as sets, because a reorder means the system default moved, which
+changes what an unselected pick resolves to.
+
+Devices are recorded **by name**, never by `AudioDeviceID`: the ID is a
+machine-local CoreAudio handle that changes across reboots and means nothing to
+a reader, while the name is what the person saw in the picker and what they
+will say when describing the problem.
 
 ## Two things that look like bugs and are not
 
