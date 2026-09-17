@@ -206,6 +206,57 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertEqual(rendered, "alpha=\"two words\" mid=true zeta=1")
     }
 
+    /// A value containing a newline would SPLIT one event across several lines
+    /// in a format that is one-event-per-line — silently turning a readable
+    /// trace into one that appears to contain events nothing recorded. Captured
+    /// log lines and error descriptions contain newlines routinely.
+    func testFieldValuesAreEscapedSoOneEventStaysOneLine() {
+        let rendered = DiagnosticsExport.renderFields([
+            "text": .string("line one\nline two"),
+            "quoted": .string("he said \"no\""),
+            "tabbed": .string("a\tb")
+        ])
+        XCTAssertFalse(rendered.contains("\n"), rendered)
+        XCTAssertFalse(rendered.contains("\t"), rendered)
+        XCTAssertTrue(rendered.contains("\\n"), rendered)
+    }
+
+    /// A value needing escapes is quoted, so the escapes are unambiguous.
+    func testEscapedValuesAreQuoted() {
+        let rendered = DiagnosticsExport.renderFields(["k": .string("a\nb")])
+        XCTAssertEqual(rendered, "k=\"a\\nb\"")
+    }
+
+    /// Ordinary values keep their unquoted shape — escaping must not make the
+    /// common line noisier.
+    func testOrdinaryValuesAreNotQuoted() {
+        XCTAssertEqual(
+            DiagnosticsExport.renderFields(["addr": .string("100.64.0.3")]), "addr=100.64.0.3")
+    }
+
+    /// A name that already exists gains a suffix rather than replacing the
+    /// file — for a feature whose job is preserving evidence, a silent
+    /// overwrite is the worst possible rounding error.
+    func testUniqueFilenameAvoidsAnExistingOne() {
+        let taken: Set<String> = [
+            DiagnosticsExport.filename(role: .sharer, device: "mac", at: epoch)
+        ]
+        let next = DiagnosticsExport.uniqueFilename(
+            role: .sharer, device: "mac", at: epoch, existsAtPath: { taken.contains($0) })
+
+        XCTAssertFalse(taken.contains(next))
+        XCTAssertTrue(next.hasSuffix(".jsonl"))
+        XCTAssertTrue(next.contains("-2."), next)
+    }
+
+    /// With nothing in the way it is the plain name.
+    func testUniqueFilenameIsThePlainNameWhenFree() {
+        XCTAssertEqual(
+            DiagnosticsExport.uniqueFilename(
+                role: .sharer, device: "mac", at: epoch, existsAtPath: { _ in false }),
+            DiagnosticsExport.filename(role: .sharer, device: "mac", at: epoch))
+    }
+
     /// An empty collection says so rather than rendering an empty file that
     /// reads as a session where nothing went wrong.
     func testEmptyTimelineSaysSo() {

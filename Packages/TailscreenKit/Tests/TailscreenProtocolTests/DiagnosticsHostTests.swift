@@ -254,6 +254,102 @@ final class DiagnosticsHostTests: XCTestCase {
             "the user's choice must still be persisted for the next run")
     }
 
+    /// The host's own channel must reach the policy. A macOS PR artifact is
+    /// stamped `0.0.<PR>` (the plist demands numeric), which classifies as a
+    /// stable release — so a host told by CI "this is a candidate" has to be
+    /// able to say so. Re-deriving from `appVersion` silently discarded it and
+    /// left the recorder off while the Settings toggle said on.
+    func testExplicitChannelOutranksTheVersionString() {
+        let prArtifact = DiagnosticsEnvironment(
+            platform: "test-os", appVersion: "0.0.311", commit: "abc1234",
+            configuration: "release", architecture: "arm64", deviceLabel: "test-device",
+            channel: .releaseCandidate)
+        XCTAssertEqual(prArtifact.channel, .releaseCandidate)
+
+        let recorder = DiagnosticsHost.start(
+            environment: prArtifact, defaults: defaults, processEnvironment: [:])
+        XCTAssertTrue(
+            recorder.isRecording,
+            "a PR artifact must record — it is exactly what testers are handed")
+    }
+
+    /// Omitting it still derives from the version, so a host with nothing extra
+    /// to say passes nothing.
+    func testChannelDefaultsToTheVersionDerivedAnswer() {
+        let stable = DiagnosticsEnvironment(
+            platform: "test-os", appVersion: "0.10.0", commit: "abc1234",
+            configuration: "release", architecture: "arm64", deviceLabel: "d")
+        XCTAssertEqual(stable.channel, .stable)
+    }
+
+    /// The marker and the switch move together. Done as two calls, a transport
+    /// or logging thread can append in between — landing an event before the
+    /// `recording.started` that claims to open the session, or after the
+    /// `recording.stopped` that claims to close it.
+    func testStartMarkerIsTheFirstEventAndStopMarkerIsTheLast() {
+        let recorder = start()
+        XCTAssertEqual(
+            recorder.events().first?.name, DiagnosticEventName.recordingStarted.rawValue)
+
+        recorder.record(.helloSent)
+        DiagnosticsHost.setRecording(false, defaults: defaults)
+        XCTAssertEqual(
+            recorder.events().last?.name, DiagnosticEventName.recordingStopped.rawValue)
+
+        DiagnosticsHost.setRecording(true, defaults: defaults)
+        XCTAssertEqual(
+            recorder.events().last?.name, DiagnosticEventName.recordingStarted.rawValue,
+            "re-enabling must open the new stretch, not sit behind it")
+    }
+
+    /// A failed write must not leave `recording.exported` behind, or the next
+    /// bundle that DOES succeed claims an export that never happened.
+    func testFailedWriteDoesNotLeaveAnExportMarkerBehind() {
+        let recorder = start()
+        recorder.record(.helloSent)
+        let before = recorder.events().count
+
+        // A path that cannot be created: an existing FILE used as a directory.
+        let file = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("diagnostics-not-a-dir-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: file.path, contents: Data("x".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        XCTAssertThrowsError(try DiagnosticsHost.export(to: file.appendingPathComponent("sub")))
+        XCTAssertEqual(
+            recorder.events().count, before,
+            "a failed export left its marker in the recorder")
+    }
+
+    /// Two exports inside one second must not overwrite each other — the
+    /// filename stamp has one-second resolution and a double-click is enough.
+    func testRepeatedExportsInOneSecondDoNotOverwrite() throws {
+        let recorder = start()
+        recorder.record(.helloSent)
+
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("diagnostics-host-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let at = Date()
+        let first = try DiagnosticsHost.export(to: directory, at: at)
+        let second = try DiagnosticsHost.export(to: directory, at: at)
+
+        XCTAssertNotEqual(first, second, "the second export replaced the first")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    /// The errors reach a person, so they are sentences rather than enum cases.
+    func testHostErrorsReadAsSentences() {
+        for error in [DiagnosticsHostError.notRecording, .nothingRecorded] {
+            let text = error.localizedDescription
+            XCTAssertFalse(text.contains("nothingRecorded"), text)
+            XCTAssertFalse(text.contains("notRecording"), text)
+            XCTAssertTrue(text.hasSuffix("."), text)
+        }
+    }
+
     // MARK: - The log tee
 
     /// The free coverage: an existing `LogSink` line lands in the record with

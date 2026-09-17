@@ -249,7 +249,13 @@ class AppState: ObservableObject {
     func setRecordDiagnostics(_ enabled: Bool) {
         guard enabled != recordDiagnostics else { return }
         AppDiagnostics.setRecording(enabled)
-        recordDiagnostics = enabled
+        // Read back what the recorder actually did rather than assuming the
+        // request took. `TAILSCREEN_DIAGNOSTICS` pins the live value for the
+        // whole run, so under `=0` a toggle-on leaves recording off — and a
+        // switch that displays "on" while nothing is being recorded (or worse,
+        // "off" while it is) is the one lie a privacy-facing control must not
+        // tell.
+        recordDiagnostics = AppDiagnostics.recorder?.isRecording ?? enabled
         if enabled {
             // Forget the cached device snapshot so the next enumeration writes
             // a fresh baseline.
@@ -671,6 +677,18 @@ class AppState: ObservableObject {
     // orderOut the window and clear the renderer's pending frame; on connect
     // we reuse the existing instances.
     @Published var viewerWindow: NSWindow?
+
+    /// The viewer window's name in the diagnostics surface trail.
+    ///
+    /// Reported at the real `orderFront` / `orderOut` transitions rather than
+    /// at construction. The window is owned for the process lifetime and REUSED
+    /// (see the comment above), so a marker at construction fired once ever:
+    /// the first disconnect recorded a hide, and every later session recorded
+    /// no show at all. Reported through the tracker's IDEMPOTENT presence path
+    /// rather than its reference count: `orderFrontRegardless` runs on every
+    /// connect and again on every re-focus, while `orderOut` runs once, so a
+    /// count would climb and never come back to zero.
+    static let viewerWindowSurface = "ViewerWindow"
     /// Preferences window, lazily created on first ⌘, and kept for the
     /// process lifetime so reopening is instant and edits stay put.
     private var settingsWindow: NSWindow?
@@ -2821,6 +2839,7 @@ class AppState: ObservableObject {
                     NSApp.activate(ignoringOtherApps: true)
                     self.viewerWindow?.orderFrontRegardless()
                     self.viewerWindow?.makeKeyAndOrderFront(nil)
+                    AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
                     guard self.voiceChannel == nil else { return }
                     self.micCapture?.stop()
                     self.micCapture = nil
@@ -2872,6 +2891,7 @@ class AppState: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
+            AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
         } catch {
             await c.disconnect()
             // Build the AppError FIRST and carry its message into the
@@ -2897,6 +2917,7 @@ class AppState: ObservableObject {
             // was fine only because the window was already up.
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
+            AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
             presentError(failure)
         }
     }
@@ -2949,11 +2970,6 @@ class AppState: ObservableObject {
     func ensureViewer() -> MetalViewerRenderer {
         if let r = viewerRenderer { return r }
 
-        // The viewer is its own `NSWindow`, so the SwiftUI
-        // `recordsDiagnosticSurface` modifier cannot reach it — it reports
-        // itself here instead, at the one place the window is built. The early
-        // return above means this fires once per window, not once per call.
-        AppDiagnostics.viewShown("ViewerWindow")
         let r = MetalViewerRenderer()
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
@@ -3356,10 +3372,7 @@ class AppState: ObservableObject {
         if invalidatePendingConnects {
             viewerConnectRequestID &+= 1
         }
-        // Paired with the `viewShown` in `ensureViewer`. The tracker suppresses
-        // a hide for a surface it never saw shown, so a disconnect with no
-        // viewer window open records nothing.
-        AppDiagnostics.viewHidden("ViewerWindow")
+
         // Invalidate presentation and ownership before the first suspension:
         // a superseding connect can then await transport cleanup without the
         // old connect task or a queued notification changing current state.
@@ -3391,6 +3404,7 @@ class AppState: ObservableObject {
         // view of a screen that's gone.
         viewerHost?.zoomState = ViewerZoomState()
         viewerWindow?.orderOut(nil)
+        AppDiagnostics.viewVisible(Self.viewerWindowSurface, false)
         // Next connect should snap to the new sharer's dims even if the
         // user dragged the previous session's window to a custom size.
         userResizedViewer = false
@@ -3446,6 +3460,7 @@ class AppState: ObservableObject {
         viewerRenderer?.clearPendingBuffer()
         viewerHost?.zoomState = ViewerZoomState()
         viewerWindow?.orderOut(nil)
+        AppDiagnostics.viewVisible(Self.viewerWindowSurface, false)
         userResizedViewer = false
         didLogFirstViewerFrame = false
         refreshViewerWindowTitle()

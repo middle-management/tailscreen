@@ -26,7 +26,13 @@ enum AppDiagnostics {
             commit: BuildInfo.commit,
             configuration: BuildInfo.configuration,
             architecture: BuildInfo.architecture,
-            deviceLabel: deviceLabel)
+            deviceLabel: deviceLabel,
+            // Passed explicitly, because `BuildInfo.releaseChannel` honours the
+            // CI-stamped `channelOverride` and the version string alone cannot:
+            // a PR artifact is `0.0.<PR>`, which reads as a stable release. Let
+            // the environment re-derive it and the recorder starts off while
+            // the Settings toggle — which reads this same property — says on.
+            channel: BuildInfo.releaseChannel)
     }
 
     /// The process recorder, once `start()` has run.
@@ -80,6 +86,13 @@ enum AppDiagnostics {
     @MainActor
     static func viewHidden(_ surface: String) {
         DiagnosticSurfaceTracker.shared.hidden(surface)
+    }
+
+    /// Set a single window's visibility, idempotently — see
+    /// `DiagnosticSurfaceTracker.setVisible`.
+    @MainActor
+    static func viewVisible(_ surface: String, _ isVisible: Bool) {
+        DiagnosticSurfaceTracker.shared.setVisible(surface, isVisible)
     }
 
     /// The raw emit the tracker calls once it has decided the transition is

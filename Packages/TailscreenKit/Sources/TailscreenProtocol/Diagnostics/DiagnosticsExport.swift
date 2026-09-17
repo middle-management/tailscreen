@@ -30,6 +30,29 @@ public enum DiagnosticsExport {
         "tailscreen-\(role.rawValue)-\(slug(device))-\(stamp(date)).jsonl"
     }
 
+    /// A name that cannot collide with one already in `directory`.
+    ///
+    /// The stamp has one-second resolution, so two exports inside the same
+    /// second produced the same path and the atomic write silently destroyed
+    /// the first — which, for a feature whose whole job is preserving evidence,
+    /// is the worst possible rounding error. A double-click on Export is enough
+    /// to hit it.
+    static func uniqueFilename(
+        role: DiagnosticRole,
+        device: String,
+        at date: Date = Date(),
+        existsAtPath: (String) -> Bool
+    ) -> String {
+        let base = "tailscreen-\(role.rawValue)-\(slug(device))-\(stamp(date))"
+        if !existsAtPath("\(base).jsonl") { return "\(base).jsonl" }
+        // Two is already unusual; ten in one second is somebody leaning on the
+        // button, and a suffixed name still beats an overwrite.
+        for suffix in 2...99 where !existsAtPath("\(base)-\(suffix).jsonl") {
+            return "\(base)-\(suffix).jsonl"
+        }
+        return "\(base)-\(UUID().uuidString.prefix(8)).jsonl"
+    }
+
     /// Write a bundle, creating intermediate directories.
     ///
     /// Atomic: the file is never observed half-written. Diagnostics are
@@ -118,13 +141,39 @@ public enum DiagnosticsExport {
     private static func render(_ value: DiagnosticValue) -> String {
         switch value {
         case .string(let text):
-            // Quoted only when it would otherwise be ambiguous — a space or an
-            // `=` inside a value would silently read as the next field.
-            return text.contains(" ") || text.contains("=") ? "\"\(text)\"" : text
+            // Escaped, then quoted when it would otherwise be ambiguous.
+            //
+            // The escaping is not cosmetic: this timeline is one event per
+            // line, and a captured log message or error description containing
+            // a newline would SPLIT one event across several lines — silently
+            // turning a readable trace into one that appears to contain events
+            // nothing recorded. A quote or backslash does the smaller version
+            // of the same damage, ending a value early.
+            let escaped = escape(text)
+            let ambiguous =
+                escaped.contains(" ") || escaped.contains("=") || escaped != text
+            return ambiguous ? "\"\(escaped)\"" : escaped
         case .int(let number): return String(number)
         case .double(let number): return String(format: "%g", number)
         case .bool(let flag): return flag ? "true" : "false"
         }
+    }
+
+    /// Backslash-escape the characters that would break one-event-per-line.
+    static func escape(_ text: String) -> String {
+        var out = ""
+        out.reserveCapacity(text.count)
+        for character in text {
+            switch character {
+            case "\\": out += "\\\\"
+            case "\"": out += "\\\""
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default: out.append(character)
+            }
+        }
+        return out
     }
 
     /// `20260917-100402`, UTC. Sorts lexicographically, which is the point:

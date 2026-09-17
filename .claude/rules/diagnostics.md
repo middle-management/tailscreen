@@ -141,10 +141,43 @@ the user asked not to be recorded. `export` also tests emptiness BEFORE writing
 the marker, or the marker is what makes the bundle non-empty and the
 "nothing recorded" guard can never fire.
 
+The marker and the switch move in **one** lock acquisition
+(`setRecording(_:markerName:markerFields:)`). As two calls, a transport or
+logging thread can append in between — landing an event before the
+`recording.started` that claims to open the session, or after the
+`recording.stopped` that claims to close it. Enabling writes the marker after
+the flag, disabling before it.
+
+`export` builds the marker into the **outgoing snapshot** and commits it to the
+live recorder only after the write succeeds; otherwise a failed write leaves
+`recording.exported` behind and the next bundle that does succeed claims an
+export that never happened. The filename is uniquified against the directory
+too — the stamp has one-second resolution, and a double-click on Export would
+otherwise overwrite the first bundle.
+
+`DiagnosticsEnvironment.channel` is **stored, not re-derived from the version**.
+A macOS PR artifact is stamped `0.0.<PR>` (the plist demands numeric), which
+classifies as a stable release, so a host told by CI "this is a candidate" needs
+somewhere to put that. Re-deriving discarded it and left the recorder off while
+the Settings toggle, reading the host's own answer, said on.
+
 `TAILSCREEN_DIAGNOSTICS` pins the **live** value for a whole run, not just the
 starting one: `setRecording` persists the user's choice but resolves the live
 recorder against the override. Applying it only at `start` left a UI toggle able
 to countermand a harness mid-run.
+
+## Surfaces: counted or present, never both
+
+`DiagnosticSurfaceTracker` has two entry points and they are not
+interchangeable. `shown`/`hidden` **count**, because a SwiftUI surface genuinely
+exists twice — while a share is live the whole sharing view renders in the main
+window *and* the menubar, so `PendingViewersList` is mounted twice and the first
+to disappear must not report the surface gone. `setVisible` is **idempotent**,
+for the viewer's `NSWindow`, which is one thing whose visibility is set:
+`orderFrontRegardless` runs on every connect and every re-focus while `orderOut`
+runs once, so a count there would climb and never return to zero. The window
+also reports at those real transitions rather than at construction — it is owned
+for the process lifetime and reused, so a marker at construction fires once ever.
 
 ## The clock problem
 

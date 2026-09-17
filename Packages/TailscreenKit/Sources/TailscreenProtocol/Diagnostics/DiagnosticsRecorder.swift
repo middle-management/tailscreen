@@ -154,10 +154,49 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     /// user who flips the switch after something went wrong wants to hand over
     /// what just happened, and a switch that also erased it would be a trap.
     /// ``clear()`` is the separate, explicit way to discard.
-    public func setRecording(_ enabled: Bool) {
+    /// Move the switch, optionally writing a lifecycle marker in the same
+    /// critical section.
+    ///
+    /// The marker and the flag have to move together. Done as two calls, a
+    /// transport or logging thread can append in between — landing an event
+    /// *before* the `recording.started` that claims to open the session, or
+    /// *after* the `recording.stopped` that claims to close it. Either way the
+    /// exported timeline misrepresents its own lifetime, which is the one thing
+    /// a record of a session must not do.
+    ///
+    /// Ordering follows the direction: enabling writes the marker **after** the
+    /// flag (so it is the first event of the new stretch), disabling writes it
+    /// **before** (so it is the last), and the disabling marker is appended
+    /// regardless of `enabled` for the reason on
+    /// ``recordLifecycle(_:fields:nowNs:wallClock:)``.
+    public func setRecording(
+        _ enabled: Bool,
+        markerName: DiagnosticEventName? = nil,
+        markerFields: [String: DiagnosticValue] = [:]
+    ) {
+        // Built outside the lock: scrubbing is the caller's cost, not the
+        // critical section's.
+        let redacted = markerName == nil ? [:] : DiagnosticsRedaction.scrub(markerFields)
+        let mono = Self.monotonicNowNs()
+        let wall = Date()
+
         lock.lock()
         defer { lock.unlock() }
-        state.enabled = enabled
+
+        func appendMarker(_ name: DiagnosticEventName) {
+            appendLocked(
+                PendingEvent(
+                    name: name, role: defaultRole, severity: name.defaultSeverity,
+                    fields: redacted, mono: mono, wall: wall))
+        }
+
+        if enabled {
+            state.enabled = true
+            if let markerName { appendMarker(markerName) }
+        } else {
+            if let markerName { appendMarker(markerName) }
+            state.enabled = false
+        }
     }
 
     /// Discard everything recorded so far, including the drop count and the

@@ -22,13 +22,30 @@ public struct DiagnosticsEnvironment: Sendable, Equatable {
     /// reading it calls the machine.
     public var deviceLabel: String
 
+    /// The channel this build is on.
+    ///
+    /// **Stored, not re-derived**, because a host can know something the
+    /// version string cannot say. A macOS PR artifact is stamped `0.0.<PR>` —
+    /// `CFBundleShortVersionString` has to be numeric — which classifies as an
+    /// ordinary stable release, so a host told by CI "this is a candidate"
+    /// needs somewhere to put that. Recomputing from `appVersion` here silently
+    /// discarded it: the recorder started off while the Settings toggle, which
+    /// read the host's own answer, said on. The two disagreed about whether the
+    /// machine was recording, which is the worst thing a privacy-facing switch
+    /// can do.
+    ///
+    /// The initialiser defaults it to the version-derived answer, so a host
+    /// with nothing extra to say passes nothing.
+    public var channel: ReleaseChannel
+
     public init(
         platform: String,
         appVersion: String,
         commit: String,
         configuration: String,
         architecture: String,
-        deviceLabel: String
+        deviceLabel: String,
+        channel: ReleaseChannel? = nil
     ) {
         self.platform = platform
         self.appVersion = appVersion
@@ -36,11 +53,8 @@ public struct DiagnosticsEnvironment: Sendable, Equatable {
         self.configuration = configuration
         self.architecture = architecture
         self.deviceLabel = deviceLabel
+        self.channel = channel ?? ReleaseChannel.classify(version: appVersion)
     }
-
-    /// The channel this build is on, derived from ``appVersion`` by the same
-    /// rule `scripts/release-version.sh` applies to the tag.
-    public var channel: ReleaseChannel { ReleaseChannel.classify(version: appVersion) }
 }
 
 /// Bring-up, the on/off switch, and export — the three things every host needs
@@ -80,7 +94,9 @@ public enum DiagnosticsHost {
             deviceLabel: environment.deviceLabel,
             enabled: enabled)
         DiagnosticsCenter.shared.install(recorder: recorder, environment: environment)
-        if enabled { recordStart(recorder, environment) }
+        if enabled {
+            recorder.recordLifecycle(.recordingStarted, fields: startFields(environment))
+        }
         return recorder
     }
 
@@ -115,34 +131,31 @@ public enum DiagnosticsHost {
         } else {
             effective = enabled
         }
+        // The marker and the switch move under ONE lock acquisition. Doing them
+        // separately let a transport or logging thread append in between, so an
+        // event could land before the `recording.started` that claims to open
+        // the session, or after the `recording.stopped` that claims to close
+        // it. Either reads as the recorder lying about its own lifetime.
         if effective {
-            recorder.setRecording(true)
-            if let environment = DiagnosticsCenter.shared.environment {
-                recordStart(recorder, environment)
-            }
+            recorder.setRecording(
+                true,
+                markerName: .recordingStarted,
+                markerFields: DiagnosticsCenter.shared.environment.map(startFields) ?? [:])
         } else {
-            // `recordLifecycle`, so this survives regardless of ordering: an
-            // ordinary `record` would be dropped the instant the switch moved,
-            // and the bundle would simply end — reading as a crash rather than
-            // as a deliberate stop.
-            recorder.recordLifecycle(.recordingStopped)
-            recorder.setRecording(false)
+            recorder.setRecording(false, markerName: .recordingStopped)
         }
     }
 
-    private static func recordStart(
-        _ recorder: DiagnosticsRecorder, _ environment: DiagnosticsEnvironment
-    ) {
-        recorder.record(
-            .recordingStarted,
-            fields: [
-                "app_version": .string(environment.appVersion),
-                "commit": .string(environment.commit),
-                "channel": .string(environment.channel.rawValue),
-                "configuration": .string(environment.configuration),
-                "architecture": .string(environment.architecture),
-                "platform": .string(environment.platform)
-            ])
+    /// The build stamp that opens a session record.
+    static func startFields(_ environment: DiagnosticsEnvironment) -> [String: DiagnosticValue] {
+        [
+            "app_version": .string(environment.appVersion),
+            "commit": .string(environment.commit),
+            "channel": .string(environment.channel.rawValue),
+            "configuration": .string(environment.configuration),
+            "architecture": .string(environment.architecture),
+            "platform": .string(environment.platform)
+        ]
     }
 
     /// Write the current recording into `directory` and return the file.
@@ -165,12 +178,21 @@ public enum DiagnosticsHost {
         guard !recorder.snapshot().events.isEmpty else {
             throw DiagnosticsHostError.nothingRecorded
         }
-        // `recordLifecycle`, not `record`: exporting while STOPPED is the
-        // documented workflow — reproduce, stop, hand the file over — and an
-        // ordinary `record` no-ops when disabled, so that path produced a
-        // bundle carrying no record of its own export.
-        recorder.recordLifecycle(.recordingExported)
-        let snapshot = recorder.snapshot()
+        // The marker goes into the OUTGOING snapshot first and is committed to
+        // the live recorder only after the write succeeds. Recording it up
+        // front meant a failed write — a full disk, a directory that could not
+        // be created — still left `recording.exported` behind, so the next
+        // bundle that DID succeed claimed an export that never happened.
+        var snapshot = recorder.snapshot()
+        snapshot.events.append(
+            DiagnosticEvent(
+                seq: (snapshot.events.last?.seq ?? 0) + 1,
+                monotonicNs: snapshot.events.last?.monotonicNs ?? 0,
+                wallClock: date,
+                role: snapshot.role,
+                category: DiagnosticEventName.recordingExported.category,
+                name: DiagnosticEventName.recordingExported.rawValue,
+                severity: DiagnosticEventName.recordingExported.defaultSeverity))
 
         // `start` installs the environment alongside the recorder, so a
         // recorder without one cannot normally exist. The fallback names the
@@ -185,15 +207,41 @@ public enum DiagnosticsHost {
         let bundle = DiagnosticsBundle.make(
             from: snapshot, environment: environment, exportedAt: date)
         let url = directory.appendingPathComponent(
-            DiagnosticsExport.filename(
-                role: snapshot.role, device: snapshot.deviceLabel, at: date))
-        return try DiagnosticsExport.write(bundle, to: url)
+            DiagnosticsExport.uniqueFilename(
+                role: snapshot.role, device: snapshot.deviceLabel, at: date,
+                existsAtPath: { name in
+                    FileManager.default.fileExists(
+                        atPath: directory.appendingPathComponent(name).path)
+                }))
+        let written = try DiagnosticsExport.write(bundle, to: url)
+        // Committed only now, so the recorder's own history matches what
+        // actually reached the disk. `recordLifecycle`, because exporting while
+        // STOPPED is the documented workflow and an ordinary `record` no-ops.
+        recorder.recordLifecycle(.recordingExported)
+        return written
     }
 }
 
-public enum DiagnosticsHostError: Error, Equatable {
+public enum DiagnosticsHostError: Error, LocalizedError, Equatable {
     /// No recorder has ever been created in this process.
     case notRecording
     /// Recording is on but nothing has happened yet.
     case nothingRecorded
+
+    /// Plain sentences, because these reach a user.
+    ///
+    /// The default rendering put the enum case itself in front of somebody —
+    /// "could not be written: nothingRecorded" — which is both meaningless and
+    /// wrong: no write was attempted. Each case says what actually happened and
+    /// what to do about it.
+    public var errorDescription: String? {
+        switch self {
+        case .notRecording:
+            return "Diagnostics are not running, so there is nothing to export."
+        case .nothingRecorded:
+            return
+                "Nothing has been recorded yet. Turn recording on, reproduce the "
+                + "problem, then export."
+        }
+    }
 }

@@ -87,4 +87,25 @@ final class DiagnosticSurfaceTracker {
         visible.removeValue(forKey: name)
         AppDiagnostics.emitViewHidden(name)
     }
+
+    /// Idempotent presence, for a surface that is ONE thing whose visibility is
+    /// set rather than counted — the viewer's `NSWindow`.
+    ///
+    /// Counting is wrong for it: `orderFrontRegardless` runs on every connect
+    /// and again whenever the session re-focuses the window, while `orderOut`
+    /// runs once, so a reference count would climb and never come back to zero.
+    /// Counting is still right for the SwiftUI surfaces, which genuinely exist
+    /// twice — the sharing view renders in the main window and the menubar at
+    /// the same time. Two shapes of truth, two entry points; they share the
+    /// same table and never use the same name.
+    func setVisible(_ name: String, _ isVisible: Bool) {
+        if isVisible {
+            guard visible[name] == nil else { return }
+            visible[name] = 1
+            AppDiagnostics.emitViewShown(name)
+        } else {
+            guard visible.removeValue(forKey: name) != nil else { return }
+            AppDiagnostics.emitViewHidden(name)
+        }
+    }
 }
