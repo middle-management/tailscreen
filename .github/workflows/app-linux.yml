@@ -237,7 +237,13 @@ jobs:
         # input means a per-push or PR build and deliberately stays "dev":
         # that is a build under test, and recording by default is right for it.
         run: |
-          set -euo pipefail
+          # `set -eu`, not `-euo pipefail`: this job runs in the swift:6.3-jammy
+          # container, whose shell is dash, and dash has no `pipefail` — it
+          # fails the step with "Illegal option -o pipefail" before running a
+          # line. Every other scripted step in this workflow uses `set -eu` for
+          # the same reason. (The macOS and Windows stamp steps can use
+          # pipefail because they run under bash.)
+          set -eu
           file=Apps/linux/Sources/tailscreen/BuildInfo.swift
           short=$(git rev-parse --short HEAD)
           sed -i "s/static let commit = \"dev\"/static let commit = \"$short\"/" "$file"
