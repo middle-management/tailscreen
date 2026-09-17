@@ -136,7 +136,7 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
     case transportSummary = "transport.summary"
     case fecArmed = "fec.armed"
     case fecDisarmed = "fec.disarmed"
-    case congestionArmed = "congestion.arm"
+    case congestionArmed = "congestion.armed"
     case receiveLoopFailed = "transport.receive_loop.failed"
 
     // MARK: Audio

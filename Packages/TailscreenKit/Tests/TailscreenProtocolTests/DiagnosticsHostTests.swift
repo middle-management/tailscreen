@@ -191,6 +191,69 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
     }
 
+    /// **The documented workflow: reproduce, stop, export.** A stopped
+    /// recorder keeps what it has and export is deliberately still allowed —
+    /// so the bundle must still carry the record of its own export. An
+    /// ordinary `record` no-ops when disabled, which silently broke the one
+    /// guarantee `DiagnosticsBundle` makes about every bundle.
+    func testExportWhileStoppedStillRecordsItsOwnExport() throws {
+        let recorder = start()
+        recorder.record(.helloSent)
+        DiagnosticsHost.setRecording(false, defaults: defaults)
+
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("diagnostics-host-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = try DiagnosticsHost.export(to: directory)
+        let parsed = try DiagnosticsBundle.parse(
+            jsonLines: try String(contentsOf: url, encoding: .utf8))
+
+        XCTAssertTrue(
+            parsed.events.contains { $0.name == DiagnosticEventName.recordingExported.rawValue },
+            "export while stopped lost its own marker")
+        XCTAssertFalse(parsed.header.wasRecording)
+        XCTAssertTrue(
+            parsed.events.contains { $0.name == DiagnosticEventName.helloSent.rawValue },
+            "stopping must keep what was already recorded")
+    }
+
+    /// The lifecycle bypass must not become a general back door: it is for the
+    /// two events that describe the switch, and ordinary recording stays off.
+    func testLifecycleBypassDoesNotReopenOrdinaryRecording() {
+        let recorder = start()
+        DiagnosticsHost.setRecording(false, defaults: defaults)
+        let before = recorder.events().count
+
+        recorder.record(.helloSent)
+        XCTAssertEqual(recorder.events().count, before, "an ordinary record slipped through")
+
+        recorder.recordLifecycle(.recordingExported)
+        XCTAssertEqual(recorder.events().count, before + 1)
+    }
+
+    /// `TAILSCREEN_DIAGNOSTICS` pins the LIVE value for the whole run — that is
+    /// the entire point of it. Applying it only at `start` left a UI toggle
+    /// able to countermand it mid-run, which made a scripted run depend on
+    /// nobody clicking anything.
+    func testEnvironmentOverrideSurvivesAUserToggle() throws {
+        let forcedOff = ["TAILSCREEN_DIAGNOSTICS": "0"]
+        let recorder = DiagnosticsHost.start(
+            environment: environment, defaults: defaults, processEnvironment: forcedOff)
+        XCTAssertFalse(recorder.isRecording)
+
+        // The user flips the switch on. The choice is stored, but the run
+        // stays as the harness pinned it.
+        DiagnosticsHost.setRecording(
+            true, defaults: defaults, processEnvironment: forcedOff)
+        XCTAssertFalse(
+            recorder.isRecording,
+            "a UI toggle overrode TAILSCREEN_DIAGNOSTICS=0")
+        XCTAssertTrue(
+            defaults.bool(forKey: DiagnosticsPreference.defaultsKey),
+            "the user's choice must still be persisted for the next run")
+    }
+
     // MARK: - The log tee
 
     /// The free coverage: an existing `LogSink` line lands in the record with

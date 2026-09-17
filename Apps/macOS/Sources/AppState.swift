@@ -250,6 +250,19 @@ class AppState: ObservableObject {
         guard enabled != recordDiagnostics else { return }
         AppDiagnostics.setRecording(enabled)
         recordDiagnostics = enabled
+        if enabled {
+            // Forget the cached device snapshot so the next enumeration writes
+            // a fresh baseline.
+            //
+            // Without this the bundle silently loses its device inventory in
+            // the commonest flow there is: Settings opens (which enumerates and
+            // caches) while recording is off, so the event is dropped but the
+            // cache is warm; the user then turns recording on right there, and
+            // every later enumeration compares equal and records nothing. The
+            // one thing they turned it on to capture would be missing.
+            lastRecordedAudioDevices = nil
+            recordAudioDevicesIfChanged()
+        }
     }
 
     /// Write the current recording out and show the user where it went.

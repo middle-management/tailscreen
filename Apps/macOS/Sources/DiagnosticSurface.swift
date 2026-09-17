@@ -59,15 +59,32 @@ private struct DiagnosticSurfaceModifier: ViewModifier {
 final class DiagnosticSurfaceTracker {
     static let shared = DiagnosticSurfaceTracker()
 
-    private var visible: Set<String> = []
+    /// How many live instances of each named surface there are.
+    ///
+    /// A count, not a set, because **the same surface can be on screen twice**.
+    /// CLAUDE.md is explicit that while a share is live the whole sharing view
+    /// — preview, controls, roster, approvals — renders on BOTH the main window
+    /// and the menubar, out of the same components, so a sharer never has to
+    /// hop between them. `PendingViewersList` is therefore mounted twice, and
+    /// with a set the first one to disappear recorded `view.hidden` for a
+    /// surface that was still right there in the other window.
+    private var visible: [String: Int] = [:]
 
     func shown(_ name: String) {
-        guard visible.insert(name).inserted else { return }
+        let count = (visible[name] ?? 0) + 1
+        visible[name] = count
+        // Only the 0→1 transition is the surface appearing.
+        guard count == 1 else { return }
         AppDiagnostics.emitViewShown(name)
     }
 
     func hidden(_ name: String) {
-        guard visible.remove(name) != nil else { return }
+        guard let count = visible[name] else { return }
+        if count > 1 {
+            visible[name] = count - 1
+            return
+        }
+        visible.removeValue(forKey: name)
         AppDiagnostics.emitViewHidden(name)
     }
 }

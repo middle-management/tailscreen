@@ -129,9 +129,28 @@ public enum DiagnosticsMerge {
                         + "its timestamps are shown as recorded and may be skewed.")
             }
 
+            // Each side is replayed from ONE wall-clock anchor plus its own
+            // monotonic elapsed, not from each event's recorded wall clock.
+            //
+            // This is what `monotonicNs` was recorded for, and until now the
+            // merge did not use it. A wall clock can step mid-session — NTP
+            // correcting a drifting machine is routine, and a share is exactly
+            // long enough for it — which would place a later event before an
+            // earlier one on the SAME device, inventing a causal inversion
+            // inside one machine's own story. The monotonic clock cannot do
+            // that. The anchor is the first event's wall clock, so the timeline
+            // still sits at the real time of day, and the cross-device offset
+            // is applied on top exactly as before.
+            let anchor = bundle.header.startedAt ?? bundle.events.first?.wallClock
+
             for event in bundle.events {
                 var shifted = event
-                shifted.wallClock = event.wallClock.addingTimeInterval(offset)
+                if let anchor {
+                    shifted.wallClock = anchor.addingTimeInterval(
+                        Double(event.monotonicNs) / 1_000_000_000 + offset)
+                } else {
+                    shifted.wallClock = event.wallClock.addingTimeInterval(offset)
+                }
                 lines.append(
                     Line(
                         device: bundle.header.device,
@@ -243,6 +262,13 @@ public enum DiagnosticsMerge {
             // until acked, and it is the final retry that actually produced
             // this ack — pairing against the first would fold the whole retry
             // period into the offset.
+            // The sharer's HELLO must be THIS viewer's. A share with several
+            // people joining at once has many `hello.received` interleaved, and
+            // taking the latest before the ack would happily pick another
+            // viewer's retry as `t2` — yielding an offset that looks entirely
+            // plausible and is wrong. The ack carries the addr it answered, so
+            // the pairing is available; it just was not being used.
+            let ackAddr = ackSent.fields["addr"]
             guard
                 let helloSent = client.events.last(where: {
                     $0.name == DiagnosticEventName.helloSent.rawValue
@@ -251,6 +277,11 @@ public enum DiagnosticsMerge {
                 let helloReceived = server.events.last(where: {
                     $0.name == DiagnosticEventName.helloReceived.rawValue
                         && $0.wallClock <= ackSent.wallClock
+                        // Older bundles predate the addr field on one side or
+                        // the other; falling back to time-only there keeps them
+                        // readable rather than refusing to align them at all.
+                        && (ackAddr == nil || $0.fields["addr"] == nil
+                            || $0.fields["addr"] == ackAddr)
                 })
             else { continue }
 

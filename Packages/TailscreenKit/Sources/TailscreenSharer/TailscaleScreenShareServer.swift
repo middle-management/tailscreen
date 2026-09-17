@@ -2733,6 +2733,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 return decision.isQuieted
             }
             if recentlyExpelled {
+                // Deliberately NOT recorded, unlike the remembered-deny branch
+                // below. This fires for every straggler KEEPALIVE a kicked
+                // viewer sends across the 30 s quiet window — a per-packet path,
+                // which would push the rest of the session out of the buffer to
+                // say something `viewer.expelled` already said once.
                 sendDenialDatagrams(to: addr)
                 return
             }
@@ -2767,6 +2772,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         if !alreadyKnown && admission == .reject {
             logger.log("Viewer \(addr) rejected (remembered deny)")
+            // Recorded here, not only in `denyViewer`: this path never parks a
+            // pending viewer and never reaches that function, so a peer blocked
+            // by a remembered "Deny & Block" was denied on the wire with
+            // nothing structured in the bundle to say so. From the sharer's
+            // side the session simply had no viewer, which is exactly the
+            // question a report about a blocked peer is asking.
+            recorder?.record(
+                .viewerDenied,
+                role: .sharer,
+                fields: [
+                    "addr": .string(addr),
+                    "guest": .bool(guest),
+                    "reason": .string("remembered deny")
+                ])
+            recorder?.record(
+                .helloDeniedSent, role: .sharer, fields: ["addr": .string(addr)])
             sendDenialDatagrams(to: addr)
             return
         }

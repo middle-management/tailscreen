@@ -51,8 +51,15 @@ extension DiagnosticEvent: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         seq = try container.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
+        // Clamped, not converted directly. `UInt64(someDouble)` TRAPS for NaN,
+        // infinity, and anything past `UInt64.max` — and `"elapsed_ms":1e300`
+        // is valid JSON that reaches here, so a bundle from a corrupt writer or
+        // a hostile one would crash its reader. That is the opposite of what
+        // this decoder promises: every other malformation in a line is
+        // tolerated or skipped, and a crash is the one failure a person
+        // chasing a bug cannot work around.
         let ms = try container.decodeIfPresent(Double.self, forKey: .elapsedMs) ?? 0
-        monotonicNs = ms > 0 ? UInt64(ms * 1_000_000) : 0
+        monotonicNs = DiagnosticEvent.nanoseconds(fromMilliseconds: ms)
         wallClock = try container.decode(Date.self, forKey: .at)
         // Unknown roles, categories and severities fall back rather than
         // throwing: a bundle from a newer build must stay readable, and an
@@ -96,6 +103,23 @@ extension DiagnosticValue: Codable {
         } else {
             self = .string(try container.decode(String.self))
         }
+    }
+}
+
+extension DiagnosticEvent {
+    /// Milliseconds → nanoseconds, saturating instead of trapping.
+    ///
+    /// Not finite (NaN, ±infinity) or not positive becomes **0**; a finite
+    /// value genuinely past `UInt64` saturates to the maximum. The split is
+    /// deliberate: garbage deserves the honest 0 rather than `.max`, which
+    /// would sort the event to the very end of the session and assert
+    /// something the data does not support. Either way the process survives a
+    /// line it was asked to be tolerant about.
+    static func nanoseconds(fromMilliseconds ms: Double) -> UInt64 {
+        guard ms.isFinite, ms > 0 else { return 0 }
+        let ns = ms * 1_000_000
+        guard ns < Double(UInt64.max) else { return .max }
+        return UInt64(ns)
     }
 }
 

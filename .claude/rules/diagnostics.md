@@ -100,6 +100,12 @@ because **macOS moves it on its own**: plugging a headset in, or a change in
 System Settings, shifts what an unselected pick uses with the device lists
 completely unchanged.
 
+Turning recording **on** clears the cached device snapshot and re-records a
+baseline. Without that, the commonest flow loses the inventory entirely:
+Settings opens (enumerating and warming the cache) while recording is off, the
+event is dropped, the user turns recording on right there, and every later
+enumeration compares equal and records nothing.
+
 Devices are recorded **by name**, never by `AudioDeviceID`: the ID is a
 machine-local CoreAudio handle that changes across reboots and means nothing to
 a reader, while the name is what the person saw in the picker and what they
@@ -122,6 +128,24 @@ would install a reference nothing already built would ever see. One object for
 the life of the process, a Boolean inside it, and both directions work
 everywhere at once.
 
+## Two events bypass the switch
+
+`recordLifecycle` appends even while recording is off, and exactly two events
+use it: `recording.stopped`, which has to outlive the stop it reports, and
+`recording.exported`, because **exporting while stopped is the documented
+workflow** — reproduce, stop, hand the file over. An ordinary `record` no-ops
+when disabled, so that workflow produced a bundle with no record of its own
+export. It is deliberately not implemented by flipping the switch on and back:
+that would open a window for every other writer in the process to land an event
+the user asked not to be recorded. `export` also tests emptiness BEFORE writing
+the marker, or the marker is what makes the bundle non-empty and the
+"nothing recorded" guard can never fire.
+
+`TAILSCREEN_DIAGNOSTICS` pins the **live** value for a whole run, not just the
+starting one: `setRecording` persists the user's choice but resolves the live
+recorder against the override. Applying it only at `start` left a UI toggle able
+to countermand a harness mid-run.
+
 ## The clock problem
 
 Two machines' wall clocks disagree. Sorting two bundles on raw timestamps
@@ -136,6 +160,19 @@ assigns in the HELLO_ACK** — a value both ends already know, so nothing had to
 be added to the wire. The estimate is always reported in `clockNotes`, never
 silently applied: an offset a reader cannot see is as misleading as the skew.
 
+Two things the merge has to get right and can get wrong silently:
+
+- **Pair the sharer's HELLO by `addr`, not just by time.** A share with several
+  people joining at once has many `hello.received` interleaved, and the latest
+  one before the ack is frequently a different viewer's retry — giving an offset
+  that looks plausible and is wrong.
+- **Replay each side from one anchor plus its own `monotonicNs`**, never from
+  each event's recorded wall clock. A clock can step mid-session (NTP correcting
+  a drifting machine is routine), which would reorder one device's own events
+  against each other — a causal inversion inside a single machine's story, which
+  is the one thing a timeline must never invent. This is what `monotonicNs` is
+  recorded for.
+
 The pairing is derived from **events, not header roles**. One process can be
 sharer and viewer at once (a Mac sharing to one person while watching another),
 so the header's role is a default, not a fact about the session.
@@ -143,11 +180,19 @@ so the header's role is a default, not a fact about the session.
 ## Host wiring
 
 `DiagnosticsHost.start(environment:)` once at start-up; `setRecording(_:)` from
-the settings toggle; `export(to:)` from the export button. All three hosts use
-these — the ordering inside them is load-bearing (`recording.stopped` before
+the settings toggle; `export(to:)` from the export button. **All three hosts call
+`start`; only macOS calls `setRecording` and `export` today** — Linux and Windows
+have no settings pane or export button yet and switch via `TAILSCREEN_DIAGNOSTICS`
+(`docs/platform-support.md` has the matrix). The ordering inside these is
+load-bearing (`recording.stopped` before
 the switch moves or the event is itself dropped; `recording.exported` before
 the snapshot or a bundle never records its own export), which is why it is
 written once rather than three times.
+
+The app-level events (`action.*`, `view.*`, `fault.surfaced`) are macOS-only so
+far: they are recorded from `AppState`, `SettingsView` and the surface modifier,
+and the GTK and WinUI apps have no equivalent call sites. So a Linux or Windows
+bundle explains what the connection did but not what the person did.
 
 Per-host wiring is one line each at construction:
 `server.recorder = DiagnosticsCenter.shared.recorder` in `LinuxShareSession`,

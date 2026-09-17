@@ -93,6 +93,18 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     /// to TSan today. Nothing exercises them concurrently under the sanitiser
     /// yet, so nothing fails — but a concurrency test added to either will hit
     /// this same wall, and the answer will be this same one.
+    /// One event's ingredients, assembled outside the lock and handed in as a
+    /// single value — both callers build the same set, and passing them
+    /// individually made `appendLocked` a six-parameter function for no gain.
+    private struct PendingEvent {
+        var name: DiagnosticEventName
+        var role: DiagnosticRole
+        var severity: DiagnosticSeverity
+        var fields: [String: DiagnosticValue]
+        var mono: UInt64
+        var wall: Date
+    }
+
     private let lock = NSLock()
     private var state: State
 
@@ -207,6 +219,21 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
         // event after the user asked it to stop, which is the one promise this
         // switch has to keep.
         guard state.enabled else { return }
+        appendLocked(
+            PendingEvent(
+                name: name, role: role ?? defaultRole,
+                severity: severity ?? name.defaultSeverity,
+                fields: redacted, mono: mono, wall: wall))
+    }
+
+    /// Append one event. **Caller must hold `lock`**, and must already have
+    /// decided that it should be appended — this does not consult `enabled`,
+    /// because ``recordLifecycle(_:fields:nowNs:wallClock:)`` deliberately
+    /// bypasses it.
+    private func appendLocked(_ pending: PendingEvent) {
+        let name = pending.name
+        let mono = pending.mono
+        let wall = pending.wall
 
         let start: UInt64
         if let existing = state.startMonotonicNs {
@@ -226,11 +253,11 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
             seq: state.nextSeq,
             monotonicNs: elapsed,
             wallClock: wall,
-            role: role ?? defaultRole,
+            role: pending.role,
             category: name.category,
             name: name.rawValue,
-            severity: severity ?? name.defaultSeverity,
-            fields: redacted)
+            severity: pending.severity,
+            fields: pending.fields)
         state.nextSeq &+= 1
 
         if state.prologue.count < prologueCapacity {
@@ -282,6 +309,37 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
     }
 
     /// Everything held, plus what it took to hold it.
+    /// Append a lifecycle marker even while recording is off.
+    ///
+    /// Exactly two events need this, and both describe the switch rather than
+    /// the session: `recording.stopped`, which must outlive the stop it
+    /// reports, and `recording.exported`, because **exporting while stopped is
+    /// the documented workflow** — reproduce the problem, stop recording, hand
+    /// the file over. An ordinary `record` no-ops when disabled, so that
+    /// workflow produced a bundle with no record of its own export, which is
+    /// the one thing ``DiagnosticsBundle`` promises every bundle carries.
+    ///
+    /// Deliberately NOT implemented by flipping the switch on and back: that
+    /// would open a window in which every other writer in the process could
+    /// land an event the user had asked not to be recorded.
+    public func recordLifecycle(
+        _ name: DiagnosticEventName,
+        fields: [String: DiagnosticValue] = [:],
+        nowNs: UInt64? = nil,
+        wallClock: Date? = nil
+    ) {
+        let mono = nowNs ?? Self.monotonicNowNs()
+        let wall = wallClock ?? Date()
+        let redacted = DiagnosticsRedaction.scrub(fields)
+
+        lock.lock()
+        defer { lock.unlock() }
+        appendLocked(
+            PendingEvent(
+                name: name, role: defaultRole, severity: name.defaultSeverity,
+                fields: redacted, mono: mono, wall: wall))
+    }
+
     /// Everything held, plus what it took to hold it — read atomically.
     ///
     /// One lock acquisition covers both the events and the counters that

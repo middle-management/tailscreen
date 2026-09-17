@@ -85,6 +85,25 @@ final class DiagnosticsExportTests: XCTestCase {
 
     // MARK: - The rendered timeline
 
+    /// Re-stamp `monotonicNs` as elapsed since the FIRST event, which is the
+    /// invariant `DiagnosticsRecorder` actually maintains.
+    ///
+    /// The fixtures used to derive it from a fixed epoch with negatives clamped
+    /// to zero, which no real recorder would ever produce — and the merge now
+    /// replays each side from its anchor plus that elapsed, so an inconsistent
+    /// fixture produced an inconsistent timeline. Building the fixtures the way
+    /// the recorder builds them keeps the suite testing the code rather than
+    /// testing a fiction.
+    private func normalized(_ events: [DiagnosticEvent]) -> [DiagnosticEvent] {
+        guard let start = events.first?.wallClock else { return events }
+        return events.map { event in
+            var copy = event
+            let elapsed = event.wallClock.timeIntervalSince(start)
+            copy.monotonicNs = elapsed > 0 ? UInt64(elapsed * 1_000_000_000) : 0
+            return copy
+        }
+    }
+
     private func twoSidedTimeline() -> DiagnosticsMerge.Timeline {
         func event(
             _ seq: UInt64, _ name: DiagnosticEventName, _ role: DiagnosticRole,
@@ -97,9 +116,10 @@ final class DiagnosticsExportTests: XCTestCase {
                 severity: name.defaultSeverity, fields: fields)
         }
         func bundle(
-            _ role: DiagnosticRole, _ device: String, _ events: [DiagnosticEvent]
+            _ role: DiagnosticRole, _ device: String, _ rawEvents: [DiagnosticEvent]
         ) -> DiagnosticsBundle {
-            DiagnosticsBundle.make(
+            let events = normalized(rawEvents)
+            return DiagnosticsBundle.make(
                 from: DiagnosticsSnapshot(
                     role: role, deviceLabel: device, wasRecording: true,
                     startedAt: events.first?.wallClock, droppedCount: 0, events: events),

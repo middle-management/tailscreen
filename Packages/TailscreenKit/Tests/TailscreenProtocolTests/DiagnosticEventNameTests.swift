@@ -64,7 +64,7 @@ final class DiagnosticEventNameTests: XCTestCase {
             "decode.first_frame", "decode.failed", "decode.recovery.action",
             "render.size.changed", "video.stalled",
             "transport.summary", "fec.armed", "fec.disarmed",
-            "congestion.arm", "transport.receive_loop.failed",
+            "congestion.armed", "transport.receive_loop.failed",
             "audio.devices.changed",
             "mic.attached", "mic.detached", "mic.failed", "mic.mute.changed",
             "system_audio.started", "system_audio.stopped", "voice.ssrc.assigned",

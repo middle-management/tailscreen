@@ -34,13 +34,33 @@ final class DiagnosticsBundleTests: XCTestCase {
             fields: fields)
     }
 
+    /// Re-stamp `monotonicNs` as elapsed since the FIRST event, which is the
+    /// invariant `DiagnosticsRecorder` actually maintains.
+    ///
+    /// The fixtures used to derive it from a fixed epoch with negatives clamped
+    /// to zero, which no real recorder would ever produce — and the merge now
+    /// replays each side from its anchor plus that elapsed, so an inconsistent
+    /// fixture produced an inconsistent timeline. Building the fixtures the way
+    /// the recorder builds them keeps the suite testing the code rather than
+    /// testing a fiction.
+    private func normalized(_ events: [DiagnosticEvent]) -> [DiagnosticEvent] {
+        guard let start = events.first?.wallClock else { return events }
+        return events.map { event in
+            var copy = event
+            let elapsed = event.wallClock.timeIntervalSince(start)
+            copy.monotonicNs = elapsed > 0 ? UInt64(elapsed * 1_000_000_000) : 0
+            return copy
+        }
+    }
+
     private func bundle(
         role: DiagnosticRole,
         device: String,
-        events: [DiagnosticEvent],
+        events rawEvents: [DiagnosticEvent],
         version: String = "0.10.0-rc.2"
     ) -> DiagnosticsBundle {
-        DiagnosticsBundle.make(
+        let events = normalized(rawEvents)
+        return DiagnosticsBundle.make(
             from: DiagnosticsSnapshot(
                 role: role,
                 deviceLabel: device,
@@ -129,7 +149,12 @@ final class DiagnosticsBundleTests: XCTestCase {
     /// Elapsed time is written in milliseconds, which is the column a reader's
     /// eye runs down. Raw nanoseconds would be correct and useless.
     func testElapsedIsWrittenInMilliseconds() throws {
-        let events = [event(seq: 1, .helloAckSent, atOffset: 1.8412)]
+        // Two events, because elapsed is measured from the first one — which
+        // is always zero. The second is what shows the unit.
+        let events = [
+            event(seq: 1, .helloReceived, atOffset: 0),
+            event(seq: 2, .helloAckSent, atOffset: 1.8412)
+        ]
         let text = try bundle(role: .sharer, device: "mac", events: events).jsonLines()
         XCTAssertTrue(
             text.contains("\"elapsed_ms\":1841.2"),
@@ -162,6 +187,40 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(parsed.events[0].name, "future.thing.happened")
         XCTAssertEqual(parsed.events[0].category, .fault, "unknown category should fall back")
         XCTAssertEqual(parsed.events[0].severity, .info, "unknown severity should fall back")
+    }
+
+    /// A valid-JSON but absurd number must not crash the reader.
+    ///
+    /// `UInt64(someDouble)` traps on NaN, infinity and anything past
+    /// `UInt64.max`, and `"elapsed_ms":1e300` is perfectly legal JSON. Every
+    /// other malformation on a line is tolerated or skipped here; a process
+    /// death is the one failure the person chasing a bug cannot work around.
+    func testAbsurdElapsedDoesNotCrashTheReader() throws {
+        let header = try bundle(role: .sharer, device: "mac", events: []).jsonLines()
+        for value in ["1e300", "-1e300", "1e999", "1e-300"] {
+            let line = """
+                {"at":"2027-01-01T00:00:00.000Z","category":"media","elapsed_ms":\(value),                "event":"decode.failed","role":"viewer","seq":9,"severity":"warning"}
+                """
+            // The assertion is that this RETURNS. Whether the line survives or
+            // is skipped is the tolerant parser's business — `1e999` exceeds
+            // Double, so JSONDecoder rejects the line outright. What must not
+            // happen is the process dying.
+            let parsed = try DiagnosticsBundle.parse(jsonLines: header + line + "\n")
+            XCTAssertLessThanOrEqual(parsed.events.count, 1, "value \(value)")
+        }
+    }
+
+    /// The clamp itself, at its edges.
+    func testNanosecondConversionSaturatesInsteadOfTrapping() {
+        XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: 1.5), 1_500_000)
+        XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: 0), 0)
+        XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: -5), 0)
+        XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: .nan), 0)
+        // Not finite is garbage, and 0 is the honest answer — `.max` would sort
+        // the event to the very end of the session, asserting something the
+        // data does not support. Only a finite value past `UInt64` saturates.
+        XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: .infinity), 0)
+        XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: 1e300), .max)
     }
 
     /// One corrupt line must not cost the other four thousand.
@@ -390,6 +449,79 @@ final class DiagnosticsBundleTests: XCTestCase {
 
         XCTAssertEqual(forward?.seconds ?? 0, 2.5, accuracy: 0.002)
         XCTAssertEqual(backward?.seconds ?? 0, -2.5, accuracy: 0.002)
+    }
+
+    /// With several viewers joining at once, the sharer's bundle holds many
+    /// interleaved `hello.received`. Pairing on time alone would take another
+    /// viewer's retry as `t2` and produce an offset that looks entirely
+    /// plausible and is wrong — so the ack's `addr` has to be matched too.
+    func testOffsetPairsTheRightViewersHello() throws {
+        let sharer = bundle(
+            role: .sharer, device: "sharer-mac",
+            events: [
+                event(
+                    seq: 1, .helloReceived, atOffset: 0.00,
+                    fields: ["addr": "100.64.0.3"]),
+                // A SECOND viewer's HELLO lands between the first viewer's and
+                // the ack that answers it. Time-only pairing picks this one.
+                event(
+                    seq: 2, .helloReceived, atOffset: 0.01,
+                    fields: ["addr": "100.64.0.9"]),
+                event(
+                    seq: 3, .helloAckSent, atOffset: 0.02,
+                    fields: ["ssrc": .int(2), "addr": "100.64.0.3"])
+            ])
+        let viewer = bundle(
+            role: .viewer, device: "viewer-pc",
+            events: [
+                event(seq: 1, .helloSent, role: .viewer, atOffset: -0.02),
+                event(
+                    seq: 2, .helloAckReceived, role: .viewer, atOffset: 0.04,
+                    fields: ["ssrc": .int(2)])
+            ])
+
+        let estimate = try XCTUnwrap(
+            DiagnosticsMerge.estimateOffset(of: viewer, against: sharer))
+        // Paired against the 0.00 HELLO (this viewer's), not the 0.01 one.
+        XCTAssertEqual(estimate.roundTripSeconds, 0.04, accuracy: 0.002)
+    }
+
+    /// A wall clock that steps mid-session must not reorder one device's own
+    /// events. This is what `monotonicNs` is recorded for, and sorting on the
+    /// wall clock alone threw it away — inventing a causal inversion inside a
+    /// single machine's story, which is the one thing a timeline must never do.
+    func testClockStepDoesNotReorderOneDevicesOwnEvents() {
+        // Three events, monotonic and increasing, but the middle one's wall
+        // clock jumped backwards a minute — an NTP correction mid-share.
+        let events = [
+            DiagnosticEvent(
+                seq: 1, monotonicNs: 0, wallClock: epoch, role: .sharer,
+                category: .media, name: DiagnosticEventName.captureStarted.rawValue,
+                severity: .info, fields: [:]),
+            DiagnosticEvent(
+                seq: 2, monotonicNs: 1_000_000_000,
+                wallClock: epoch.addingTimeInterval(-60), role: .sharer,
+                category: .media, name: DiagnosticEventName.encodeCodecSelected.rawValue,
+                severity: .info, fields: [:]),
+            DiagnosticEvent(
+                seq: 3, monotonicNs: 2_000_000_000,
+                wallClock: epoch.addingTimeInterval(-59), role: .sharer,
+                category: .media, name: DiagnosticEventName.decodeFirstFrame.rawValue,
+                severity: .info, fields: [:])
+        ]
+        let only = DiagnosticsBundle.make(
+            from: DiagnosticsSnapshot(
+                role: .sharer, deviceLabel: "sharer-mac", wasRecording: true,
+                startedAt: epoch, droppedCount: 0, events: events),
+            environment: DiagnosticsEnvironment(
+                platform: "test", appVersion: "0.10.0-rc.2", commit: "abc1234",
+                configuration: "release", architecture: "arm64",
+                deviceLabel: "sharer-mac"))
+
+        let timeline = DiagnosticsMerge.merge([only])
+        XCTAssertEqual(
+            timeline.lines.map(\.event.seq), [1, 2, 3],
+            "a backwards clock step reordered one device's own events")
     }
 
     /// An empty input is not a crash.

@@ -110,6 +110,48 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("tskey-auth-"))
     }
 
+    /// **The bare two-segment form was leaking the secret verbatim.**
+    /// `tskey-<secret>` split into two parts, and the code kept both and
+    /// appended a placeholder — `tskey-<secret>-<redacted>` — from the
+    /// function whose only job is to stop exactly that. The three-segment form
+    /// was fine, which is why the original test missed it.
+    func testBareAuthKeyDoesNotLeakItsSecret() {
+        let scrubbed = DiagnosticsRedaction.scrub("up failed with tskey-SECRETVALUE123456")
+        XCTAssertFalse(scrubbed.contains("SECRETVALUE123456"), scrubbed)
+        XCTAssertTrue(scrubbed.contains("tskey-"), scrubbed)
+    }
+
+    /// An unrecognised kind is treated as a secret, not as a kind. There is no
+    /// way to tell one from the other by shape, and guessing wrong in this
+    /// direction is what produced the leak above.
+    func testUnknownAuthKeyKindIsRedactedWholesale() {
+        let scrubbed = DiagnosticsRedaction.scrub("tskey-somethingnew-SECRET99999")
+        XCTAssertFalse(scrubbed.contains("SECRET99999"), scrubbed)
+        XCTAssertFalse(scrubbed.contains("somethingnew"), scrubbed)
+    }
+
+    /// Known kinds survive, because which kind of key was used is a real
+    /// troubleshooting answer.
+    func testKnownAuthKeyKindsAreKept() {
+        for kind in ["auth", "client", "api"] {
+            let scrubbed = DiagnosticsRedaction.scrub("tskey-\(kind)-SECRETABCDEF")
+            XCTAssertFalse(scrubbed.contains("SECRETABCDEF"), scrubbed)
+            XCTAssertTrue(scrubbed.contains("tskey-\(kind)-"), scrubbed)
+        }
+    }
+
+    /// Auth keys arrive embedded, exactly as tokens do.
+    func testEmbeddedAuthKeysAreRedacted() {
+        for carrier in [
+            "authKey=tskey-auth-SECRETABCDEF",
+            "{\"authKey\":\"tskey-auth-SECRETABCDEF\"}",
+            "start failed (tskey-auth-SECRETABCDEF)"
+        ] {
+            let scrubbed = DiagnosticsRedaction.scrub(carrier)
+            XCTAssertFalse(scrubbed.contains("SECRETABCDEF"), "\(carrier) → \(scrubbed)")
+        }
+    }
+
     /// A sign-in URL's secret path goes; its origin stays, because which
     /// control server was in use is a genuine troubleshooting answer and is
     /// not itself the credential.

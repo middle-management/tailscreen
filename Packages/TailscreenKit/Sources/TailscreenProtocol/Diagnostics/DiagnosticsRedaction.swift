@@ -164,19 +164,78 @@ public enum DiagnosticsRedaction {
             return nil
         }
 
-        // 3. A tailnet auth key: `tskey-auth-…`, `tskey-client-…`, and the
-        //    bare `tskey-…` older forms. Prefix kept (which kind of key was
-        //    used is diagnostic), secret dropped.
-        let lowered = core.lowercased()
-        if lowered.hasPrefix("tskey-") {
-            let parts = core.split(separator: "-", maxSplits: 2, omittingEmptySubsequences: false)
-            if parts.count >= 2 {
-                return "\(parts[0])-\(parts[1])-\(placeholder)"
-            }
-            return placeholder
-        }
+        // 3. A tailnet auth key, anywhere in the word for the same reason
+        //    tokens are: `authKey=tskey-auth-…` and JSON fragments are how one
+        //    actually reaches a log line.
+        if let redacted = redactAuthKeys(in: core) { return redacted }
 
         return nil
+    }
+
+    /// The key *kinds* Tailscale puts between `tskey-` and the secret.
+    ///
+    /// An allowlist, and deliberately so: the segment after `tskey-` is either
+    /// a kind word or it is the secret itself, and there is no way to tell them
+    /// apart by shape. Treating an unknown segment as a kind is how
+    /// `tskey-<secret>` came to be redacted as `tskey-<secret>-<redacted>` —
+    /// the credential preserved verbatim with a placeholder appended, by the
+    /// function whose entire job is to prevent exactly that. An unrecognised
+    /// kind now redacts from immediately after `tskey-`, which at worst loses
+    /// one diagnostic word and at best loses nothing at all.
+    private static let authKeyKinds: Set<String> = [
+        "auth", "client", "api", "scope", "webhook"
+    ]
+
+    /// Replace every auth key embedded anywhere in `word`, or nil when there
+    /// is none.
+    private static func redactAuthKeys(in word: String) -> String? {
+        let marker = "tskey-"
+        let characters = Array(word)
+        let markerCharacters = Array(marker)
+        var out = ""
+        var index = 0
+        var found = false
+
+        while index < characters.count {
+            let fits = index + markerCharacters.count <= characters.count
+            let matches =
+                fits
+                && String(characters[index..<(index + markerCharacters.count)]).lowercased()
+                    == marker
+            guard
+                matches,
+                index == 0 || tokenDelimiters.contains(characters[index - 1])
+            else {
+                out.append(characters[index])
+                index += 1
+                continue
+            }
+            // The key runs to the end of its `-`-joined alphanumeric run.
+            var end = index
+            while end < characters.count, isKeyCharacter(characters[end]) { end += 1 }
+            let key = String(characters[index..<end])
+            out += redactedAuthKey(key)
+            found = true
+            index = end
+        }
+        return found ? out : nil
+    }
+
+    /// `tskey-auth-…` → `tskey-auth-<redacted>`; anything whose kind is not
+    /// recognised → `tskey-<redacted>`, secret and all.
+    private static func redactedAuthKey(_ key: String) -> String {
+        let parts = key.split(separator: "-", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count >= 3, authKeyKinds.contains(parts[1].lowercased()) else {
+            // Covers the bare `tskey-<secret>` form and any kind this build has
+            // never heard of. Which kind it was is worth less than the
+            // certainty that nothing after `tskey-` survived.
+            return "tskey-\(placeholder)"
+        }
+        return "\(parts[0])-\(parts[1])-\(placeholder)"
+    }
+
+    private static func isKeyCharacter(_ character: Character) -> Bool {
+        character.isASCII && (character.isLetter || character.isNumber || character == "-")
     }
 
     /// Characters that can precede a token and still leave it a token.
@@ -186,7 +245,14 @@ public enum DiagnosticsRedaction {
     /// rule, any long word containing `tc` would be a candidate. They are the
     /// separators the real carriers use — `token=`, `"token":`, `?token=`,
     /// `&token=`, and the `#` of a web-viewer fragment.
-    private static let tokenDelimiters: Set<Character> = ["=", ":", "\"", "'", "?", "#", "&", "/"]
+    private static let tokenDelimiters: Set<Character> = [
+        "=", ":", "\"", "'", "?", "#", "&", "/",
+        // Bracketing and list punctuation: a credential shows up as
+        // `(tskey-auth-…)` in a parenthesised error, `[tc…]`, or after a comma
+        // in a joined list. None of these can be part of a token or a key, so
+        // treating them as boundaries costs nothing and closes the gap.
+        "(", "[", "{", "<", ",", "|"
+    ]
 
     /// Replace every share token embedded anywhere in `word`, or nil when
     /// there is none.

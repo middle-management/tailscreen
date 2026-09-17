@@ -93,19 +93,39 @@ public enum DiagnosticsHost {
     /// Turning it **off keeps what was already recorded** — the user who flips
     /// the switch after something went wrong wants to hand over what just
     /// happened, and a switch that also erased it would be a trap.
-    public static func setRecording(_ enabled: Bool, defaults: UserDefaults = .standard) {
+    public static func setRecording(
+        _ enabled: Bool,
+        defaults: UserDefaults = .standard,
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        // The choice is always persisted — that is the user's preference and it
+        // must survive into the next launch.
         DiagnosticsPreference.save(enabled, defaults: defaults)
         guard let recorder = DiagnosticsCenter.shared.recorder else { return }
-        if enabled {
+
+        // But `TAILSCREEN_DIAGNOSTICS` pins the LIVE value for the whole run,
+        // and that is the entire point of it: a harness sets it so the run is
+        // reproducible regardless of what is stored on the machine — or of what
+        // somebody clicks while it is going. Applying the override only at
+        // `start` left a macOS toggle able to countermand it mid-run, which
+        // made scripted runs depend on nobody touching the UI.
+        let effective: Bool
+        if case .forced(let forced) = DiagnosticsPreference.forcedBy(processEnvironment) {
+            effective = forced
+        } else {
+            effective = enabled
+        }
+        if effective {
             recorder.setRecording(true)
             if let environment = DiagnosticsCenter.shared.environment {
                 recordStart(recorder, environment)
             }
         } else {
-            // Recorded BEFORE the switch moves, or the event that says
-            // recording stopped is itself dropped and the bundle just ends —
-            // which reads as a crash rather than as a deliberate stop.
-            recorder.record(.recordingStopped)
+            // `recordLifecycle`, so this survives regardless of ordering: an
+            // ordinary `record` would be dropped the instant the switch moved,
+            // and the bundle would simply end — reading as a crash rather than
+            // as a deliberate stop.
+            recorder.recordLifecycle(.recordingStopped)
             recorder.setRecording(false)
         }
     }
@@ -140,9 +160,17 @@ public enum DiagnosticsHost {
         // own export — which is how you tell a bundle somebody sent you from
         // one they exported, looked at, and exported again after actually
         // reproducing the problem.
-        recorder.record(.recordingExported)
+        // Emptiness is tested BEFORE the marker is written, or the marker is
+        // the thing that makes it non-empty and the guard can never fire again.
+        guard !recorder.snapshot().events.isEmpty else {
+            throw DiagnosticsHostError.nothingRecorded
+        }
+        // `recordLifecycle`, not `record`: exporting while STOPPED is the
+        // documented workflow — reproduce, stop, hand the file over — and an
+        // ordinary `record` no-ops when disabled, so that path produced a
+        // bundle carrying no record of its own export.
+        recorder.recordLifecycle(.recordingExported)
         let snapshot = recorder.snapshot()
-        guard !snapshot.events.isEmpty else { throw DiagnosticsHostError.nothingRecorded }
 
         // `start` installs the environment alongside the recorder, so a
         // recorder without one cannot normally exist. The fallback names the
