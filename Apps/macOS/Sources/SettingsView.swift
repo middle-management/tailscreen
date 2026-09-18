@@ -584,9 +584,27 @@ struct SettingsView: View {
                 appState.exportDiagnostics()
             }
 
+            // Beside Export rather than anywhere else, because the pair is
+            // the point: you export yours, they export theirs, and this is
+            // what turns the two files into one readable answer. Not disabled
+            // when nothing has been recorded here either — merging two files
+            // somebody sent you is a real thing to want, and this Mac's own
+            // recording is included only if it has anything in it.
+            Button(L("Merge With…")) {
+                appState.mergeDiagnostics()
+            }
+
             Text(
                 L(
                     "Writes a file naming this device, the devices it connected to, your audio devices, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Text(
+                L(
+                    "Merge With… combines the files you were sent with this device's recording into one timeline, correcting for the clocks on the two machines disagreeing."
                 )
             )
             .font(.caption)

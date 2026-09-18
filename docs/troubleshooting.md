@@ -390,7 +390,15 @@ the next one.
    the sharer never saw the connection at all or saw it and parked it on
    an approval prompt nobody was looking at — and those are completely
    different problems. Only the two files together tell them apart.
-4. Attach what you have to the issue.
+4. **On macOS you can read the pair yourself: Settings → Diagnostics →
+   Merge With…** Pick the file the other end sent you and it is combined
+   with this Mac's own recording into one ordered timeline, written beside
+   the exports as `tailscreen-merged-….txt`. The two machines' clocks do
+   not need to agree — the offset between them is worked out from the
+   handshake the two sides already share, and the result says which clock
+   it used and how far the other one was off. More than two ends (a sharer
+   with two viewers) can be picked at once.
+5. Attach what you have to the issue.
 
 Each file is named for the machine it came from
 (`tailscreen-app-roberts-macbook-pro-20260917-100402.jsonl`), so a pair

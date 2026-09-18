@@ -212,6 +212,98 @@ public enum DiagnosticsHost {
         recorder.recordLifecycle(.recordingExported)
         return written
     }
+
+    // MARK: - Merge
+
+    /// Merge this process's current recording with bundles exported elsewhere,
+    /// and write the result as a readable timeline.
+    ///
+    /// This is the half of the feature that makes recording two sides worth
+    /// doing. One side's bundle says what this machine did; the pair says what
+    /// *happened*, and the difference is the whole point — a viewer that gave
+    /// up after thirty seconds looks identical whether the sharer never saw it
+    /// or saw it and parked it on an approval prompt.
+    ///
+    /// Unlike ``export(to:at:)`` this records **nothing**. A merge is a read:
+    /// it derives a `.txt` from bundles that are themselves unchanged, so
+    /// there is no marker a later reader would need, and no new registry name
+    /// to keep forever. Exporting is the thing that alters a bundle's history;
+    /// reading one is not.
+    ///
+    /// The local recording is included **when there is one with events in it**,
+    /// and simply left out otherwise. That case is real rather than defensive —
+    /// somebody sent both files and this Mac was never in the session — and
+    /// erroring there would refuse to do the obvious thing with the arguments
+    /// given. Merging a single bundle is likewise allowed: it renders that
+    /// bundle's own timeline, which is the honest answer to being handed one
+    /// file.
+    ///
+    /// Bundles that share no handshake still merge; the timeline says so under
+    /// its clock-alignment notes rather than interleaving two unrelated
+    /// stories as though they were one.
+    ///
+    /// - Parameters:
+    ///   - urls: exported bundles to merge in, in any order.
+    ///   - directory: where the rendered timeline is written.
+    /// - Returns: the file written.
+    @discardableResult
+    public static func merge(
+        with urls: [URL],
+        into directory: URL,
+        at date: Date = Date()
+    ) throws -> URL {
+        var bundles: [DiagnosticsBundle] = []
+        for url in urls {
+            let text: String
+            do {
+                text = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                // Name the file. A merge is given several and a bare failure
+                // leaves the person guessing which one to look at.
+                throw DiagnosticsHostError.bundleUnreadable(
+                    name: url.lastPathComponent, reason: error.localizedDescription)
+            }
+            do {
+                bundles.append(try DiagnosticsBundle.parse(jsonLines: text))
+            } catch {
+                throw DiagnosticsHostError.notABundle(name: url.lastPathComponent)
+            }
+        }
+
+        // The local side, if this process has one worth adding.
+        if let recorder = DiagnosticsCenter.shared.recorder {
+            let snapshot = recorder.snapshot()
+            if !snapshot.events.isEmpty {
+                let environment =
+                    DiagnosticsCenter.shared.environment
+                    ?? DiagnosticsEnvironment(
+                        platform: "unknown", appVersion: "dev", commit: "unknown",
+                        configuration: "unknown", architecture: "unknown",
+                        deviceLabel: snapshot.deviceLabel)
+                bundles.append(
+                    DiagnosticsBundle.make(
+                        from: snapshot, environment: environment, exportedAt: date))
+            }
+        }
+
+        guard !bundles.isEmpty else { throw DiagnosticsHostError.nothingToMerge }
+
+        let url = directory.appendingPathComponent(
+            DiagnosticsExport.uniqueMergedFilename(
+                at: date,
+                existsAtPath: { name in
+                    FileManager.default.fileExists(
+                        atPath: directory.appendingPathComponent(name).path)
+                }))
+        let text = DiagnosticsExport.renderTimeline(DiagnosticsMerge.merge(bundles))
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        // Atomic, for the reason `write(_:to:)` is: a half-written timeline
+        // that reads as a short session is worse than none, because nothing
+        // about it looks wrong.
+        try Data(text.utf8).write(to: url, options: .atomic)
+        return url
+    }
 }
 
 public enum DiagnosticsHostError: Error, LocalizedError, Equatable {
@@ -219,6 +311,12 @@ public enum DiagnosticsHostError: Error, LocalizedError, Equatable {
     case notRecording
     /// Recording is on but nothing has happened yet.
     case nothingRecorded
+    /// A file picked for a merge could not be read at all.
+    case bundleUnreadable(name: String, reason: String)
+    /// A file picked for a merge was read but is not a diagnostics bundle.
+    case notABundle(name: String)
+    /// A merge was asked for with no files and no local recording.
+    case nothingToMerge
 
     /// Plain sentences, because these reach a user.
     ///
@@ -234,6 +332,18 @@ public enum DiagnosticsHostError: Error, LocalizedError, Equatable {
             return
                 "Nothing has been recorded yet. Turn recording on, reproduce the "
                 + "problem, then export."
+        case .bundleUnreadable(let name, let reason):
+            // The name, because a merge is given several files and "it could
+            // not be read" does not say which to go and look at.
+            return "\(name) could not be read: \(reason)"
+        case .notABundle(let name):
+            return
+                "\(name) is not a Tailscreen diagnostics file. Pick a .jsonl "
+                + "file exported from Tailscreen."
+        case .nothingToMerge:
+            return
+                "There is nothing to merge: no files were picked and this "
+                + "device has recorded nothing yet."
         }
     }
 }
