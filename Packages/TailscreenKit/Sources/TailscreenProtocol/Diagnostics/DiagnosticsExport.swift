@@ -53,6 +53,34 @@ public enum DiagnosticsExport {
         return "\(base)-\(UUID().uuidString.prefix(8)).jsonl"
     }
 
+    /// Filename for a MERGED timeline: `tailscreen-merged-20260918-100402.txt`.
+    ///
+    /// `.txt` and not `.jsonl` on purpose. A merged timeline is rendered prose
+    /// for a person to read, not a bundle — feeding it back into the merge
+    /// would fail, and a name that invites that is a name that wastes
+    /// somebody's afternoon. It also carries no role or device, because it has
+    /// two of each; the devices are named inside, on every line.
+    public static func mergedFilename(at date: Date = Date()) -> String {
+        "tailscreen-merged-\(stamp(date)).txt"
+    }
+
+    /// A merged-timeline name that cannot collide with one already in
+    /// `directory` — the same one-second-resolution problem
+    /// ``uniqueFilename(role:device:at:existsAtPath:)`` solves, and for the
+    /// same reason: merging twice in a second must not silently destroy the
+    /// first answer.
+    static func uniqueMergedFilename(
+        at date: Date = Date(),
+        existsAtPath: (String) -> Bool
+    ) -> String {
+        let base = "tailscreen-merged-\(stamp(date))"
+        if !existsAtPath("\(base).txt") { return "\(base).txt" }
+        for suffix in 2...99 where !existsAtPath("\(base)-\(suffix).txt") {
+            return "\(base)-\(suffix).txt"
+        }
+        return "\(base)-\(UUID().uuidString.prefix(8)).txt"
+    }
+
     /// Write a bundle, creating intermediate directories.
     ///
     /// Atomic: the file is never observed half-written. Diagnostics are

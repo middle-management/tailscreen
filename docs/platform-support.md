@@ -325,6 +325,7 @@ difference between the machines solved from the handshake itself. See
 | On by default in release candidates | ✅ | ✅ | ✅ | — |
 | Settings toggle | ✅ | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | — |
 | Export to a file | ✅ Settings → Diagnostics | ❌ | ❌ | — |
+| Merge two recordings into one timeline | ✅ Settings → Diagnostics | ❌ | ❌ | — |
 
 The **protocol half** is in the portable core, so all three platforms record
 handshakes, admission decisions and the package's own log lines identically —

@@ -140,6 +140,19 @@ enum AppDiagnostics {
         try DiagnosticsHost.export(to: exportDirectory)
     }
 
+    /// Merge bundles somebody sent with this Mac's own recording, and write
+    /// the readable timeline beside the exports.
+    ///
+    /// The ordering and the "include the local side only if it has events"
+    /// rule live in `DiagnosticsHost` rather than here, for the same reason
+    /// export's do: they are not mac-specific, and the GTK and WinUI apps get
+    /// them for free whenever either grows a way to pick a file. What is left
+    /// on this side is genuinely local — where the result goes.
+    @discardableResult
+    static func merge(with urls: [URL]) throws -> URL {
+        try DiagnosticsHost.merge(with: urls, into: exportDirectory)
+    }
+
     // MARK: - Environment
 
     /// What names this machine in a merged bundle.

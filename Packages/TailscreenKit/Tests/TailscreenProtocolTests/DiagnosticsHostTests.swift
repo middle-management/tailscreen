@@ -427,4 +427,155 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(
             DiagnosticsCenter.severity(of: "recovered 4 packets from parity"), .info)
     }
+
+    // MARK: - Merge
+
+    /// A scratch directory per test, cleaned up on the way out.
+    private func scratch() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("DiagnosticsHostMerge-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    /// Write a bundle out as the app would, so the merge reads real JSONL
+    /// rather than a value handed straight across.
+    private func writeBundle(
+        role: DiagnosticRole, device: String, events: [DiagnosticEvent], to dir: URL
+    ) throws -> URL {
+        let bundle = DiagnosticsBundle(
+            header: .init(
+                role: role, device: device, platform: "test-os",
+                appVersion: "0.10.0-rc.14", commit: "abc1234", configuration: "release",
+                architecture: "arm64", channel: .releaseCandidate,
+                startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                exportedAt: Date(timeIntervalSince1970: 1_800_000_010),
+                eventCount: events.count, droppedCount: 0, wasRecording: true),
+            events: events)
+        let url = dir.appendingPathComponent("\(device).jsonl")
+        return try DiagnosticsExport.write(bundle, to: url)
+    }
+
+    private func handshakeEvent(
+        _ seq: UInt64, _ name: DiagnosticEventName, _ role: DiagnosticRole, at offset: TimeInterval
+    ) -> DiagnosticEvent {
+        DiagnosticEvent(
+            seq: seq, monotonicNs: UInt64(offset * 1_000_000_000),
+            wallClock: Date(timeIntervalSince1970: 1_800_000_000 + offset),
+            session: 1, role: role, category: .handshake, name: name.rawValue,
+            fields: ["ssrc": .int(2)])
+    }
+
+    /// The point of the whole feature: a file somebody sent you, merged with
+    /// what this device recorded, in one ordered timeline.
+    func testMergeCombinesAPickedBundleWithTheLocalRecording() throws {
+        let dir = try scratch()
+        let recorder = start()
+        recorder.record(.helloAckSent, fields: ["ssrc": .int(2)])
+
+        let theirs = try writeBundle(
+            role: .viewer, device: "their-pc",
+            events: [handshakeEvent(1, .helloAckReceived, .viewer, at: 1.0)], to: dir)
+
+        let written = try DiagnosticsHost.merge(with: [theirs], into: dir)
+
+        let text = try String(contentsOf: written, encoding: .utf8)
+        XCTAssertTrue(
+            written.lastPathComponent.hasPrefix("tailscreen-merged-"),
+            "a merged timeline is named for being merged, not for either side")
+        XCTAssertTrue(written.pathExtension == "txt", "it is prose, not a bundle")
+        XCTAssertTrue(text.contains("their-pc"), "the picked bundle's device must appear")
+        XCTAssertTrue(
+            text.contains("test-device"),
+            "this device's own recording must be in there — merging it with their file "
+                + "is what the caller asked for")
+    }
+
+    /// Somebody sent BOTH files and this Mac was never in the session. That is
+    /// a real way to arrive here, not a misuse, so it merges what it was given
+    /// rather than refusing.
+    func testMergeWorksWithNoLocalRecording() throws {
+        let dir = try scratch()
+        let a = try writeBundle(
+            role: .sharer, device: "mac-one",
+            events: [handshakeEvent(1, .helloAckSent, .sharer, at: 1.0)], to: dir)
+        let b = try writeBundle(
+            role: .viewer, device: "pc-two",
+            events: [handshakeEvent(1, .helloAckReceived, .viewer, at: 1.1)], to: dir)
+
+        let text = try String(
+            contentsOf: try DiagnosticsHost.merge(with: [a, b], into: dir), encoding: .utf8)
+
+        XCTAssertTrue(text.contains("mac-one"))
+        XCTAssertTrue(text.contains("pc-two"))
+    }
+
+    /// Merging is a READ. Unlike export it must leave no trace in the
+    /// recording, or every merge would alter the evidence it was run on.
+    func testMergeRecordsNothing() throws {
+        let dir = try scratch()
+        let recorder = start()
+        recorder.record(.helloAckSent, fields: ["ssrc": .int(2)])
+        let before = recorder.events()
+
+        let theirs = try writeBundle(
+            role: .viewer, device: "their-pc",
+            events: [handshakeEvent(1, .helloAckReceived, .viewer, at: 1.0)], to: dir)
+        _ = try DiagnosticsHost.merge(with: [theirs], into: dir)
+
+        XCTAssertEqual(
+            recorder.events(), before,
+            "a merge derives a file from bundles it does not change; an export is the "
+                + "operation that writes its own marker")
+    }
+
+    /// Two merges inside one second must not silently destroy the first
+    /// answer — the same one-second-resolution trap the bundle filename has.
+    func testTwoMergesInOneSecondBothSurvive() throws {
+        let dir = try scratch()
+        let at = Date(timeIntervalSince1970: 1_800_000_500)
+        let theirs = try writeBundle(
+            role: .viewer, device: "their-pc",
+            events: [handshakeEvent(1, .helloAckReceived, .viewer, at: 1.0)], to: dir)
+
+        let first = try DiagnosticsHost.merge(with: [theirs], into: dir, at: at)
+        let second = try DiagnosticsHost.merge(with: [theirs], into: dir, at: at)
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    /// An unreadable or wrong file names ITSELF. A merge is given several
+    /// paths, so "it could not be read" does not say which to go and look at.
+    func testMergeFailuresNameTheOffendingFile() throws {
+        let dir = try scratch()
+
+        let missing = dir.appendingPathComponent("not-here.jsonl")
+        XCTAssertThrowsError(try DiagnosticsHost.merge(with: [missing], into: dir)) { error in
+            guard case DiagnosticsHostError.bundleUnreadable(let name, _) = error else {
+                return XCTFail("expected bundleUnreadable, got \(error)")
+            }
+            XCTAssertEqual(name, "not-here.jsonl")
+        }
+
+        let junk = dir.appendingPathComponent("notes.jsonl")
+        try "this is not a bundle".write(to: junk, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try DiagnosticsHost.merge(with: [junk], into: dir)) { error in
+            XCTAssertEqual(error as? DiagnosticsHostError, .notABundle(name: "notes.jsonl"))
+            XCTAssertTrue(
+                (error as? DiagnosticsHostError)?.errorDescription?.contains("notes.jsonl") == true,
+                "the sentence a user reads has to name the file too, not just the case")
+        }
+    }
+
+    /// Nothing picked and nothing recorded is the one case that genuinely has
+    /// no answer, and it says so rather than writing an empty file.
+    func testMergeWithNothingAtAllRefuses() throws {
+        let dir = try scratch()
+        XCTAssertThrowsError(try DiagnosticsHost.merge(with: [], into: dir)) { error in
+            XCTAssertEqual(error as? DiagnosticsHostError, .nothingToMerge)
+        }
+    }
 }

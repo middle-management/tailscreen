@@ -348,10 +348,23 @@ so the header's role is a default, not a fact about the session.
 ## Host wiring
 
 `DiagnosticsHost.start(environment:)` once at start-up; `setRecording(_:)` from
-the settings toggle; `export(to:)` from the export button. **All three hosts call
-`start`; only macOS calls `setRecording` and `export` today** — Linux and Windows
-have no settings pane or export button yet and switch via `TAILSCREEN_DIAGNOSTICS`
-(`docs/platform-support.md` has the matrix). The ordering inside these is
+the settings toggle; `export(to:)` from the export button; `merge(with:into:)`
+from **Merge With…** beside it. **All three hosts call `start`; only macOS calls
+`setRecording`, `export` and `merge` today** — Linux and Windows have no settings
+pane or file picker yet and switch via `TAILSCREEN_DIAGNOSTICS`
+(`docs/platform-support.md` has the matrix); until they do,
+`tailscreen-diagnostics-merge` is the way in on those platforms.
+
+`merge` sits in the host rather than in the mac app for the same reason the
+others do — it is not mac-specific, and the swift-cross-ui apps inherit it the
+day either grows a picker — and, more immediately, because a decision in
+`Apps/macOS` is only compiled and tested on the macOS CI leg, whereas one here
+is pinned by `linux-protocol` on every PR. Two rules of its own: it records
+**nothing** (a merge derives a file from bundles it does not change, so it needs
+no marker and no new registry name — exporting is the operation that writes its
+own), and it includes the local recording only when that recording has events,
+because "somebody sent me both files and this machine was never in the session"
+is a real way to arrive rather than a misuse. The ordering inside these is
 load-bearing (`recording.stopped` before
 the switch moves or the event is itself dropped; `recording.exported` before
 the snapshot or a bundle never records its own export), which is why it is

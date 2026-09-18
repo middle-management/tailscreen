@@ -301,6 +301,51 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Pick bundles somebody sent and merge them with this Mac's recording.
+    ///
+    /// The pair is the point of recording two sides — one file says what this
+    /// machine did, the pair says what happened — and until now nothing in the
+    /// app could read two. `tailscreen-diagnostics-merge` can, but it needs a
+    /// checkout and a toolchain, which the person who hit the bug does not
+    /// have.
+    ///
+    /// Multiple selection because a session can have more than two ends: a
+    /// sharer with two viewers is three bundles, and merging them pairwise
+    /// would mean three passes and three files to read.
+    ///
+    /// The panel does not filter to a content type. `jsonl` has no registered
+    /// UTI, so deriving one leaves a picker that greys out the very files it
+    /// exists to open on any Mac that has not been taught the extension —
+    /// which is all of them. An unreadable pick is caught below and names
+    /// itself, which is the better place to be strict.
+    func mergeDiagnostics() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = L("Choose the diagnostics files you were sent.")
+        panel.prompt = L("Merge")
+        // Open where this app's own exports land — usually where the file they
+        // were sent has just been saved alongside.
+        panel.directoryURL = AppDiagnostics.exportDirectory
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+
+        do {
+            let url = try AppDiagnostics.merge(with: panel.urls)
+            logger.log("Diagnostics merged to \(url.path)")
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            presentError(
+                .legacy(
+                    title: L("Couldn't Merge Diagnostics"),
+                    message: L(
+                        "The diagnostics could not be merged: \(error.localizedDescription)")
+                ))
+        }
+    }
+
     // MARK: - Link sharing (share-by-token guests)
 
     /// Settings feature gate for sharing via link. Default on but inert —
