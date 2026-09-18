@@ -284,6 +284,18 @@ produces a plausible-looking lie — an ack before the message it acknowledges �
 and a reader will read causality out of the order, because that is what an
 ordered list is for.
 
+**`tailscreen-diagnostics-merge` is how you actually run it** — an
+executable target in this package (`make merge-diagnostics FILES="a.jsonl
+b.jsonl"`). It takes `TailscreenProtocol` alone, so it builds with a bare
+Swift toolchain: no `libtailscale.a`, no Go, no libopus, which is what lets
+somebody triaging a pair of bundles build it without the rest of the repo's
+prerequisites. The tool is deliberately thin — argument handling and naming
+the file that failed — because every decision below belongs to the library
+and is pinned by `DiagnosticsBundleTests` / `DiagnosticsExportTests`. It
+exists because the merge shipped complete, tested, and callable from nothing
+but its own suites: two sides could be recorded and exported, and never read
+together, which is the only reason to record two sides.
+
 A handshake is exactly the four-timestamp exchange NTP uses, so
 `DiagnosticsMerge` solves for the offset with
 `((t2 - t1) + (t3 - t4)) / 2` and pairs the two sides on the **SSRC the sharer

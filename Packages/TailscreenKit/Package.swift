@@ -143,6 +143,22 @@ let package = Package(
             ],
             path: "Sources/TailscreenViewerTsnet"
         ),
+        // The diagnostics merge, as something runnable.
+        //
+        // `DiagnosticsMerge` + `DiagnosticsExport.renderTimeline` shipped
+        // complete and tested with no caller outside their own suites, so the
+        // pair of bundles a session produces could be exported and never read
+        // together — which is the only reason to record two sides at all.
+        //
+        // It takes `TailscreenProtocol` and nothing else, so it builds with a
+        // bare Swift toolchain: no `libtailscale.a`, no Go, no libopus. That
+        // is also why it lives in this package rather than beside the macOS
+        // app — anybody holding two bundles can build it, on any platform.
+        .executableTarget(
+            name: "tailscreen-diagnostics-merge",
+            dependencies: ["TailscreenProtocol"],
+            path: "Sources/tailscreen-diagnostics-merge"
+        ),
         .testTarget(
             name: "TailscreenProtocolTests",
             dependencies: ["TailscreenProtocol", "TailscreenAudio"],
