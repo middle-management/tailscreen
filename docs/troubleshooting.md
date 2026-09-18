@@ -390,15 +390,8 @@ the next one.
    the sharer never saw the connection at all or saw it and parked it on
    an approval prompt nobody was looking at — and those are completely
    different problems. Only the two files together tell them apart.
-4. **On macOS you can read the pair yourself: Settings → Diagnostics →
-   Merge With…** Pick the file the other end sent you and it is combined
-   with this Mac's own recording into one ordered timeline, written beside
-   the exports as `tailscreen-merged-….txt`. The two machines' clocks do
-   not need to agree — the offset between them is worked out from the
-   handshake the two sides already share, and the result says which clock
-   it used and how far the other one was off. More than two ends (a sharer
-   with two viewers) can be picked at once.
-5. Attach what you have to the issue.
+4. Attach what you have to the issue — or read the pair yourself, which
+   **Merging two recordings** below covers.
 
 Each file is named for the machine it came from
 (`tailscreen-app-roberts-macbook-pro-20260917-100402.jsonl`), so a pair
@@ -407,24 +400,31 @@ stays straight in a chat thread.
 ### Merging two recordings
 
 Two files from one session merge into a single ordered timeline, which is
-the form the pair is actually readable in:
+the form the pair is actually readable in. **The two machines' clocks do
+not need to agree** — the offset between them is solved from the handshake
+the two sides already share, and the result says which clock it used as the
+reference and how far the other one was off.
+
+**On macOS: Settings → Diagnostics → Merge With…** Pick the file the other
+end sent you; it is combined with this Mac's own recording and written
+beside the exports as `tailscreen-merged-….txt`, with Finder opening on it.
+More than two ends — a sharer with two viewers — can be picked at once, and
+files somebody sent you merge fine even if this Mac was never in the
+session.
+
+**Anywhere, from a checkout:**
 
 ```
 make merge-diagnostics FILES="tailscreen-app-their-mac-….jsonl tailscreen-app-your-pc-….jsonl"
 ```
 
 It prints the merged timeline on stdout, so redirect it to a file to keep
-it. Order doesn't matter, one file on its own is allowed (it renders that
-bundle alone), and **the two machines' clocks do not need to agree** — the
-offset between them is solved from the handshake the two sides already
-share, and the result says which clock it used as the reference and how far
-the other one was off.
-
-This needs a checkout of the repository and a Swift toolchain, so in
-practice it is run by whoever is *helping* rather than by the person
-reporting the problem — send the files, and let the other end merge them.
-It needs nothing else: the tool depends only on the Foundation-only core,
-so there is no Go, no libtailscale and no libopus to build first.
+it. Order doesn't matter and one file on its own is allowed (it renders that
+bundle alone). This is the route on Linux and Windows, which have no button
+yet, and the one to reach for when somebody has sent you both files. It
+needs a Swift toolchain and nothing else: the tool depends only on the
+Foundation-only core, so there is no Go, no libtailscale and no libopus to
+build first.
 
 Bundles from unrelated sessions still merge, but nothing pairs them, so the
 timeline says so under **Clock alignment** rather than interleaving two

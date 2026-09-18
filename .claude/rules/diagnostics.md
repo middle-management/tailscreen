@@ -284,9 +284,11 @@ produces a plausible-looking lie — an ack before the message it acknowledges �
 and a reader will read causality out of the order, because that is what an
 ordered list is for.
 
-**`tailscreen-diagnostics-merge` is how you actually run it** — an
-executable target in this package (`make merge-diagnostics FILES="a.jsonl
-b.jsonl"`). It takes `TailscreenProtocol` alone, so it builds with a bare
+**Two ways to actually run it**: macOS's **Merge With…** button (see *Host
+wiring*), and `tailscreen-diagnostics-merge` — an executable target in this
+package (`make merge-diagnostics FILES="a.jsonl b.jsonl"`), which is the
+only route on Linux and Windows and the one to reach for when somebody
+hands you both bundles. It takes `TailscreenProtocol` alone, so it builds with a bare
 Swift toolchain: no `libtailscale.a`, no Go, no libopus, which is what lets
 somebody triaging a pair of bundles build it without the rest of the repo's
 prerequisites. The tool is deliberately thin — argument handling and naming
