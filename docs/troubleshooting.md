@@ -396,6 +396,32 @@ Each file is named for the machine it came from
 (`tailscreen-app-roberts-macbook-pro-20260917-100402.jsonl`), so a pair
 stays straight in a chat thread.
 
+### Merging two recordings
+
+Two files from one session merge into a single ordered timeline, which is
+the form the pair is actually readable in:
+
+```
+make merge-diagnostics FILES="tailscreen-app-their-mac-….jsonl tailscreen-app-your-pc-….jsonl"
+```
+
+It prints the merged timeline on stdout, so redirect it to a file to keep
+it. Order doesn't matter, one file on its own is allowed (it renders that
+bundle alone), and **the two machines' clocks do not need to agree** — the
+offset between them is solved from the handshake the two sides already
+share, and the result says which clock it used as the reference and how far
+the other one was off.
+
+This needs a checkout of the repository and a Swift toolchain, so in
+practice it is run by whoever is *helping* rather than by the person
+reporting the problem — send the files, and let the other end merge them.
+It needs nothing else: the tool depends only on the Foundation-only core,
+so there is no Go, no libtailscale and no libopus to build first.
+
+Bundles from unrelated sessions still merge, but nothing pairs them, so the
+timeline says so under **Clock alignment** rather than interleaving two
+unrelated stories as if they were one.
+
 ### What's in the file
 
 It's text, one event per line, and you can read it before you send it.
