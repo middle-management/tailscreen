@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-isolation sil sil-isolation-report lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n merge-diagnostics lint lint-isolation sil sil-isolation-report lint-baseline lint-tools format format-check print-format-paths-all print-swiftlint-version print-swift-format-version e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness web-viewer web-viewer-bundle test-web-spike icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -71,6 +71,26 @@ test: tailscale ## Run the unit test suite (swift test)
 # names TailscaleKit — hence the full `tailscale` prerequisite.
 test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit package
 	swift test --package-path Packages/TailscreenKit
+
+# Merge exported diagnostics bundles into one ordered timeline.
+#
+#   make merge-diagnostics FILES="sharer.jsonl viewer.jsonl"
+#
+# The two machines' clocks do not need to agree — the offset is solved from
+# the handshake the two sides share. One file is allowed and renders that
+# bundle alone.
+#
+# No `tailscale` prerequisite, unlike most targets here: the tool depends on
+# TailscreenProtocol only, which is the Foundation-only tier, so it needs no
+# libtailscale.a. That is deliberate — somebody triaging a pair of bundles
+# should not have to build Go first.
+merge-diagnostics: ## Merge diagnostics bundles into one timeline (FILES="a.jsonl b.jsonl")
+	@test -n "$(FILES)" || { \
+		echo 'usage: make merge-diagnostics FILES="sharer.jsonl viewer.jsonl"' >&2; \
+		exit 2; \
+	}
+	@swift run --package-path Packages/TailscreenKit \
+		tailscreen-diagnostics-merge $(FILES)
 
 # The Swift↔Go differential suite (Packages/TailscreenDifferential): the
 # shipping Swift pipeline and the public Go SDK — linked in as
