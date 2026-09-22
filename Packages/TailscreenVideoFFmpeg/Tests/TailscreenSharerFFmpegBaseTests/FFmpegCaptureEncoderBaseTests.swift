@@ -141,6 +141,22 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
             unclamped)
     }
 
+    /// No ceiling means `QualitySettings.automaticCeilingBps`, not "whatever
+    /// the formula said". These two sharers derive their own anchor rather
+    /// than going through `QualitySettings.cappedBitrate`, so the automatic
+    /// bound has to be asserted here too or Linux and Windows keep the
+    /// unbounded behaviour after the mac path loses it.
+    func testAnchoredBitrateBoundsAnUncappedAnchorAtTheAutomaticCeiling() {
+        // A 6K capture at 60 — the resolution that anchored near 98 Mbps.
+        let anchored = Base.anchoredBitrate(
+            width: 6016, height: 3384, fps: 60, wantHEVC: true, ceiling: nil)
+        XCTAssertEqual(anchored, QualitySettings.automaticCeilingBps)
+        // …while an ordinary 1080p anchor stays exactly where it was.
+        let hd = Base.anchoredBitrate(
+            width: 1920, height: 1080, fps: 30, wantHEVC: false, ceiling: nil)
+        XCTAssertLessThan(hd, QualitySettings.automaticCeilingBps)
+    }
+
     func testAnchoredBitrateUsesTheCodecsOwnBitsPerPixel() {
         // HEVC's default bits-per-pixel differs from H.264's, so the same
         // pixels anchor at a different budget — the anchor must follow the

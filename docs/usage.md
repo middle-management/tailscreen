@@ -449,7 +449,12 @@ and silently.
 - **Encoder quality** — a 0.30–1.00 slider for the encoder's
   quality/bitrate trade-off. It's what the presets mostly differ on, so it
   unlocks only on Custom (the other presets just show their value).
-- **Limit bandwidth** — an optional hard ceiling, 1–50 Mbps.
+- **Limit bandwidth** — an optional hard ceiling, 1–50 Mbps. Off means
+  *automatic*, not unlimited: the rate is derived from the captured
+  resolution and frame rate and then bounded at 50 Mbps, the same maximum
+  the slider offers. That bound only ever bites above 4K — a 4K 60 fps
+  capture already derives around 40 Mbps — so on a 5K or 6K display,
+  where the derivation lands near 98 Mbps, automatic now stays at 50.
 
 **Settings → Color** holds the 10-bit and HDR capture opt-ins that used
 to require environment variables. Both apply the next time you start
