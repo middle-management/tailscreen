@@ -170,7 +170,13 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
         let formulaBitrate = EncoderTuning.computeBitrate(
             width: width, height: height, fps: fps,
             bitsPerPixel: EncoderTuning.defaultBitsPerPixel(for: codec))
-        return min(formulaBitrate, ceiling ?? formulaBitrate)
+        // `automaticCeilingBps`, not `formulaBitrate`, when no ceiling is
+        // set: "automatic" bounds the formula rather than surrendering to
+        // it. Same rule as `QualitySettings.cappedBitrate`, which the mac
+        // sharer's anchor and capture helper both call — this backend takes
+        // a bare `Int?` rather than the settings value, so it spells the
+        // fallback out instead.
+        return min(formulaBitrate, ceiling ?? QualitySettings.automaticCeilingBps)
     }
 
     /// The attempt ladder, generic over how an encoder opens so the ordering

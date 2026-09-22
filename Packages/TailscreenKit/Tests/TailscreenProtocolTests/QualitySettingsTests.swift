@@ -68,6 +68,69 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(QualitySettings.minCeilingBps, TransportTuning.adaptiveFloorMinBps)
     }
 
+    // MARK: - cappedBitrate (the "automatic" ceiling)
+
+    /// The drift guard. `automaticCeilingBps` exists to say "automatic must
+    /// never exceed what the Settings stepper will grant on request", which
+    /// is only true while it equals `maxCeilingBps` — raise one without the
+    /// other and automatic is quietly back above the explicit maximum,
+    /// which is the whole defect.
+    func testAutomaticCeilingMatchesTheHighestExplicitCeiling() {
+        XCTAssertEqual(QualitySettings.automaticCeilingBps, QualitySettings.maxCeilingBps)
+    }
+
+    /// The regression. 6016x3384 HEVC at 60 fps is an ordinary retina
+    /// capture and anchored near 98 Mbps — roughly twice the most a user is
+    /// allowed to ask for — because "automatic" fell back to the formula's
+    /// own output.
+    func testAutomaticCapsAnOversizedRetinaAnchor() {
+        let anchor = EncoderTuning.computeBitrate(
+            width: 6016, height: 3384, fps: 60,
+            bitsPerPixel: EncoderTuning.defaultBitsPerPixel(for: .hevc))
+        // The formula still produces the outsized number…
+        XCTAssertGreaterThan(anchor, QualitySettings.maxCeilingBps)
+        // …and automatic no longer passes it straight through.
+        let automatic = QualitySettings(maxBitrateBps: nil)
+        XCTAssertEqual(automatic.cappedBitrate(anchorBps: anchor), QualitySettings.automaticCeilingBps)
+    }
+
+    /// The blast radius. Everything at or below 4K already anchored under
+    /// the automatic ceiling, so the cap must be invisible there — if these
+    /// moved, the change would be a quality regression for the resolutions
+    /// most shares actually run at rather than a bound on the outlier.
+    func testAutomaticLeavesAnchorsAtOrBelow4KUntouched() {
+        let automatic = QualitySettings(maxBitrateBps: nil)
+        for (w, h) in [(1920, 1080), (2560, 1440), (3840, 2160)] {
+            let anchor = EncoderTuning.computeBitrate(
+                width: w, height: h, fps: 60,
+                bitsPerPixel: EncoderTuning.defaultBitsPerPixel(for: .hevc))
+            XCTAssertLessThan(anchor, QualitySettings.automaticCeilingBps, "\(w)x\(h)")
+            XCTAssertEqual(automatic.cappedBitrate(anchorBps: anchor), anchor, "\(w)x\(h)")
+        }
+    }
+
+    /// An explicit ceiling still wins in both directions: below the anchor
+    /// it clamps, above it the anchor stands. Unchanged behaviour, asserted
+    /// so the automatic arm can't be widened into the explicit one.
+    func testExplicitCeilingStillDecidesWhenItIsSet() {
+        let capped = QualitySettings(maxBitrateBps: 3_000_000)
+        XCTAssertEqual(capped.cappedBitrate(anchorBps: 40_000_000), 3_000_000)
+        XCTAssertEqual(capped.cappedBitrate(anchorBps: 1_000_000), 1_000_000)
+    }
+
+    /// `normalizedCeiling` already clamps an explicit ceiling to
+    /// `maxCeilingBps`, so no settings value can resolve above the
+    /// automatic ceiling however it was set.
+    func testNoSettingsValueResolvesAboveTheAutomaticCeiling() {
+        let huge = Int.max / 2
+        for ceiling in [nil, 999_000_000, 50_000_000, 1_000] as [Int?] {
+            let quality = QualitySettings(maxBitrateBps: ceiling).normalized()
+            XCTAssertLessThanOrEqual(
+                quality.cappedBitrate(anchorBps: huge), QualitySettings.automaticCeilingBps,
+                "ceiling \(String(describing: ceiling))")
+        }
+    }
+
     // MARK: - normalized()
 
     func testNormalizedSnapsFPSDownToNearestAllowed() {
