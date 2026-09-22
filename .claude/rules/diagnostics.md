@@ -139,6 +139,17 @@ Settings opens (enumerating and warming the cache) while recording is off, the
 event is dropped, the user turns recording on right there, and every later
 enumeration compares equal and records nothing.
 
+The mic toggle enumerates too, before it records `mic.attached` / `mic.failed`.
+The lists are otherwise filled only by the pickers' `onAppear` (Settings and
+the sharer tool), and a **viewer** who toggles the mic from the viewer window
+opens neither — so their bundle carried no inventory at all, and a default
+resolved through the empty cache read `device=unknown` while the sharing side
+of the same session named its headset (a 0.10.0-rc.14 bundle pair). The change
+guard still applies, so a repeat toggle records nothing new. And the default's
+name no longer stops at the cache: `AudioDevices.name(of:in:hal:)` reads the
+list first and the HAL when the list lacks the device (never enumerated, or
+arrived since), pinned by `AudioDeviceNameResolutionTests` in the app target.
+
 Devices are recorded **by name**, never by `AudioDeviceID`: the ID is a
 machine-local CoreAudio handle that changes across reboots and means nothing to
 a reader, while the name is what the person saw in the picker and what they

@@ -183,6 +183,32 @@ tccutil reset Microphone se.middlemanagement.tailscreen
 Sharing your screen and hearing others were never affected; only sending
 your own voice was.
 
+## The other side goes silent the moment you turn your microphone on
+
+You could hear them, you turned your own mic on, and from that moment you
+hear nothing — turning the mic off again does not bring it back, and the
+picture and your own voice are unaffected. **v0.10.0-rc.14** and earlier
+on macOS did this on both seats of a call: each machine stopped hearing
+the other at the instant its *own* microphone came on. It is fixed in the
+next build.
+
+What happened: turning the mic on restarts the audio engine to enable
+echo cancellation, and the restart threw away the other side's queued
+voice without telling the playback bookkeeping. The count of queued audio
+stayed pinned at its limit, so every later packet was dropped as "too
+much queued" — silently, for the rest of the session. The same
+bookkeeping now resets on every engine restart (mic toggle, output-device
+change, a headset plugged in), so no restart can leave it stuck.
+
+If you are still on an affected build, the workaround is to turn the mic
+on *before* connecting (viewer) or before anyone joins (sharer) — the
+restart then happens with nothing queued — or to use the mic on one seat
+only. If you see this on a build after rc.14, run Tailscreen from a
+terminal: a healthy restart logs `MicCapture: playback queues reset`
+followed by voice resuming, and the once-a-minute `VoiceChannel: stats`
+line should not show `overruns=` climbing while nothing is heard. Include
+those lines, and a diagnostics recording from both seats, in the report.
+
 ## Capture restarts by itself mid-share
 
 Viewers see a brief pause, the sharer's log shows a helper restart. The

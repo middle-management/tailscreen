@@ -121,10 +121,10 @@ public enum TsnetNodeFactory {
     ///     handed to this closure. The watcher is torn down on **every** exit
     ///     path — `up()` returning, `up()` throwing, and `startWatching`
     ///     itself throwing — because its `MessageProcessor` keeps running
-    ///     (retaining the node) unless `stopWatching()` cancels it, and a
-    ///     `startWatching` that threw part-way has already latched
-    ///     `isWatching`. With an auth key the subscription is skipped
-    ///     entirely.
+    ///     (retaining the node) unless `stopWatching()` cancels it. (A
+    ///     `startWatching` that throws now disarms itself, so the stop on
+    ///     that path is belt-and-braces rather than load-bearing.) With an
+    ///     auth key the subscription is skipped entirely.
     ///   - stepLogPrefix: when non-nil, each step logs *before* it starts
     ///     under this prefix (e.g. `"prepare"`). Before rather than after
     ///     because the failure this diagnoses is a *hang*, and a line that
@@ -167,10 +167,12 @@ public enum TsnetNodeFactory {
         // do/catch whose catch stops the watcher: it subscribed the IPN bus
         // before `up()`, and its MessageProcessor keeps running (retaining the
         // node) unless `stopWatching()` cancels it — a leak on the
-        // interactive-login path. `startWatching` is INSIDE the same block for
-        // the same reason: it latches `isWatching` before it can throw, so a
-        // failed subscribe left the watcher half-armed and untorn-down when
-        // this used to assign `authWatcher` only after it returned.
+        // interactive-login path. `startWatching` is INSIDE the same block
+        // for the same reason: it used to latch `isWatching` before it could
+        // throw, so a failed subscribe left the watcher half-armed and
+        // untorn-down when this assigned `authWatcher` only after it
+        // returned. It disarms itself on failure now; the shape stays because
+        // the stop is harmless and the block reads as one teardown.
         var authWatcher: TailscaleIPNWatcher?
         do {
             if let onLoginURL, spec.authKey == nil {

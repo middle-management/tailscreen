@@ -691,9 +691,13 @@ final class MicCapture {
     /// player(s) by `mainMixerNode`. Load-bearing: two concurrent 50 Hz PCM
     /// streams serialized into one node time-multiplex instead of mixing.
     private var systemAudioPlayer: AVAudioPlayerNode?
-    /// Pending-buffer counter for the system-audio node (AVAudioPlayerNode
-    /// exposes no queue depth). Touched only on @MainActor.
-    private var systemAudioPendingBuffers: Int = 0
+    /// Pending-buffer bookkeeping for the voice player and the system-audio
+    /// node (AVAudioPlayerNode exposes no queue depth). Both are touched
+    /// only on @MainActor, and both are reset by `resetPlaybackQueues` at
+    /// every point where the node's queue is known to be empty — the type's
+    /// doc-comment says why that is not optional.
+    private var voiceQueue = PlaybackQueueAccounting()
+    private var systemAudioQueue = PlaybackQueueAccounting()
     private let mixer: AVAudioMixerNode
     private let outputFormat: AVAudioFormat
     private var tapBuffer: TapBuffer?
@@ -745,17 +749,67 @@ final class MicCapture {
     }
 
     /// Apply a new output device. Restarts the playback engine if it
-    /// was running so the new device takes effect.
+    /// was running so the new device takes effect. The players' queues
+    /// do not survive the restart, so their bookkeeping is reset with
+    /// them; the jitter-buffer kick in `scheduleSamples` primes and
+    /// restarts playback on the next arrivals.
     func setOutputDevice(_ deviceID: AudioDeviceID?) {
         outputDeviceID = deviceID
         guard isPlaying else { return }
+        resetPlaybackQueues(reason: "output device change")
         engine.stop()
-        for player in playerNodes { player.stop() }
         applyOutputDevice()
         do {
             try engine.start()
         } catch {
             logger.log("MicCapture: failed to restart engine after output device change: \(error)")
+        }
+    }
+
+    /// Empty both player queues and their bookkeeping. Called at every
+    /// point where the queues are *known* to be empty: before we stop the
+    /// engine ourselves (enabling voice processing, an output-device
+    /// change, teardown) and after the engine stopped itself for a
+    /// configuration change.
+    ///
+    /// This is what keeps the pending counts self-healing. A count only
+    /// ever comes down from a scheduleBuffer completion, and an engine
+    /// stop or I/O-unit swap can discard the queued buffers without
+    /// invoking one; a count left pinned at the cap makes every later
+    /// arrival an overrun drop — inbound voice silent for the rest of the
+    /// session, `overruns=` climbing in the stats line. That is the shape
+    /// 0.10.0-rc.14 had: each machine went deaf the moment its own mic
+    /// came on, because `enableCapture`'s VPIO restart went through the
+    /// engine and the players with no reset (the only one ran once, in
+    /// `startPlayback`).
+    ///
+    /// Order matters: the accounting is reset (opening a new generation)
+    /// *before* the nodes are stopped, because `AVAudioPlayerNode.stop()`
+    /// invokes the completion of every buffer it discards — synchronously,
+    /// on AVFAudio's queue — and those completions must land as orphans of
+    /// the old generation, not as decrements of the fresh count.
+    private func resetPlaybackQueues(reason: String) {
+        let healed = voiceQueue.reset() + systemAudioQueue.reset()
+        for node in playerNodes { node.stop() }
+        systemAudioPlayer?.stop()
+        if healed > 0 {
+            logger.log("MicCapture: playback queues reset (\(reason)); \(healed) queued buffer(s) discarded.")
+        }
+    }
+
+    /// (Re)connect every player into the mixer. Done at `startPlayback`
+    /// and again after voice processing is enabled and after a
+    /// configuration change: enabling VPIO replaces the I/O unit under
+    /// the output node, and a configuration change uninitialises the
+    /// engine, so the graph built before either is not relied on to have
+    /// survived. Connecting an already-connected pair just re-establishes
+    /// it, which is the point.
+    private func connectPlayers() {
+        for player in playerNodes {
+            engine.connect(player, to: mixer, format: outputFormat)
+        }
+        if let sysPlayer = systemAudioPlayer {
+            engine.connect(sysPlayer, to: mixer, format: outputFormat)
         }
     }
 
@@ -822,7 +876,7 @@ final class MicCapture {
             object: engine,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.reinstallTapAfterConfigChange() }
+            Task { @MainActor [weak self] in self?.handleConfigurationChange() }
         }
     }
 
@@ -831,25 +885,21 @@ final class MicCapture {
     /// so listening works without prompting for microphone permission.
     func startPlayback() throws {
         guard !isPlaying else { return }
-        // New playback session: the warmup counter and pending count are
-        // per-session ("since last startPlayback()"), and bumping the
-        // generation orphans any scheduleBuffer completion still in
-        // flight from a previous session — a stale completion must not
-        // drive `pendingBuffers` negative or record a bogus drain.
-        playbackGeneration += 1
-        scheduledCount = 0
-        pendingBuffers = 0
-        drainedAtNs = 0
+        // New playback session: the priming counter and pending count
+        // start from zero, and the reset's new generation orphans any
+        // scheduleBuffer completion still in flight from a previous
+        // session — a stale completion must not drive the count negative
+        // or record a bogus drain.
+        voiceQueue.reset()
+        systemAudioQueue.reset()
         let player = AVAudioPlayerNode()
         engine.attach(player)
-        engine.connect(player, to: mixer, format: outputFormat)
         playerNodes.append(player)
         // Dedicated system-audio node, summed by mainMixerNode.
         let sysPlayer = AVAudioPlayerNode()
         engine.attach(sysPlayer)
-        engine.connect(sysPlayer, to: mixer, format: outputFormat)
         systemAudioPlayer = sysPlayer
-        systemAudioPendingBuffers = 0
+        connectPlayers()
         applyOutputDevice()
         try engine.start()
         // Don't call player.play() yet. scheduleSamples kicks
@@ -889,7 +939,16 @@ final class MicCapture {
         }
 
         // setVoiceProcessingEnabled requires the engine to be stopped.
-        if isPlaying { engine.stop() }
+        // Stopping it empties the players' queues — the buffers already
+        // scheduled for the other side's voice are gone, with or without
+        // their completions — so the bookkeeping is reset with them
+        // (`resetPlaybackQueues`), and playback is re-primed by the
+        // jitter-buffer kick once the engine is back rather than by a
+        // blind `play()` here.
+        if isPlaying {
+            resetPlaybackQueues(reason: "enabling voice processing")
+            engine.stop()
+        }
         do {
             try engine.inputNode.setVoiceProcessingEnabled(true)
             try engine.outputNode.setVoiceProcessingEnabled(true)
@@ -900,8 +959,19 @@ final class MicCapture {
             // often fires once before the engine renegotiates.
             logger.log("MicCapture: VPIO not engaged: \(error). Continuing without AEC.")
         }
+        // Voice processing swaps the I/O unit under the output node and
+        // changes its format; the player → mixer edges built by
+        // `startPlayback` before that are re-established rather than
+        // trusted to have survived it. (The mixer → output edge the engine
+        // makes on its own at start, and the input sink below is wired
+        // after VPIO is on.)
+        if isPlaying { connectPlayers() }
 
-        logger.log("MicCapture: default input device = \(Self.defaultInputDeviceName() ?? "<unknown>")")
+        // The name, not just the ID: when capture goes one-and-done it often
+        // reveals a virtual loopback (BlackHole, Loopback, an aggregate)
+        // sitting where the user assumes the built-in mic is.
+        let defaultInput = AudioDevices.defaultInputID().flatMap { AudioDevices.name(of: $0) }
+        logger.log("MicCapture: default input device = \(defaultInput ?? "<unknown>")")
 
         guard let buffer = TapBuffer(channel: channel) else {
             throw NSError(
@@ -934,8 +1004,10 @@ final class MicCapture {
         applyInputDevice()
         applyOutputDevice()
         try engine.start()
-        for player in playerNodes { player.play() }
-        systemAudioPlayer?.play()
+        // No `play()` here: the players were stopped with their queues
+        // above, and `scheduleSamples` restarts each one once the jitter
+        // target is queued ahead again — the same priming as a fresh
+        // `startPlayback`.
         logger.log("MicCapture: capture started (engineRunning=\(engine.isRunning)).")
 
         isCapturing = true
@@ -969,45 +1041,63 @@ final class MicCapture {
             isCapturing = false
         }
         if isPlaying {
-            // Orphan in-flight scheduleBuffer completions (see
-            // `playbackGeneration`) before tearing the players down.
-            playbackGeneration += 1
-            drainedAtNs = 0
-            for node in playerNodes { node.stop() }
-            systemAudioPlayer?.stop()
-            systemAudioPlayer = nil
-            systemAudioPendingBuffers = 0
+            // Orphans in-flight scheduleBuffer completions (a new
+            // generation) before the players are torn down.
+            resetPlaybackQueues(reason: "stop")
             engine.stop()
+            for node in playerNodes { engine.detach(node) }
+            if let sysPlayer = systemAudioPlayer { engine.detach(sysPlayer) }
+            systemAudioPlayer = nil
             playerNodes.removeAll()
             isPlaying = false
         }
     }
 
-    /// Called from the AVAudioEngineConfigurationChange notification.
-    /// Reconfigure tears down node connections, including the input tap,
-    /// so capture goes dead after one buffer. Re-derive the input format
-    /// (it may have changed — e.g. VPIO renegotiated to mono 24 kHz),
-    /// rebuild the converter, reinstall the tap, and restart the engine.
-    private func reinstallTapAfterConfigChange() {
-        guard isCapturing else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        guard let buffer = TapBuffer(channel: channel) else {
-            logger.log("MicCapture: configuration change — TapBuffer alloc failed; capture stalled.")
-            return
+    /// Called from the AVAudioEngineConfigurationChange notification —
+    /// the engine observed a hardware format or route change (VPIO
+    /// renegotiating the sample rate as it engages, a default-device
+    /// flip, a mic or headset hot-plug), stopped itself, and uninitialised.
+    /// Three things need putting back, and each was missed at some point:
+    ///
+    /// - The players' queues went with the engine, without completions,
+    ///   so their bookkeeping is reset here (see `resetPlaybackQueues`)
+    ///   and the players are re-primed by the jitter-buffer kick. Carrying
+    ///   the old counts over is how playback stayed silent after the mic
+    ///   toggle in 0.10.0-rc.14.
+    /// - The input tap stops firing after a reconfigure ("exactly one
+    ///   buffer, then silence"), and the input format may have changed
+    ///   (e.g. VPIO renegotiated to mono 24 kHz): rebuild the converter and
+    ///   reinstall the tap while capturing.
+    /// - The engine has to be started again — for playback as much as for
+    ///   capture. A handler that only ran while capturing left a
+    ///   listening-only viewer's engine stopped for good after an
+    ///   output-device change.
+    private func handleConfigurationChange() {
+        guard isPlaying || isCapturing else { return }
+        if isPlaying {
+            resetPlaybackQueues(reason: "configuration change")
         }
-        self.tapBuffer = buffer
-        Self.installTap(on: engine.inputNode, buffer: buffer)
+        if isCapturing {
+            engine.inputNode.removeTap(onBus: 0)
+            guard let buffer = TapBuffer(channel: channel) else {
+                logger.log("MicCapture: configuration change — TapBuffer alloc failed; capture stalled.")
+                return
+            }
+            self.tapBuffer = buffer
+            Self.installTap(on: engine.inputNode, buffer: buffer)
+        }
         if !engine.isRunning {
+            if isPlaying { connectPlayers() }
             do {
                 try engine.start()
-                for player in playerNodes { player.play() }
-                systemAudioPlayer?.play()
             } catch {
                 logger.log("MicCapture: configuration change — engine restart failed: \(error)")
                 return
             }
         }
-        logger.log("MicCapture: tap reinstalled after configuration change.")
+        logger.log(
+            "MicCapture: engine reconfigured after configuration change "
+                + "(playing=\(isPlaying) capturing=\(isCapturing) running=\(engine.isRunning)).")
     }
 
     /// Mutable state for the test-tone timer. Lives outside
@@ -1064,38 +1154,6 @@ final class MicCapture {
         channel.processOutboundFrame(samples)
     }
 
-    /// Look up the human-readable name of the system default input device
-    /// via CoreAudio. Used purely for diagnostic logging — when capture
-    /// goes one-and-done, the name often reveals a virtual loopback
-    /// (BlackHole, Loopback, an aggregate) sitting where the user assumes
-    /// the built-in mic is.
-    nonisolated private static func defaultInputDeviceName() -> String? {
-        var deviceID: AudioDeviceID = 0
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &deviceID
-        )
-        guard status == noErr, deviceID != 0 else { return nil }
-
-        var name: Unmanaged<CFString>?
-        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        var nameAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let nameStatus = AudioObjectGetPropertyData(
-            deviceID, &nameAddr, 0, nil, &nameSize, &name
-        )
-        guard nameStatus == noErr, let cfName = name?.takeRetainedValue() else { return nil }
-        return cfName as String
-    }
-
     /// Install the input tap from a nonisolated context so the closure
     /// AVAudioEngine retains does not inherit `@MainActor` isolation from
     /// `start()`. Without this, the audio render thread invoking the tap
@@ -1114,72 +1172,41 @@ final class MicCapture {
         }
     }
 
-    /// Counts scheduled buffers since last `startPlayback()`. Used by the
-    /// jitter-buffer kick: we don't call `player.play()` until at least
-    /// the channel's adaptive target depth has been queued ahead.
-    private var scheduledCount: Int = 0
-
-    /// Pending-buffer counter. AVAudioPlayerNode doesn't expose its
-    /// queue depth, so we increment on schedule and decrement in the
-    /// completion handler. Touched only on @MainActor.
+    /// Every arrival of decoded voice PCM lands here on the MainActor.
+    /// The decisions — drop at the cap, prime then kick, underrun verdict
+    /// — are `PlaybackQueueAccounting`'s; this method owns the AVFAudio
+    /// calls around them.
     ///
-    /// The headroom above the adaptive target depth before we drop the
-    /// incoming buffer instead of scheduling it is
-    /// `VoiceChannel.playbackSlackBuffers`. The sender's
-    /// `DispatchSourceTimer` drifts a hair faster than the receiver's
-    /// audio clock, so without a cap the queue grows unbounded → seconds
-    /// of playback latency that you hear when muting (queue keeps
-    /// draining after the sender stops). Dropping at the cap eats one
-    /// frame (~20 ms) at most and keeps end-to-end latency bounded near
+    /// The cap: the sender's `DispatchSourceTimer` drifts a hair faster
+    /// than the receiver's audio clock, so without a cap the queue grows
+    /// unbounded → seconds of playback latency that you hear when muting
+    /// (queue keeps draining after the sender stops). Dropping at
+    /// `targetDepth + playbackSlackBuffers` eats one frame (~20 ms) at
+    /// most and keeps end-to-end latency bounded near
     /// `(targetDepth + slack) * 20 ms` — the clock-drift backstop.
-    private var pendingBuffers: Int = 0
-
-    /// Playback-session marker, bumped by `startPlayback()` and `stop()`.
-    /// Every scheduleBuffer completion captures it and bails if a new
-    /// session has started, so a completion Task racing a stop/start
-    /// cycle can't corrupt `pendingBuffers` or `drainedAtNs`.
-    private var playbackGeneration = 0
-
-    /// Uptime when the pending queue last drained to zero while the
-    /// player was running; 0 = no drain pending. Whether that drain was
-    /// an audible underrun is decided on the next arrival — see
-    /// `VoiceReceiveDecisions.isStarveResume`.
-    private var drainedAtNs: UInt64 = 0
-
     private func scheduleSamples(_ samples: [Float]) {
         guard isPlaying, let player = playerNodes.first else { return }
         // A past drain-to-zero counts as an underrun only if audio
         // resumes shortly after (starve-then-resume). A drain followed by
         // this long a silence was a benign stop (mute / end of stream).
-        if drainedAtNs != 0 {
-            let now = DispatchTime.now().uptimeNanoseconds
-            if VoiceReceiveDecisions.isStarveResume(drainedAtNs: drainedAtNs, nowNs: now) {
-                channel.noteUnderrun()
-            }
-            drainedAtNs = 0
+        if voiceQueue.takeStarveVerdict(nowNs: DispatchTime.now().uptimeNanoseconds) {
+            channel.noteUnderrun()
         }
         // Adaptive jitter-buffer depth: 20 ms buffers, sized by the
         // channel from RFC 3550 inter-arrival jitter (initially 3 ≈ 64 ms,
         // bounded at 12 ≈ 256 ms of added latency).
         let targetDepth = channel.currentJitterTargetDepth
-        if pendingBuffers >= targetDepth + VoiceChannel.playbackSlackBuffers {
+        guard let buffer = Self.makeBuffer(samples, format: outputFormat) else { return }
+        let verdict = voiceQueue.schedule(
+            targetDepth: targetDepth,
+            slack: VoiceChannel.playbackSlackBuffers,
+            playerIsPlaying: player.isPlaying
+        )
+        guard case .schedule(let kickPlayback) = verdict else {
             channel.noteOverrunDrop()
             return
         }
-        guard
-            let buffer = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: AVAudioFrameCount(samples.count)
-            )
-        else { return }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        guard let dst = buffer.floatChannelData?[0] else { return }
-        for (i, sample) in samples.enumerated() {
-            dst[i] = sample
-        }
-        scheduledCount += 1
-        pendingBuffers += 1
-        let generation = playbackGeneration
+        let generation = voiceQueue.generation
         // AVFAudio runs this on its own `CompletionHandlerQueue`, never the
         // main queue — and not only when a buffer finishes playing: a buffer
         // still pending when `stop()` tears the node down is discarded, and
@@ -1193,24 +1220,24 @@ final class MicCapture {
         // same trap, and the same fix, as `installTap` and
         // `SharerNoticeCenter.ensureAuthorization`.
         let onBufferConsumed: @Sendable () -> Void = { [weak self] in
-            // Hop to MainActor before mutating @MainActor state.
+            // Hop to MainActor before mutating @MainActor state. The
+            // captured generation lets the accounting orphan a completion
+            // for a buffer a reset already discarded. Re-read the player
+            // from self rather than capturing the non-Sendable node.
             Task { @MainActor [weak self] in
-                guard let self, self.playbackGeneration == generation else { return }
-                self.pendingBuffers -= 1
-                // Queue drained while the player is still running —
-                // possibly the audible starve; the next arrival decides.
-                // Re-read the player from self rather than capturing the
-                // non-Sendable node in this closure.
-                if self.pendingBuffers == 0, self.playerNodes.first?.isPlaying == true {
-                    self.drainedAtNs = DispatchTime.now().uptimeNanoseconds
-                }
+                guard let self else { return }
+                self.voiceQueue.consumed(
+                    generation: generation,
+                    playerIsPlaying: self.playerNodes.first?.isPlaying == true,
+                    nowNs: DispatchTime.now().uptimeNanoseconds
+                )
             }
         }
         player.scheduleBuffer(buffer, completionHandler: onBufferConsumed)
-        // Defer the first play() until we have a small queue ahead.
-        if !player.isPlaying && scheduledCount >= targetDepth {
-            player.play()
-        }
+        // Defer the first play() until we have a small queue ahead — and
+        // the first after every reset, since the players are stopped
+        // with their queues.
+        if kickPlayback { player.play() }
     }
 
     /// Schedule one decoded system-audio block into the dedicated node. A twin
@@ -1219,39 +1246,50 @@ final class MicCapture {
     /// estimate). Drops at a fixed cap so clock drift can't grow the queue.
     private func scheduleSystemAudioSamples(_ samples: [Float]) {
         guard isPlaying, let player = systemAudioPlayer else { return }
-        let cap = VoiceChannel.initialJitterTargetDepth + VoiceChannel.playbackSlackBuffers
-        if systemAudioPendingBuffers >= cap {
+        guard let buffer = Self.makeBuffer(samples, format: outputFormat) else { return }
+        let verdict = systemAudioQueue.schedule(
+            targetDepth: VoiceChannel.initialJitterTargetDepth,
+            slack: VoiceChannel.playbackSlackBuffers,
+            playerIsPlaying: player.isPlaying
+        )
+        guard case .schedule(let kickPlayback) = verdict else {
             channel.noteOverrunDrop()
             return
         }
-        guard
-            let buffer = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: AVAudioFrameCount(samples.count)
-            )
-        else { return }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        guard let dst = buffer.floatChannelData?[0] else { return }
-        for (i, sample) in samples.enumerated() {
-            dst[i] = sample
-        }
-        systemAudioPendingBuffers += 1
-        let generation = playbackGeneration
+        let generation = systemAudioQueue.generation
         // `@Sendable` for the reason `scheduleSamples`' handler is: AVFAudio
         // calls it on its own queue (including synchronously from the command
         // destructor when `stop()` discards a pending buffer), and an
         // inferred-MainActor closure traps there under Swift 6.
         let onBufferConsumed: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self, self.playbackGeneration == generation else { return }
-                self.systemAudioPendingBuffers -= 1
+                guard let self else { return }
+                self.systemAudioQueue.consumed(
+                    generation: generation,
+                    playerIsPlaying: self.systemAudioPlayer?.isPlaying == true,
+                    nowNs: DispatchTime.now().uptimeNanoseconds
+                )
             }
         }
         player.scheduleBuffer(buffer, completionHandler: onBufferConsumed)
         // Defer the first play() until a small queue is buffered ahead.
-        if !player.isPlaying && systemAudioPendingBuffers >= VoiceChannel.initialJitterTargetDepth {
-            player.play()
+        if kickPlayback { player.play() }
+    }
+
+    /// One decoded block as a player-node buffer in the codec format.
+    private static func makeBuffer(_ samples: [Float], format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        guard
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(samples.count)
+            ),
+            let dst = buffer.floatChannelData?[0]
+        else { return nil }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        for (i, sample) in samples.enumerated() {
+            dst[i] = sample
         }
+        return buffer
     }
 
     // `nonisolated` is load-bearing: `MicCapture` is `@MainActor`, so without
