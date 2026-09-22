@@ -3778,8 +3778,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             let cutoff = now &- windowNs
             let capsByAddr = viewerCaps.withLock { $0 }
             let (pliCounts, lossQ8ByAddr, currentlyThrottled, feedbackStaleAddrs) =
-                viewers.withLock {
-                    state -> ([String: Int], [String: Int], Set<String>, Set<String>) in
+                viewers.withLock { state -> ([String: Int], [String: Int], Set<String>, Set<String>) in
                     var counts: [String: Int] = [:]
                     var lossQ8: [String: Int] = [:]
                     var throttled = Set<String>()
