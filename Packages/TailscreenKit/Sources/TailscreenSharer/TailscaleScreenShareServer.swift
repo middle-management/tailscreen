@@ -311,6 +311,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// that reports high loss then goes silent doesn't pin the global loss
         /// input up until it's swept out.
         var lastRRAtNs: UInt64 = 0
+        /// Uptime-ns this viewer was admitted. The clock the *absence* of a
+        /// receiver report is measured against: a viewer that negotiated
+        /// `.receiverReport` and has never sent one has no `lastRRAtNs` to
+        /// age, and `lastSeenNs` moves with every packet so it can't serve.
+        /// Only the grace period after admission uses it — see
+        /// `CongestionControl.feedbackIsStale`.
+        let admittedAtNs: UInt64
         /// Retransmits served to this viewer in the current sweep window, reset
         /// each window. NACK-recovered loss softens the congestion cut.
         var nackServedThisWindow: Int = 0
@@ -2886,6 +2893,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 audioSSRC: newAudioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now,
+                admittedAtNs: now,
                 info: newInfo
             )
             state[addr] = v
@@ -3070,6 +3078,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 audioSSRC: pending.audioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now,
+                // Admission, not arrival: a viewer parked at the approval
+                // gate for a minute has not been failing to report, so its
+                // wait must not count against the first-report grace period.
+                admittedAtNs: now,
                 info: ViewerInfo(
                     id: pending.info.id,
                     tailscaleIP: pending.info.tailscaleIP,
@@ -3764,11 +3776,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // per-viewer PLI count, its (freshness-decayed) RR loss, and who's
             // currently in keyframe-only mode.
             let cutoff = now &- windowNs
-            let (pliCounts, lossQ8ByAddr, currentlyThrottled) =
-                viewers.withLock { state -> ([String: Int], [String: Int], Set<String>) in
+            let capsByAddr = viewerCaps.withLock { $0 }
+            let (pliCounts, lossQ8ByAddr, currentlyThrottled, feedbackStaleAddrs) =
+                viewers.withLock {
+                    state -> ([String: Int], [String: Int], Set<String>, Set<String>) in
                     var counts: [String: Int] = [:]
                     var lossQ8: [String: Int] = [:]
                     var throttled = Set<String>()
+                    var stale = Set<String>()
                     for key in Array(state.keys) {
                         guard var viewer = state[key] else { continue }
                         viewer.pliTimestampsNs.removeAll { $0 < cutoff }
@@ -3779,9 +3794,20 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                         // then went silent can't pin the global input up.
                         let fresh = viewer.lastRRAtNs != 0 && now &- viewer.lastRRAtNs < windowNs
                         lossQ8[key] = fresh ? viewer.lossFractionQ8 : 0
+                        // …and separately record that the decay HAPPENED, so
+                        // the decayed 0 above can't be mistaken for a clean
+                        // report by the recovery arm.
+                        let hasReported = viewer.lastRRAtNs != 0
+                        let since = now &- (hasReported ? viewer.lastRRAtNs : viewer.admittedAtNs)
+                        if Self.feedbackIsStale(
+                            expectsReports: capsByAddr[key]?.contains(.receiverReport) ?? false,
+                            hasReported: hasReported, sinceNs: since, windowNs: windowNs)
+                        {
+                            stale.insert(key)
+                        }
                         if now < viewer.throttledUntilNs { throttled.insert(key) }
                     }
-                    return (counts, lossQ8, throttled)
+                    return (counts, lossQ8, throttled, stale)
                 }
 
             // Attribute loss: throttle an isolated bad viewer (keyframe-only,
@@ -3793,7 +3819,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 pliCounts: pliCounts,
                 lossQ8ByAddr: lossQ8ByAddr,
                 currentlyThrottled: currentlyThrottled,
-                lossThreshold: lossThreshold)
+                lossThreshold: lossThreshold,
+                feedbackStaleAddrs: feedbackStaleAddrs)
             let throttleSet = Set(gci.throttle)
             let throttleDeadline = now &+ (2 &* windowNs)  // ~10 s; renewed while isolated
 
@@ -3818,7 +3845,9 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 return health
             }
             publishViewerHealth(healthByAddr)
-            logViewerStats(pliCounts: pliCounts, healthByAddr: healthByAddr)
+            logViewerStats(
+                pliCounts: pliCounts, healthByAddr: healthByAddr,
+                feedbackStaleAddrs: feedbackStaleAddrs)
             // Before the drains below and in `sweepFECArm`: the per-window
             // counters are read here as this window's totals, then zeroed.
             recordTransportSummaries(
@@ -3849,7 +3878,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                     baseline: baseline,
                     fpsTier: fpsTier,
                     fpsCap: sessionFpsCap,
-                    elapsedSinceChangeNs: elapsedSinceChange),
+                    elapsedSinceChangeNs: elapsedSinceChange,
+                    feedbackStale: gci.feedbackStale),
                 lossThreshold: lossThreshold,
                 downHysteresisNs: downHysteresisNs,
                 upHysteresisNs: upHysteresisNs)
@@ -3960,17 +3990,30 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     /// Emit one stats log line per viewer with nonzero activity this window
-    /// (PLIs, dropped video/audio frames, or a live throttle). Cheap and
-    /// once-per-5 s; the drop counts are cumulative per send chain.
-    private func logViewerStats(pliCounts: [String: Int], healthByAddr: [String: ViewerHealth]) {
+    /// (PLIs, dropped video/audio frames, a live throttle, or feedback that
+    /// has stopped arriving). Cheap and once-per-5 s; the drop counts are
+    /// cumulative per send chain.
+    ///
+    /// `rrStale` is in the guard as well as the line: a viewer whose reports
+    /// have stopped has nothing else nonzero to report — its decayed loss
+    /// reads 0 and it sends no PLIs — so before this the one share state
+    /// nobody could see from a log was the one where the sharer had gone
+    /// deaf. It is the same verdict the recovery arm now holds on.
+    private func logViewerStats(
+        pliCounts: [String: Int], healthByAddr: [String: ViewerHealth],
+        feedbackStaleAddrs: Set<String>
+    ) {
         let videoDrops = videoSendTails.withLock { $0.mapValues { $0.droppedFrames } }
         let audioDrops = audioSendTails.withLock { $0.mapValues { $0.droppedFrames } }
         for (addr, plis) in pliCounts {
             let vDrops = videoDrops[addr] ?? 0
             let aDrops = audioDrops[addr] ?? 0
             let thr = healthByAddr[addr] == .throttled
-            guard plis > 0 || vDrops > 0 || aDrops > 0 || thr else { continue }
-            logger.log("Viewer stats \(addr) plis/5s=\(plis) vDrops=\(vDrops) aDrops=\(aDrops) throttled=\(thr)")
+            let rrStale = feedbackStaleAddrs.contains(addr)
+            guard plis > 0 || vDrops > 0 || aDrops > 0 || thr || rrStale else { continue }
+            logger.log(
+                "Viewer stats \(addr) plis/5s=\(plis) vDrops=\(vDrops) aDrops=\(aDrops) "
+                    + "throttled=\(thr) rrStale=\(rrStale)")
         }
     }
 
