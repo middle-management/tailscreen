@@ -85,12 +85,108 @@ public final class ViewerSession {
     /// already taken by the live counter snapshot the stats overlay reads —
     /// a different thing entirely, kept for a different purpose.
     ///
-    /// Only the handshake and the terminal transitions are recorded here, not
-    /// the per-packet paths: the events worth keeping are the ones that
-    /// explain a session, and `receiveRTP` runs hundreds of times a second.
-    /// The counters in ``ViewerSession/diagnostics`` already summarize that
-    /// traffic, and the host samples them into `transport.summary`.
+    /// Three kinds of thing are recorded here, and the per-packet paths are
+    /// deliberately not one of them (`receiveRTP` runs hundreds of times a
+    /// second): the handshake and the terminal transitions; the media
+    /// milestones — the first decoded frame, a frame-size change, a decode
+    /// failure and each rung of the recovery ladder, up to the stall; and one
+    /// `transport.summary` per ``DiagnosticsTransportSampler`` window,
+    /// rolling up the counters in ``ViewerSession/diagnostics`` into a row a
+    /// reader can diff against the sharer's summary for the same window.
+    /// Recording these in the session rather than in each host is what makes
+    /// a macOS, GTK and WinUI viewer bundle say the same things.
     public var recorder: DiagnosticsRecorder?
+
+    /// Cadence for `transport.summary`. Ticks from `tick(nowNs:)`, and only
+    /// once admitted — before the HELLO_ACK there is no media to roll up.
+    private var transportSampler = DiagnosticsTransportSampler()
+    /// The counters as they stood when the last summary was recorded, so each
+    /// summary carries this window's deltas rather than session totals: a
+    /// reader wants "no frames in these five seconds", and a running total
+    /// makes them subtract two rows to find it.
+    private var lastSummarizedDiagnostics = Diagnostics()
+    /// Session clock at the HELLO_ACK, for `decode.first_frame`'s time-to-
+    /// first-frame; 0 before admission.
+    private var admittedAtNs: UInt64 = 0
+    /// Size of the most recently drained frame, for `render.size.changed`.
+    private var lastFrameSize: (width: Int, height: Int)?
+
+    /// What the decoder reported since the last drain — the one piece of
+    /// this session that is written from **any** thread.
+    ///
+    /// Everything else here runs on the host's serialization context, and
+    /// the decoder callbacks are documented to as well. In practice the mac
+    /// host does not honour that for frames: `VTVideoDecoderAdapter` hops
+    /// decoded frames onto its own queue, while `tick` and `receiveRTP` run on
+    /// the receive task. Before the recorder existed nothing on the receive
+    /// side ever read what the frame side wrote, so the mismatch was
+    /// harmless; recording the first frame and the per-window frame count
+    /// from the receive side made it a data race. So the frame side no
+    /// longer touches session state at all: it drops what happened into this
+    /// box, and the receive side drains it (`drainFrameMailbox`) at every
+    /// entry point before reading or recording anything. For the synchronous
+    /// FFmpeg decoders the drain runs on the same thread inside the same
+    /// call, so the ladder and the counters behave exactly as they did.
+    ///
+    /// The episode latch lives in here rather than beside the counters for
+    /// the same reason: `decode.failed` is once per failing run, and the run
+    /// is closed by a frame that may arrive on the other thread.
+    private let frameMailbox = Guarded<FrameMailbox>(FrameMailbox())
+
+    private struct FrameMailbox {
+        /// Frames decoded since the last drain.
+        var decodedFrames = 0
+        /// Per-frame decode failures since the last drain, from either the
+        /// portable `onDecodeFailure` seam or a host's counting-only
+        /// `noteHostDecodeFailure`.
+        var failures = 0
+        /// Failing runs that opened since the last drain — a failure with no
+        /// failure since the previous frame. At most one per drain in
+        /// practice; counted rather than latched so a run that opened and
+        /// closed between two drains is still recorded.
+        var episodesOpened = 0
+        /// True from a failure until the next frame.
+        var episodeOpen = false
+        /// True when the most recent report was a frame — what tells the
+        /// ladder its run is over.
+        var lastWasFrame = false
+        /// Frame sizes seen, in order, appended only when the size differs
+        /// from the previous entry; the drain turns each step into a
+        /// `render.size.changed`. Bounded by how often a share changes
+        /// resolution, which is rarely.
+        var sizes: [(width: Int, height: Int)] = []
+
+        mutating func noteFrame(width: Int, height: Int) {
+            decodedFrames += 1
+            episodeOpen = false
+            lastWasFrame = true
+            if let last = sizes.last, last.width == width, last.height == height { return }
+            sizes.append((width, height))
+        }
+
+        mutating func noteFailure() {
+            failures += 1
+            lastWasFrame = false
+            if !episodeOpen {
+                episodeOpen = true
+                episodesOpened += 1
+            }
+        }
+
+        /// Hand back what accumulated and start the next batch, keeping the
+        /// open-episode latch and the last size (the next batch's baseline).
+        mutating func take() -> FrameMailbox {
+            let taken = self
+            decodedFrames = 0
+            failures = 0
+            episodesOpened = 0
+            lastWasFrame = false
+            if let last = sizes.last { sizes = [last] } else { sizes = [] }
+            return taken
+        }
+
+        var isEmpty: Bool { decodedFrames == 0 && failures == 0 }
+    }
 
     // MARK: Decode-recovery ladder opt-in (optional; host cooperation)
 
@@ -259,7 +355,7 @@ public final class ViewerSession {
         // (synchronously for FFmpeg, after an adapter hop for an async backend
         // like VideoToolbox).
         decoder.onDecodedFrame = { [weak self] frame in
-            self?.noteDecodedFrame()
+            self?.noteDecodedFrame(frame)
             videoSink.present(frame)
         }
         decoder.onDecodeFailure = { [weak self] in
@@ -297,6 +393,7 @@ public final class ViewerSession {
     /// malformed input is dropped.
     public func receiveRTP(_ data: Data) {
         guard !data.isEmpty else { return }
+        drainFrameMailbox()
 
         if ScreenShareControlMessage.looksLikeControl(data) {
             controlPacketsReceived += 1
@@ -361,6 +458,16 @@ public final class ViewerSession {
         public var codec: VideoCodec?
         /// Smoothed RTT from the NACK scheduler, ms. 0 before the first sample.
         public var rttMs: Int = 0
+        /// NACKs (selective-retransmit requests) sent.
+        public var nacksSent = 0
+        /// Packets recovered via FEC parity, over the session.
+        public var fecRecovered = 0
+        /// The `fracLostQ8` of the most recent receiver report this viewer
+        /// sent — its own residual-loss reading, as the sharer sees it. 0
+        /// before the first report.
+        public var lastReportedLossQ8: Int = 0
+        /// True while parity is flowing and the FEC receive path is armed.
+        public var fecActive = false
 
         /// One line, for a log. Deliberately terse — it is printed on a cadence.
         public var summary: String {
@@ -373,9 +480,53 @@ public final class ViewerSession {
                 + "rtt=\(rttMs)ms "
                 + "decoded=\(framesDecoded) decodeFailures=\(decodeFailures)"
         }
+
+        /// The `transport.summary` row for one window: this snapshot's
+        /// counters minus `previous`'s, plus the gauges (RTT, last reported
+        /// loss, codec, keyframe, FEC state) as they stand now.
+        ///
+        /// Deltas, not totals, for every counter: the question a summary
+        /// answers is "what happened in these five seconds", and a running
+        /// total makes a reader subtract two rows to find out. `frames_total`
+        /// is the one cumulative field, because "still zero" is the blank-
+        /// viewer question and it should not need the previous row either.
+        ///
+        /// Pure — a struct method over two values — so the field set is
+        /// pinned by a test with no session behind it, and the session's
+        /// only job is to remember the previous snapshot.
+        public func transportSummaryFields(
+            since previous: Diagnostics, windowNs: UInt64
+        ) -> [String: DiagnosticValue] {
+            [
+                "window_ms": DiagnosticValue(windowNs / 1_000_000),
+                "video_packets": DiagnosticValue(videoPacketsReceived - previous.videoPacketsReceived),
+                "audio_packets": DiagnosticValue(audioPacketsReceived - previous.audioPacketsReceived),
+                "control_packets": DiagnosticValue(controlPacketsReceived - previous.controlPacketsReceived),
+                "bad_rtp": DiagnosticValue(undecodablePackets - previous.undecodablePackets),
+                "aus": DiagnosticValue(accessUnitsAssembled - previous.accessUnitsAssembled),
+                "torn_aus": DiagnosticValue(tornAUs - previous.tornAUs),
+                "skipped_gaps": DiagnosticValue(skippedGaps - previous.skippedGaps),
+                "pre_keyframe_drops": DiagnosticValue(preKeyframeDrops - previous.preKeyframeDrops),
+                "frames": DiagnosticValue(framesDecoded - previous.framesDecoded),
+                "frames_total": DiagnosticValue(framesDecoded),
+                "decode_failures": DiagnosticValue(decodeFailures - previous.decodeFailures),
+                "plis_sent": DiagnosticValue(keyframeRequests - previous.keyframeRequests),
+                "nacks_sent": DiagnosticValue(nacksSent - previous.nacksSent),
+                "fec_recovered": DiagnosticValue(fecRecovered - previous.fecRecovered),
+                "loss_q8": DiagnosticValue(lastReportedLossQ8),
+                "rtt_ms": DiagnosticValue(rttMs),
+                "codec": .string(codec?.rawValue ?? "none"),
+                "keyframe": .bool(seenKeyframe),
+                "fec_active": .bool(fecActive)
+            ]
+        }
     }
 
     public var diagnostics: Diagnostics {
+        // Read from the host's serialization context, like everything else
+        // here; draining first is what makes a frame the decoder just
+        // delivered on another thread visible in the snapshot.
+        drainFrameMailbox()
         var snapshot = Diagnostics()
         snapshot.videoPacketsReceived = videoPacketsReceived
         snapshot.audioPacketsReceived = audioPacketsReceived
@@ -392,6 +543,10 @@ public final class ViewerSession {
         snapshot.keyframeRequests = keyframeRequestsSent
         snapshot.codec = observedCodec
         snapshot.rttMs = Int(nack.rttEstimateNs / 1_000_000)
+        snapshot.nacksSent = nacksSent
+        snapshot.fecRecovered = fecRecoveredTotal
+        snapshot.lastReportedLossQ8 = lastReportedLossQ8
+        snapshot.fecActive = fecParityActive
         return snapshot
     }
 
@@ -403,6 +558,9 @@ public final class ViewerSession {
     private var accessUnitsAssembled = 0
     private var framesDecoded = 0
     private var decodeFailures = 0
+    private var nacksSent = 0
+    private var fecRecoveredTotal = 0
+    private var lastReportedLossQ8 = 0
     /// Every PLI this session has sent, from all three senders (the pre-keyframe
     /// retry, a decode failure, and the NACK scheduler giving up on a gap).
     private var keyframeRequestsSent = 0
@@ -416,6 +574,7 @@ public final class ViewerSession {
     /// and emits a receiver report about once a second.
     public func tick(nowNs: UInt64) {
         self.nowNs = nowNs
+        drainFrameMailbox()
 
         if caps.contains(.nack) {
             emit(actions: nack.tick(nowNs: nowNs))
@@ -424,6 +583,28 @@ public final class ViewerSession {
         maybeDisarmFEC()
         maybeRequestKeyframe()
         maybeSendReceiverReport()
+        maybeRecordTransportSummary()
+    }
+
+    /// One `transport.summary` per sampler window, once admitted.
+    ///
+    /// Gated on `assignedSSRC` for the same reason `maybeRequestKeyframe`
+    /// is: before the HELLO_ACK there is no media to roll up, and a viewer
+    /// parked on the approval prompt for a minute would otherwise record
+    /// twelve rows of zeros ahead of the handshake that matters. The sampler
+    /// is only ticked once admitted too, so the first window is measured
+    /// from admission rather than from `start()`.
+    private func maybeRecordTransportSummary() {
+        guard assignedSSRC != nil, let recorder else { return }
+        guard let windowNs = transportSampler.windowClosed(nowNs: nowNs) else { return }
+        let now = diagnostics
+        let previous = lastSummarizedDiagnostics
+        lastSummarizedDiagnostics = now
+        recorder.record(
+            .transportSummary,
+            role: .viewer,
+            fields: now.transportSummaryFields(since: previous, windowNs: windowNs)
+                .merging(["ssrc": DiagnosticValue(assignedSSRC ?? 0)]) { current, _ in current })
     }
 
     /// Ask for a keyframe, on a cadence, while admitted with none yet.
@@ -496,6 +677,7 @@ public final class ViewerSession {
                         "server_caps": .string(caps.diagnosticDescription),
                         "was_pending": .bool(isPendingApproval)
                     ])
+                if assignedSSRC == nil { admittedAtNs = nowNs }
                 assignedSSRC = ssrc
                 serverCaps = caps
                 isPendingApproval = false
@@ -626,6 +808,7 @@ public final class ViewerSession {
     /// recovered tail-of-batch marker so the next batch opens no phantom gap).
     private func processRecoveredPacket(_ recovery: FECGroupBuffer.Recovery) {
         fecRecoveredSinceReport += 1
+        fecRecoveredTotal += 1
         onFECRecovered?()
         if caps.contains(.receiverReport) {
             rr.observe(seq: recovery.seq)
@@ -690,7 +873,13 @@ public final class ViewerSession {
     /// macOS `VideoDecoder` applies internally, so all three hosts escalate
     /// identically.
     private func handleDecodeFailure() {
-        decodeFailures += 1
+        // Through the mailbox like a frame, then drained at once: this runs
+        // on the host's serialization context (a synchronous decoder reports
+        // from inside `decode`), so the drain sees this failure — and the
+        // frame that preceded it, if one did, which is what closes the
+        // previous episode and resets the ladder — in order.
+        frameMailbox.withLock { $0.noteFailure() }
+        drainFrameMailbox()
         guard onDecoderResetNeeded != nil || onDecodeFatal != nil else {
             sendDecodeRecoveryPLI()
             return
@@ -701,6 +890,17 @@ public final class ViewerSession {
             alreadyFired: firedDecodeRecoveryRungs)
         guard let action = decision else { return }
         firedDecodeRecoveryRungs.insert(action)
+        // Each rung fires at most once per episode (the latch above), so this
+        // is at most four events per failing run. `video.stalled` is the last
+        // rung under its own name: it is the event a reader searches for, and
+        // the one that carries `error` severity.
+        recorder?.record(
+            .decodeRecoveryAction,
+            role: .viewer,
+            fields: [
+                "action": .string(action.diagnosticName),
+                "consecutive_failures": DiagnosticValue(consecutiveDecodeFailures)
+            ])
         switch action {
         case .requestKeyframe:
             sendDecodeRecoveryPLI()
@@ -715,18 +915,113 @@ public final class ViewerSession {
             // renders its degraded badge host-side).
             break
         case .surfaceError:
+            recorder?.record(
+                .videoStalled,
+                role: .viewer,
+                fields: [
+                    "consecutive_failures": DiagnosticValue(consecutiveDecodeFailures),
+                    "codec": .string(observedCodec?.rawValue ?? "none")
+                ])
             onDecodeFatal?()
         }
     }
 
-    /// A successfully decoded frame: reset the ladder's counter and latches so
-    /// the next failing run starts a fresh episode (mirrors the mac decoder's
-    /// success-path reset).
-    private func noteDecodedFrame() {
-        framesDecoded += 1
-        consecutiveDecodeFailures = 0
-        if !firedDecodeRecoveryRungs.isEmpty {
-            firedDecodeRecoveryRungs.removeAll()
+    /// A successfully decoded frame. **Safe from any thread** — the one
+    /// entry point that is, because the mac adapter delivers frames off its
+    /// own queue (see `frameMailbox`). Touches nothing but the mailbox; the
+    /// receive side drains it and does the bookkeeping.
+    private func noteDecodedFrame(_ frame: any DecodedFrame) {
+        frameMailbox.withLock { $0.noteFrame(width: frame.width, height: frame.height) }
+    }
+
+    /// Count a per-frame decode failure that the host's own decoder handled
+    /// — the escalation ladder, the PLI, the reset — without running the
+    /// session's. **Safe from any thread**, like `noteDecodedFrame`.
+    ///
+    /// For the mac host, whose `VideoDecoder` runs the ladder internally and
+    /// therefore leaves `VideoDecoding.onDecodeFailure` deliberately unwired
+    /// (wiring it would double-ladder one episode). Without this, its
+    /// `transport.summary` rows said `decode_failures=0` through a failing
+    /// run, and its `decode.failed` was a second, host-side copy of the
+    /// episode rule. Now both come from the same mailbox as everyone else's.
+    public func noteHostDecodeFailure() {
+        frameMailbox.withLock { $0.noteFailure() }
+    }
+
+    /// Apply what the decoder reported since the last drain, on the host's
+    /// serialization context: the counters, the ladder reset a frame implies,
+    /// and the three records — `decode.first_frame`, `render.size.changed`,
+    /// and `decode.failed` once per run that opened.
+    ///
+    /// Called at every entry point (`tick`, `receiveRTP`, `diagnostics`, and
+    /// the portable failure path), so on the mac host a frame delivered on
+    /// the other thread is accounted for within a packet or a tick. That is
+    /// the granularity `ms_since_ack` has there; on the synchronous hosts it
+    /// is exact.
+    private func drainFrameMailbox() {
+        let batch = frameMailbox.withLock { $0.take() }
+        guard !batch.isEmpty else { return }
+
+        let firstFrameEver = framesDecoded == 0 && batch.decodedFrames > 0
+        framesDecoded += batch.decodedFrames
+        decodeFailures += batch.failures
+
+        if batch.decodedFrames > 0, batch.lastWasFrame {
+            // The run is over: the next failing run starts a fresh episode
+            // (mirrors the mac decoder's own success-path reset).
+            consecutiveDecodeFailures = 0
+            if !firedDecodeRecoveryRungs.isEmpty {
+                firedDecodeRecoveryRungs.removeAll()
+            }
+        }
+
+        if firstFrameEver, let first = batch.sizes.first {
+            // Time-to-first-frame from admission is the number that separates
+            // "slow to start" from "never started", and the drops and requests
+            // beside it say what the wait was spent on.
+            recorder?.record(
+                .decodeFirstFrame,
+                role: .viewer,
+                fields: [
+                    "size": .string("\(first.width)x\(first.height)"),
+                    "codec": .string(observedCodec?.rawValue ?? "none"),
+                    "ms_since_ack": DiagnosticValue(
+                        admittedAtNs == 0 ? 0 : (nowNs &- admittedAtNs) / 1_000_000),
+                    "pre_keyframe_drops": DiagnosticValue(preKeyframeDropCount),
+                    "keyframe_requests": DiagnosticValue(keyframeRequestsSent)
+                ])
+        }
+
+        for size in batch.sizes {
+            if let last = lastFrameSize, last.width != size.width || last.height != size.height {
+                // A resolution change mid-share is the sharer's encoder
+                // re-anchoring (a display change, a window resize under the
+                // portal backend) and is the usual explanation for a bitrate
+                // step a reader would otherwise attribute to loss.
+                recorder?.record(
+                    .renderSizeChanged,
+                    role: .viewer,
+                    fields: [
+                        "from": .string("\(last.width)x\(last.height)"),
+                        "to": .string("\(size.width)x\(size.height)")
+                    ])
+            }
+            lastFrameSize = size
+        }
+
+        // Once per episode, not per frame — a wedged decoder fails at frame
+        // rate, and per-frame events would push the handshake out of the
+        // ring in seconds. The totals ride along so the row still says how
+        // bad it has been.
+        for _ in 0..<batch.episodesOpened {
+            recorder?.record(
+                .decodeFailed,
+                role: .viewer,
+                fields: [
+                    "codec": .string(observedCodec?.rawValue ?? "none"),
+                    "failures_total": DiagnosticValue(decodeFailures),
+                    "frames_total": DiagnosticValue(framesDecoded)
+                ])
         }
     }
 
@@ -762,6 +1057,7 @@ public final class ViewerSession {
                 let entries = NACKScheduler.packFCI(seqs)
                 guard !entries.isEmpty else { continue }
                 onControlToSend(ScreenShareControlMessage.encodeNACK(entries))
+                nacksSent += 1
                 onNACKSent?()
             case .sendPLI:
                 keyframeRequestsSent += 1
@@ -798,5 +1094,6 @@ public final class ViewerSession {
         lastReportNs = nowNs
         sentFirstReport = true
         fecRecoveredSinceReport = 0
+        lastReportedLossQ8 = Int(fracLostQ8)
     }
 }

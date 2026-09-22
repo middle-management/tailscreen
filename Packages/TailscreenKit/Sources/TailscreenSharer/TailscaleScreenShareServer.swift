@@ -1340,6 +1340,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 "CaptureEncoding: anchored baseline bitrate \(baseline / 1000) kbps for "
                     + "\(width)x\(height) \(codec) @\(quality.fpsCap)fps"
             )
+            // The one place the share's codec, resolution and rate ceiling
+            // are all known at once — and, thanks to the `changed` guard,
+            // only when one of them actually changed, so a re-emit on every
+            // IDR does not become an event every two seconds. This is the
+            // row every later `encode.bitrate.changed` is read against.
+            var selected: [String: DiagnosticValue] = [
+                "codec": .string(codec.rawValue),
+                "size": .string("\(width)x\(height)"),
+                "fps": DiagnosticValue(quality.fpsCap),
+                "anchor_kbps": DiagnosticValue(anchor / 1000),
+                "baseline_kbps": DiagnosticValue(baseline / 1000)
+            ]
+            if let ceiling = quality.maxBitrateBps {
+                selected["ceiling_kbps"] = DiagnosticValue(ceiling / 1000)
+            }
+            self.recorder?.record(.encodeCodecSelected, role: .sharer, fields: selected)
         }
         helper.onPreviewImage = { [weak self] image in
             self?.onPreviewImage?(image)
@@ -3310,10 +3326,23 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     private func removeViewer(addr: String) {
-        let removed = viewers.withLock { state -> Bool in
-            state.removeValue(forKey: addr) != nil
+        let removedInfo = viewers.withLock { state -> ViewerInfo? in
+            state.removeValue(forKey: addr)?.info
         }
-        if removed {
+        if let removedInfo {
+            // The viewer said BYE — the orderly ending. The idle sweep records
+            // the other one (`reason=idle_timeout`); together with
+            // `viewer.expelled` every way out of the admitted set is named.
+            recorder?.record(
+                .viewerDisconnected,
+                role: .sharer,
+                fields: [
+                    "addr": .string(addr),
+                    "guest": .bool(isGuestAddr(addr)),
+                    "reason": .string("bye"),
+                    "connected_ms": DiagnosticValue(
+                        max(0, Int(Date().timeIntervalSince(removedInfo.connectedAt) * 1000)))
+                ])
             // Prune the departed viewer's audio send chain (video chains
             // self-prune on the next broadcast's rebuild).
             audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
@@ -3595,11 +3624,17 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         while isRunning {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             let now = DispatchTime.now().uptimeNanoseconds
-            let dropped = viewers.withLock { state -> [(addr: String, idleNs: UInt64)] in
+            typealias IdleDrop = (addr: String, idleNs: UInt64, connectedAt: Date)
+            let dropped = viewers.withLock { state -> [IdleDrop] in
                 let stale = Self.staleAddrs(
                     lastSeenNs: state.mapValues { $0.lastSeenNs },
                     nowNs: now, timeoutNs: self.viewerIdleTimeoutNs)
-                let result = stale.map { (addr: $0, idleNs: now &- (state[$0]?.lastSeenNs ?? now)) }
+                let result = stale.map {
+                    (
+                        addr: $0, idleNs: now &- (state[$0]?.lastSeenNs ?? now),
+                        connectedAt: state[$0]?.info.connectedAt ?? Date()
+                    )
+                }
                 for addr in stale { state.removeValue(forKey: addr) }
                 return result
             }
@@ -3621,6 +3656,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 // An idled-out viewer surrenders any control grant.
                 revokeControlIfHeld(byIP: Self.ipFromAddr(entry.addr), reason: "viewer idle timeout")
                 logger.log("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
+                // A viewer that went quiet without a BYE: crashed, lost its
+                // network, or is behind a path that stopped delivering its
+                // keepalives. Warning rather than info because, unlike a BYE,
+                // nobody chose this.
+                recorder?.record(
+                    .viewerDisconnected,
+                    role: .sharer,
+                    severity: .warning,
+                    fields: [
+                        "addr": .string(entry.addr),
+                        "guest": .bool(isGuestAddr(entry.addr)),
+                        "reason": .string("idle_timeout"),
+                        "idle_ms": DiagnosticValue(idleMs),
+                        "connected_ms": DiagnosticValue(
+                            max(0, Int(Date().timeIntervalSince(entry.connectedAt) * 1000)))
+                    ])
             }
 
             // Same sweep for pending viewers, with a longer grace period:
@@ -3697,6 +3748,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let downHysteresisNs: UInt64 = 5_000_000_000
         let upHysteresisNs: UInt64 = 10_000_000_000
         let lossThreshold = 2  // PLIs per window before we cut
+        lastTransportSummaryNs.withLock { $0 = 0 }
 
         while isRunning {
             try? await Task.sleep(nanoseconds: windowNs)
@@ -3767,6 +3819,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             publishViewerHealth(healthByAddr)
             logViewerStats(pliCounts: pliCounts, healthByAddr: healthByAddr)
+            // Before the drains below and in `sweepFECArm`: the per-window
+            // counters are read here as this window's totals, then zeroed.
+            recordTransportSummaries(
+                now: now, windowNs: windowNs, pliCounts: pliCounts, healthByAddr: healthByAddr)
 
             // Drain the per-window NACK-served counters (loss/PLI inputs already
             // computed by `congestionInputs`, excluding throttled viewers).
@@ -3866,16 +3922,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// hysteresis clock so the bitrate arm doesn't immediately fight the fps
     /// change. No-op if the tier is unchanged.
     private func applyFpsTier(_ fps: Int) {
-        let changed = currentFpsTier.withLock { existing -> Bool in
-            guard existing != fps else { return false }
+        let previous = currentFpsTier.withLock { existing -> Int? in
+            guard existing != fps else { return nil }
+            let prior = existing
             existing = fps
-            return true
+            return prior
         }
-        guard changed else { return }
+        guard let previous else { return }
         lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         helperCapture?.setFrameInterval(fps)
         helperCapture?.requestKeyframe()
         logger.log("Adaptive fps: → \(fps) fps")
+        recorder?.record(
+            .encodeFrameIntervalChanged,
+            role: .sharer,
+            severity: fps < previous ? .warning : .info,
+            fields: ["from_fps": DiagnosticValue(previous), "to_fps": DiagnosticValue(fps)])
     }
 
     /// Update each connected viewer's public `info.health` projection and
@@ -3912,6 +3974,76 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// One `transport.summary` per connected viewer per sweep window, whether
+    /// or not anything was nonzero — the log line above stays quiet on a
+    /// clean window, and that silence is exactly what made a bundle from a
+    /// share whose receiver reports had stopped arriving look identical to a
+    /// bundle from a share that was fine. Records nothing with no viewers:
+    /// the roster events already say the share was up and empty.
+    ///
+    /// The field set is the pure `transportSummaryFields`, pinned by
+    /// `SharerTransportSummaryTests`; this method only snapshots the inputs.
+    private func recordTransportSummaries(
+        now: UInt64, windowNs: UInt64, pliCounts: [String: Int], healthByAddr: [String: ViewerHealth]
+    ) {
+        guard let recorder else { return }
+        // Measured, not nominal: the sweep sleeps for `windowNs` and THEN
+        // does its work, so the counters drained each pass span the window
+        // plus that work. The first row after start has no predecessor and
+        // reports the nominal window.
+        let elapsedNs = lastTransportSummaryNs.withLock { last -> UInt64 in
+            let elapsed = last == 0 || now < last ? windowNs : now - last
+            last = now
+            return elapsed
+        }
+        let videoDrops = videoSendTails.withLock { $0.mapValues { $0.droppedFrames } }
+        let audioDrops = audioSendTails.withLock { $0.mapValues { $0.droppedFrames } }
+        let gated = fecGatedAddrs.withLock { $0 }
+        let share = ShareTransportState(
+            bitrateBps: currentBitrate.withLock { $0 },
+            baselineBps: baselineBitrate.withLock { $0 },
+            fpsTier: currentFpsTier.withLock { $0 },
+            fecGroupSize: fecEncoderGroupSize())
+        let samples = viewers.withLock { state -> [(addr: String, sample: ViewerTransportSample)] in
+            state.map { addr, viewer in
+                (
+                    addr: addr,
+                    sample: ViewerTransportSample(
+                        pliCount: pliCounts[addr] ?? 0,
+                        lossFractionQ8: viewer.lossFractionQ8,
+                        rttNs: viewer.rttNs,
+                        lastRRAtNs: viewer.lastRRAtNs,
+                        nackServed: viewer.nackServedThisWindow,
+                        fecRecovered: viewer.fecRecoveredThisWindow,
+                        nackRecovered: viewer.nackRecoveredThisWindow,
+                        packetsSent: viewer.packetsSentThisWindow,
+                        droppedVideoFrames: videoDrops[addr] ?? 0,
+                        droppedAudioFrames: audioDrops[addr] ?? 0,
+                        health: healthByAddr[addr] ?? .good,
+                        fecGated: gated.contains(addr))
+                )
+            }
+        }
+        // Sorted so a multi-viewer share records its rows in a stable order
+        // — the timeline is read top to bottom, and two viewers swapping
+        // places every window would look like something happened.
+        for entry in samples.sorted(by: { $0.addr < $1.addr }) {
+            recorder.record(
+                .transportSummary,
+                role: .sharer,
+                fields: Self.transportSummaryFields(
+                    addr: entry.addr, sample: entry.sample, share: share,
+                    window: SummaryWindow(nowNs: now, nominalNs: windowNs, elapsedNs: elapsedNs)))
+        }
+    }
+
+    /// Uptime-ns of the previous `transport.summary` pass; 0 before the first
+    /// of each share (the sweep clears it on entry, so a server reused for a
+    /// second share does not measure its first window from the last share's
+    /// final row). Written only by the sweep; `Guarded` so the sanitiser can
+    /// see it like every other cross-task field on this class.
+    private let lastTransportSummaryNs = Guarded<UInt64>(0)
+
     /// Push a new bitrate to the live encoder and update the bookkeeping
     /// the sweep reads on the next tick. Forces a keyframe on a down-step
     /// so viewers don't have to wait for the next periodic IDR to recover
@@ -3936,6 +4068,19 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let kbps = Double(bitrate) / 1000.0
         let prevKbps = Double(prev) / 1000.0
         logger.log("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
+        // A step down is degradation and a step up is recovery; the severity
+        // follows the direction so a reader scanning the margin sees the cuts.
+        recorder?.record(
+            .encodeBitrateChanged,
+            role: .sharer,
+            severity: bitrate < prev ? .warning : .info,
+            fields: [
+                "from_kbps": DiagnosticValue(prev / 1000),
+                "to_kbps": DiagnosticValue(bitrate / 1000),
+                "baseline_kbps": DiagnosticValue(baselineBitrate.withLock { $0 } / 1000),
+                "fec_group_size": DiagnosticValue(fecEncoderGroupSize()),
+                "reason": .string(reason)
+            ])
     }
 
     /// Group size the ENCODER is compensated for right now: the sweep's N
@@ -3973,6 +4118,17 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             helperCapture?.requestKeyframe()
         }
         logger.log("Adaptive FEC: effective group size \(previousEffective) → \(nextEffective)")
+        // Only on the EFFECTIVE transition (the guard above), which is the
+        // one that changes what viewers receive — a gray-zone decision that
+        // holds N with nobody gated is bookkeeping, not an event.
+        recorder?.record(
+            nextEffective > 0 ? .fecArmed : .fecDisarmed,
+            role: .sharer,
+            fields: [
+                "group_size": DiagnosticValue(nextEffective),
+                "previous_group_size": DiagnosticValue(previousEffective),
+                "gated_viewers": DiagnosticValue(decision.gated.count)
+            ])
     }
 
     /// Live-apply a new user bandwidth ceiling mid-share (`nil` = back to

@@ -2,6 +2,7 @@ import AppKit
 import CoreVideo
 import Foundation
 import TailscaleKit
+import TailscreenProtocol
 import TailscreenViewer
 import os
 
@@ -71,9 +72,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// mac-only side channels (annotations, remote control, `VoiceChannel`
     /// audio, the decode-recovery ladder) arranged *around* the session.
     private var viewerSession: ViewerSession?
-    /// Serial queue the VideoToolbox adapter hops decoded frames onto (the
-    /// frame path — adapter → sink → renderer — never touches session state, so
-    /// it needn't be the receive task's context; it just must be consistent).
+    /// Serial queue the VideoToolbox adapter hops decoded frames onto. The
+    /// frame path — adapter → sink → renderer — is not the receive task's
+    /// context, and the session tolerates that for exactly the two calls the
+    /// frame path makes (`noteDecodedFrame` and `noteHostDecodeFailure` are
+    /// its thread-safe entry points, a mailbox the receive side drains); it
+    /// just must be consistent.
     private let viewerFrameQueue = DispatchQueue(label: "com.tailscreen.viewer-session-frames")
     private var isConnected = false
     /// Disconnect is a permanent cancellation request for this one-shot
@@ -701,6 +705,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// decoder fires this at most once per codec, so this isn't a hot path.
     private func handleDecodeFailure(_ codec: VideoCodec) {
         logger.log("Decode failure for \(codec) — requesting H.264 fallback from sharer")
+        // The mac-only failure shape: VideoToolbox could not build a session
+        // for this codec at all. Per-frame failures are the other shape, and
+        // reach the recorder from the adapter's episode hook (see
+        // `buildViewerSession`), so `reason` is what tells the two apart.
+        recorder?.record(
+            .decodeFailed,
+            role: .viewer,
+            fields: ["codec": .string(codec.rawValue), "reason": .string("codec_unsupported")])
         if let addr = serverAddr, let pl = packetListener {
             Task {
                 for _ in 0..<3 {
@@ -725,6 +737,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// for another chance. Loss-driven PLIs stay throttled.
     private func handleDecodeRecoveryAction(_ action: DecodeRecoveryAction) {
         logger.log("Client: decode-recovery action \(action)")
+        // Same two events, same field spellings, as the portable session
+        // records for the GTK and WinUI viewers — the mac ladder runs inside
+        // `VideoDecoder` rather than in `ViewerSession`, so it has to record
+        // its own rungs or a mac viewer bundle would show a stall as nothing
+        // but a `fault.surfaced` with no ladder leading up to it.
+        recorder?.record(
+            .decodeRecoveryAction,
+            role: .viewer,
+            fields: ["action": .string(action.diagnosticName)])
+        if action == .surfaceError {
+            recorder?.record(.videoStalled, role: .viewer)
+        }
         switch action {
         case .requestKeyframe, .recreateSession:
             // The decoder handles the session rebuild itself; either way a
@@ -762,9 +786,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         adapter.onDecodedPixelBufferForTesting = { [weak self] buffer in
             self?.onDecodedFrameForTesting?(buffer)
         }
-        adapter.onFrameDecodeFailed = { [weak self] in
-            self?.renderer.noteDecodeFailure()
-        }
         adapter.onRecoveryAction = { [weak self] action in
             self?.handleDecodeRecoveryAction(action)
         }
@@ -798,6 +819,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 self?.onAudioReceived?(datagram)
             }
         )
+        // Per-frame decode failures: the stats overlay's counter, plus the
+        // session's own count. `VideoDecoder` runs the escalation ladder
+        // itself, so this must NOT reach the session's `onDecodeFailure`
+        // (that would double-ladder one episode); `noteHostDecodeFailure` is
+        // the counting-only entry, safe from the decoder's queue, and it is
+        // what puts `decode_failures` in this viewer's `transport.summary`
+        // rows and records `decode.failed` once per failing run — the same
+        // rule, from the same place, as the GTK and WinUI viewers.
+        adapter.onFrameDecodeFailed = { [weak self, weak session] in
+            self?.renderer.noteDecodeFailure()
+            session?.noteHostDecodeFailure()
+        }
         // Stats overlay: feed the renderer's loss-recovery counters as the
         // session emits feedback. These fire on the receive task (where
         // receiveRTP/tick run), same as the legacy loop's note* calls.
@@ -1074,9 +1107,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 }
 
+/// The viewer's own log sink. Prints like the package's `PrintLogSink` and,
+/// like it, tees every line into the process recorder as a `log.line` event.
+///
+/// The tee is not optional here: `PrintLogSink` is `package`-scoped, so this
+/// app cannot use it, and until this struct teed on its own the sharer's
+/// lines reached a bundle while the viewer's — the decode-failure, recovery
+/// and idle-timeout lines above — did not. A viewer bundle then explained the
+/// handshake and nothing after it. Same `"Tailscale"` source tag as the
+/// sharer's sink, so a merged timeline files both sides' lines alike.
+///
+/// Nothing this sink logs is an identity the bundle header disclaims (tailnet
+/// IPs and device names are recorded on purpose, see
+/// `.claude/rules/diagnostics.md`); a line that named an account would need
+/// the `TailscaleAuth` treatment instead — a separate, non-teeing sink.
 private struct TSLogger: LogSink {
     var logFileHandle: Int32?
-    func log(_ message: String) { print("[Tailscale] \(message)") }
+    func log(_ message: String) {
+        print("[Tailscale] \(message)")
+        DiagnosticsCenter.shared.captureLog(source: "Tailscale", message: message)
+    }
 }
 
 /// Why the viewer's receive loop declared the session over is the shared

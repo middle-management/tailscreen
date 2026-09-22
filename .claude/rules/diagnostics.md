@@ -155,6 +155,83 @@ machine-local CoreAudio handle that changes across reboots and means nothing to
 a reader, while the name is what the person saw in the picker and what they
 will say when describing the problem.
 
+## Media quality: milestones, and one summary per window
+
+Until 0.10.0-rc.14 a bundle pair was structurally blind to the picture. The
+registry had `decode.first_frame`, `video.stalled`, `transport.summary`,
+`encode.bitrate.changed` and the rest from the start, and nothing recorded
+them: the sharer's sweep computed per-viewer PLI counts, RR loss, RTT and
+FEC/NACK recovery every five seconds and only *logged* a line when something
+was nonzero, so a bundle from a share whose receiver reports had quietly
+stopped arriving was byte-for-byte the bundle of a clean share; and the mac
+viewer's log sink was a bare `print`, so its decode-failure and stall lines
+never became `log.line` events at all. Two rules came out of closing that.
+
+**Record the milestones in the portable session, not per host.**
+`ViewerSession` records `decode.first_frame` (with `ms_since_ack`, the drops
+and requests the wait was spent on), `render.size.changed`, `decode.failed`,
+each `decode.recovery.action` rung and `video.stalled` at the terminal rung —
+so a macOS, GTK and WinUI viewer bundle say the same things and there is one
+suite (`ViewerSessionDiagnosticsTests`) pinning it. The one exception is
+forced: the mac ladder runs inside `VideoDecoder`, off the session's
+`onDecodeFailure` seam, so `TailscaleScreenShareClient` records its own rungs
+with the same names and field spellings; its per-frame failures still reach
+the session through `noteHostDecodeFailure`, the counting-only entry that
+runs no ladder, so its `decode.failed` and its `decode_failures` column come
+from the same place as everyone else's.
+
+**The frame side writes a mailbox; the receive side drains it.** The
+session's contract is that the host serializes every call, decoder callbacks
+included, and the mac host does not honour it for frames:
+`VTVideoDecoderAdapter` hops decoded frames onto its own queue while `tick`
+and `receiveRTP` run on the receive task. That was harmless while nothing on
+the receive side read what the frame side wrote, and recording the first
+frame and a per-window frame count from the receive side made it a data
+race. So `noteDecodedFrame` and `noteHostDecodeFailure` are the session's two
+thread-safe entry points — they touch nothing but a `Guarded` mailbox — and
+`drainFrameMailbox` applies the batch (counters, the ladder reset a frame
+implies, the once-per-run `decode.failed` latch, first frame, size changes)
+at every receive-side entry point. For the synchronous FFmpeg decoders the
+drain runs inside the same call on the same thread, so nothing observable
+changed there; on the mac host a frame is accounted for within a packet or a
+tick, which is the granularity `ms_since_ack` has there. On the
+sharer, `encode.codec.selected` rides the encoder anchor (which already
+fires only on a real configuration change, not on every IDR),
+`encode.bitrate.changed` / `encode.frame_interval.changed` the two adaptive
+appliers, `fec.armed` / `fec.disarmed` the *effective* group-size
+transition, and `viewer.disconnected` both ways out of the admitted set that
+are not an expulsion (`reason=bye`, `reason=idle_timeout`).
+
+**Per window, never per packet — and a clean window is still a row.**
+`transport.summary` is one event per ``DiagnosticsTransportSampler`` window
+(five seconds, the sharer's sweep cadence, so one sharer row per viewer lines
+up with one viewer row) on each side: the viewer's from `tick`, once
+admitted, carrying that window's *deltas* of `ViewerSession.Diagnostics`
+(packets, frames, torn AUs, PLIs, NACKs, FEC recoveries) and the gauges (RTT,
+its last reported loss, codec, FEC state); the sharer's from the adaptive
+sweep, one per connected viewer, from the pure
+`TailscaleScreenShareServer.transportSummaryFields` (`SharerTransportSummaryTests`).
+The sharer row's load-bearing fields are `rr_received` / `rr_age_ms` /
+`rr_fresh`: the sweep decays a stale report to "no loss" — right for the
+congestion decision, wrong for the record — so the row carries the last
+report's loss *undecayed* beside how old it is and whether the sweep still
+believed it. A window in which nothing happened records the same row with
+zeros in it; the silence of the old log line was the bug. `window_ms` is
+**measured** on both sides, never the nominal five seconds: the sharer's
+sweep sleeps for the window and then works, so what it drains spans the
+window plus the work, and the viewer's sampler reports the window it
+actually closed — a row that claimed 5000 ms over a longer interval would
+understate every rate a reader derived from it. At one viewer the
+ring holds roughly five and a half hours of them, which is what it was sized
+for. Before admission nothing is summarized — the sampler is only ticked once
+there is an SSRC — because a viewer parked on the approval prompt for a
+minute would otherwise put twelve rows of zeros ahead of the handshake.
+
+**`decode.failed` is once per episode.** A wedged decoder fails at frame
+rate; the event is recorded on the first failure after a decoded frame and
+the total rides along in `failures_total`. `decode.recovery.action` is
+bounded by the ladder's own latch (four rungs per episode, each once).
+
 ## Two things that look like bugs and are not
 
 **The buffer is two buffers.** A plain ring keeps the most recent N events and
