@@ -3624,8 +3624,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         while isRunning {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             let now = DispatchTime.now().uptimeNanoseconds
-            let dropped = viewers.withLock {
-                state -> [(addr: String, idleNs: UInt64, connectedAt: Date)] in
+            typealias IdleDrop = (addr: String, idleNs: UInt64, connectedAt: Date)
+            let dropped = viewers.withLock { state -> [IdleDrop] in
                 let stale = Self.staleAddrs(
                     lastSeenNs: state.mapValues { $0.lastSeenNs },
                     nowNs: now, timeoutNs: self.viewerIdleTimeoutNs)
