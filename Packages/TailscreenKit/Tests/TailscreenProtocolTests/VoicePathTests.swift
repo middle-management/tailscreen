@@ -317,12 +317,13 @@ final class VoicePathTests: XCTestCase {
         let au = try XCTUnwrap(encoder.encode(pcm: tone))
 
         let now = ms(1000)
-        let packetizers = Dictionary(
-            uniqueKeysWithValues: [UInt32(0), 1, 9].map {
-                ($0, AudioRTPPacketizer(ssrc: $0, payloadType: RTPHeader.voicePayloadType))
-            })
-        for ssrc in [UInt32(0), 1, 9] {
-            downlink.ingest(packetizers[ssrc]!.packetize(au: au), nowNs: now)
+        // One packetizer per SSRC, kept so a second packet continues its
+        // sequence rather than restarting at 0 (which would read as stale).
+        let zero = AudioRTPPacketizer(ssrc: 0, payloadType: RTPHeader.voicePayloadType)
+        let one = AudioRTPPacketizer(ssrc: 1, payloadType: RTPHeader.voicePayloadType)
+        let nine = AudioRTPPacketizer(ssrc: 9, payloadType: RTPHeader.voicePayloadType)
+        for packetizer in [zero, one, nine] {
+            downlink.ingest(packetizer.packetize(au: au), nowNs: now)
         }
         XCTAssertEqual(downlink.voiceCount, 3, "each SSRC gets its own decoder")
         // The first voice was alone and passed straight through; the second
@@ -333,7 +334,7 @@ final class VoicePathTests: XCTestCase {
 
         // The next frame of voice 1 closes the slot: what comes out is the
         // sum of 1 and 9, which for two identical decodes is exactly double.
-        downlink.ingest(packetizers[1]!.packetize(au: au), nowNs: now + ms(20))
+        downlink.ingest(one.packetize(au: au), nowNs: now + ms(20))
         XCTAssertEqual(heard.count, 2)
         for i in stride(from: 0, to: 960, by: 97) {
             XCTAssertEqual(heard[1][i], 2 * heard[0][i], accuracy: 1e-6, "slot frame must be the SUM")
