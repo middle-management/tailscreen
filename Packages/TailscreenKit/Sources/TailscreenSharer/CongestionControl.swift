@@ -166,10 +166,20 @@ extension TailscaleScreenShareServer {
         /// must not be pushed to 60.
         public var fpsCap: Int = 60
         public var elapsedSinceChangeNs: UInt64
+        /// At least one viewer that negotiated `.receiverReport`, and that
+        /// this sweep is not isolating, has stopped reporting (see
+        /// `feedbackIsStale`). It suppresses the
+        /// up-ramp and nothing else: silence is not evidence of loss, so it
+        /// never drives a cut — but it is not evidence of a clean link
+        /// either, and treating it as one is what let the rate climb against
+        /// a viewer nobody was hearing from. Defaults false, so a legacy
+        /// PLI-only session is byte-identical to before.
+        public var feedbackStale: Bool = false
 
         public init(
             lossFractionQ8: Int, pliCount: Int, nackServed: Int, current: Int, baseline: Int,
-            fpsTier: Int, fpsCap: Int = 60, elapsedSinceChangeNs: UInt64
+            fpsTier: Int, fpsCap: Int = 60, elapsedSinceChangeNs: UInt64,
+            feedbackStale: Bool = false
         ) {
             self.lossFractionQ8 = lossFractionQ8
             self.pliCount = pliCount
@@ -179,7 +189,44 @@ extension TailscaleScreenShareServer {
             self.fpsTier = fpsTier
             self.fpsCap = fpsCap
             self.elapsedSinceChangeNs = elapsedSinceChangeNs
+            self.feedbackStale = feedbackStale
         }
+    }
+
+    /// Whether one viewer's receiver feedback has gone missing, as distinct
+    /// from arriving and saying "clean".
+    ///
+    /// The sweep decays a stale RR's loss fraction to 0 so a viewer that
+    /// reported badly and then went quiet can't pin the shared rate down.
+    /// That is right, and it leaves a hole: a decayed report and a genuinely
+    /// clean one are the same 0, so the `clean` predicate reads a dead
+    /// feedback path as a perfect link and the +10 % recovery arm keeps
+    /// climbing toward the baseline against a viewer whose reports stopped
+    /// arriving. The stats log line was no help either — it only fired on a
+    /// nonzero count, so the bundle looked exactly like a healthy share.
+    ///
+    /// Two clocks, because "has not reported" has two shapes:
+    /// - A viewer that HAS reported is stale one window after its last report.
+    ///   Reports are ~1 Hz against a ~5 s window, so a single dropped RR
+    ///   can't trip it.
+    /// - A viewer that has NEVER reported is measured from admission and
+    ///   gets `graceWindows` of slack, because a viewer admitted moments ago
+    ///   legitimately has not sent one yet.
+    ///
+    /// `expectsReports` is the whole safety rail: a viewer that never
+    /// negotiated `.receiverReport` is silent by design, and treating its
+    /// silence as missing feedback would freeze the rate for the entire
+    /// session on every legacy or stream-transport viewer.
+    public static func feedbackIsStale(
+        expectsReports: Bool,
+        hasReported: Bool,
+        sinceNs: UInt64,
+        windowNs: UInt64,
+        graceWindows: UInt64 = 2
+    ) -> Bool {
+        guard expectsReports else { return false }
+        let limit = hasReported ? windowNs : windowNs &* graceWindows
+        return sinceNs >= limit
     }
 
     /// Bitrate + fps-tier decision from receiver feedback. `nil` on either
@@ -232,12 +279,19 @@ extension TailscaleScreenShareServer {
         public var throttle: [String]
         public var pliInput: Int
         public var lossQ8Input: Int
+        /// Any viewer whose feedback has gone missing, excluding the ones
+        /// this sweep decided to isolate — the same `throttle` set, and for
+        /// the same reason, as the loss and PLI inputs beside it. Isolating a
+        /// viewer is taking its link out of the shared decision, so its
+        /// silence must not hold the rate everyone else sees.
+        public var feedbackStale: Bool = false
     }
     public static func congestionInputs(
         pliCounts: [String: Int],
         lossQ8ByAddr: [String: Int],
         currentlyThrottled: Set<String>,
-        lossThreshold: Int = 2
+        lossThreshold: Int = 2,
+        feedbackStaleAddrs: Set<String> = []
     ) -> GlobalCongestionInputs {
         // Combined per-viewer loss folds RR into PLI-equivalent units so the
         // fairness gate can isolate an RR-lossy-but-PLI-quiet viewer.
@@ -252,8 +306,10 @@ extension TailscaleScreenShareServer {
         let throttleSet = Set(fairness.throttle)
         let pliInput = pliCounts.filter { !throttleSet.contains($0.key) }.values.max() ?? 0
         let lossQ8Input = lossQ8ByAddr.filter { !throttleSet.contains($0.key) }.values.max() ?? 0
+        let stale = feedbackStaleAddrs.contains { !throttleSet.contains($0) }
         return GlobalCongestionInputs(
-            throttle: fairness.throttle, pliInput: pliInput, lossQ8Input: lossQ8Input)
+            throttle: fairness.throttle, pliInput: pliInput, lossQ8Input: lossQ8Input,
+            feedbackStale: stale)
     }
 
     /// Receiver-feedback congestion control. Bitrate is the primary lever (cut
@@ -298,8 +354,13 @@ extension TailscaleScreenShareServer {
         // Recovery is NOT gated on `nackServed == 0`: on a real WAN a NACK is
         // served most windows, and the retransmit already repaired that loss,
         // so requiring literally zero NACKs would suppress recovery exactly on
-        // the lossy links NACK targets. Low RR loss + no PLIs is "clean enough".
-        let clean = inputs.lossFractionQ8 <= lowLossQ8 && inputs.pliCount == 0
+        // the lossy links NACK targets. Low RR loss + no PLIs is "clean enough"
+        // — provided the quiet is a viewer saying so rather than a viewer we
+        // have stopped hearing from at all. `feedbackStale` only ever
+        // subtracts from `clean`: the cut path below never reads it, because
+        // missing feedback is not evidence of loss.
+        let clean =
+            inputs.lossFractionQ8 <= lowLossQ8 && inputs.pliCount == 0 && !inputs.feedbackStale
 
         let downReady = inputs.elapsedSinceChangeNs >= downHysteresisNs
         let upReady = inputs.elapsedSinceChangeNs >= upHysteresisNs

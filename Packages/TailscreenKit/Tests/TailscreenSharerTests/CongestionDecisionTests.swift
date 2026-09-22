@@ -171,4 +171,133 @@ final class CongestionDecisionTests: XCTestCase {
             elapsedSinceChangeNs: 60 * s)
         XCTAssertEqual(TailscaleScreenShareServer.nextCongestionDecision(i), .hold)
     }
+
+    // MARK: - Missing receiver feedback
+    //
+    // The sweep decays a stale RR's loss to 0 so a viewer that reported badly
+    // and went quiet can't pin the shared rate down. That leaves the decayed 0
+    // and a genuinely clean 0 indistinguishable here, so the recovery arm read
+    // a dead feedback path as a perfect link and kept climbing. `feedbackStale`
+    // is the missing third state.
+
+    /// The regression, stated as an inequality between two runs that differ in
+    /// nothing else. Asserting only the stale case holds would pass against an
+    /// implementation that never raises at all.
+    func testMissingFeedbackSuppressesTheUpRamp() {
+        var clean = inputs(current: 5_000_000, elapsed: 10 * s)
+        XCTAssertEqual(decide(clean).bitrate, 5_500_000, "a clean window still recovers")
+        clean.feedbackStale = true
+        XCTAssertEqual(decide(clean), .hold, "silence is not a clean window")
+    }
+
+    /// Missing feedback must not CUT either. Nobody said the link is bad —
+    /// nobody said anything — and cutting on silence would punish a viewer
+    /// whose reports are merely late, every window, forever.
+    func testMissingFeedbackDoesNotCut() {
+        var i = inputs(current: 5_000_000, elapsed: 10 * s)
+        i.feedbackStale = true
+        let d = decide(i)
+        XCTAssertNil(d.bitrate)
+        XCTAssertNil(d.fpsTier)
+    }
+
+    /// Real loss still cuts while feedback is stale: the flag only ever
+    /// subtracts from `clean`, and one viewer's silence must not shield
+    /// another viewer's reported loss from the cut arm.
+    func testMissingFeedbackDoesNotBlockACutForReportedLoss() {
+        var i = inputs(lossQ8: 30, current: baseline, elapsed: 5 * s)
+        i.feedbackStale = true
+        XCTAssertEqual(decide(i).bitrate, 7_500_000)
+    }
+
+    /// The fps-recovery rung is gated on the same `clean`, so it must hold too
+    /// — otherwise a stale-feedback session would freeze its bitrate and go on
+    /// climbing frame rate, which costs the same bandwidth by another route.
+    func testMissingFeedbackSuppressesTheFpsRecoveryRung() {
+        var i = inputs(current: 8_000_000, fps: 30, elapsed: 10 * s)
+        XCTAssertEqual(decide(i).fpsTier, 60, "a clean window restores fps first")
+        i.feedbackStale = true
+        XCTAssertEqual(decide(i), .hold)
+    }
+
+    /// Default-false, so every legacy PLI-only caller is byte-identical to
+    /// before. `AdaptiveBitrateTests` depends on this.
+    func testFeedbackStaleDefaultsToFalse() {
+        let i = Inputs(
+            lossFractionQ8: 0, pliCount: 0, nackServed: 0, current: 5_000_000,
+            baseline: baseline, fpsTier: 60, elapsedSinceChangeNs: 10 * s)
+        XCTAssertFalse(i.feedbackStale)
+        XCTAssertEqual(decide(i).bitrate, 5_500_000)
+    }
+
+    // MARK: - feedbackIsStale
+
+    private func stale(
+        expects: Bool = true, reported: Bool, sinceWindows: Double
+    ) -> Bool {
+        TailscaleScreenShareServer.feedbackIsStale(
+            expectsReports: expects, hasReported: reported,
+            sinceNs: UInt64(sinceWindows * 5_000_000_000), windowNs: 5 * s)
+    }
+
+    /// The safety rail, and the leg to read first. A viewer that never
+    /// negotiated `.receiverReport` is silent BY DESIGN — legacy peers and
+    /// every stream-transport viewer, whose caps mask drops NACK and FEC and
+    /// which would otherwise be permanently stale. Reading their silence as
+    /// missing feedback freezes the rate for the whole session, on a share
+    /// where nothing is wrong.
+    func testAViewerThatNeverNegotiatedReportsIsNeverStale() {
+        XCTAssertFalse(stale(expects: false, reported: false, sinceWindows: 100))
+        XCTAssertFalse(stale(expects: false, reported: true, sinceWindows: 100))
+    }
+
+    /// Reports are ~1 Hz against a ~5 s window, so one window of silence is
+    /// many missed reports rather than an unlucky drop.
+    func testAReportingViewerGoesStaleOneWindowAfterItsLastReport() {
+        XCTAssertFalse(stale(reported: true, sinceWindows: 0.9))
+        XCTAssertTrue(stale(reported: true, sinceWindows: 1.0), "boundary is inclusive")
+        XCTAssertTrue(stale(reported: true, sinceWindows: 4))
+    }
+
+    /// A viewer that has never reported is measured from ADMISSION and gets
+    /// two windows of slack: it may legitimately not have sent its first
+    /// report yet, and treating a fresh join as stale would hold the rate
+    /// down at the start of every share.
+    func testAViewerThatHasNeverReportedGetsGraceFromAdmission() {
+        XCTAssertFalse(stale(reported: false, sinceWindows: 1.5))
+        XCTAssertTrue(stale(reported: false, sinceWindows: 2.0))
+    }
+
+    // MARK: - congestionInputs folding
+
+    func testCongestionInputsReportsAnyNonThrottledStaleViewer() {
+        let gci = TailscaleScreenShareServer.congestionInputs(
+            pliCounts: ["v1": 0, "v2": 0], lossQ8ByAddr: [:], currentlyThrottled: [],
+            feedbackStaleAddrs: ["v2"])
+        XCTAssertTrue(gci.feedbackStale)
+    }
+
+    /// Throttled viewers are excluded for the same reason — and against the
+    /// same set — as their loss and PLI counts: the viewers this sweep
+    /// decides to isolate, not the ones that happened to be isolated going
+    /// in. A viewer being isolated is having its own link taken out of the
+    /// shared decision, so its silence must not hold the rate everyone else
+    /// sees. (PLIs and receiver reports are different control bytes, so a
+    /// viewer can be losing loudly enough to isolate while its RRs have
+    /// stopped arriving — which is exactly this case.)
+    func testCongestionInputsIgnoresAStaleViewerItIsIsolating() {
+        let gci = TailscaleScreenShareServer.congestionInputs(
+            pliCounts: ["v1": 0, "v2": 5], lossQ8ByAddr: [:], currentlyThrottled: [],
+            feedbackStaleAddrs: ["v2"])
+        XCTAssertEqual(gci.throttle, ["v2"], "precondition: v2 is the isolated viewer")
+        XCTAssertFalse(gci.feedbackStale)
+    }
+
+    /// The default argument, so every existing caller of `congestionInputs`
+    /// keeps reporting a live feedback path rather than an absent one.
+    func testCongestionInputsIsNotStaleWithNobodyStale() {
+        let gci = TailscaleScreenShareServer.congestionInputs(
+            pliCounts: ["v1": 0], lossQ8ByAddr: [:], currentlyThrottled: [])
+        XCTAssertFalse(gci.feedbackStale)
+    }
 }
