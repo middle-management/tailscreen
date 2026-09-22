@@ -3748,6 +3748,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let downHysteresisNs: UInt64 = 5_000_000_000
         let upHysteresisNs: UInt64 = 10_000_000_000
         let lossThreshold = 2  // PLIs per window before we cut
+        lastTransportSummaryNs.withLock { $0 = 0 }
 
         while isRunning {
             try? await Task.sleep(nanoseconds: windowNs)
@@ -3986,6 +3987,15 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         now: UInt64, windowNs: UInt64, pliCounts: [String: Int], healthByAddr: [String: ViewerHealth]
     ) {
         guard let recorder else { return }
+        // Measured, not nominal: the sweep sleeps for `windowNs` and THEN
+        // does its work, so the counters drained each pass span the window
+        // plus that work. The first row after start has no predecessor and
+        // reports the nominal window.
+        let elapsedNs = lastTransportSummaryNs.withLock { last -> UInt64 in
+            let elapsed = last == 0 || now < last ? windowNs : now - last
+            last = now
+            return elapsed
+        }
         let videoDrops = videoSendTails.withLock { $0.mapValues { $0.droppedFrames } }
         let audioDrops = audioSendTails.withLock { $0.mapValues { $0.droppedFrames } }
         let gated = fecGatedAddrs.withLock { $0 }
@@ -4023,9 +4033,16 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 role: .sharer,
                 fields: Self.transportSummaryFields(
                     addr: entry.addr, sample: entry.sample, share: share,
-                    nowNs: now, windowNs: windowNs))
+                    nowNs: now, windowNs: windowNs, elapsedNs: elapsedNs))
         }
     }
+
+    /// Uptime-ns of the previous `transport.summary` pass; 0 before the first
+    /// of each share (the sweep clears it on entry, so a server reused for a
+    /// second share does not measure its first window from the last share's
+    /// final row). Written only by the sweep; `Guarded` so the sanitiser can
+    /// see it like every other cross-task field on this class.
+    private let lastTransportSummaryNs = Guarded<UInt64>(0)
 
     /// Push a new bitrate to the live encoder and update the bookkeeping
     /// the sweep reads on the next tick. Forces a keyframe on a down-step

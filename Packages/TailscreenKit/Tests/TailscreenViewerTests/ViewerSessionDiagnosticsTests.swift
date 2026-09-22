@@ -46,6 +46,11 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         func present(_ frame: any DecodedFrame) {}
     }
 
+    private final class UncheckedSendableBox<Value>: @unchecked Sendable {
+        let value: Value
+        init(_ value: Value) { self.value = value }
+    }
+
     private struct Harness {
         let session: ViewerSession
         let decoder: StubDecoder
@@ -144,6 +149,11 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
 
         h.decoder.frameSize = (4, 4)
         feedAUs(h.session, count: 1, startSeq: seq)
+        // A frame is accounted for at the next receive-side call — here a
+        // snapshot read, in a host the next packet or tick — never inside
+        // the decoder callback, which may be on another thread.
+        XCTAssertEqual(h.events(named: .renderSizeChanged).count, 1, "not yet drained")
+        _ = h.session.diagnostics
         XCTAssertEqual(h.events(named: .renderSizeChanged).count, 2, "and back is a second change")
     }
 
@@ -377,5 +387,106 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         h.session.tick(nowNs: 7 * second)
         XCTAssertEqual(h.recorder.events().count, 0)
         XCTAssertEqual(h.session.diagnostics.framesDecoded, 3)
+    }
+
+    // MARK: - Host-counted failures, and the frame side on another thread
+
+    /// A host whose decoder runs the ladder itself (mac) counts its per-frame
+    /// failures through `noteHostDecodeFailure`: no PLI, no ladder rung, but
+    /// the same counter, the same once-per-run `decode.failed`, and the same
+    /// `decode_failures` column in the next summary row.
+    func testHostDecodeFailuresAreCountedWithoutRunningTheLadder() {
+        let h = makeHarness()
+        h.session.tick(nowNs: 0)
+        admit(h.session)
+        // One keyframe first, so the session's own pre-keyframe request is
+        // spent and any PLI from here on would be a decode-recovery one.
+        feedAUs(h.session, count: 1)
+        h.session.tick(nowNs: 1 * second)
+        var plis = 0
+        h.session.onPLISent = { plis += 1 }
+        let plisBefore = plis
+
+        for _ in 0..<7 { h.session.noteHostDecodeFailure() }
+        h.session.tick(nowNs: 2 * second)  // drains
+        XCTAssertEqual(h.session.diagnostics.decodeFailures, 7)
+        XCTAssertEqual(h.events(named: .decodeFailed).count, 1, "seven failures, one run")
+        XCTAssertEqual(h.events(named: .decodeRecoveryAction).count, 0, "the host owns the ladder")
+        XCTAssertEqual(plis, plisBefore, "and the host owns the PLI")
+
+        // A decoded frame closes the run; the next host failure opens another.
+        feedAUs(h.session, count: 1, startSeq: 1)
+        h.session.noteHostDecodeFailure()
+        h.session.tick(nowNs: 3 * second)
+        XCTAssertEqual(h.events(named: .decodeFailed).count, 2)
+        XCTAssertEqual(h.session.diagnostics.decodeFailures, 8)
+        XCTAssertEqual(plis, plisBefore, "still no PLI from the session")
+
+        h.session.tick(nowNs: 6 * second)
+        let row = h.events(named: .transportSummary).last
+        XCTAssertEqual(row?.fields["decode_failures"], .int(8), "host failures reach the row")
+        XCTAssertEqual(row?.fields["frames"], .int(2))
+    }
+
+    /// Frames and host failures reported from another thread — the mac
+    /// adapter's shape — while the receive side ticks and reads. The
+    /// invariant is interleaving-independent: every report is counted once,
+    /// and the first frame is recorded exactly once. This is the case the
+    /// TSan gate needs in order to watch the mailbox at all.
+    func testFrameSideOnAnotherThreadIsCountedExactlyOnce() {
+        let h = makeHarness()
+        h.session.tick(nowNs: 0)
+        admit(h.session)
+        // Open the keyframe gate on the receive side so decoded frames can
+        // flow, then stop touching the decoder from this thread.
+        feedAUs(h.session, count: 1)
+
+        let frames = 2_000
+        let failures = 500
+        let session = h.session
+        // The session is deliberately not Sendable (the host serializes it);
+        // this test IS the host, and the two calls it makes off-thread are
+        // the two the session documents as safe, so the box only says so
+        // to the compiler.
+        let producerSide = UncheckedSendableBox((session: session, decoder: h.decoder))
+        let producer = Thread {
+            let (session, decoder) = producerSide.value
+            for i in 0..<(frames + failures) {
+                if i % 5 == 4 {
+                    session.noteHostDecodeFailure()
+                } else {
+                    // The same entry point the adapter uses: the decoder's
+                    // frame callback, which `ViewerSession` installed on the
+                    // stub in `init`.
+                    decoder.onDecodedFrame?(
+                        DecodedVideoFrame(
+                            width: 4, height: 4,
+                            yPlane: [UInt8](repeating: 0x10, count: 16),
+                            uPlane: [UInt8](repeating: 0x80, count: 4),
+                            vPlane: [UInt8](repeating: 0x80, count: 4)))
+                }
+            }
+        }
+        producer.start()
+        var tick: UInt64 = 1
+        while !producer.isFinished {
+            session.tick(nowNs: tick * 10_000_000)
+            _ = session.diagnostics
+            tick += 1
+        }
+        session.tick(nowNs: 100 * second)
+
+        let snapshot = session.diagnostics
+        XCTAssertEqual(snapshot.framesDecoded, frames + 1, "every frame counted once")
+        XCTAssertEqual(snapshot.decodeFailures, failures, "every failure counted once")
+        XCTAssertEqual(h.events(named: .decodeFirstFrame).count, 1)
+        XCTAssertEqual(h.events(named: .renderSizeChanged).count, 0)
+        let summaries = h.events(named: .transportSummary)
+        let summedFrames = summaries.reduce(Int64(0)) { acc, row in
+            if case .int(let n)? = row.fields["frames"] { return acc + n }
+            return acc
+        }
+        XCTAssertEqual(summaries.last?.fields["frames_total"], .int(Int64(frames + 1)))
+        XCTAssertEqual(summedFrames, Int64(frames + 1), "the windows partition the frames")
     }
 }

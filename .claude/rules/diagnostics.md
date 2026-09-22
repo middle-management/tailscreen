@@ -164,9 +164,26 @@ so a macOS, GTK and WinUI viewer bundle say the same things and there is one
 suite (`ViewerSessionDiagnosticsTests`) pinning it. The one exception is
 forced: the mac ladder runs inside `VideoDecoder`, off the session's
 `onDecodeFailure` seam, so `TailscaleScreenShareClient` records its own rungs
-with the same names and field spellings, and `VTVideoDecoderAdapter` latches
-the failure episode (it is the one object that sees both edges — the failure
-on the decoder queue and the next frame on VideoToolbox's thread). On the
+with the same names and field spellings; its per-frame failures still reach
+the session through `noteHostDecodeFailure`, the counting-only entry that
+runs no ladder, so its `decode.failed` and its `decode_failures` column come
+from the same place as everyone else's.
+
+**The frame side writes a mailbox; the receive side drains it.** The
+session's contract is that the host serializes every call, decoder callbacks
+included, and the mac host does not honour it for frames:
+`VTVideoDecoderAdapter` hops decoded frames onto its own queue while `tick`
+and `receiveRTP` run on the receive task. That was harmless while nothing on
+the receive side read what the frame side wrote, and recording the first
+frame and a per-window frame count from the receive side made it a data
+race. So `noteDecodedFrame` and `noteHostDecodeFailure` are the session's two
+thread-safe entry points — they touch nothing but a `Guarded` mailbox — and
+`drainFrameMailbox` applies the batch (counters, the ladder reset a frame
+implies, the once-per-run `decode.failed` latch, first frame, size changes)
+at every receive-side entry point. For the synchronous FFmpeg decoders the
+drain runs inside the same call on the same thread, so nothing observable
+changed there; on the mac host a frame is accounted for within a packet or a
+tick, which is the granularity `ms_since_ack` has there. On the
 sharer, `encode.codec.selected` rides the encoder anchor (which already
 fires only on a real configuration change, not on every IDR),
 `encode.bitrate.changed` / `encode.frame_interval.changed` the two adaptive
@@ -188,7 +205,12 @@ The sharer row's load-bearing fields are `rr_received` / `rr_age_ms` /
 congestion decision, wrong for the record — so the row carries the last
 report's loss *undecayed* beside how old it is and whether the sweep still
 believed it. A window in which nothing happened records the same row with
-zeros in it; the silence of the old log line was the bug. At one viewer the
+zeros in it; the silence of the old log line was the bug. `window_ms` is
+**measured** on both sides, never the nominal five seconds: the sharer's
+sweep sleeps for the window and then works, so what it drains spans the
+window plus the work, and the viewer's sampler reports the window it
+actually closed — a row that claimed 5000 ms over a longer interval would
+understate every rate a reader derived from it. At one viewer the
 ring holds roughly five and a half hours of them, which is what it was sized
 for. Before admission nothing is summarized — the sampler is only ticked once
 there is an SSRC — because a viewer parked on the approval prompt for a

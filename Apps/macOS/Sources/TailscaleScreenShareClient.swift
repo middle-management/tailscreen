@@ -72,9 +72,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// mac-only side channels (annotations, remote control, `VoiceChannel`
     /// audio, the decode-recovery ladder) arranged *around* the session.
     private var viewerSession: ViewerSession?
-    /// Serial queue the VideoToolbox adapter hops decoded frames onto (the
-    /// frame path — adapter → sink → renderer — never touches session state, so
-    /// it needn't be the receive task's context; it just must be consistent).
+    /// Serial queue the VideoToolbox adapter hops decoded frames onto. The
+    /// frame path — adapter → sink → renderer — is not the receive task's
+    /// context, and the session tolerates that for exactly the two calls the
+    /// frame path makes (`noteDecodedFrame` and `noteHostDecodeFailure` are
+    /// its thread-safe entry points, a mailbox the receive side drains); it
+    /// just must be consistent.
     private let viewerFrameQueue = DispatchQueue(label: "com.tailscreen.viewer-session-frames")
     private var isConnected = false
     /// Disconnect is a permanent cancellation request for this one-shot
@@ -783,19 +786,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         adapter.onDecodedPixelBufferForTesting = { [weak self] buffer in
             self?.onDecodedFrameForTesting?(buffer)
         }
-        adapter.onFrameDecodeFailed = { [weak self] in
-            self?.renderer.noteDecodeFailure()
-        }
-        // Once per failing run, not once per frame: a wedged decoder fails at
-        // frame rate, and the adapter's episode latch is what keeps that to
-        // one `decode.failed` per run — the same shape the portable session
-        // applies for the other two viewers.
-        adapter.onDecodeFailureEpisodeOpened = { [weak self] in
-            self?.recorder?.record(
-                .decodeFailed,
-                role: .viewer,
-                fields: ["reason": .string("frame")])
-        }
         adapter.onRecoveryAction = { [weak self] action in
             self?.handleDecodeRecoveryAction(action)
         }
@@ -829,6 +819,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 self?.onAudioReceived?(datagram)
             }
         )
+        // Per-frame decode failures: the stats overlay's counter, plus the
+        // session's own count. `VideoDecoder` runs the escalation ladder
+        // itself, so this must NOT reach the session's `onDecodeFailure`
+        // (that would double-ladder one episode); `noteHostDecodeFailure` is
+        // the counting-only entry, safe from the decoder's queue, and it is
+        // what puts `decode_failures` in this viewer's `transport.summary`
+        // rows and records `decode.failed` once per failing run — the same
+        // rule, from the same place, as the GTK and WinUI viewers.
+        adapter.onFrameDecodeFailed = { [weak self, weak session] in
+            self?.renderer.noteDecodeFailure()
+            session?.noteHostDecodeFailure()
+        }
         // Stats overlay: feed the renderer's loss-recovery counters as the
         // session emits feedback. These fire on the receive task (where
         // receiveRTP/tick run), same as the legacy loop's note* calls.

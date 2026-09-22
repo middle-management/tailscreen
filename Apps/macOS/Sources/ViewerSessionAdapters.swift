@@ -88,19 +88,6 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
     var onRecoveryAction: ((DecodeRecoveryAction) -> Void)?
     var onRecovered: (() -> Void)?
 
-    /// Fires on the FIRST per-frame decode failure after a decoded frame (or
-    /// at session start) — once per failing run, however long the run is.
-    /// `onFrameDecodeFailed` above fires per frame, which is right for a
-    /// counter and wrong for a record: a wedged decoder fails at frame rate.
-    /// The client records `decode.failed` from this hook.
-    ///
-    /// Latched here rather than in the client because this adapter is the
-    /// one object that sees both edges: the failure (on the decoder's serial
-    /// queue) and the next decoded frame (on VideoToolbox's output thread),
-    /// which is also why the latch is a `Guarded` rather than a Bool.
-    var onDecodeFailureEpisodeOpened: (() -> Void)?
-    private let decodeFailureEpisodeOpen = Guarded<Bool>(false)
-
     /// Test-only: fires with each decoded `CVPixelBuffer` on the decoder's
     /// output thread, *before* the `callbackQueue` hop — the client forwards it
     /// to its `onDecodedFrameForTesting` seam (the E2E suites assert a frame
@@ -124,7 +111,6 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
 
         decoder.onDecodedFrame = { [weak self] buffer in
             guard let self else { return }
-            self.decodeFailureEpisodeOpen.withLock { $0 = false }
             self.onDecodedPixelBufferForTesting?(buffer)
             let box = CVPixelBufferBox(buffer: buffer, receiveUptimeNs: self.lastSubmitUptimeNs)
             self.callbackQueue.async { self.onDecodedFrame?(box) }
@@ -138,16 +124,7 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
         }
         // The per-frame decode-failure stats signal and the consecutive-failure
         // escalation ladder pass straight through to the host (no session hop).
-        decoder.onFrameDecodeFailed = { [weak self] in
-            guard let self else { return }
-            let opened = self.decodeFailureEpisodeOpen.withLock { open -> Bool in
-                if open { return false }
-                open = true
-                return true
-            }
-            if opened { self.onDecodeFailureEpisodeOpened?() }
-            self.onFrameDecodeFailed?()
-        }
+        decoder.onFrameDecodeFailed = { [weak self] in self?.onFrameDecodeFailed?() }
         decoder.onRecoveryAction = { [weak self] action in self?.onRecoveryAction?(action) }
         decoder.onRecovered = { [weak self] in self?.onRecovered?() }
     }

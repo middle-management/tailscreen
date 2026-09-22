@@ -103,12 +103,22 @@ extension TailscaleScreenShareServer {
     /// expected count (`fecRecoveredQ8`), which is the number the FEC arm
     /// gates on. Both are Q8 like the wire field (255 = 100 %), with
     /// `loss_pct` beside them for a reader who does not want to divide.
+    ///
+    /// Two durations, on purpose. `windowNs` is the sweep's nominal window:
+    /// the freshness threshold `rr_fresh` is judged against, exactly as the
+    /// sweep decays a report. `elapsedNs` is how long it has actually been
+    /// since the previous row, which is what `window_ms` reports — the
+    /// sweep sleeps for the nominal window and *then* works, so the
+    /// counters it drains span the nominal window plus that work, and a row
+    /// claiming `window_ms=5000` over a longer interval would understate
+    /// every rate derived from it.
     public static func transportSummaryFields(
         addr: String,
         sample: ViewerTransportSample,
         share: ShareTransportState,
         nowNs: UInt64,
-        windowNs: UInt64
+        windowNs: UInt64,
+        elapsedNs: UInt64
     ) -> [String: DiagnosticValue] {
         let rrReceived = sample.lastRRAtNs != 0
         let rrAgeNs = rrReceived && nowNs >= sample.lastRRAtNs ? nowNs - sample.lastRRAtNs : 0
@@ -121,7 +131,7 @@ extension TailscaleScreenShareServer {
                     expectedPackets: sample.packetsSent))
         var fields: [String: DiagnosticValue] = [
             "addr": .string(addr),
-            "window_ms": DiagnosticValue(windowNs / 1_000_000),
+            "window_ms": DiagnosticValue(elapsedNs / 1_000_000),
             "plis": DiagnosticValue(sample.pliCount),
             "rr_received": .bool(rrReceived),
             "rr_fresh": .bool(rrFresh),

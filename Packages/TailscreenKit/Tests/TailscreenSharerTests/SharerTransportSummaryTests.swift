@@ -22,10 +22,26 @@ final class SharerTransportSummaryTests: XCTestCase {
         bitrateBps: 12_000_000, baselineBps: 20_000_000, fpsTier: 30, fecGroupSize: 8)
 
     private func fields(
-        _ sample: Server.ViewerTransportSample, nowNs: UInt64 = 60_000_000_000
+        _ sample: Server.ViewerTransportSample, nowNs: UInt64 = 60_000_000_000,
+        elapsedNs: UInt64? = nil
     ) -> [String: DiagnosticValue] {
         Server.transportSummaryFields(
-            addr: "100.64.0.9:51820", sample: sample, share: share, nowNs: nowNs, windowNs: window)
+            addr: "100.64.0.9:51820", sample: sample, share: share, nowNs: nowNs,
+            windowNs: window, elapsedNs: elapsedNs ?? window)
+    }
+
+    /// `window_ms` is the interval the row actually covers, not the sweep's
+    /// nominal window: the sweep sleeps for the window and then works, so
+    /// the counters it drains span more than the window. Freshness stays
+    /// judged against the nominal window, because that is what the sweep's
+    /// own decay uses — the two durations answer different questions.
+    func testWindowIsMeasuredWhileFreshnessStaysNominal() {
+        let now: UInt64 = 60_000_000_000
+        let sample = Server.ViewerTransportSample(lastRRAtNs: now - window + 1)
+        let row = fields(sample, nowNs: now, elapsedNs: window + 340_000_000)
+        XCTAssertEqual(row["window_ms"], .int(5340), "the measured interval")
+        XCTAssertEqual(row["rr_fresh"], .bool(true), "fresh against the nominal window")
+        XCTAssertEqual(fields(sample, nowNs: now)["window_ms"], .int(5000))
     }
 
     /// A viewer that never sent a receiver report says so — `rr_received`
