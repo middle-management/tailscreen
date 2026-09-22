@@ -31,12 +31,14 @@ public final class SharerVoice: @unchecked Sendable {
     private let uplink: VoiceUplink
     private let downlink = VoiceDownlink()
 
-    /// A viewer's decoded voice, tagged with their SSRC. The host mixes and
-    /// plays it; the tag is kept because "who is talking" is information a
-    /// sharer's UI can use and mixing destroys irreversibly.
-    public var onRemotePCM: ((UInt32, [Float]) -> Void)? {
-        get { downlink.onPCM }
-        set { downlink.onPCM = newValue }
+    /// The viewers' decoded voices, already summed into one frame per 20 ms
+    /// playout slot (`VoiceDownlink.onMixedPCM`). The host queues each frame
+    /// onto its one output device as is: two viewers talking at once arrive
+    /// as one mixed frame, not as alternating frames a queue would play in
+    /// turn.
+    public var onRemotePCM: (([Float]) -> Void)? {
+        get { downlink.onMixedPCM }
+        set { downlink.onMixedPCM = newValue }
     }
 
     /// The capture device stopped. Nil means the caller asked; an error means

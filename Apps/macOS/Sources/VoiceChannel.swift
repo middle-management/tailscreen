@@ -15,8 +15,19 @@ import os
 // and the mac-side tests reading naturally.
 
 /// Process-side voice pipeline: PCM in → Opus enc → RTP out, and RTP in →
-/// Opus dec (per SSRC) → mixed PCM out. Hardware capture/playback glue is
-/// in `MicCapture` (added in Task 7) which feeds this class.
+/// Opus dec (per SSRC) → `VoiceMixer` (per 20 ms slot) → mixed PCM out.
+/// Hardware capture/playback glue is in `MicCapture` (added in Task 7) which
+/// feeds this class.
+///
+/// The mix is real summation, not a name: `MicCapture` schedules everything
+/// `onMixedPCM` delivers onto ONE `AVAudioPlayerNode`, which plays its
+/// buffers in turn — so emitting per SSRC with two remote voices (a sharer
+/// hearing two viewers; a viewer hearing the sharer at SSRC 0 plus another
+/// viewer's relayed voice) time-multiplexed them, 20 ms of each in
+/// alternation, and the doubled queue depth tripped the overrun cap on top.
+/// The mixer (portable, shared with `VoiceDownlink`) sums the frames of
+/// different SSRCs that land in the same slot; a single voice passes
+/// through unchanged. Decoding, concealment, jitter and fades stay per SSRC.
 ///
 /// Thread-safe via an internal serial queue: capture callbacks (audio
 /// thread) and network callbacks (TailscaleKit reader task) call into
@@ -24,8 +35,9 @@ import os
 /// the queue.
 ///
 /// Marked `@unchecked Sendable`: all stored mutable state (`_isMuted`,
-/// `decoders`, `decoderFailures`, `receiveStates`, `lastTargetRefreshNs`,
-/// `lastStatsLogNs`, `lastLoggedStats`) is touched only from `queue`.
+/// `decoders`, `decoderFailures`, `receiveStates`, `mixer`,
+/// `lastTargetRefreshNs`, `lastStatsLogNs`, `lastLoggedStats`) is touched
+/// only from `queue`.
 /// `statsLock` and `jitterTargetDepth` are the cross-thread values —
 /// lock-published because `MicCapture` reads/writes them from the
 /// MainActor. `onMixedPCM` is the documented exception — set it once
@@ -41,10 +53,12 @@ final class VoiceChannel: @unchecked Sendable {
     /// RTP packet. Caller should pass it to the network layer.
     private let onSend: (Data) -> Void
 
-    /// Invoked on the internal queue when the decoder produces a block of
-    /// PCM samples for one inbound RTP audio packet. One call per packet
-    /// per remote SSRC — mixing across peers is the caller's job (the
-    /// audio engine in `MicCapture` schedules them into a shared player).
+    /// Invoked on the internal queue with one frame of PCM per 20 ms playout
+    /// slot: every remote voice that landed in the slot, summed and clamped
+    /// by `VoiceMixer` (a lone voice passes through untouched). Mixing is
+    /// done HERE, not by the caller — `MicCapture` schedules each frame onto
+    /// one shared player node, which plays its buffers sequentially and so
+    /// cannot mix.
     ///
     /// Set this once before the first `receive(_:)` call. Mutating it
     /// concurrently with packet ingestion is unsafe; the queue reads it
@@ -66,6 +80,9 @@ final class VoiceChannel: @unchecked Sendable {
     private var decoders: [UInt32: OpusVoiceDecoder] = [:]
     private var decoderFailures: [UInt32: DecoderFailureRecord] = [:]
     private var receiveStates: [UInt32: ReceiveState] = [:]
+    /// The per-slot sum every voice emission (decoded or concealed) passes
+    /// through on its way to `onMixedPCM`. Queue-confined like `decoders`.
+    private var mixer = VoiceMixer()
     private var lastTargetRefreshNs: UInt64 = 0
     private var lastStatsLogNs: UInt64 = 0
     private var lastLoggedStats = VoiceStats()
@@ -153,6 +170,7 @@ final class VoiceChannel: @unchecked Sendable {
             self.decoders.removeAll()
             self.decoderFailures.removeAll()
             self.receiveStates.removeAll()
+            self.mixer.reset()
             self.lastTargetRefreshNs = 0
             self.lastStatsLogNs = 0
             self.lastLoggedStats = VoiceStats()
@@ -233,8 +251,10 @@ final class VoiceChannel: @unchecked Sendable {
             kind = .inOrder
         case .concealThenDecode(let missing):
             emitConcealment(
+                for: parsed.ssrc,
                 frames: VoiceReceiveDecisions.concealmentEmitCount(missing: missing),
-                lastSample: state?.lastEmittedSample ?? 0)
+                lastSample: state?.lastEmittedSample ?? 0,
+                nowNs: now)
             kind = .concealed
         case .discontinuity:
             statsLock.withLock { $0.discontinuities += 1 }
@@ -377,15 +397,30 @@ final class VoiceChannel: @unchecked Sendable {
     /// arrives pre-capped by `concealmentEmitCount`, so this fill can
     /// never occupy the playback-queue headroom the gap's next real frame
     /// needs. `concealedFrames` counts only what is actually emitted.
-    private func emitConcealment(frames: Int, lastSample: Float) {
-        guard frames > 0, let emit = onMixedPCM else { return }
+    ///
+    /// The fill enters the mix under the gap's SSRC: the mixer keeps one
+    /// SSRC's frames sequential, so a burst of several fill frames plays in
+    /// order, while another voice's frame in the same slot is summed in.
+    private func emitConcealment(for ssrc: UInt32, frames: Int, lastSample: Float, nowNs: UInt64) {
+        guard frames > 0, onMixedPCM != nil else { return }
         statsLock.withLock { $0.concealedFrames += frames }
         for frameIndex in 0..<frames {
+            let fill: [Float]
             if frameIndex == 0 {
-                emit(VoiceReceiveDecisions.concealmentFadeOut(from: lastSample))
+                fill = VoiceReceiveDecisions.concealmentFadeOut(from: lastSample)
             } else {
-                emit([Float](repeating: 0, count: Self.samplesPerFrame))
+                fill = [Float](repeating: 0, count: Self.samplesPerFrame)
             }
+            emitMixed(ssrc: ssrc, samples: fill, nowNs: nowNs)
+        }
+    }
+
+    /// The one exit of the voice path: run a per-SSRC frame through the
+    /// per-slot mixer and hand whatever it releases to `onMixedPCM`, in order.
+    private func emitMixed(ssrc: UInt32, samples: [Float], nowNs: UInt64) {
+        guard let emit = onMixedPCM else { return }
+        for frame in mixer.add(ssrc: ssrc, samples: samples, nowNs: nowNs) {
+            emit(frame)
         }
     }
 
@@ -419,7 +454,7 @@ final class VoiceChannel: @unchecked Sendable {
                 if let last = samples.last { updated.lastEmittedSample = last }
                 state = updated
             }
-            onMixedPCM?(samples)
+            emitMixed(ssrc: parsed.ssrc, samples: samples, nowNs: nowNs)
         } catch {
             recordDecodeFailure(for: parsed.ssrc, error: error, nowNs: nowNs)
         }
@@ -854,8 +889,11 @@ final class MicCapture {
         }
         self.outputFormat = fmt
 
-        // Pipe decoded PCM (per-SSRC mix already done by VoiceChannel)
-        // into a player node so the user hears it.
+        // Pipe decoded PCM into a player node so the user hears it. One frame
+        // per 20 ms slot, every remote voice already summed by the channel's
+        // `VoiceMixer`: a player node plays its buffers in turn, so it cannot
+        // mix two voices itself — and the pending-buffer bookkeeping below
+        // (jitter target, overrun cap) is sized for one stream per slot.
         channel.onMixedPCM = { [weak self] samples in
             Task { @MainActor [weak self] in self?.scheduleSamples(samples) }
         }

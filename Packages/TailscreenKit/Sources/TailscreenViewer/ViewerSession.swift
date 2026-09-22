@@ -266,15 +266,17 @@ public final class ViewerSession {
             self?.handleDecodeFailure()
         }
 
-        // Every voice, mixed by the sink. The SSRC the downlink tags each
-        // buffer with is dropped here on purpose: `AudioSink` is one device,
-        // and a viewer has nowhere to route "this one is system audio" that a
-        // person would notice. macOS, which does — a separate player node for
-        // system audio — takes `onAudioDatagram` and never reaches this path.
-        // Captured directly rather than via `self` so the downlink's callback
-        // does not retain the session.
+        // Every voice, and the system-audio stream, already summed into one
+        // frame per 20 ms slot by the downlink's mixer: `AudioSink` is one
+        // device that plays what it is given in turn, so handing it each SSRC
+        // separately would time-multiplex the sharer's voice against a relayed
+        // viewer (or against system audio) instead of mixing them. macOS,
+        // which keeps a separate player node for system audio, takes
+        // `onAudioDatagram` and never reaches this path. Captured directly
+        // rather than via `self` so the downlink's callback does not retain
+        // the session.
         if let audioSink {
-            voiceDownlink.onPCM = { _, pcm in audioSink.play(pcm) }
+            voiceDownlink.onMixedPCM = { pcm in audioSink.play(pcm) }
         }
     }
 

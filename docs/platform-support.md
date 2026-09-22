@@ -304,7 +304,10 @@ user-visible stall error).
 Voice has its own resilience layer on the same terms — packet-loss
 concealment, per-speaker jitter buffering, a cooldown on a failing decoder,
 a sweep that retires quiet speakers — and all three platforms run the same
-decisions.
+decisions. Several people talking at once are summed into one stream on the
+way to the speaker, so a sharer hearing two viewers, or a viewer hearing the
+sharer and another viewer, hears them together rather than in alternating
+20 ms slices.
 
 That is the point of the split: a bug fixed in the loss-recovery path is fixed
 everywhere, and the platform code stays down to capture, encode, decode, render,
