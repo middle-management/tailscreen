@@ -304,29 +304,97 @@ final class VoicePathTests: XCTestCase {
 
     // MARK: - VoiceDownlink
 
-    func testDownlinkDecodesEachSSRCIndependently() throws {
+    /// One decoder per SSRC, but ONE frame per playout slot: three voices
+    /// speaking in the same instant come out as a single summed frame, not
+    /// as three frames a playback queue would play in turn.
+    func testDownlinkDecodesEachSSRCIndependentlyAndMixesTheSlot() throws {
         let downlink = VoiceDownlink()
-        var heard: [(UInt32, Int)] = []
-        downlink.onPCM = { ssrc, pcm in heard.append((ssrc, pcm.count)) }
+        var heard: [[Float]] = []
+        downlink.onMixedPCM = { pcm in heard.append(pcm) }
 
         let encoder = try OpusVoiceEncoder()
         let tone = (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }
         let au = try XCTUnwrap(encoder.encode(pcm: tone))
 
+        let now = ms(1000)
+        let packetizers = Dictionary(
+            uniqueKeysWithValues: [UInt32(0), 1, 9].map {
+                ($0, AudioRTPPacketizer(ssrc: $0, payloadType: RTPHeader.voicePayloadType))
+            })
         for ssrc in [UInt32(0), 1, 9] {
-            let packetizer = AudioRTPPacketizer(
-                ssrc: ssrc, payloadType: RTPHeader.voicePayloadType)
-            downlink.ingest(packetizer.packetize(au: au))
+            downlink.ingest(packetizers[ssrc]!.packetize(au: au), nowNs: now)
         }
-        XCTAssertEqual(heard.map(\.0), [0, 1, 9])
-        XCTAssertTrue(heard.allSatisfy { $0.1 == 960 })
-        XCTAssertEqual(downlink.voiceCount, 3)
+        XCTAssertEqual(downlink.voiceCount, 3, "each SSRC gets its own decoder")
+        // The first voice was alone and passed straight through; the second
+        // opened a slot the third joined, and that slot is still open — it
+        // closes on the next frame, not on a timer.
+        XCTAssertEqual(heard.count, 1, "three voices in one slot must not emit three frames")
+        XCTAssertEqual(heard[0].count, 960)
+
+        // The next frame of voice 1 closes the slot: what comes out is the
+        // sum of 1 and 9, which for two identical decodes is exactly double.
+        downlink.ingest(packetizers[1]!.packetize(au: au), nowNs: now + ms(20))
+        XCTAssertEqual(heard.count, 2)
+        for i in stride(from: 0, to: 960, by: 97) {
+            XCTAssertEqual(heard[1][i], 2 * heard[0][i], accuracy: 1e-6, "slot frame must be the SUM")
+        }
+    }
+
+    /// The bug this whole layer exists for, end to end: two viewers talking
+    /// over each other, decoded from real Opus packets, must reach the host
+    /// as one frame per 20 ms — not as two interleaved 50 Hz streams whose
+    /// alternation sounds garbled and whose doubled depth trips the host's
+    /// overrun cap. Both voices are decoded on their own too, so the mixed
+    /// frames can be checked against the actual sum rather than a count.
+    func testTwoVoicesInTheSameSlotAreSummedIntoOneFrame() throws {
+        let frames = 10
+        let a = try voicePackets(count: frames, ssrc: 2)
+        let b = try voicePackets(count: frames, ssrc: 3)
+        try XCTSkipIf(a.count < frames || b.count < frames, "Opus encoder produced no usable output on this host")
+
+        // Reference: each voice through its own downlink, alone.
+        func solo(_ packets: [Data]) -> [[Float]] {
+            let downlink = VoiceDownlink()
+            var heard: [[Float]] = []
+            downlink.onMixedPCM = { heard.append($0) }
+            for (i, packet) in packets.enumerated() { downlink.ingest(packet, nowNs: ms(1000 + 20 * i)) }
+            return heard
+        }
+        let soloA = solo(a)
+        let soloB = solo(b)
+        XCTAssertEqual(soloA.count, frames, "a lone voice is unchanged: one frame in, one frame out")
+        XCTAssertEqual(soloB.count, frames)
+
+        // Together: B runs 5 ms behind A, the way two peers' clocks do.
+        let downlink = VoiceDownlink()
+        var heard: [[Float]] = []
+        downlink.onMixedPCM = { heard.append($0) }
+        for i in 0..<frames {
+            downlink.ingest(a[i], nowNs: ms(1000 + 20 * i))
+            downlink.ingest(b[i], nowNs: ms(1005 + 20 * i))
+        }
+        XCTAssertLessThan(heard.count, 2 * frames, "two voices must not double the frame rate")
+        XCTAssertEqual(heard.count, frames, "one frame per 20 ms slot, whoever spoke in it")
+
+        // A's first frame was alone (nothing to wait for). From then on each
+        // slot is opened by B's frame k and joined by A's frame k+1, and the
+        // slot is released when B's next frame arrives.
+        XCTAssertEqual(heard[0], soloA[0], "a frame that passes through alone is byte-identical")
+        for k in 0..<(frames - 1) {
+            let mixed = heard[k + 1]
+            XCTAssertEqual(mixed.count, 960)
+            for i in stride(from: 0, to: 960, by: 61) {
+                let expected = max(-1, min(1, soloA[k + 1][i] + soloB[k][i]))
+                XCTAssertEqual(mixed[i], expected, accuracy: 1e-6, "slot \(k + 1) is not the sum of its two voices")
+            }
+        }
+        XCTAssertEqual(downlink.voiceCount, 2, "mixing must not collapse the per-SSRC decoders")
     }
 
     func testGarbageIsDroppedWithoutAllocatingADecoder() {
         let downlink = VoiceDownlink()
         var heard = 0
-        downlink.onPCM = { _, _ in heard += 1 }
+        downlink.onMixedPCM = { _ in heard += 1 }
         downlink.ingest(Data())
         downlink.ingest(Data([0xFF, 0x00, 0x01]))
         XCTAssertEqual(heard, 0)
@@ -403,7 +471,7 @@ final class VoicePathTests: XCTestCase {
     /// ordinary run is the loud version of the same bug.
     func testResetIsSafeAgainstConcurrentIngest() throws {
         let downlink = VoiceDownlink()
-        downlink.onPCM = { _, _ in }
+        downlink.onMixedPCM = { _ in }
         let encoder = try OpusVoiceEncoder()
         let tone = (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }
         let au = try XCTUnwrap(encoder.encode(pcm: tone))
@@ -453,7 +521,7 @@ final class VoicePathTests: XCTestCase {
     func testGapConcealsWithOpusPLCUpToTheCapAndFadesOut() throws {
         let downlink = VoiceDownlink()
         var heard: [[Float]] = []
-        downlink.onPCM = { _, pcm in heard.append(pcm) }
+        downlink.onMixedPCM = { pcm in heard.append(pcm) }
         let packets = try voicePackets(count: 10, ssrc: 7)
         try XCTSkipIf(packets.count < 10, "Opus encoder produced no usable output on this host")
 
@@ -488,7 +556,7 @@ final class VoicePathTests: XCTestCase {
     func testLatePacketAfterConcealmentIsDroppedStale() throws {
         let downlink = VoiceDownlink()
         var heard = 0
-        downlink.onPCM = { _, _ in heard += 1 }
+        downlink.onMixedPCM = { _ in heard += 1 }
         let packets = try voicePackets(count: 6, ssrc: 9)
         try XCTSkipIf(packets.count < 6, "Opus encoder produced no usable output on this host")
 
@@ -515,7 +583,7 @@ final class VoicePathTests: XCTestCase {
     func testLargeGapResyncsInsteadOfConcealing() throws {
         let downlink = VoiceDownlink()
         var heard = 0
-        downlink.onPCM = { _, _ in heard += 1 }
+        downlink.onMixedPCM = { _ in heard += 1 }
         let packets = try voicePackets(count: 10, ssrc: 12)
         try XCTSkipIf(packets.count < 10, "Opus encoder produced no usable output on this host")
 
@@ -530,7 +598,7 @@ final class VoicePathTests: XCTestCase {
     func testDecoderInitFailureCooldownGatesThenRecovers() throws {
         let downlink = VoiceDownlink()
         var heard = 0
-        downlink.onPCM = { _, _ in heard += 1 }
+        downlink.onMixedPCM = { _ in heard += 1 }
         let packets = try voicePackets(count: 6, ssrc: 4)
         try XCTSkipIf(packets.count < 6, "Opus encoder produced no usable output on this host")
 
@@ -628,7 +696,7 @@ final class VoicePathTests: XCTestCase {
     func testSystemAudioGapsAreNotConcealed() throws {
         let downlink = VoiceDownlink()
         var heard = 0
-        downlink.onPCM = { _, _ in heard += 1 }
+        downlink.onMixedPCM = { _ in heard += 1 }
         let encoder = try OpusVoiceEncoder(application: .audio)
         let packetizer = AudioRTPPacketizer(
             ssrc: RTPHeader.systemAudioSSRC, payloadType: RTPHeader.systemAudioPayloadType)
@@ -713,25 +781,30 @@ final class SharerVoiceTests: XCTestCase {
         XCTAssertEqual(header.payloadType, RTPHeader.voicePayloadType)
     }
 
-    func testViewerVoiceIsDecodedPerSSRC() throws {
+    /// Two viewers, two decoders — and one frame per slot on the way to the
+    /// sharer's single output, since a sharer hearing two viewers at once is
+    /// exactly the case that used to come out interleaved.
+    func testViewerVoicesAreDecodedPerSSRCAndMixedPerSlot() throws {
         let voice = try SharerVoice(
             microphone: ManualMic(), encoder: OpusVoiceEncoder(), send: { _ in })
-        var heard: [UInt32] = []
-        voice.onRemotePCM = { ssrc, pcm in
-            XCTAssertEqual(pcm.count, 960)
-            heard.append(ssrc)
-        }
+        var heard: [[Float]] = []
+        voice.onRemotePCM = { pcm in heard.append(pcm) }
         let encoder = try OpusVoiceEncoder()
         let au = try XCTUnwrap(
             encoder.encode(pcm: (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }))
         // Viewer SSRCs start at 2 — 0 is the sharer, 1 is system audio.
-        for ssrc in [UInt32(2), 3] {
-            let packetizer = AudioRTPPacketizer(
-                ssrc: ssrc, payloadType: RTPHeader.voicePayloadType)
-            voice.receive(packetizer.packetize(au: au))
-        }
-        XCTAssertEqual(heard, [2, 3])
+        let two = AudioRTPPacketizer(ssrc: 2, payloadType: RTPHeader.voicePayloadType)
+        let three = AudioRTPPacketizer(ssrc: 3, payloadType: RTPHeader.voicePayloadType)
+        let base: UInt64 = 1_000_000_000
+        voice.receive(two.packetize(au: au), nowNs: base)
+        voice.receive(three.packetize(au: au), nowNs: base + 2_000_000)
+        voice.receive(two.packetize(au: au), nowNs: base + 20_000_000)
+        voice.receive(three.packetize(au: au), nowNs: base + 22_000_000)
         XCTAssertEqual(voice.voiceCount, 2)
+        // Viewer 2's first frame was alone; the slot viewer 3 then opened took
+        // viewer 2's second frame and closed on viewer 3's next.
+        XCTAssertEqual(heard.count, 2, "two voices in one slot must come out as one frame")
+        XCTAssertTrue(heard.allSatisfy { $0.count == 960 })
     }
 
     /// An open capture device after Stop Sharing keeps the OS microphone

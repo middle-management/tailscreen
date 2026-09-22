@@ -174,8 +174,11 @@ loops need a real tsnet node and a genuinely bad network to exercise.
 Voice runs in both directions (Opus, mono, 48 kHz), with viewer-to-viewer
 relay through the sharer, alongside the sharer's **system audio**. The
 receive side runs an adaptive jitter buffer, conceals short sequence gaps
-instead of glitching, and puts a failing decoder on a cooldown rather
-than hammering it. All of those decisions live in the portable core
+instead of glitching, puts a failing decoder on a cooldown rather
+than hammering it, and sums the voices that fall in the same 20 ms slot
+into one frame before they reach the single playback queue every host
+has — a queue plays what it is given in turn, so handing it each voice
+separately interleaves them rather than mixing them. All of those decisions live in the portable core
 (`VoiceReceiveDecisions`), composed by every platform's audio path, so a
 fix lands on all three platforms at once; each host supplies only its own
 microphone and speaker.

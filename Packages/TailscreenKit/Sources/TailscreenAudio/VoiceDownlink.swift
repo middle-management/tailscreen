@@ -41,9 +41,17 @@ import TailscreenProtocol
 /// concealment tuning is voice-shaped. It still gets the decode path and the
 /// failure cooldown.
 ///
-/// Emits PCM tagged with its SSRC rather than mixing: who is speaking is
-/// information the host needs (to route system audio to a different node than
-/// voice, to show a speaking indicator) and mixing throws it away irreversibly.
+/// Emits **one mixed frame per 20 ms playout slot**, not one frame per SSRC.
+/// Every host feeds a single playback queue, and a queue plays what it is
+/// given in turn — so per-SSRC emission with two remote voices (a sharer
+/// hearing two viewers; a viewer hearing the sharer plus a relayed viewer)
+/// interleaved their frames instead of summing them: 20 ms of A, 20 ms of B,
+/// garbled and chopped, with the doubled queue depth tripping the host's
+/// overrun cap on top. `VoiceMixer` sums the frames that fall in the same
+/// slot — voice SSRCs and the system-audio SSRC alike, since a host owns one
+/// output device — and clamps the sum; a single live voice passes through
+/// unheld and unchanged. Decoding, concealment, jitter and fades stay per
+/// SSRC; only the emit is mixed.
 ///
 /// Timing: every decision that needs a clock reads the `nowNs` handed to
 /// `ingest`. Hosts that already thread a monotonic clock (`ViewerSession`
@@ -68,32 +76,38 @@ public final class VoiceDownlink: @unchecked Sendable {
     /// below anything that matters for memory.
     public static let maxConcurrentVoices = 32
 
-    /// Decoded 48 kHz mono PCM, tagged with the SSRC it came from. Concealment
-    /// frames are emitted through the same hook, under the gap's SSRC.
-    public var onPCM: ((UInt32, [Float]) -> Void)? {
+    /// Decoded 48 kHz mono PCM, one frame per 20 ms playout slot: every voice
+    /// (and the system-audio stream) that landed in the slot, summed and
+    /// clamped by `VoiceMixer`. Concealment frames enter the same mix under
+    /// the gap's SSRC. A host queues each frame onto its one output as is.
+    public var onMixedPCM: (([Float]) -> Void)? {
         get { lock.withLock { pcmSink } }
         set { lock.withLock { pcmSink = newValue } }
     }
 
-    /// One buffer of decoded (or concealed) PCM, on its way out.
+    /// One buffer of decoded (or concealed) PCM, on its way to the mixer.
     ///
-    /// Emissions are collected inside the critical section and delivered after
-    /// it: `onPCM` reaches a host's playback device (ALSA, WASAPI, a MainActor
-    /// hop), and holding a lock across that would park a share teardown behind
-    /// an audio device. Buffering keeps the order the decode produced, which
-    /// is what makes concealment-then-decode still arrive in that order.
+    /// Emissions are collected inside the critical section, mixed there, and
+    /// delivered after it: `onMixedPCM` reaches a host's playback device
+    /// (ALSA, WASAPI, a MainActor hop), and holding a lock across that would
+    /// park a share teardown behind an audio device. Buffering keeps the order
+    /// the decode produced, which is what makes concealment-then-decode still
+    /// reach the mixer — and the host — in that order.
     private typealias Emission = (ssrc: UInt32, samples: [Float])
 
     /// Guards every mutable field below — the decoder pool, the per-SSRC
-    /// sequence/jitter state, the failure records, the counters and `pcmSink`.
+    /// sequence/jitter state, the failure records, the mixer, the counters and
+    /// `pcmSink`.
     ///
     /// The two contenders are the host's receive thread (`ingest`) and
     /// whichever thread stopped the share (`reset`). Nothing is emitted while
     /// it is held; see `Emission`.
     private let lock = NSLock()
-    private var pcmSink: ((UInt32, [Float]) -> Void)?
+    private var pcmSink: (([Float]) -> Void)?
 
     private let depacketizer = AudioRTPDepacketizer()
+    /// The per-slot sum every emission passes through on its way out.
+    private var mixer = VoiceMixer()
     private var decoders: [UInt32: OpusVoiceDecoder] = [:]
     /// Ingest ordinal of each SSRC's last packet, for capacity eviction. A
     /// counter rather than a clock so the bound's behaviour is deterministic
@@ -137,8 +151,8 @@ public final class VoiceDownlink: @unchecked Sendable {
     ///   testable); nil reads the process's monotonic uptime clock.
     public func ingest(_ packet: Data, nowNs: UInt64? = nil) {
         let now = nowNs ?? Self.monotonicNowNs()
-        let (sink, emissions) = lock.withLock {
-            () -> (((UInt32, [Float]) -> Void)?, [Emission]) in
+        let (sink, frames) = lock.withLock {
+            () -> ((([Float]) -> Void)?, [[Float]]) in
             guard let parsed = depacketizer.unpack(packet) else { return (nil, []) }
             ingestCount &+= 1
             lastSeen[parsed.ssrc] = ingestCount
@@ -153,10 +167,12 @@ public final class VoiceDownlink: @unchecked Sendable {
                 ingestVoice(parsed, nowNs: now, into: &out)
             }
             sweepIfDue(nowNs: now)
-            return (pcmSink, out)
+            // Per-SSRC output becomes per-slot output here, in decode order.
+            let mixed = out.flatMap { mixer.add(ssrc: $0.ssrc, samples: $0.samples, nowNs: now) }
+            return (pcmSink, mixed)
         }
         guard let sink else { return }
-        for emission in emissions { sink(emission.ssrc, emission.samples) }
+        for frame in frames { sink(frame) }
     }
 
     /// Drop every decoder and all resilience state — a new session, or a
@@ -172,6 +188,7 @@ public final class VoiceDownlink: @unchecked Sendable {
             ingestCount = 0
             receiveStates.removeAll()
             decoderFailures.removeAll()
+            mixer.reset()
             jitterTarget = VoiceReceiveDecisions.initialJitterTargetDepth
             lastSweepNs = 0
             concealed = 0

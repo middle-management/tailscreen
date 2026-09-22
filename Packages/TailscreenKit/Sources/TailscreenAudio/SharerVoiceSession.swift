@@ -37,11 +37,10 @@ public final class SharerVoiceSession: @unchecked Sendable {
     /// re-renders without a status push per idle call.
     public var onStateChanged: ((Bool, Bool) -> Void)?
 
-    /// A viewer's decoded voice, already mixed down to one stream.
-    ///
-    /// The SSRC is dropped on the way through: there is one local output
-    /// device and what a person hears is the mix. A sharer UI that wanted a
-    /// speaking indicator would take `SharerVoice.onRemotePCM` instead.
+    /// The viewers' decoded voices, already mixed down to one stream: one
+    /// frame per 20 ms playout slot, with everyone who spoke in that slot
+    /// summed (`VoiceDownlink.onMixedPCM`). There is one local output device
+    /// and what a person hears is the mix, so the host queues each frame as is.
     public var onRemotePCM: (([Float]) -> Void)?
 
     private let lock = NSLock()
@@ -80,7 +79,7 @@ public final class SharerVoiceSession: @unchecked Sendable {
     ) throws {
         let voice = SharerVoice(
             microphone: microphone, encoder: try OpusVoiceEncoder(), send: send)
-        voice.onRemotePCM = { [weak self] _, pcm in self?.onRemotePCM?(pcm) }
+        voice.onRemotePCM = { [weak self] pcm in self?.onRemotePCM?(pcm) }
         // Installed BEFORE `start()`: a device that fails on the way up must
         // reach the host, or the mic control stays offering an unmute that
         // cannot happen.

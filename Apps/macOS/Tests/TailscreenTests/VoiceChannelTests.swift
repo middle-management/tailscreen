@@ -56,6 +56,35 @@ final class VoiceChannelTests: XCTestCase {
         XCTAssertTrue(receivedAnyPCM, "listener should decode and surface PCM")
     }
 
+    /// Two remote voices at once — a sharer hearing two viewers — must reach
+    /// `MicCapture` as ONE frame per 20 ms slot. Per-SSRC emission handed the
+    /// single player node two interleaved 50 Hz streams, which it played in
+    /// turn (garbled) and which doubled the pending depth past the overrun
+    /// cap. The slot rule itself is pinned sample-exact in the package's
+    /// `VoiceMixerTests`; this pins that the channel's voice path goes
+    /// through it. Timing rides the real uptime clock here (`receive` reads
+    /// it), so the assertion is the rate, not an exact count.
+    func testTwoRemoteVoicesAreMixedNotInterleaved() throws {
+        let frames = 20
+        let a = try encodedPackets(count: frames, ssrc: 0x11)
+        let b = try encodedPackets(count: frames, ssrc: 0x22)
+        try XCTSkipIf(a.count < frames || b.count < frames, "Opus encoder produced no usable output on this host")
+
+        let listener = try VoiceChannel(localSSRC: 0x33, onSend: { _ in })
+        var emitted = 0
+        listener.onMixedPCM = { samples in
+            XCTAssertEqual(samples.count, VoiceChannel.samplesPerFrame)
+            emitted += 1
+        }
+        for i in 0..<frames {
+            listener.receive(a[i])
+            listener.receive(b[i])
+        }
+        listener.flushForTesting()
+        XCTAssertLessThan(emitted, 2 * frames, "two voices must not double the frame rate")
+        XCTAssertGreaterThanOrEqual(emitted, frames - 1, "every slot still plays")
+    }
+
     func testMutedDoesNotSend() throws {
         var sent: [Data] = []
         let channel = try VoiceChannel(
