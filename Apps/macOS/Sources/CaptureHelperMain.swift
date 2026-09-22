@@ -538,19 +538,19 @@ private final class CaptureHelperRunner {
                 try newEncoder.setup(
                     width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred)
                 let codec = newEncoder.codec
-                // If the user capped bandwidth, tighten the encoder's
-                // DataRateLimits ceiling below the bits-per-pixel formula
-                // it was set up with. Uses the shared
-                // `VideoEncoder.computeBitrate` — the server's adaptive
-                // sweep anchors its baseline to the same min() over the
-                // same formula, so the two stay coherent.
-                if let ceiling = quality.maxBitrateBps {
-                    let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
-                    let computed = VideoEncoder.computeBitrate(
-                        width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
-                    if ceiling < computed {
-                        newEncoder.setBitrate(ceiling)
-                    }
+                // Tighten the encoder's DataRateLimits ceiling below the
+                // bits-per-pixel formula it was set up with, to whichever
+                // ceiling applies: the user's if they capped bandwidth,
+                // else `QualitySettings.automaticCeilingBps`. Uses the
+                // shared `VideoEncoder.computeBitrate` and the shared
+                // `cappedBitrate` — the server's adaptive sweep anchors its
+                // baseline through the same two, so the two stay coherent.
+                let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
+                let computed = VideoEncoder.computeBitrate(
+                    width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
+                let capped = quality.cappedBitrate(anchorBps: computed)
+                if capped < computed {
+                    newEncoder.setBitrate(capped)
                 }
                 writer.writeLog("capture-helper: encoder \(codec) \(width)x\(height) @\(quality.fpsCap)fps")
                 lastWidth = width

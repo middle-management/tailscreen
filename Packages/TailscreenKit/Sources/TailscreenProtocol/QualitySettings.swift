@@ -67,6 +67,31 @@ public struct QualitySettings: Codable, Equatable, Sendable {
     /// Ceiling installed when the user first flips "Limit bandwidth" on.
     public static let initialCeilingBps = 10_000_000
 
+    /// The ceiling that applies when the user has set none — "automatic".
+    ///
+    /// Automatic used to mean *unbounded*: the bits-per-pixel formula alone
+    /// set the rate, and nothing capped what it produced. On an ordinary
+    /// retina display that is not a theoretical concern — a 6016x3384
+    /// capture at 60 fps anchors near 98 Mbps, close to **twice**
+    /// `maxCeilingBps`, which is the most the Settings stepper will let
+    /// anyone ask for. A share helping itself to more than the UI will
+    /// grant on request is wrong on the app's own terms, and the overshoot
+    /// is not confined to the picture: video and voice share one socket
+    /// (`NetworkConfig.tailscreenPort`), so a rate the link cannot carry
+    /// degrades the call as well.
+    ///
+    /// Deliberately equal to `maxCeilingBps` rather than something lower.
+    /// This is the *consistency* bound — automatic must not exceed
+    /// explicit — not a judgement about what a good automatic default
+    /// would be. That distinction keeps the change narrow: nothing at or
+    /// below 4K moves at all (3840x2160 HEVC at 60 anchors near 40 Mbps),
+    /// so only the 5K/6K captures that were the outlier are affected.
+    /// Choosing a genuinely conservative automatic default is a product
+    /// decision with a visible quality cost on links that *can* carry the
+    /// rate; this constant only fixes the part that is indefensible.
+    /// Pinned to `maxCeilingBps` by `QualitySettingsTests`.
+    public static let automaticCeilingBps = maxCeilingBps
+
     /// Bounds for `encoderQuality` (`kVTCompressionPropertyKey_Quality`).
     /// Below 0.3 VideoToolbox output degrades into blocky unusability;
     /// 1.0 is the property's own maximum.
@@ -145,6 +170,23 @@ public struct QualitySettings: Codable, Equatable, Sendable {
         guard let bps else { return nil }
         let clamped = min(max(bps, minCeilingBps), maxCeilingBps)
         return (clamped + 500_000) / 1_000_000 * 1_000_000
+    }
+
+    /// What a bits-per-pixel `anchorBps` actually resolves to: the user's
+    /// explicit ceiling when they set one, else `automaticCeilingBps`.
+    ///
+    /// One function because three places used to spell this out, and they
+    /// have to agree or the encoder and the adaptive sweep aim at different
+    /// rates: the sharer's anchor
+    /// (`TailscaleScreenShareServer.onEncoderResolution`), the live-apply
+    /// path (`updateQualityCeiling`), and the capture helper's own
+    /// `DataRateLimits` clamp. All three wrote `min(anchor, ceiling ??
+    /// anchor)`, which is why "automatic" was unbounded in all three at
+    /// once. An explicit ceiling is already clamped to `maxCeilingBps` by
+    /// `normalizedCeiling`, so the automatic arm is the only one this
+    /// changes.
+    public func cappedBitrate(anchorBps: Int) -> Int {
+        min(anchorBps, maxBitrateBps ?? Self.automaticCeilingBps)
     }
 
     // MARK: - Presets

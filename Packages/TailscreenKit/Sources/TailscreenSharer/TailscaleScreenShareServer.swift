@@ -1332,7 +1332,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             let anchor = EncoderTuning.computeBitrate(
                 width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
             self.anchoredBaselineBitrate.withLock { $0 = anchor }
-            let baseline = min(anchor, quality.maxBitrateBps ?? anchor)
+            let baseline = quality.cappedBitrate(anchorBps: anchor)
             self.baselineBitrate.withLock { $0 = baseline }
             self.currentBitrate.withLock { $0 = baseline }
             self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
@@ -4159,7 +4159,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         let anchor = anchoredBaselineBitrate.withLock { $0 }
         // No encoder anchored yet — the snapshot applies at anchor time.
         guard anchor > 0 else { return }
-        let newBaseline = min(anchor, ceiling ?? anchor)
+        // Read the ceiling back off the session rather than using `ceiling`
+        // directly: clearing it ("automatic") still resolves through
+        // `automaticCeilingBps`, so a user turning the limit off must not
+        // restore an unbounded anchor.
+        let newBaseline = sessionQuality.withLock { $0 }.cappedBitrate(anchorBps: anchor)
         baselineBitrate.withLock { $0 = newBaseline }
         let current = currentBitrate.withLock { $0 }
         if current > newBaseline {

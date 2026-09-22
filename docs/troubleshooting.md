@@ -120,6 +120,15 @@ If `tailscale status` confirms `direct` and it's still bad:
   filter for `Tailscreen`, and look for VideoToolbox errors. Encoder
   starvation or decoder backpressure produces logs.
 - Disable Wi-Fi power saving on both ends.
+- **Set a bandwidth limit** (Settings → Quality → Limit bandwidth) and see
+  whether it helps. Left off, the rate is derived from what you're
+  sharing: a large high-resolution display asks for a lot, and the
+  automatic bound is deliberately generous because a link that can carry
+  it should get the quality. On Wi-Fi that is often more than the path
+  has, and the symptom is not only a bad picture — voice travels over the
+  same connection as video, so a saturated link breaks up the audio too.
+  If a limit fixes it, the link was the constraint rather than the
+  encoder.
 
 ## "Connection degraded" badge in the viewer toolbar
 
