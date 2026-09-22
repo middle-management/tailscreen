@@ -4033,7 +4033,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 role: .sharer,
                 fields: Self.transportSummaryFields(
                     addr: entry.addr, sample: entry.sample, share: share,
-                    nowNs: now, windowNs: windowNs, elapsedNs: elapsedNs))
+                    window: SummaryWindow(nowNs: now, nominalNs: windowNs, elapsedNs: elapsedNs)))
         }
     }
 

@@ -86,6 +86,31 @@ extension TailscaleScreenShareServer {
         }
     }
 
+    /// When a row is taken and how long it covers.
+    ///
+    /// Two durations, on purpose. `nominalNs` is the sweep's window: the
+    /// freshness threshold `rr_fresh` is judged against, exactly as the
+    /// sweep decays a report. `elapsedNs` is how long it has actually been
+    /// since the previous row, which is what `window_ms` reports — the
+    /// sweep sleeps for the nominal window and *then* works, so the
+    /// counters it drains span the nominal window plus that work, and a row
+    /// claiming `window_ms=5000` over a longer interval would understate
+    /// every rate derived from it.
+    public struct SummaryWindow: Equatable, Sendable {
+        /// Uptime reading the row is taken at; ages are measured from it.
+        public var nowNs: UInt64
+        /// The sweep's nominal window, the freshness threshold.
+        public var nominalNs: UInt64
+        /// Measured time since the previous row.
+        public var elapsedNs: UInt64
+
+        public init(nowNs: UInt64, nominalNs: UInt64, elapsedNs: UInt64) {
+            self.nowNs = nowNs
+            self.nominalNs = nominalNs
+            self.elapsedNs = elapsedNs
+        }
+    }
+
     /// The `transport.summary` fields for one viewer.
     ///
     /// Two fields exist for the failure the summary was added to catch.
@@ -104,25 +129,17 @@ extension TailscaleScreenShareServer {
     /// gates on. Both are Q8 like the wire field (255 = 100 %), with
     /// `loss_pct` beside them for a reader who does not want to divide.
     ///
-    /// Two durations, on purpose. `windowNs` is the sweep's nominal window:
-    /// the freshness threshold `rr_fresh` is judged against, exactly as the
-    /// sweep decays a report. `elapsedNs` is how long it has actually been
-    /// since the previous row, which is what `window_ms` reports — the
-    /// sweep sleeps for the nominal window and *then* works, so the
-    /// counters it drains span the nominal window plus that work, and a row
-    /// claiming `window_ms=5000` over a longer interval would understate
-    /// every rate derived from it.
+    /// The window carries two durations, on purpose — see ``SummaryWindow``.
     public static func transportSummaryFields(
         addr: String,
         sample: ViewerTransportSample,
         share: ShareTransportState,
-        nowNs: UInt64,
-        windowNs: UInt64,
-        elapsedNs: UInt64
+        window: SummaryWindow
     ) -> [String: DiagnosticValue] {
+        let nowNs = window.nowNs
         let rrReceived = sample.lastRRAtNs != 0
         let rrAgeNs = rrReceived && nowNs >= sample.lastRRAtNs ? nowNs - sample.lastRRAtNs : 0
-        let rrFresh = rrReceived && rrAgeNs < windowNs
+        let rrFresh = rrReceived && rrAgeNs < window.nominalNs
         let rawLossQ8 = min(
             255,
             sample.lossFractionQ8
@@ -131,7 +148,7 @@ extension TailscaleScreenShareServer {
                     expectedPackets: sample.packetsSent))
         var fields: [String: DiagnosticValue] = [
             "addr": .string(addr),
-            "window_ms": DiagnosticValue(elapsedNs / 1_000_000),
+            "window_ms": DiagnosticValue(window.elapsedNs / 1_000_000),
             "plis": DiagnosticValue(sample.pliCount),
             "rr_received": .bool(rrReceived),
             "rr_fresh": .bool(rrFresh),

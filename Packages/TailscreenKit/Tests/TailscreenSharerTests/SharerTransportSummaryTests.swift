@@ -26,8 +26,8 @@ final class SharerTransportSummaryTests: XCTestCase {
         elapsedNs: UInt64? = nil
     ) -> [String: DiagnosticValue] {
         Server.transportSummaryFields(
-            addr: "100.64.0.9:51820", sample: sample, share: share, nowNs: nowNs,
-            windowNs: window, elapsedNs: elapsedNs ?? window)
+            addr: "100.64.0.9:51820", sample: sample, share: share,
+            window: Server.SummaryWindow(nowNs: nowNs, nominalNs: window, elapsedNs: elapsedNs ?? window))
     }
 
     /// `window_ms` is the interval the row actually covers, not the sweep's
