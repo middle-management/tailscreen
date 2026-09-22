@@ -79,11 +79,12 @@ final class IPNNotifyDecodeTests: XCTestCase {
     /// Engine and browse-to-URL notifies, the other two payloads the watcher
     /// subscribes to.
     func testEngineAndBrowseToURLNotifiesDecode() throws {
-        let engine = try decode(#"""
-        {"Version":"1.102.3","Engine":{"RBytes":10,"WBytes":20,"NumLive":1,"LiveDERPs":1,
-         "LivePeers":{"nodekey:07":{"NodeKey":"nodekey:07","TxBytes":1,"RxBytes":2,
-         "LastHandshake":"2026-09-20T10:00:00Z"}}}}
-        """#)
+        let engine = try decode(
+            #"""
+            {"Version":"1.102.3","Engine":{"RBytes":10,"WBytes":20,"NumLive":1,"LiveDERPs":1,
+             "LivePeers":{"nodekey:07":{"NodeKey":"nodekey:07","TxBytes":1,"RxBytes":2,
+             "LastHandshake":"2026-09-20T10:00:00Z"}}}}
+            """#)
         XCTAssertEqual(engine.Engine?.NumLive, 1)
         XCTAssertEqual(engine.Engine?.LivePeers["nodekey:07"]?.RxBytes, 2)
 
@@ -97,95 +98,95 @@ final class IPNNotifyDecodeTests: XCTestCase {
     /// Swift model reads, plus the ones it ignores, minus the `omitempty`
     /// ones that are empty).
     static let initialStateJSON = #"""
-    {
-      "Version": "1.102.3",
-      "State": 6,
-      "Prefs": {
-        "ControlURL": "https://controlplane.tailscale.com",
-        "RouteAll": false,
-        "ExitNodeID": "",
-        "ExitNodeIP": "",
-        "InternalExitNodePrior": "",
-        "ExitNodeAllowLANAccess": false,
-        "CorpDNS": true,
-        "RunSSH": false,
-        "RunWebClient": false,
-        "WantRunning": true,
-        "LoggedOut": false,
-        "ShieldsUp": false,
-        "AdvertiseTags": null,
-        "Hostname": "tailscreen-mac",
-        "NotepadURLs": false,
-        "AdvertiseRoutes": null,
-        "AdvertiseServices": null,
-        "Sync": "",
-        "NoSNAT": false,
-        "NetfilterMode": 2,
-        "AutoUpdate": {"Check": true, "Apply": null},
-        "AppConnector": {"Advertise": false},
-        "PostureChecking": false,
-        "NetfilterKind": "",
-        "RemoteConfig": false,
-        "DriveShares": null,
-        "Config": null
-      }
-    }
-    """#
+        {
+          "Version": "1.102.3",
+          "State": 6,
+          "Prefs": {
+            "ControlURL": "https://controlplane.tailscale.com",
+            "RouteAll": false,
+            "ExitNodeID": "",
+            "ExitNodeIP": "",
+            "InternalExitNodePrior": "",
+            "ExitNodeAllowLANAccess": false,
+            "CorpDNS": true,
+            "RunSSH": false,
+            "RunWebClient": false,
+            "WantRunning": true,
+            "LoggedOut": false,
+            "ShieldsUp": false,
+            "AdvertiseTags": null,
+            "Hostname": "tailscreen-mac",
+            "NotepadURLs": false,
+            "AdvertiseRoutes": null,
+            "AdvertiseServices": null,
+            "Sync": "",
+            "NoSNAT": false,
+            "NetfilterMode": 2,
+            "AutoUpdate": {"Check": true, "Apply": null},
+            "AppConnector": {"Advertise": false},
+            "PostureChecking": false,
+            "NetfilterKind": "",
+            "RemoteConfig": false,
+            "DriveShares": null,
+            "Config": null
+          }
+        }
+        """#
 
     static let sparseNetmapJSON = #"""
-    {
-      "Version": "1.102.3",
-      "NetMap": {
-        "SelfNode": {
-          "ID": 1, "StableID": "nSELF", "Name": "me.tail.ts.net.", "User": 100,
-          "Key": "nodekey:00", "Addresses": ["100.64.0.1/32"],
-          "Hostinfo": {"OS": "macOS", "Hostname": "me"},
-          "ComputedName": "me", "ComputedNameWithHost": "me"
-        },
-        "NodeKey": "nodekey:00",
-        "Peers": [
-          {"ID": 9, "StableID": "nBARE", "Name": "", "User": 100,
-           "Key": "nodekey:09", "Addresses": ["100.64.0.9/32"]}
-        ],
-        "DNS": {},
-        "Domain": "example.com",
-        "UserProfiles": {"100": {"ID": 100, "LoginName": "a@example.com", "DisplayName": "A"}}
-      }
-    }
-    """#
+        {
+          "Version": "1.102.3",
+          "NetMap": {
+            "SelfNode": {
+              "ID": 1, "StableID": "nSELF", "Name": "me.tail.ts.net.", "User": 100,
+              "Key": "nodekey:00", "Addresses": ["100.64.0.1/32"],
+              "Hostinfo": {"OS": "macOS", "Hostname": "me"},
+              "ComputedName": "me", "ComputedNameWithHost": "me"
+            },
+            "NodeKey": "nodekey:00",
+            "Peers": [
+              {"ID": 9, "StableID": "nBARE", "Name": "", "User": 100,
+               "Key": "nodekey:09", "Addresses": ["100.64.0.9/32"]}
+            ],
+            "DNS": {},
+            "Domain": "example.com",
+            "UserProfiles": {"100": {"ID": 100, "LoginName": "a@example.com", "DisplayName": "A"}}
+          }
+        }
+        """#
 
     static let fullNetmapJSON = #"""
-    {
-      "Version": "1.102.3",
-      "NetMap": {
-        "SelfNode": {
-          "ID": 1, "StableID": "nSELF", "Name": "me.tail.ts.net.", "User": 100,
-          "Key": "nodekey:00", "Addresses": ["100.64.0.1/32"],
-          "Hostinfo": {"OS": "macOS", "Hostname": "me"},
-          "ComputedName": "me", "ComputedNameWithHost": "me"
-        },
-        "NodeKey": "nodekey:00",
-        "Peers": [
-          {
-            "ID": 7, "StableID": "nPEER", "Name": "studio.tail.ts.net.", "User": 100,
-            "Sharer": 200, "Key": "nodekey:07", "KeyExpiry": "2030-01-01T00:00:00Z",
-            "Addresses": ["100.64.0.7/32"],
-            "AllowedIPs": ["100.64.0.7/32", "0.0.0.0/0", "::/0"],
-            "Hostinfo": {"OS": "linux", "OSVersion": "24.04", "Hostname": "studio-host"},
-            "Tags": ["tag:studio"],
-            "LastSeen": "2026-09-20T10:00:00Z",
-            "Online": true,
-            "Capabilities": ["https://tailscale.com/cap/is-admin"],
-            "ComputedName": "studio", "ComputedNameWithHost": "studio (studio-host)"
+        {
+          "Version": "1.102.3",
+          "NetMap": {
+            "SelfNode": {
+              "ID": 1, "StableID": "nSELF", "Name": "me.tail.ts.net.", "User": 100,
+              "Key": "nodekey:00", "Addresses": ["100.64.0.1/32"],
+              "Hostinfo": {"OS": "macOS", "Hostname": "me"},
+              "ComputedName": "me", "ComputedNameWithHost": "me"
+            },
+            "NodeKey": "nodekey:00",
+            "Peers": [
+              {
+                "ID": 7, "StableID": "nPEER", "Name": "studio.tail.ts.net.", "User": 100,
+                "Sharer": 200, "Key": "nodekey:07", "KeyExpiry": "2030-01-01T00:00:00Z",
+                "Addresses": ["100.64.0.7/32"],
+                "AllowedIPs": ["100.64.0.7/32", "0.0.0.0/0", "::/0"],
+                "Hostinfo": {"OS": "linux", "OSVersion": "24.04", "Hostname": "studio-host"},
+                "Tags": ["tag:studio"],
+                "LastSeen": "2026-09-20T10:00:00Z",
+                "Online": true,
+                "Capabilities": ["https://tailscale.com/cap/is-admin"],
+                "ComputedName": "studio", "ComputedNameWithHost": "studio (studio-host)"
+              }
+            ],
+            "DNS": {"Domains": ["tail.ts.net"]},
+            "Domain": "example.com",
+            "UserProfiles": {
+              "100": {"ID": 100, "LoginName": "a@example.com", "DisplayName": "A", "ProfilePicURL": ""},
+              "200": {"ID": 200, "LoginName": "b@example.com", "DisplayName": "B"}
+            }
           }
-        ],
-        "DNS": {"Domains": ["tail.ts.net"]},
-        "Domain": "example.com",
-        "UserProfiles": {
-          "100": {"ID": 100, "LoginName": "a@example.com", "DisplayName": "A", "ProfilePicURL": ""},
-          "200": {"ID": 200, "LoginName": "b@example.com", "DisplayName": "B"}
         }
-      }
-    }
-    """#
+        """#
 }

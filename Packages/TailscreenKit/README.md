@@ -107,8 +107,12 @@ that roadmap.
   data plane, and a second host implementation is exactly who would want
   them — so most of `TailscreenSharerTests` imports the module plainly (the
   exception is `SharerAskToShareCoordinatorTests`, which uses `@testable`
-  for the coordinator's internal reply-send seam). `TailscreenTransport` has no package tests;
-  the macOS app's suite exercises it through the app's dependency.
+  for the coordinator's internal reply-send seam). `TailscreenTransport`'s
+  suites live in the same target, since it is the one that already depends
+  on the module: `IPNWatcherReconnectTests` (`@testable`, for the watcher's
+  internal `startWatching(subscriber:)` seam) and `LogSinkDiagnosticsTeeTests`
+  (the sink is `package`-visible). The macOS app's suite still exercises the
+  rest of the tier through the app's dependency.
 - `Tests/TailscreenProtocolTests` began as a shallow smoke suite and now
   also holds the **migrated pure suites** — the loss-recovery/RTP/wire/util
   tests whose subject types live entirely in this package (FEC, NACK,

@@ -4,8 +4,9 @@ import TailscreenProtocol
 
 /// A live watch-ipn-bus subscription, as far as the watcher cares: something
 /// it can cancel. `MessageProcessor` is the production one; a test hands the
-/// watcher a fake through `startWatching(subscriber:)`.
-public protocol IPNBusSubscription: AnyObject, Sendable {
+/// watcher a fake through `startWatching(subscriber:)`. Internal, like the
+/// seam: the app only ever sees `startWatching(node:)`.
+protocol IPNBusSubscription: AnyObject, Sendable {
     func cancel()
 }
 
@@ -45,18 +46,18 @@ public class TailscaleIPNWatcher: ObservableObject {
     /// Opens one subscription and hands back its handle. Called once per
     /// (re)connect with a fresh consumer; the same closure serves every
     /// attempt, so whatever it captures (the node, the mask) is shared.
-    public typealias Subscriber =
+    typealias Subscriber =
         @Sendable (IPNMessageConsumer) async throws -> any IPNBusSubscription
 
     /// Backoff between reconnect attempts, in seconds; the last entry repeats.
-    public static let defaultReconnectDelays: [TimeInterval] = [1, 2, 4, 8, 16, 30]
+    static let defaultReconnectDelays: [TimeInterval] = [1, 2, 4, 8, 16, 30]
 
     /// A reconnect attempt that parks (LocalAPI briefly unreachable) must not
     /// wedge the loop the way a parked first start once wedged discovery, so
     /// each attempt runs under a watchdog. A late success past the deadline is
     /// still adopted if nothing else has been by then, else cancelled — see
     /// `adopt`.
-    static let reconnectWatchdogSeconds: Double = 15
+    static let defaultReconnectWatchdogSeconds: Double = 15
 
     private var subscription: (any IPNBusSubscription)?
     /// The consumer whose subscription is live. Errors and notifies from any
@@ -64,13 +65,20 @@ public class TailscaleIPNWatcher: ObservableObject {
     /// are ignored — otherwise a dying stream's terminal error would restart
     /// the healthy one that replaced it.
     private var currentConsumer: IPNMessageConsumer?
-    /// The consumer of the attempt that is opening right now. Its processor
-    /// starts inside the subscriber call, a hop or two before `adopt` runs,
-    /// so a notify it delivers in that window is real (the `.initialState`
-    /// replay, typically) and must not read as a straggler; an error in
-    /// that window is remembered and acted on at adoption instead.
-    private var openingConsumer: IPNMessageConsumer?
-    private var openingFailure: Error?
+    /// The attempts still opening, by consumer. A processor starts inside the
+    /// subscriber call, a hop or two before `adopt` runs, so a notify it
+    /// delivers in that window is real (the `.initialState` replay,
+    /// typically) and must not read as a straggler; an error in that window
+    /// is remembered and acted on at adoption instead. Keyed per attempt
+    /// rather than one slot, because the reconnect watchdog can leave a
+    /// timed-out attempt running beside the next one — a single slot would
+    /// forget the older attempt's failure, and `adopt` could then install a
+    /// stream that already died, silently ending the reconnect loop.
+    private struct OpeningAttempt {
+        let consumer: IPNMessageConsumer
+        var failure: Error?
+    }
+    private var opening: [ObjectIdentifier: OpeningAttempt] = [:]
     private var subscriber: Subscriber?
     private var armed = false
     /// Bumped by every start and stop, so an attempt that was in flight across
@@ -79,11 +87,21 @@ public class TailscaleIPNWatcher: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     private let reconnectDelays: [TimeInterval]
+    private let reconnectWatchdogSeconds: Double
     private let logger: PrintLogSink
 
-    public init(reconnectDelays: [TimeInterval] = TailscaleIPNWatcher.defaultReconnectDelays) {
+    public convenience init() {
+        self.init(
+            reconnectDelays: Self.defaultReconnectDelays,
+            reconnectWatchdogSeconds: Self.defaultReconnectWatchdogSeconds)
+    }
+
+    /// The tunable form is internal: the reconnect suite shrinks both so a
+    /// reconnect lands within a poll, and nothing else has a reason to.
+    init(reconnectDelays: [TimeInterval], reconnectWatchdogSeconds: Double) {
         precondition(!reconnectDelays.isEmpty, "reconnectDelays must not be empty")
         self.reconnectDelays = reconnectDelays
+        self.reconnectWatchdogSeconds = reconnectWatchdogSeconds
         self.logger = PrintLogSink(prefix: "IPNWatcher")
     }
 
@@ -105,13 +123,14 @@ public class TailscaleIPNWatcher: ObservableObject {
     }
 
     /// Start watching through an arbitrary subscriber. The seam the reconnect
-    /// suite drives; `startWatching(node:)` is this with the LocalAPI client.
+    /// suite drives (internal, reached through `@testable`);
+    /// `startWatching(node:)` is this with the LocalAPI client.
     ///
     /// Idempotent while armed. A subscriber that throws on the first attempt
     /// disarms the watcher again before rethrowing, so the caller sees the
     /// same watcher it would have seen had it never called — no half-armed
     /// state to tear down, though `stopWatching()` stays harmless.
-    public func startWatching(subscriber: @escaping Subscriber) async throws {
+    func startWatching(subscriber: @escaping Subscriber) async throws {
         guard !armed else { return }
         armed = true
         epoch += 1
@@ -143,8 +162,7 @@ public class TailscaleIPNWatcher: ObservableObject {
         reconnectTask = nil
         reconnectAttempt = 0
         subscriber = nil
-        openingConsumer = nil
-        openingFailure = nil
+        opening.removeAll()
         dropSubscription()
     }
 
@@ -163,15 +181,31 @@ public class TailscaleIPNWatcher: ObservableObject {
 
     private func subscribe(_ subscriber: Subscriber, epoch attemptEpoch: Int) async throws {
         let consumer = beginOpening()
-        let handle = try await subscriber(consumer)
+        let handle: any IPNBusSubscription
+        do {
+            handle = try await subscriber(consumer)
+        } catch {
+            forgetOpening(consumer)
+            throw error
+        }
         adopt(handle, consumer: consumer, epoch: attemptEpoch)
     }
 
     private func beginOpening() -> IPNMessageConsumer {
         let consumer = IPNMessageConsumer(watcher: self)
-        openingConsumer = consumer
-        openingFailure = nil
+        opening[ObjectIdentifier(consumer)] = OpeningAttempt(consumer: consumer)
         return consumer
+    }
+
+    private func isOpening(_ consumer: IPNMessageConsumer) -> Bool {
+        opening[ObjectIdentifier(consumer)] != nil
+    }
+
+    /// Close out an attempt's opening record and hand back the error its
+    /// stream reported while it was still opening, if any.
+    @discardableResult
+    private func forgetOpening(_ consumer: IPNMessageConsumer) -> Error? {
+        opening.removeValue(forKey: ObjectIdentifier(consumer))?.failure
     }
 
     /// Install a freshly opened subscription — unless the watcher was stopped
@@ -181,11 +215,7 @@ public class TailscaleIPNWatcher: ObservableObject {
     /// while it was opening is adopted and immediately failed, so it takes
     /// the same reconnect path as one that dies later.
     private func adopt(_ handle: any IPNBusSubscription, consumer: IPNMessageConsumer, epoch attemptEpoch: Int) {
-        let failure = consumer === openingConsumer ? openingFailure : nil
-        if consumer === openingConsumer {
-            openingConsumer = nil
-            openingFailure = nil
-        }
+        let failure = forgetOpening(consumer)
         guard armed, attemptEpoch == epoch, subscription == nil else {
             handle.cancel()
             return
@@ -202,9 +232,9 @@ public class TailscaleIPNWatcher: ObservableObject {
     // MARK: - Reconnecting
 
     private func subscriptionFailed(_ error: Error, from consumer: IPNMessageConsumer) {
-        if consumer === openingConsumer {
+        if isOpening(consumer) {
             // Died before its subscribe call returned; `adopt` acts on it.
-            openingFailure = error
+            opening[ObjectIdentifier(consumer)]?.failure = error
             return
         }
         guard armed, consumer === currentConsumer else {
@@ -235,8 +265,14 @@ public class TailscaleIPNWatcher: ObservableObject {
         guard armed, attemptEpoch == epoch, subscription == nil, let subscriber else { return }
         let consumer = beginOpening()
         do {
-            try await TailscalePeerDiscovery.withWatchdog(seconds: Self.reconnectWatchdogSeconds) {
-                let handle = try await subscriber(consumer)
+            try await TailscalePeerDiscovery.withWatchdog(seconds: reconnectWatchdogSeconds) {
+                let handle: any IPNBusSubscription
+                do {
+                    handle = try await subscriber(consumer)
+                } catch {
+                    await self.forgetOpening(consumer)
+                    throw error
+                }
                 await self.adopt(handle, consumer: consumer, epoch: attemptEpoch)
             }
             // The watchdog can hand back before `adopt` ran (it timed out and
@@ -256,9 +292,9 @@ public class TailscaleIPNWatcher: ObservableObject {
     // MARK: - Consumer callbacks
 
     /// Handle incoming IPN notifications
-    public nonisolated func handleNotify(_ notify: Ipn.Notify, from consumer: IPNMessageConsumer) {
+    nonisolated func handleNotify(_ notify: Ipn.Notify, from consumer: IPNMessageConsumer) {
         Task { @MainActor in
-            guard consumer === currentConsumer || consumer === openingConsumer else { return }
+            guard consumer === currentConsumer || isOpening(consumer) else { return }
 
             // tsnet emits BrowseToURL whenever the user needs to visit a
             // page in their browser — primarily the interactive-login URL
@@ -307,7 +343,7 @@ public class TailscaleIPNWatcher: ObservableObject {
     /// Handle errors from the IPN bus. `MessageReader` already swallows the
     /// cancellation its own `stop()` produces, so everything that reaches
     /// here is a stream that died on us.
-    public nonisolated func handleError(_ error: Error, from consumer: IPNMessageConsumer) {
+    nonisolated func handleError(_ error: Error, from consumer: IPNMessageConsumer) {
         Task { @MainActor in
             subscriptionFailed(error, from: consumer)
         }

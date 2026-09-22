@@ -1,8 +1,9 @@
 import Foundation
 import TailscaleKit
 import TailscreenProtocol
-import TailscreenTransport
 import XCTest
+
+@testable import TailscreenTransport
 
 /// `TailscaleIPNWatcher`'s reconnect loop, through the `startWatching(subscriber:)`
 /// seam — no tsnet node, no LocalAPI: the "subscription" is a fake handle
@@ -10,7 +11,9 @@ import XCTest
 /// the consumer the watcher handed us.
 ///
 /// Here rather than in `TailscreenProtocolTests` because the watcher lives in
-/// TailscreenTransport, which this is the test target that depends on.
+/// TailscreenTransport, which this is the test target that depends on; and
+/// `@testable` because the seam and the tunable initializer are internal —
+/// the app only ever sees `startWatching(node:)`.
 ///
 /// The bug this pins was invisible for a whole release cycle because its
 /// failure is a *silence*: the watch-ipn-bus request timed out after a
@@ -63,9 +66,11 @@ final class IPNWatcherReconnectTests: XCTestCase {
     struct StreamDied: Error {}
 
     @MainActor
-    private func makeWatcher() -> TailscaleIPNWatcher {
+    private func makeWatcher(
+        delays: [TimeInterval] = [0.01, 0.02], watchdog: Double = 15
+    ) -> TailscaleIPNWatcher {
         // Tiny backoff so a reconnect lands within a poll, not a second.
-        TailscaleIPNWatcher(reconnectDelays: [0.01, 0.02])
+        TailscaleIPNWatcher(reconnectDelays: delays, reconnectWatchdogSeconds: watchdog)
     }
 
     /// Poll for `condition` up to `timeout`, yielding to the main actor's
@@ -134,7 +139,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         let bus = FakeBus()
         let inner = bus.subscriber
         let subscriber: TailscaleIPNWatcher.Subscriber = { consumer in
-            let attempt = parkedAttempts.withLock { $0 += 1; return $0 }
+            let attempt = parkedAttempts.withLock {
+                $0 += 1
+                return $0
+            }
             if attempt == 2 {
                 await withCheckedContinuation { cont in
                     release.withLock { $0 = cont }
@@ -151,7 +159,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         XCTAssertFalse(watcher.isWatching, "off while the reconnect is still opening")
         XCTAssertEqual(bus.count, 1)
 
-        release.withLock { $0?.resume(); $0 = nil }
+        release.withLock {
+            $0?.resume()
+            $0 = nil
+        }
         await eventually { watcher.isWatching && bus.count == 2 }
     }
 
@@ -186,7 +197,8 @@ final class IPNWatcherReconnectTests: XCTestCase {
         await eventually { watcher.peers.count == 1 }
         let peer = try XCTUnwrap(watcher.peers["7"])
         XCTAssertEqual(peer.hostname, "studio")
-        XCTAssertEqual(peer.tailscaleIPs, ["100.64.0.7", "fd7a:115c:a1e0::7"], "CIDR suffixes stripped, both families kept")
+        XCTAssertEqual(
+            peer.tailscaleIPs, ["100.64.0.7", "fd7a:115c:a1e0::7"], "CIDR suffixes stripped, both families kept")
         XCTAssertTrue(peer.online)
     }
 
@@ -227,7 +239,7 @@ final class IPNWatcherReconnectTests: XCTestCase {
     @MainActor
     func testStopDuringBackoffCancelsTheReconnect() async throws {
         let bus = FakeBus()
-        let watcher = TailscaleIPNWatcher(reconnectDelays: [0.05])
+        let watcher = makeWatcher(delays: [0.05])
         try await watcher.startWatching(subscriber: bus.subscriber)
         await bus.attempt(0).consumer.error(StreamDied())
         await eventually { !watcher.isWatching }
@@ -244,7 +256,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         let bus = FakeBus()
         let inner = bus.subscriber
         let subscriber: TailscaleIPNWatcher.Subscriber = { consumer in
-            let attempt = attemptsSeen.withLock { $0 += 1; return $0 }
+            let attempt = attemptsSeen.withLock {
+                $0 += 1
+                return $0
+            }
             if attempt == 2 {
                 await withCheckedContinuation { cont in release.withLock { $0 = cont } }
             }
@@ -256,7 +271,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         await eventually { release.withLock { $0 != nil } }
 
         watcher.stopWatching()
-        release.withLock { $0?.resume(); $0 = nil }
+        release.withLock {
+            $0?.resume()
+            $0 = nil
+        }
 
         await eventually { bus.count == 2 }
         await eventually { bus.attempt(1).handle.isCancelled }
@@ -270,7 +288,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         let inner = bus.subscriber
         let calls = Guarded(0)
         let subscriber: TailscaleIPNWatcher.Subscriber = { consumer in
-            let n = calls.withLock { $0 += 1; return $0 }
+            let n = calls.withLock {
+                $0 += 1
+                return $0
+            }
             if n == 2 { throw StreamDied() }
             return try await inner(consumer)
         }
@@ -344,7 +365,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         await consumer.notify(try notify(json: #"{"BrowseToURL":"https://login.tailscale.com/a/early"}"#))
         await eventually { opened.count == 1 }
 
-        release.withLock { $0?.resume(); $0 = nil }
+        release.withLock {
+            $0?.resume()
+            $0 = nil
+        }
         try await start.value
         XCTAssertTrue(watcher.isWatching)
     }
@@ -359,7 +383,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         let bus = FakeBus()
         let inner = bus.subscriber
         let subscriber: TailscaleIPNWatcher.Subscriber = { consumer in
-            if attemptsSeen.withLock({ $0 += 1; return $0 }) == 1 {
+            if attemptsSeen.withLock({
+                $0 += 1
+                return $0
+            }) == 1 {
                 opening.withLock { $0 = consumer }
                 await withCheckedContinuation { cont in release.withLock { $0 = cont } }
             }
@@ -371,11 +398,65 @@ final class IPNWatcherReconnectTests: XCTestCase {
         await eventually { release.withLock { $0 != nil } }
         let consumer = try XCTUnwrap(opening.withLock { $0 })
         await consumer.error(StreamDied())
-        release.withLock { $0?.resume(); $0 = nil }
+        release.withLock {
+            $0?.resume()
+            $0 = nil
+        }
         try await start.value
 
         await eventually { bus.count == 2 && watcher.isWatching }
         XCTAssertTrue(bus.attempt(0).handle.isCancelled, "the stream that died while opening is released")
+    }
+
+    /// The reconnect watchdog gives up on a parked attempt without being able
+    /// to stop it, so two attempts can be opening at once. If the older one's
+    /// stream dies before it returns, and then it returns first, it must not
+    /// be installed as the live subscription: with one opening slot the
+    /// newer attempt would have overwritten the record of that death, and
+    /// the watcher would sit on a dead stream reporting `isWatching == true`
+    /// with no reconnect scheduled — the original silence, back again.
+    @MainActor
+    func testTimedOutAttemptThatDiedWhileParkedIsNotAdoptedLive() async throws {
+        let parked = Guarded<[(IPNMessageConsumer, CheckedContinuation<Void, Never>)]>([])
+        let attemptsSeen = Guarded(0)
+        let bus = FakeBus()
+        let inner = bus.subscriber
+        let subscriber: TailscaleIPNWatcher.Subscriber = { consumer in
+            // The first attempt (the initial start) goes straight through;
+            // every reconnect parks until the test releases it.
+            if attemptsSeen.withLock({
+                $0 += 1
+                return $0
+            }) > 1 {
+                await withCheckedContinuation { cont in
+                    parked.withLock { $0.append((consumer, cont)) }
+                }
+            }
+            return try await inner(consumer)
+        }
+        let watcher = makeWatcher(delays: [0.01], watchdog: 0.05)
+        try await watcher.startWatching(subscriber: subscriber)
+        await bus.attempt(0).consumer.error(StreamDied())
+
+        // Reconnect #1 parks, the watchdog gives up on it, reconnect #2 parks
+        // beside it.
+        await eventually { parked.withLock { $0.count } == 2 }
+        let (older, releaseOlder) = parked.withLock { $0[0] }
+        let (_, releaseNewer) = parked.withLock { $0[1] }
+
+        // The older attempt's stream dies while both are still parked, then
+        // the older one returns first.
+        await older.error(StreamDied())
+        releaseOlder.resume()
+
+        await eventually { bus.count == 2 }
+        await eventually { bus.attempt(1).handle.isCancelled }
+        XCTAssertFalse(watcher.isWatching, "a stream that died while opening is never live")
+
+        // The newer attempt (or a further reconnect) then carries the watcher.
+        releaseNewer.resume()
+        await eventually { watcher.isWatching }
+        XCTAssertFalse(bus.last.handle.isCancelled)
     }
 
     @MainActor
@@ -397,29 +478,29 @@ final class IPNWatcherReconnectTests: XCTestCase {
 
     /// A netmap-bearing notify in the shape tailscale.com v1.102.x emits.
     static let netmapNotifyJSON = #"""
-    {
-      "Version": "1.102.3",
-      "NetMap": {
-        "SelfNode": {
-          "ID": 1, "StableID": "nSELF", "Name": "me.tail.ts.net.", "User": 100,
-          "Key": "nodekey:00", "Addresses": ["100.64.0.1/32"],
-          "Hostinfo": {"OS": "macOS", "Hostname": "me"},
-          "ComputedName": "me", "ComputedNameWithHost": "me"
-        },
-        "NodeKey": "nodekey:00",
-        "Peers": [
-          {
-            "ID": 7, "StableID": "nPEER", "Name": "studio.tail.ts.net.", "User": 100,
-            "Key": "nodekey:07", "Addresses": ["100.64.0.7/32", "fd7a:115c:a1e0::7/128"],
-            "Hostinfo": {"OS": "linux", "Hostname": "studio"},
-            "Online": true, "Tags": ["tag:studio"],
-            "ComputedName": "studio", "ComputedNameWithHost": "studio"
+        {
+          "Version": "1.102.3",
+          "NetMap": {
+            "SelfNode": {
+              "ID": 1, "StableID": "nSELF", "Name": "me.tail.ts.net.", "User": 100,
+              "Key": "nodekey:00", "Addresses": ["100.64.0.1/32"],
+              "Hostinfo": {"OS": "macOS", "Hostname": "me"},
+              "ComputedName": "me", "ComputedNameWithHost": "me"
+            },
+            "NodeKey": "nodekey:00",
+            "Peers": [
+              {
+                "ID": 7, "StableID": "nPEER", "Name": "studio.tail.ts.net.", "User": 100,
+                "Key": "nodekey:07", "Addresses": ["100.64.0.7/32", "fd7a:115c:a1e0::7/128"],
+                "Hostinfo": {"OS": "linux", "Hostname": "studio"},
+                "Online": true, "Tags": ["tag:studio"],
+                "ComputedName": "studio", "ComputedNameWithHost": "studio"
+              }
+            ],
+            "DNS": {},
+            "Domain": "example.com",
+            "UserProfiles": {"100": {"ID": 100, "LoginName": "a@example.com", "DisplayName": "A"}}
           }
-        ],
-        "DNS": {},
-        "Domain": "example.com",
-        "UserProfiles": {"100": {"ID": 100, "LoginName": "a@example.com", "DisplayName": "A"}}
-      }
-    }
-    """#
+        }
+        """#
 }
