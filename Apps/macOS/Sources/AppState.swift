@@ -2472,14 +2472,19 @@ class AppState: ObservableObject {
     /// a headset is plugged in or pulled out. Without this, a bundle says
     /// "system default" for a session that started on a headset and finished
     /// on the built-in mic, and the thing that actually changed is invisible.
+    ///
+    /// Resolved through the cached list, then the HAL. The list is only
+    /// filled by the pickers' `onAppear`, and someone who never opened the
+    /// picker — the same person this field exists for — is exactly who has
+    /// an empty one. Stopping at the list recorded `device=unknown` on a
+    /// viewer's `mic.attached` while the sharer, same session, named the
+    /// AirPods.
     private var systemDefaultInputName: String? {
-        guard let id = AudioDevices.defaultInputID() else { return nil }
-        return availableInputDevices.first { $0.id == id }?.name
+        AudioDevices.name(of: AudioDevices.defaultInputID(), in: availableInputDevices)
     }
 
     private var systemDefaultOutputName: String? {
-        guard let id = AudioDevices.defaultOutputID() else { return nil }
-        return availableOutputDevices.first { $0.id == id }?.name
+        AudioDevices.name(of: AudioDevices.defaultOutputID(), in: availableOutputDevices)
     }
 
     /// The input actually in use: the explicit pick, else the system default.
@@ -2530,6 +2535,14 @@ class AppState: ObservableObject {
             return
         }
         AppDiagnostics.action(.actionMicToggle, ["on": .bool(true)])
+        // Enumerate before recording anything about the device. The lists are
+        // otherwise filled only by the pickers' `onAppear`, so a viewer who
+        // toggles the mic without ever opening Settings or the sharer tool has
+        // an empty list — and a bundle with no `audio.devices.changed` at all,
+        // which is the inventory the `mic.attached` line below is read
+        // against. The change guard inside keeps a repeat toggle from
+        // re-recording an unchanged list.
+        refreshAudioDevices()
         do {
             try await cap.enableCapture()
             voice.isMuted = false

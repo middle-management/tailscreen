@@ -43,6 +43,37 @@ enum AudioDevices {
         defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
     }
 
+    /// Human-readable name of one device, straight from the HAL. One
+    /// property read — the same one enumeration does per device.
+    static func name(of id: AudioDeviceID) -> String? {
+        stringProperty(deviceID: id, selector: kAudioObjectPropertyName)
+    }
+
+    /// Name a device for a diagnostics line: the enumerated list first, the
+    /// HAL when the list does not carry it.
+    ///
+    /// The list is a cache that only the pickers fill (`refreshAudioDevices`
+    /// runs from their `onAppear`), so a process that never rendered one has
+    /// an empty list. That is the viewer, typically: they toggle the mic from
+    /// the viewer window and open neither Settings nor the sharer tool. A
+    /// lookup that stopped at the list recorded `device=unknown` for exactly
+    /// that person while the sharing side, same session, named its headset.
+    /// The HAL read is the property enumeration itself uses, so it cannot
+    /// disagree with the list where the list has an answer; it only fills in
+    /// where the list has none — never enumerated, or a device that arrived
+    /// after the last enumeration.
+    ///
+    /// `nil` in, `nil` out, without asking the HAL: no default device is a
+    /// real state (a machine with no inputs), not a lookup to attempt.
+    static func name(
+        of id: AudioDeviceID?,
+        in devices: [AudioDevice],
+        hal: (AudioDeviceID) -> String? = { AudioDevices.name(of: $0) }
+    ) -> String? {
+        guard let id else { return nil }
+        return devices.first { $0.id == id }?.name ?? hal(id)
+    }
+
     /// Apply a device to an AVAudioEngine input or output node. Pass
     /// the node's audioUnit handle. Engine must be stopped before
     /// this — switching device requires a fresh render-graph
