@@ -2,6 +2,7 @@ import AppKit
 import CoreVideo
 import Foundation
 import TailscaleKit
+import TailscreenProtocol
 import TailscreenViewer
 import os
 
@@ -701,6 +702,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// decoder fires this at most once per codec, so this isn't a hot path.
     private func handleDecodeFailure(_ codec: VideoCodec) {
         logger.log("Decode failure for \(codec) — requesting H.264 fallback from sharer")
+        // The mac-only failure shape: VideoToolbox could not build a session
+        // for this codec at all. Per-frame failures are the other shape, and
+        // reach the recorder from the adapter's episode hook (see
+        // `buildViewerSession`), so `reason` is what tells the two apart.
+        recorder?.record(
+            .decodeFailed,
+            role: .viewer,
+            fields: ["codec": .string(codec.rawValue), "reason": .string("codec_unsupported")])
         if let addr = serverAddr, let pl = packetListener {
             Task {
                 for _ in 0..<3 {
@@ -725,6 +734,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// for another chance. Loss-driven PLIs stay throttled.
     private func handleDecodeRecoveryAction(_ action: DecodeRecoveryAction) {
         logger.log("Client: decode-recovery action \(action)")
+        // Same two events, same field spellings, as the portable session
+        // records for the GTK and WinUI viewers — the mac ladder runs inside
+        // `VideoDecoder` rather than in `ViewerSession`, so it has to record
+        // its own rungs or a mac viewer bundle would show a stall as nothing
+        // but a `fault.surfaced` with no ladder leading up to it.
+        recorder?.record(
+            .decodeRecoveryAction,
+            role: .viewer,
+            fields: ["action": .string(action.diagnosticName)])
+        if action == .surfaceError {
+            recorder?.record(.videoStalled, role: .viewer)
+        }
         switch action {
         case .requestKeyframe, .recreateSession:
             // The decoder handles the session rebuild itself; either way a
@@ -764,6 +785,16 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         adapter.onFrameDecodeFailed = { [weak self] in
             self?.renderer.noteDecodeFailure()
+        }
+        // Once per failing run, not once per frame: a wedged decoder fails at
+        // frame rate, and the adapter's episode latch is what keeps that to
+        // one `decode.failed` per run — the same shape the portable session
+        // applies for the other two viewers.
+        adapter.onDecodeFailureEpisodeOpened = { [weak self] in
+            self?.recorder?.record(
+                .decodeFailed,
+                role: .viewer,
+                fields: ["reason": .string("frame")])
         }
         adapter.onRecoveryAction = { [weak self] action in
             self?.handleDecodeRecoveryAction(action)
@@ -1074,9 +1105,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 }
 
+/// The viewer's own log sink. Prints like the package's `PrintLogSink` and,
+/// like it, tees every line into the process recorder as a `log.line` event.
+///
+/// The tee is not optional here: `PrintLogSink` is `package`-scoped, so this
+/// app cannot use it, and until this struct teed on its own the sharer's
+/// lines reached a bundle while the viewer's — the decode-failure, recovery
+/// and idle-timeout lines above — did not. A viewer bundle then explained the
+/// handshake and nothing after it. Same `"Tailscale"` source tag as the
+/// sharer's sink, so a merged timeline files both sides' lines alike.
+///
+/// Nothing this sink logs is an identity the bundle header disclaims (tailnet
+/// IPs and device names are recorded on purpose, see
+/// `.claude/rules/diagnostics.md`); a line that named an account would need
+/// the `TailscaleAuth` treatment instead — a separate, non-teeing sink.
 private struct TSLogger: LogSink {
     var logFileHandle: Int32?
-    func log(_ message: String) { print("[Tailscale] \(message)") }
+    func log(_ message: String) {
+        print("[Tailscale] \(message)")
+        DiagnosticsCenter.shared.captureLog(source: "Tailscale", message: message)
+    }
 }
 
 /// Why the viewer's receive loop declared the session over is the shared

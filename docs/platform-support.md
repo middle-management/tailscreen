@@ -321,6 +321,7 @@ difference between the machines solved from the handshake itself. See
 | | macOS | Linux | Windows | Browser |
 | :--- | :---: | :---: | :---: | :---: |
 | Record handshakes and admission decisions | ✅ | ✅ | ✅ | ❌ |
+| Record media quality: first frame, decode failures and recovery, codec/bitrate/fps changes, a loss/RTT summary every 5 s | ✅ | ✅ | ✅ | ❌ |
 | Record user actions, active views, surfaced failures | ✅ | ❌ | ❌ | ❌ |
 | On by default in release candidates | ✅ | ✅ | ✅ | — |
 | Settings toggle | ✅ | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | ⚠️ `TAILSCREEN_DIAGNOSTICS=1` / `=0` | — |

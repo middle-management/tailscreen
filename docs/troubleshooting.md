@@ -362,8 +362,12 @@ required for the build.
 ## Recording diagnostics
 
 Tailscreen can record what it did during a session — connections,
-handshakes, the actions you took, and anything that failed — and write it
-out as a file you can send to whoever is helping you.
+handshakes, the actions you took, anything that failed, and how the picture
+was doing: when the first frame arrived, any decode trouble and the steps
+taken to recover from it, the codec and rate the sharer chose and every
+change to them, and a short summary of packet loss, retransmits, FEC
+recoveries and round-trip time every five seconds from both ends — and
+write it out as a file you can send to whoever is helping you.
 
 **In a release candidate this is on by default.** A candidate exists to be
 tested, and a problem you hit while testing is worth very little if it

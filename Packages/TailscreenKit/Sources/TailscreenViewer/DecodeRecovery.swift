@@ -71,3 +71,18 @@ public enum DecodeRecovery {
         return nil
     }
 }
+
+extension DecodeRecoveryAction {
+    /// The stable spelling a `decode.recovery.action` event carries in its
+    /// `action` field. A registry-style string rather than
+    /// `String(describing:)`: the enum's case names are free to be renamed,
+    /// and a bundle written last year has to keep meaning what it said.
+    public var diagnosticName: String {
+        switch self {
+        case .requestKeyframe: return "request_keyframe"
+        case .recreateSession: return "recreate_session"
+        case .signalDegraded: return "signal_degraded"
+        case .surfaceError: return "surface_error"
+        }
+    }
+}
