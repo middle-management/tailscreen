@@ -901,7 +901,11 @@ final class MicCapture {
             logger.log("MicCapture: VPIO not engaged: \(error). Continuing without AEC.")
         }
 
-        logger.log("MicCapture: default input device = \(Self.defaultInputDeviceName() ?? "<unknown>")")
+        // The name, not just the ID: when capture goes one-and-done it often
+        // reveals a virtual loopback (BlackHole, Loopback, an aggregate)
+        // sitting where the user assumes the built-in mic is.
+        let defaultInput = AudioDevices.defaultInputID().flatMap { AudioDevices.name(of: $0) }
+        logger.log("MicCapture: default input device = \(defaultInput ?? "<unknown>")")
 
         guard let buffer = TapBuffer(channel: channel) else {
             throw NSError(
@@ -1062,38 +1066,6 @@ final class MicCapture {
         }
         state.phase = phase
         channel.processOutboundFrame(samples)
-    }
-
-    /// Look up the human-readable name of the system default input device
-    /// via CoreAudio. Used purely for diagnostic logging — when capture
-    /// goes one-and-done, the name often reveals a virtual loopback
-    /// (BlackHole, Loopback, an aggregate) sitting where the user assumes
-    /// the built-in mic is.
-    nonisolated private static func defaultInputDeviceName() -> String? {
-        var deviceID: AudioDeviceID = 0
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &deviceID
-        )
-        guard status == noErr, deviceID != 0 else { return nil }
-
-        var name: Unmanaged<CFString>?
-        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        var nameAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let nameStatus = AudioObjectGetPropertyData(
-            deviceID, &nameAddr, 0, nil, &nameSize, &name
-        )
-        guard nameStatus == noErr, let cfName = name?.takeRetainedValue() else { return nil }
-        return cfName as String
     }
 
     /// Install the input tap from a nonisolated context so the closure
