@@ -2,11 +2,8 @@ import XCTest
 
 @testable import TailscreenAudio
 
-/// Smoke tests proving the TailscreenAudio module (the Opus codec wrapper) is
-/// *usable* on Linux — encode/decode actually runs against libopus, not merely
-/// compiles. Deliberately shallow: the fuller `[Float]`-contract coverage lives
-/// in the main repo's `Tests/TailscreenTests/OpusAudioCodecTests`, which
-/// compiles these same sources as part of the Tailscreen target.
+/// Proves TailscreenAudio (Opus wrapper) actually runs against libopus on
+/// Linux, not just compiles. Fuller coverage: `OpusAudioCodecTests`.
 final class AudioSmokeTests: XCTestCase {
     func testEncodeDecodeRoundTrip() throws {
         let encoder = try OpusVoiceEncoder()

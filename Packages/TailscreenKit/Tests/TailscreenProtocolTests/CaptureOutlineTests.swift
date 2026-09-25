@@ -2,13 +2,9 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// `CaptureOutline` — the recording indicator, drawn around the captured
-/// region on the sharer's own screen.
-///
-/// The failure that matters is not a wonky border. It is **covering the
-/// screen**: this buffer is composited over the sharer's desktop for the whole
-/// share, so a border that fills its interior paints a solid rectangle over the
-/// thing being shared, with no error anywhere.
+/// `CaptureOutline` — the recording indicator drawn around the captured
+/// region. Composited over the sharer's desktop for the whole share, so a
+/// border that fills its interior silently paints over the shared content.
 final class CaptureOutlineTests: XCTestCase {
 
     /// A surface plus its backing store, so the pointer stays valid.
@@ -34,8 +30,6 @@ final class CaptureOutlineTests: XCTestCase {
 
     // MARK: The interior
 
-    /// The whole contract. Everything between the bars must be left EXACTLY as
-    /// it was — this composites over the sharer's desktop.
     func testTheInteriorIsUntouched() {
         let frame = makeSurface(width: 40, height: 30) {
             CaptureOutline.draw(into: $0, thickness: 4)
@@ -49,11 +43,8 @@ final class CaptureOutlineTests: XCTestCase {
         }
     }
 
-    /// A border wide enough to meet in the middle would fill the buffer, i.e.
-    /// paint a solid rectangle over the shared window for the whole share.
     func testAnOversizedBorderStillLeavesAnInterior() {
-        // 10 px tall with a 6 px request: naively that is two 6 px bars over a
-        // 10 px height, which covers everything.
+        // 10px tall, 6px requested: naive two 6px bars would cover everything.
         let frame = makeSurface(width: 40, height: 10) {
             CaptureOutline.draw(into: $0, thickness: 6)
         }
@@ -70,8 +61,7 @@ final class CaptureOutlineTests: XCTestCase {
         }
     }
 
-    /// Too small for any border at all draws NOTHING, rather than the smallest
-    /// border that happens to fit. An absent indicator beats a covered window.
+    /// Too small for any border draws nothing rather than the smallest that fits.
     func testAGeometryWithNoRoomDrawsNothing() {
         let frame = makeSurface(width: 2, height: 2) {
             CaptureOutline.draw(into: $0, thickness: 4)
@@ -91,9 +81,7 @@ final class CaptureOutlineTests: XCTestCase {
         XCTAssertNotEqual(pixel(frame, x: 39, y: 15), [0, 0, 0, 0], "right edge")
     }
 
-    /// Off-by-one at the inner boundary is the difference between a 4 px border
-    /// and a 3 px one, which is invisible — but the same off-by-one on the far
-    /// edge leaves a one-pixel gap, which is not.
+    /// An off-by-one at the far edge leaves a visible one-pixel gap.
     func testEachEdgeIsExactlyAsThickAsAsked() {
         let frame = makeSurface(width: 40, height: 30) {
             CaptureOutline.draw(into: $0, thickness: 4)
@@ -110,7 +98,6 @@ final class CaptureOutlineTests: XCTestCase {
         XCTAssertEqual(pixel(frame, x: 35, y: 15), [0, 0, 0, 0], "right border ran one column long")
     }
 
-    /// A padded surface must not smear. Every capture surface here is padded.
     func testAPaddedStrideIsHonoured() {
         let padded = makeSurface(width: 16, height: 12, padding: 37) {
             CaptureOutline.draw(into: $0, thickness: 3)
@@ -127,9 +114,7 @@ final class CaptureOutlineTests: XCTestCase {
         }
     }
 
-    /// Same byte order and premultiplication as `AnnotationRasterizer`, which
-    /// writes into the same buffer. Getting it wrong is an outline in the wrong
-    /// colour — red and blue swapped reads as a theme, not a bug.
+    /// Same byte order/premultiplication as `AnnotationRasterizer`, which shares this buffer.
     func testTheBorderIsPremultipliedBGRA() {
         let colour = Annotation.RGBA(r: 1, g: 0, b: 0, a: 1)
         let frame = makeSurface(width: 20, height: 20) {
@@ -151,8 +136,7 @@ final class CaptureOutlineTests: XCTestCase {
 
     // MARK: Composition
 
-    /// The outline goes UNDER the strokes: a stroke drawn near the edge of the
-    /// shared region must stay visible rather than being framed out.
+    /// The outline goes under the strokes: an edge stroke must stay visible.
     func testAnnotationsDrawOverTheOutline() {
         let width = 40
         let height = 30

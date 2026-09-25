@@ -8,7 +8,7 @@ import XCTest
 /// OpusKit). OpusKit's own package tests cover the raw libopus binding; these
 /// pin the Tailscreen-facing `[Float]` contract that replaced AAC.
 final class OpusAudioCodecTests: XCTestCase {
-    /// One 20 ms frame (960 samples) of a 440 Hz sine at 48 kHz mono, Float32.
+    /// One 20ms frame (960 samples) of a sine at 48kHz mono, Float32.
     private func sineFrame(hz: Double = 440, amplitude: Double = 0.5) -> [Float] {
         (0..<OpusVoiceEncoder.frameSamples).map { i in
             Float(amplitude * sin(2 * .pi * hz * Double(i) / 48_000))
@@ -19,12 +19,10 @@ final class OpusAudioCodecTests: XCTestCase {
         let encoder = try OpusVoiceEncoder()
         let decoder = try OpusVoiceDecoder()
 
-        // A short stream (encoder/decoder are stateful) of five 20 ms frames.
+        // encoder/decoder are stateful, so a short stream of five frames.
         var decoded: [Float] = []
         for _ in 0..<5 {
             let au = try XCTUnwrap(try encoder.encode(pcm: sineFrame()))
-            // A real Opus packet: non-empty, far smaller than the raw PCM
-            // (960 samples × 2 bytes = 1920).
             XCTAssertGreaterThan(au.count, 0)
             XCTAssertLessThan(au.count, OpusVoiceEncoder.frameSamples * 2)
             let pcm = try decoder.decode(au: au)
@@ -32,8 +30,7 @@ final class OpusAudioCodecTests: XCTestCase {
             decoded.append(contentsOf: pcm)
         }
 
-        // Lossy, so not byte-exact — but a loud sine must decode to non-silent
-        // audio with meaningful, non-clipped RMS.
+        // Lossy, so not byte-exact — but must decode to non-silent, non-clipped audio.
         let rms = sqrt(decoded.reduce(0) { $0 + $1 * $1 } / Float(decoded.count))
         XCTAssertGreaterThan(rms, 0.1, "decoded sine should have meaningful RMS, got \(rms)")
         XCTAssertLessThan(rms, 1.5, "decoded sine should not be wildly clipped, got \(rms)")
@@ -48,27 +45,24 @@ final class OpusAudioCodecTests: XCTestCase {
             _ = try decoder.decode(au: au)
         }
 
-        // A lost packet still yields one whole 20 ms frame, and it carries
-        // extrapolated signal rather than silence.
         let concealed = try decoder.conceal()
         XCTAssertEqual(concealed.count, OpusVoiceEncoder.frameSamples)
         let rms = sqrt(concealed.reduce(0) { $0 + $1 * $1 } / Float(concealed.count))
         XCTAssertGreaterThan(rms, 0.05, "PLC should extrapolate the primed tone, got RMS \(rms)")
 
-        // The decoder state stays continuous: the next real packet decodes.
+        // Decoder state must stay continuous after concealment.
         let au = try XCTUnwrap(try encoder.encode(pcm: sineFrame()))
         XCTAssertEqual(try decoder.decode(au: au).count, OpusVoiceEncoder.frameSamples)
     }
 
     func testWrongFrameSizeThrows() throws {
         let encoder = try OpusVoiceEncoder()
-        // 1024 samples (the old AAC AU size) is not a valid Opus frame — the
-        // wrapper must reject it rather than emit a corrupt packet.
+        // 1024 samples (the old AAC AU size) is not a valid Opus frame.
         XCTAssertThrowsError(try encoder.encode(pcm: [Float](repeating: 0, count: 1024)))
     }
 
+    /// The system-audio path uses `.audio` (music) mode.
     func testAudioApplicationModeEncodes() throws {
-        // The system-audio path uses `.audio` (music) mode; prove it encodes.
         let encoder = try OpusVoiceEncoder(application: .audio)
         let au = try XCTUnwrap(try encoder.encode(pcm: sineFrame()))
         XCTAssertGreaterThan(au.count, 0)
@@ -82,8 +76,8 @@ final class OpusAudioCodecTests: XCTestCase {
         }
     }
 
+    /// A stray >1.0 peak must saturate, never wrap to the opposite sign.
     func testPCMConversionClampsOutOfRange() {
-        // A stray >1.0 peak must saturate, never wrap to the opposite sign.
         let clamped = OpusPCM.floatToInt16([6.0, -6.0])
         XCTAssertEqual(clamped, [32767, -32767])
     }

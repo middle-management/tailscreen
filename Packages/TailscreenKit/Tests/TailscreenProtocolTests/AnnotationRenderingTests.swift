@@ -2,14 +2,8 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Tests for the two halves of displaying a viewer's annotations on a sharer
-/// that has no drawing framework to hand: `ReceivedAnnotations` (what to draw) and
-/// `AnnotationRasterizer` (how).
-///
-/// Both exist in the portable tier for the same reason: they are the parts a
-/// Windows-only implementation could not check, and the parts most likely to
-/// be subtly wrong — an upsert that appends instead, a premultiply that is
-/// skipped and shows up as a dark halo rather than an error.
+/// Displaying a viewer's annotations on a sharer with no drawing framework:
+/// `ReceivedAnnotations` (what to draw) and `AnnotationRasterizer` (how).
 final class AnnotationRenderingTests: XCTestCase {
     private func stroke(
         id: UUID = UUID(), tool: AnnotationTool = .pen, points: [CGPoint],
@@ -21,9 +15,7 @@ final class AnnotationRenderingTests: XCTestCase {
     // MARK: The store
 
     func testADragUpdatesOneStrokeRatherThanStackingCopies() {
-        // A viewer dragging a pen re-sends the SAME id with a longer point
-        // list every few milliseconds. Appending would leave hundreds of
-        // overlapping copies of one stroke to redraw every frame.
+        // A dragging pen re-sends the same id with a longer point list; must upsert, not append.
         var store = ReceivedAnnotations()
         let id = UUID()
         store.apply(.add(stroke(id: id, points: [.init(x: 0, y: 0)])), nowNs: 0)
@@ -82,11 +74,9 @@ final class AnnotationRenderingTests: XCTestCase {
 
     // MARK: The rasterizer
 
-    /// Renders into a tightly packed buffer and returns it.
-    /// 400×400 rather than something tiny: `Annotation.width` is quoted
-    /// against a 1000-pixel short edge, so on a 64-pixel buffer even a fat
-    /// stroke is sub-pixel and every coverage assertion would be measuring the
-    /// antialiasing rather than the drawing.
+    /// 400×400: `Annotation.width` is quoted against a 1000px short edge, so a
+    /// smaller buffer would make strokes sub-pixel and assertions measure
+    /// antialiasing instead of drawing.
     private func rasterize(
         _ annotations: [Annotation], width: Int = 400, height: Int = 400
     ) -> [UInt8] {
@@ -111,8 +101,7 @@ final class AnnotationRenderingTests: XCTestCase {
     }
 
     func testAnEmptyListClearsToFullyTransparent() {
-        // Pre-filled with 0xEE, so this also proves the clear actually runs
-        // rather than the buffer merely starting empty.
+        // Pre-filled with 0xEE, so this proves the clear runs rather than the buffer starting empty.
         let buffer = rasterize([])
         XCTAssertTrue(buffer.allSatisfy { $0 == 0 })
     }
@@ -131,9 +120,7 @@ final class AnnotationRenderingTests: XCTestCase {
     }
 
     func testColoursArePremultipliedByAlpha() {
-        // UpdateLayeredWindow composites premultiplied BGRA. Getting this
-        // wrong is not an error — it is a dark halo around every stroke, which
-        // is exactly the kind of thing that survives to a release.
+        // UpdateLayeredWindow composites premultiplied BGRA; getting this wrong is a silent dark halo, not a crash.
         let half = Annotation.RGBA(r: 1, g: 0, b: 0, a: 0.5)
         let line = stroke(
             tool: .line, points: [.init(x: 0.1, y: 0.5), .init(x: 0.9, y: 0.5)],
@@ -148,10 +135,7 @@ final class AnnotationRenderingTests: XCTestCase {
     }
 
     func testStrokesOffTheEdgeAreClippedNotRejected() {
-        // Dragging past the edge of the screen is ordinary. The visible part
-        // must still draw, and nothing may be written out of bounds — which
-        // the surrounding 0xEE guard bytes in `rasterize` would catch as a
-        // crash under bounds checking.
+        // The visible part must still draw; nothing may write out of bounds (the 0xEE guard bytes would catch it).
         let line = stroke(
             tool: .line, points: [.init(x: -2, y: 0.5), .init(x: 0.5, y: 0.5)], width: 20)
         let buffer = rasterize([line])
@@ -185,7 +169,7 @@ final class AnnotationRenderingTests: XCTestCase {
         var buffer = [UInt8](repeating: 0x11, count: 16)
         buffer.withUnsafeMutableBufferPointer { pointer in
             guard let base = pointer.baseAddress else { return }
-            // Stride smaller than a row: unusable, and must not be written.
+            // Stride smaller than a row: must be refused, not written.
             AnnotationRasterizer.render(
                 [],
                 into: AnnotationRasterizer.Surface(bgra: base, stride: 4, width: 4, height: 1))

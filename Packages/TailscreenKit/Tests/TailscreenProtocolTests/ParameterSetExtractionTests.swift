@@ -2,16 +2,11 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Tests for `ParameterSetExtraction` — the shared "which NAL is the SPS"
-/// step every libavcodec-based `CaptureEncoding` backend performs.
-///
-/// The bug worth pinning is not "it failed to find a parameter set". It is
-/// that H.264 and HEVC carry the NAL type in DIFFERENT bits of the header
-/// byte, so reading one with the other's mask yields a plausible-looking
-/// wrong number instead of an error. That failure is silent in the worst way:
-/// the sharer's own preview is perfect, the encoder is fine, viewers just
-/// never receive parameter sets and sit on black. So the interesting cases
-/// here are the crossed ones.
+/// `ParameterSetExtraction` — the shared "which NAL is the SPS" step every
+/// libavcodec `CaptureEncoding` backend performs. H.264 and HEVC carry the NAL
+/// type in different bits of the header byte, so reading one with the other's
+/// mask yields a plausible wrong number, not an error — viewers silently sit
+/// on black while the sharer's own preview looks fine.
 final class ParameterSetExtractionTests: XCTestCase {
     /// An H.264 NAL: type in the low five bits, high bit zero.
     private func h264NAL(type: UInt8, body: [UInt8] = [0xAA, 0xBB]) -> Data {
@@ -28,8 +23,7 @@ final class ParameterSetExtractionTests: XCTestCase {
     func testH264FindsSPSAndPPS() {
         let sps = h264NAL(type: 7, body: [0x01])
         let pps = h264NAL(type: 8, body: [0x02])
-        // Interleaved with an ordinary IDR slice, which is what a real
-        // keyframe looks like — the extractor must ignore it.
+        // Interleaved with an ordinary IDR slice, as in a real keyframe — must be ignored.
         let nals = [sps, pps, h264NAL(type: 5, body: [0x03])]
 
         guard
@@ -63,8 +57,7 @@ final class ParameterSetExtractionTests: XCTestCase {
     }
 
     func testHEVCMissingVPSYieldsNil() {
-        // SPS and PPS present, VPS absent: all-or-nothing, because a partial
-        // set only moves the failure to the viewer's decoder.
+        // All-or-nothing: a partial set only moves the failure to the viewer's decoder.
         let nals = [hevcNAL(type: 33), hevcNAL(type: 34)]
         XCTAssertNil(ParameterSetExtraction.parameterSets(fromAnnexBNALs: nals, codec: .hevc))
     }
@@ -72,9 +65,7 @@ final class ParameterSetExtractionTests: XCTestCase {
     // MARK: The masks are not interchangeable
 
     func testHEVCNALsReadAsH264YieldNil() {
-        // HEVC VPS/SPS/PPS are header bytes 0x40/0x42/0x44. Masked with the
-        // H.264 `& 0x1F` those read as types 0, 2 and 4 — none of which is 7
-        // or 8, so the answer is a clean nil rather than a wrong set.
+        // HEVC bytes 0x40/0x42/0x44 masked with H.264's `& 0x1F` read as 0/2/4 — never 7 or 8, so a clean nil.
         let nals = [hevcNAL(type: 32), hevcNAL(type: 33), hevcNAL(type: 34)]
         XCTAssertNil(ParameterSetExtraction.parameterSets(fromAnnexBNALs: nals, codec: .h264))
     }
@@ -84,10 +75,8 @@ final class ParameterSetExtractionTests: XCTestCase {
         XCTAssertNil(ParameterSetExtraction.parameterSets(fromAnnexBNALs: nals, codec: .hevc))
     }
 
+    /// nal_ref_idc (bits 5–6) is commonly set on parameter sets; a whole-byte compare would miss them.
     func testH264MaskIgnoresTheTopThreeBits() {
-        // nal_ref_idc lives in bits 5–6 and the forbidden_zero_bit in bit 7.
-        // A real encoder sets nal_ref_idc on parameter sets, so a naive
-        // whole-byte comparison would miss every one of them.
         let sps = Data([0x67, 0x01])  // nal_ref_idc = 3, type 7
         let pps = Data([0x68, 0x02])
         guard
@@ -98,9 +87,8 @@ final class ParameterSetExtractionTests: XCTestCase {
 
     // MARK: Degenerate input
 
+    /// A zero-length NAL has no header byte and must be dropped, not indexed under some default type.
     func testEmptyNALsAreSkippedNotIndexed() {
-        // A zero-length NAL has no header byte. It must be dropped, not
-        // indexed under some default type where it could displace a real one.
         let sps = h264NAL(type: 7)
         let pps = h264NAL(type: 8)
         guard
