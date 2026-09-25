@@ -15,9 +15,7 @@ import TailscreenProtocol
 /// paired decoder agree on. Only **dimensions** are required here — cheap for
 /// every backing and enough for a generic decorator or stats overlay.
 public protocol DecodedFrame {
-    /// Frame width in luma samples.
     var width: Int { get }
-    /// Frame height in luma samples.
     var height: Int { get }
 }
 
@@ -27,9 +25,7 @@ public protocol DecodedFrame {
 /// `yPlane` is `width × height`; `uPlane`/`vPlane` are each
 /// `⌈width/2⌉ × ⌈height/2⌉`, tightly packed with no row padding.
 public struct DecodedVideoFrame: Sendable, Equatable, DecodedFrame {
-    /// Frame width in luma samples.
     public let width: Int
-    /// Frame height in luma samples.
     public let height: Int
     /// `width × height` luma (Y) samples, row-major.
     public let yPlane: [UInt8]

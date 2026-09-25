@@ -3,9 +3,7 @@ import Foundation
 /// An audio device's output format: interleaved Float32 at this rate and
 /// channel count.
 public struct AudioOutputFormat: Equatable, Sendable {
-    /// Samples per second per channel.
     public let sampleRate: Int
-    /// Interleaved channel count.
     public let channelCount: Int
 
     /// The format `AudioSink.play` is documented to receive, and the one

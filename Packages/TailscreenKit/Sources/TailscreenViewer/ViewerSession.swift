@@ -521,8 +521,9 @@ public final class ViewerSession {
     private var nacksSent = 0
     private var fecRecoveredTotal = 0
     private var lastReportedLossQ8 = 0
-    /// Every PLI this session has sent, from all three senders (the pre-keyframe
-    /// retry, a decode failure, and the NACK scheduler giving up on a gap).
+    /// Every PLI this session has sent, from all three senders: the
+    /// pre-keyframe retry, a decode failure, and the NACK scheduler giving
+    /// up on a gap.
     private var keyframeRequestsSent = 0
     /// Codec of the first video packet, read off its RTP payload type.
     private var observedCodec: VideoCodec?
@@ -549,12 +550,10 @@ public final class ViewerSession {
 
     /// One `transport.summary` per sampler window, once admitted.
     ///
-    /// Gated on `assignedSSRC` for the same reason `maybeRequestKeyframe`
-    /// is: before the HELLO_ACK there is no media to roll up, and a viewer
-    /// parked on the approval prompt for a minute would otherwise record
-    /// twelve rows of zeros ahead of the handshake that matters. The sampler
-    /// is only ticked once admitted too, so the first window is measured
-    /// from admission rather than from `start()`.
+    /// Gated on `assignedSSRC`, like `maybeRequestKeyframe`: before the
+    /// HELLO_ACK there is no media to roll up, and a parked viewer would
+    /// otherwise record rows of zeros. The sampler itself only ticks once
+    /// admitted, so the first window is measured from admission, not `start()`.
     private func maybeRecordTransportSummary() {
         guard assignedSSRC != nil, let recorder else { return }
         guard let windowNs = transportSampler.windowClosed(nowNs: nowNs) else { return }
@@ -642,14 +641,10 @@ public final class ViewerSession {
         switch kind {
         case .helloAck:
             if let (ssrc, caps) = ScreenShareControlMessage.decodeHelloAckCaps(data) {
-                // Recorded before the assignment so a re-ack (a reconnect
-                // onto the same session) still shows both values.
-                //
-                // `ssrc` is what pairs this event with the sharer's
-                // `hello.ack.sent`, which is how `DiagnosticsMerge` aligns the
-                // two machines' clocks. It is the one identifier both ends
-                // already agree on, so nothing had to be added to the wire to
-                // make the merge work — see that type's doc comment.
+                // Recorded before assignment so a re-ack still shows both
+                // values. `ssrc` pairs this with the sharer's
+                // `hello.ack.sent` — how `DiagnosticsMerge` aligns clocks
+                // without adding anything to the wire.
                 recorder?.record(
                     .helloAckReceived,
                     role: .viewer,
@@ -664,10 +659,9 @@ public final class ViewerSession {
                 isPendingApproval = false
             }
         case .helloPending:
-            // Only on the transition. A sharer re-sends HELLO_PENDING for
-            // every keepalive while the viewer sits on the approval prompt,
-            // and an event per keepalive would push the rest of the session
-            // out of the ring.
+            // Only on the transition — a sharer re-sends HELLO_PENDING per
+            // keepalive while the viewer waits, and an event per keepalive
+            // would push the rest of the session out of the ring.
             if !isPendingApproval {
                 recorder?.record(.helloPendingReceived, role: .viewer)
             }
@@ -681,10 +675,9 @@ public final class ViewerSession {
             isStopped = true
             if closeReason == nil { closeReason = .deniedOrKicked }
         case .serverBye, .bye:
-            // `closeReason == nil` is the "this is the first cause" test the
-            // line below already makes — recording inside it keeps the
-            // SERVER_BYE that chases a HELLO_DENY from writing a second,
-            // contradictory ending into the timeline.
+            // Recording only on the first-cause check keeps a SERVER_BYE
+            // that chases a HELLO_DENY from writing a second, contradictory
+            // ending into the timeline.
             if closeReason == nil {
                 recorder?.record(.serverByeReceived, role: .viewer)
             }
@@ -704,12 +697,9 @@ public final class ViewerSession {
         }
     }
 
-    /// Handle one inbound FEC parity datagram (0x0D). Parity rides the control
-    /// plane (`looksLikeControl` sees the 0x0D first byte), so it lands here,
-    /// not on the video path. Bounds-checked decode (untrusted UDP), arm/refresh
-    /// the FEC receive machinery (parity on the wire is the arming evidence),
-    /// group solve, and the recovered-packet flow. No-op unless both sides
-    /// negotiated `.fec`.
+    /// Handle one inbound FEC parity datagram (0x0D). Parity rides the
+    /// control plane (`looksLikeControl` sees the 0x0D first byte). No-op
+    /// unless both sides negotiated `.fec`.
     private func handleFECParity(_ data: Data) {
         guard caps.contains(.fec), serverCaps.contains(.fec) else { return }
         guard let parity = ScreenShareControlMessage.decodeFEC(data) else { return }
@@ -717,9 +707,8 @@ public final class ViewerSession {
         if !fecParityActive {
             fecParityActive = true
             // Loosen the scheduler's reorder tolerances IN PLACE (gaps + RTT
-            // estimate survive) so a recovery already in flight — up to N−1
-            // trailing group members plus the parity away — isn't raced by a
-            // NACK; NACK fires only for multi-loss groups FEC can't solve.
+            // estimate survive) so a recovery already in flight isn't raced
+            // by a NACK; NACK fires only for multi-loss groups FEC can't solve.
             nack.setReorderTolerances(
                 toleranceNs: TransportTuning.fecSchedulerToleranceNs,
                 packetTolerance: TransportTuning.fecSchedulerPacketTolerance)
@@ -735,9 +724,7 @@ public final class ViewerSession {
 
     private func handleVideo(_ data: Data, header: RTPHeader) {
         let seq = header.sequenceNumber
-        // Which codec the sharer actually chose, off the payload type. Recorded
-        // on the first packet because the log never said, and "is the HEVC
-        // decoder present in this build" was guessed at for two rounds.
+        // Which codec the sharer actually chose, off the payload type.
         if observedCodec == nil {
             observedCodec = header.payloadType == RTPHeader.hevcPayloadType ? .hevc : .h264
         }
@@ -751,11 +738,10 @@ public final class ViewerSession {
 
         // FEC: while parity is flowing, retain this packet for parity solves
         // and check whether it completed a group whose parity arrived first
-        // (parity can outrun a reordered member). Gated on `fecParityActive`,
-        // not bare negotiation, so a session that never sees parity pays zero
-        // per-packet buffering cost. The recovered packet (an earlier seq in
-        // the group) ingests before this wire packet — the reorder buffer
-        // orders both by seq, so the interleave is harmless.
+        // (parity can outrun a reordered member). Gated on `fecParityActive`
+        // so a session that never sees parity pays zero buffering cost. The
+        // recovered packet ingests before this one — harmless, since the
+        // reorder buffer orders both by seq.
         if fecParityActive, let recovery = fecBuffer.noteMedia(seq: seq, packet: data, nowNs: nowNs) {
             processRecoveredPacket(recovery)
         }
@@ -764,29 +750,26 @@ public final class ViewerSession {
     }
 
     /// Shared tail for wire AND FEC-recovered packets — downstream of here a
-    /// recovered packet is indistinguishable from a received one (reassembly,
-    /// AU completion, decode).
+    /// recovered packet is indistinguishable from a received one.
     private func ingestVideo(_ packet: Data) {
         guard let au = depacketizer.ingest(packet, nowNs: nowNs) else { return }
         submit(au)
-        // A gap fill (reorder completion or an FEC recovery) can unblock a run
-        // of buffered AUs at once; `ingest` returns only the first and trickles
-        // the rest one per later packet. Submit them all now instead — a viewer
-        // has no reason to hold a ready frame, and an FEC-recovered tail packet
-        // may have no trailing wire packet to trickle out on.
+        // A gap fill can unblock a run of buffered AUs at once; `ingest`
+        // returns only the first and trickles the rest one per later packet.
+        // Submit them all now — a viewer has no reason to hold a ready frame,
+        // and an FEC-recovered tail packet may have no trailing wire packet
+        // to trickle out on.
         for extra in depacketizer.drainReady() {
             submit(extra)
         }
     }
 
     /// Feed one FEC-recovered packet through the SAME path as a received one,
-    /// with two accounting deltas: the receiver report counts it as *received*
-    /// (recovered ≠ lost — residual loss drives the sharer's bitrate arm) while
-    /// `fecRecoveredSinceReport` feeds the extended-RR field (raw loss drives
-    /// the FEC arm); and the pending NACK gap is cleared via `noteRecovered`
-    /// (not the straggler path, which would inject FEC latency into the RTT
-    /// EMA — `noteRecovered` also advances the highest-seen cursor past a
-    /// recovered tail-of-batch marker so the next batch opens no phantom gap).
+    /// with two accounting deltas: the RR counts it as *received* (residual
+    /// loss drives the bitrate arm) while `fecRecoveredSinceReport` feeds the
+    /// extended-RR field (raw loss drives the FEC arm); the pending NACK gap
+    /// clears via `noteRecovered` rather than the straggler path, which would
+    /// inject FEC latency into the RTT EMA.
     private func processRecoveredPacket(_ recovery: FECGroupBuffer.Recovery) {
         fecRecoveredSinceReport += 1
         fecRecoveredTotal += 1
@@ -798,20 +781,15 @@ public final class ViewerSession {
         ingestVideo(recovery.packet)
     }
 
-    /// Submit one access unit to the decoder. Decoded frames come back through
-    /// `onDecodedFrame` → the sink (wired in `init`); a decode failure comes
-    /// back through `onDecodeFailure` → a PLI. For a synchronous decoder both
-    /// happen inside this call; for an async one, later.
+    /// Submit one access unit to the decoder. Decoded frames come back
+    /// through `onDecodedFrame` → the sink; a decode failure through
+    /// `onDecodeFailure` → a PLI. Synchronous for a sync decoder, later for
+    /// an async one.
     ///
     /// GATED until the first keyframe: feeding P-frame slices to a decoder
-    /// that has never seen parameter sets is guaranteed failure, and libavcodec
-    /// says so loudly — the real Mac→Windows session logged two lines
-    /// ("PPS id out of range" / "Skipping invalid undecodable NALU") for every
-    /// pre-keyframe frame, ~2 s of spam per keyframe interval. The Mac
-    /// `VideoDecoder` has always dropped these silently; the portable path now
-    /// matches, counting instead of logging so time-to-first-frame problems
-    /// stay measurable (`preKeyframeDropCount`, surfaced via `onVideoStats`
-    /// consumers that already poll).
+    /// that never saw parameter sets is guaranteed (and noisy) failure.
+    /// Dropped silently, but counted (`preKeyframeDropCount`) so
+    /// time-to-first-frame problems stay measurable.
     private func submit(_ au: VideoAccessUnit) {
         accessUnitsAssembled += 1
         if !seenKeyframe {
@@ -827,15 +805,13 @@ public final class ViewerSession {
     /// True once a keyframe has been submitted; P-frames before it are
     /// undecodable by construction and are counted, not decoded.
     private var seenKeyframe = false
-    /// Dropped-before-first-keyframe count — the visibility a silent drop
-    /// would otherwise cost (a large value here means keyframes are being
-    /// torn in transit; look at NACK/FEC recovery, not the decoder).
+    /// A large value here means keyframes are being torn in transit — look
+    /// at NACK/FEC recovery, not the decoder.
     public private(set) var preKeyframeDropCount = 0
 
-    /// Test-only: open the keyframe gate without a real IDR, so suites that
-    /// exercise transport mechanics (gap→NACK, FEC recovery) with P-frame-only
-    /// streams keep asserting on frame counts. Internal via @testable, per the
-    /// package convention.
+    /// Test-only: open the keyframe gate without a real IDR, so suites
+    /// exercising transport mechanics with P-frame-only streams can still
+    /// assert on frame counts.
     func markKeyframeSeenForTesting() { seenKeyframe = true }
 
     // MARK: - Decode failure recovery
@@ -848,17 +824,13 @@ public final class ViewerSession {
     private var firedDecodeRecoveryRungs: Set<DecodeRecoveryAction> = []
 
     /// One per-frame decode failure, reported by the decoder. With no ladder
-    /// callbacks installed this is exactly the historical flat path (one PLI
-    /// per failure); with a host opted in, failures are counted consecutively
-    /// and answered per `DecodeRecovery` rung instead — the same policy the
-    /// macOS `VideoDecoder` applies internally, so all three hosts escalate
-    /// identically.
+    /// callbacks installed this is the flat path (one PLI per failure); with
+    /// a host opted in, failures are counted consecutively and answered per
+    /// `DecodeRecovery` rung instead.
     private func handleDecodeFailure() {
-        // Through the mailbox like a frame, then drained at once: this runs
-        // on the host's serialization context (a synchronous decoder reports
-        // from inside `decode`), so the drain sees this failure — and the
-        // frame that preceded it, if one did, which is what closes the
-        // previous episode and resets the ladder — in order.
+        // Through the mailbox like a frame, then drained at once, so the
+        // drain sees this failure and any preceding frame (which closes the
+        // previous episode) in order.
         frameMailbox.withLock { $0.noteFailure() }
         drainFrameMailbox()
         guard onDecoderResetNeeded != nil || onDecodeFatal != nil else {
@@ -871,10 +843,7 @@ public final class ViewerSession {
             alreadyFired: firedDecodeRecoveryRungs)
         guard let action = decision else { return }
         firedDecodeRecoveryRungs.insert(action)
-        // Each rung fires at most once per episode (the latch above), so this
-        // is at most four events per failing run. `video.stalled` is the last
-        // rung under its own name: it is the event a reader searches for, and
-        // the one that carries `error` severity.
+        // At most one event per rung per episode (the latch above).
         recorder?.record(
             .decodeRecoveryAction,
             role: .viewer,
@@ -886,9 +855,8 @@ public final class ViewerSession {
         case .requestKeyframe:
             sendDecodeRecoveryPLI()
         case .recreateSession:
-            // Reset the host's decoder, then ask for the fresh IDR the
-            // rebuilt decoder needs (in-band parameter sets ride keyframes) —
-            // the same PLI the mac client sends on this rung.
+            // Reset the decoder, then ask for the fresh IDR it needs
+            // (in-band parameter sets ride keyframes).
             onDecoderResetNeeded?()
             sendDecodeRecoveryPLI()
         case .signalDegraded:
@@ -907,38 +875,31 @@ public final class ViewerSession {
         }
     }
 
-    /// A successfully decoded frame. **Safe from any thread** — the one
-    /// entry point that is, because the mac adapter delivers frames off its
-    /// own queue (see `frameMailbox`). Touches nothing but the mailbox; the
-    /// receive side drains it and does the bookkeeping.
+    /// A successfully decoded frame. **Safe from any thread** — the mac
+    /// adapter delivers frames off its own queue (see `frameMailbox`).
+    /// Touches nothing but the mailbox; the receive side drains it.
     private func noteDecodedFrame(_ frame: any DecodedFrame) {
         frameMailbox.withLock { $0.noteFrame(width: frame.width, height: frame.height) }
     }
 
     /// Count a per-frame decode failure that the host's own decoder handled
-    /// — the escalation ladder, the PLI, the reset — without running the
-    /// session's. **Safe from any thread**, like `noteDecodedFrame`.
-    ///
-    /// For the mac host, whose `VideoDecoder` runs the ladder internally and
-    /// therefore leaves `VideoDecoding.onDecodeFailure` deliberately unwired
-    /// (wiring it would double-ladder one episode). Without this, its
-    /// `transport.summary` rows said `decode_failures=0` through a failing
-    /// run, and its `decode.failed` was a second, host-side copy of the
-    /// episode rule. Now both come from the same mailbox as everyone else's.
+    /// (its own ladder/PLI/reset) without running the session's. **Safe from
+    /// any thread**, like `noteDecodedFrame`. For the mac host, whose
+    /// `VideoDecoder` runs the ladder internally and leaves
+    /// `VideoDecoding.onDecodeFailure` unwired (wiring it would
+    /// double-ladder one episode).
     public func noteHostDecodeFailure() {
         frameMailbox.withLock { $0.noteFailure() }
     }
 
-    /// Apply what the decoder reported since the last drain, on the host's
-    /// serialization context: the counters, the ladder reset a frame implies,
-    /// and the three records — `decode.first_frame`, `render.size.changed`,
-    /// and `decode.failed` once per run that opened.
+    /// Apply what the decoder reported since the last drain: the counters,
+    /// the ladder reset a frame implies, and the records —
+    /// `decode.first_frame`, `render.size.changed`, `decode.failed` once per
+    /// opened run.
     ///
-    /// Called at every entry point (`tick`, `receiveRTP`, `diagnostics`, and
-    /// the portable failure path), so on the mac host a frame delivered on
-    /// the other thread is accounted for within a packet or a tick. That is
-    /// the granularity `ms_since_ack` has there; on the synchronous hosts it
-    /// is exact.
+    /// Called at every entry point (`tick`, `receiveRTP`, `diagnostics`, the
+    /// failure path), so a frame delivered on another thread (mac) is
+    /// accounted for within a packet or a tick — exact on synchronous hosts.
     private func drainFrameMailbox() {
         let batch = frameMailbox.withLock { $0.take() }
         guard !batch.isEmpty else { return }
@@ -948,8 +909,7 @@ public final class ViewerSession {
         decodeFailures += batch.failures
 
         if batch.decodedFrames > 0, batch.lastWasFrame {
-            // The run is over: the next failing run starts a fresh episode
-            // (mirrors the mac decoder's own success-path reset).
+            // The run is over: the next failing run starts a fresh episode.
             consecutiveDecodeFailures = 0
             if !firedDecodeRecoveryRungs.isEmpty {
                 firedDecodeRecoveryRungs.removeAll()
@@ -957,9 +917,8 @@ public final class ViewerSession {
         }
 
         if firstFrameEver, let first = batch.sizes.first {
-            // Time-to-first-frame from admission is the number that separates
-            // "slow to start" from "never started", and the drops and requests
-            // beside it say what the wait was spent on.
+            // Time-to-first-frame separates "slow to start" from "never
+            // started"; drops/requests alongside say what the wait was spent on.
             recorder?.record(
                 .decodeFirstFrame,
                 role: .viewer,
@@ -975,10 +934,9 @@ public final class ViewerSession {
 
         for size in batch.sizes {
             if let last = lastFrameSize, last.width != size.width || last.height != size.height {
-                // A resolution change mid-share is the sharer's encoder
-                // re-anchoring (a display change, a window resize under the
-                // portal backend) and is the usual explanation for a bitrate
-                // step a reader would otherwise attribute to loss.
+                // A resolution change mid-share (display change, portal
+                // window resize) is the usual explanation for a bitrate step
+                // a reader might otherwise attribute to loss.
                 recorder?.record(
                     .renderSizeChanged,
                     role: .viewer,
@@ -992,8 +950,7 @@ public final class ViewerSession {
 
         // Once per episode, not per frame — a wedged decoder fails at frame
         // rate, and per-frame events would push the handshake out of the
-        // ring in seconds. The totals ride along so the row still says how
-        // bad it has been.
+        // ring in seconds.
         for _ in 0..<batch.episodesOpened {
             recorder?.record(
                 .decodeFailed,
@@ -1017,9 +974,8 @@ public final class ViewerSession {
     // MARK: - Audio handling
 
     private func handleAudio(_ data: Data) {
-        // Host owns audio decode (e.g. macOS's VoiceChannel) — hand it the raw
-        // datagram and skip the built-in Opus path entirely. The host demuxes
-        // PT 98 (voice) vs 99 (system) itself.
+        // Host owns audio decode (e.g. macOS's VoiceChannel): hand it the raw
+        // datagram and skip the built-in Opus path. Host demuxes PT 98/99 itself.
         if let onAudioDatagram {
             onAudioDatagram(data)
             return
