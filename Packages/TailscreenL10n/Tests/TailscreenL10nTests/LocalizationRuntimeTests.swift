@@ -2,13 +2,9 @@ import XCTest
 
 @testable import TailscreenL10n
 
-/// The half of localization that used to be Apple Foundation's job: parsing a
-/// `.strings` file, choosing a language, and putting the interpolated values
-/// back into a translated sentence.
-///
-/// All of it runs on Linux, which is the point — the GTK and WinUI apps'
-/// strings are resolved by this code and by nothing else, and before the
-/// catalog was shared there was no machine that could check that.
+/// The half of localization that used to be Apple Foundation's job: parsing
+/// `.strings`, choosing a language, substituting interpolated values. Runs on
+/// Linux — the GTK/WinUI apps' strings are resolved by this code alone.
 final class StringsFileTests: XCTestCase {
     func testParsesEntriesCommentsAndEscapes() {
         let table = StringsFile.parse(
@@ -28,9 +24,7 @@ final class StringsFileTests: XCTestCase {
         XCTAssertEqual(table.count, 4)
     }
 
-    /// One bad line costs one string, not the language. A catalog is a
-    /// translator deliverable and arrives imperfect; refusing the whole file
-    /// would turn a typo into an untranslated app.
+    /// One bad line costs one string, not the whole file.
     func testRecoversFromAMalformedEntry() {
         let table = StringsFile.parse(
             text: """
@@ -63,24 +57,21 @@ final class LocalizationFormatTests: XCTestCase {
             "42 ms (good)")
     }
 
-    /// A translation must be able to reorder the values — for several
-    /// languages that is the only way to write a grammatical sentence.
+    /// A translation must be able to reorder the values (positional specifiers).
     func testHonorsPositionalSpecifiers() {
         XCTAssertEqual(
             LocalizationFormat.render("%2$@ har %1$lld tittare", [.integer(2), .text("wisp")]),
             "wisp har 2 tittare")
     }
 
-    /// The conversion character says which slot, never how to read memory:
-    /// a translator who types `%d` where the key says `%@` gets a rendered
-    /// word, not a crash.
+    /// The conversion character says which slot, never how to read memory —
+    /// a translator's `%d` where the key says `%@` renders, doesn't crash.
     func testConversionCharacterDoesNotSelectTheType() {
         XCTAssertEqual(LocalizationFormat.render("%d", [.text("wisp")]), "wisp")
         XCTAssertEqual(LocalizationFormat.render("%@", [.integer(7)]), "7")
     }
 
-    /// "Zoom to 50%" is a real key. A bare `%` that introduces nothing is
-    /// literal text, and with no arguments the format is returned untouched.
+    /// "Zoom to 50%" is a real key — a bare `%` is literal text.
     func testLiteralPercentSurvives() {
         XCTAssertEqual(LocalizationFormat.render("Zoom to 50%", []), "Zoom to 50%")
         XCTAssertEqual(
@@ -88,9 +79,8 @@ final class LocalizationFormatTests: XCTestCase {
         XCTAssertEqual(LocalizationFormat.render("100%% sure %@", [.text("x")]), "100% sure x")
     }
 
-    /// More specifiers than arguments leaves the specifier visible rather than
-    /// dropping the word around it — a mistranslation you can see beats one
-    /// you cannot.
+    /// More specifiers than arguments leaves the specifier visible rather
+    /// than silently dropping the word.
     func testSurplusSpecifierIsLeftVisible() {
         XCTAssertEqual(LocalizationFormat.render("%@ and %@", [.text("a")]), "a and %@")
     }
@@ -117,16 +107,14 @@ final class LocalizationKeyTests: XCTestCase {
         XCTAssertEqual(L10nProbe.key("plain").format, "plain")
     }
 
-    /// `Int` has to keep taking `%lld` — the catalog was written against
-    /// `String.LocalizationValue`, which spelled it that way, and the keys were
-    /// not rewritten when the lookup moved off it.
+    /// `Int` keeps `%lld` — the catalog was written against
+    /// `String.LocalizationValue` and its keys weren't rewritten.
     func testIntKeepsItsOwnSpecifier() {
         XCTAssertEqual(L10nProbe.key("\(1) of \("two")").format, "%lld of %@")
     }
 
-    /// Interpolating a bare `any Error` compiles and renders. Several call
-    /// sites do it, and `Error` conforms to nothing that would let a
-    /// constrained overload accept it.
+    /// Interpolating a bare `any Error` compiles and renders (several call
+    /// sites do this; `Error` conforms to nothing a constrained overload could use).
     func testArbitraryValuesInterpolate() {
         struct Failure: Error {}
         let error: any Error = Failure()
@@ -138,8 +126,8 @@ final class LocalizationKeyTests: XCTestCase {
     }
 }
 
-/// Test-only shim: `L(_:)` returns the resolved string, so the KEY it built —
-/// the thing the catalog is indexed by — is otherwise unobservable.
+/// Test-only shim: `L(_:)` returns the resolved string, so the key it built
+/// is otherwise unobservable.
 enum L10nProbe {
     static func key(_ key: LocalizationKey) -> LocalizationKey { key }
 }

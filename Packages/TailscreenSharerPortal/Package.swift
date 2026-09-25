@@ -1,22 +1,13 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// The LINUX sharer's ScreenCast-portal `CaptureEncoding` backend: PipeWire
-// frames (BGRA) → the portable `BGRAToI420` → libavcodec.
+// LINUX sharer's ScreenCast-portal `CaptureEncoding` backend: PipeWire frames
+// (BGRA) → the portable `BGRAToI420` → libavcodec.
 //
-// A SEPARATE package from TailscreenLinuxBackends, for the same reason
-// TailscreenSharerWGC is separate on Windows and TailscreenVideoFFmpeg is
-// separate from the decoder's consumers: consuming one backend should not drag
-// in the system libraries of another. Folding this into TailscreenSharerLinux
-// would put libdbus and libpipewire on the link line of every viewer-only run
-// and every headless test-sharer — and would make the `linux-viewer` CI job,
-// which exists to gate the FFmpeg/ALSA pipeline, start failing on a missing
-// PipeWire header. Same argument X11HotkeyKit makes for not living inside
-// XTestInjectKit.
-//
-// It carries no UI and no transport, so Linux CI typechecks and tests it in
-// full — which matters more here than anywhere else in the repo, because the
-// portal itself can never be gated headlessly (see PortalCapturePlan).
+// Separate package from TailscreenLinuxBackends: folding it in would put
+// libdbus/libpipewire on the link line of every viewer-only run and headless
+// test-sharer, and would make `linux-viewer` (gates FFmpeg/ALSA) fail on a
+// missing PipeWire header.
 let package = Package(
     name: "TailscreenSharerPortal",
     products: [
@@ -34,20 +25,15 @@ let package = Package(
             dependencies: [
                 .product(name: "PortalCaptureKit", package: "PortalCaptureKit"),
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
-                // The seam this conforms to, and the colour conversion +
-                // arm/rebuild decisions it runs on.
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-                // The encode-send scaffolding shared with the X11 and WGC
-                // backends (FFmpegKit + TailscreenProtocol only — adds no
-                // system library to this link line).
+                // Encode-send scaffolding shared with the X11 and WGC backends.
                 .product(name: "TailscreenSharerFFmpegBase", package: "TailscreenVideoFFmpeg"),
             ],
             path: "Sources/TailscreenSharerPortal"
         ),
-        // The buffer hand-off's tests run real threads against real
-        // contention. They need no portal and no PipeWire daemon, which is
-        // the entire reason that type was pulled out of the encoder.
+        // Runs real threads against real contention; needs no portal/PipeWire
+        // daemon, which is why this type was pulled out of the encoder.
         .testTarget(
             name: "TailscreenSharerPortalTests",
             dependencies: ["TailscreenSharerPortal"],

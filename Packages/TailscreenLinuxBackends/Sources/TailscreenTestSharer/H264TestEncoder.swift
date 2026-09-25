@@ -5,8 +5,8 @@ import Foundation
 /// no B-frames, low latency) for the test sharer. Draws a moving bar over a
 /// gradient so a viewer can tell live video from a frozen frame at a glance.
 ///
-/// Mirrors the encoder in `PipelineIntegrationTests` — kept separate rather than
-/// shared because that one is test scaffolding and this one draws real content.
+/// Mirrors `PipelineIntegrationTests`' encoder; kept separate since that one
+/// is test scaffolding and this one draws real content.
 final class H264TestEncoder {
     private let ctx: UnsafeMutablePointer<AVCodecContext>
     private let pkt: UnsafeMutablePointer<AVPacket>

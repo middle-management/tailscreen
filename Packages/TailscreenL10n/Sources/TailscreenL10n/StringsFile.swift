@@ -1,24 +1,15 @@
 import Foundation
 
-/// Parser for Apple's `.strings` catalog format.
+/// Parser for Apple's `.strings` catalog format: `"key" = "value";` entries
+/// with `//` and `/* … */` comments. Parsed by hand rather than through
+/// `PropertyListSerialization`, whose old-style plist support is thin on
+/// swift-corelibs-foundation.
 ///
-/// The format is `"key" = "value";` entries separated by whitespace, with `//`
-/// and `/* … */` comments (which is where translator notes live, and where
-/// this catalog keeps its section MARKs). Parsed here rather than through
-/// `PropertyListSerialization` because the old-style plist reader that would
-/// handle it is a Darwin-quality path on Darwin and a much thinner one on
-/// swift-corelibs-foundation, and because this parser can be pointed at the
-/// checked-in `.strings` files by a test running anywhere.
-///
-/// Malformed input is not an error worth propagating — a catalog is a
-/// translator deliverable, and one bad line should cost one string, not the
-/// language. Parsing therefore recovers: it skips to the next `;` and keeps
-/// going, so everything the file got right still reaches the screen.
+/// Malformed input is not fatal — one bad line costs one string, not the
+/// language: parsing skips to the next `;` and keeps going.
 enum StringsFile {
-    /// Byte prefix of a binary property list. Xcode rewrites `.strings` files
-    /// into binary plists when it processes them; SwiftPM copies them as
-    /// written. Both shapes are read here so the catalog survives whichever
-    /// build system touched it.
+    /// Byte prefix of a binary property list — Xcode rewrites `.strings` into
+    /// this; SwiftPM copies them as written. Handle both shapes.
     private static let binaryPlistMagic = Array("bplist00".utf8)
 
     static func parse(data: Data) -> [String: String] {
@@ -27,8 +18,7 @@ enum StringsFile {
                 from: data, options: [], format: nil)
             return decoded as? [String: String] ?? [:]
         }
-        // UTF-16 with a BOM is legal in this format and is what older
-        // translation tools emit; UTF-8 is what this repo writes.
+        // UTF-16 with BOM is legal and what older translation tools emit.
         let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) ?? ""
         return parse(text: text)
     }
@@ -89,8 +79,7 @@ enum StringsFile {
         if index < chars.count { index += 1 }
     }
 
-    /// The scalar behind a `\Uxxxx` escape, or nil if those four characters
-    /// aren't four hex digits (in which case the `U` is literal text).
+    /// The scalar behind a `\Uxxxx` escape, or nil if not four hex digits.
     private static func fourDigitScalar(_ hex: String) -> Unicode.Scalar? {
         guard hex.count == 4, let value = UInt32(hex, radix: 16) else { return nil }
         return Unicode.Scalar(value)
@@ -121,8 +110,7 @@ enum StringsFile {
             case "r": out.append("\r")
             case "0": out.append("\0")
             case "u", "U":
-                // \Uxxxx — four hex digits, as emitted by translation tools
-                // that escape non-ASCII. Anything shorter is passed through.
+                // \Uxxxx (four hex digits); anything shorter passes through.
                 let start = scan + 1
                 let end = min(start + 4, chars.count)
                 if let scalar = fourDigitScalar(String(chars[start..<end])) {
@@ -135,8 +123,7 @@ enum StringsFile {
             }
             scan += 1
         }
-        // Unterminated literal: leave the cursor where recovery can find the
-        // next `;`.
+        // Unterminated literal: leave the cursor for recovery to find `;`.
         index = scan
         return nil
     }

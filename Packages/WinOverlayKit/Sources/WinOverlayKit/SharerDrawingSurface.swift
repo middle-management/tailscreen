@@ -7,8 +7,7 @@ public enum SharerDrawingArm: Sendable {
     case armed(SharerDrawingSurface)
     case refused(SharerDrawingRefusal)
 
-    /// The same answer in the portable latch's vocabulary, so a host can hand
-    /// this straight to ``SharerDrawingLatch/select(_:surface:)``.
+    /// The same answer in the portable latch's vocabulary.
     public var result: SharerDrawingArmResult {
         switch self {
         case .armed: return .armed
@@ -20,24 +19,19 @@ public enum SharerDrawingArm: Sendable {
 /// The surface the sharer draws on: a topmost, click-taking, keyboard-taking
 /// window over the shared region, alive only while a tool is armed.
 ///
-/// A second window rather than a mode on ``AnnotationOverlay`` — the reasoning
-/// is in `ts_draw_surface.h` and it comes down to one thing: disarming should
-/// be an object ceasing to exist, not four style bits being restored in the
-/// right order. There is no such thing as failing to destroy a window.
+/// A second window rather than a mode on ``AnnotationOverlay``: disarming
+/// should be an object ceasing to exist, not style bits restored in order —
+/// there is no such thing as failing to destroy a window.
 ///
-/// Everything decidable lives elsewhere. Which tool is armed and what happens
-/// when arming is refused is ``SharerDrawingLatch``; pixels-to-normalized is
-/// ``ScreenRegion/normalizedPoint(screenX:screenY:)``; what a stroke looks like
-/// is `AnnotationStore` and `AnnotationRasterizer`. All four are tested on
-/// Linux CI. What is left here is window lifetime, which no test could check
-/// anyway.
+/// Everything decidable lives elsewhere and is tested on Linux CI
+/// (`SharerDrawingLatch`, `ScreenRegion.normalizedPoint`, `AnnotationStore`,
+/// `AnnotationRasterizer`). What's left here is window lifetime.
 public final class SharerDrawingSurface: @unchecked Sendable {
     /// Boxed so the C callbacks — which take a bare `void *` — have something
     /// stable to point at for the surface's whole life.
     private final class Callbacks {
-        /// The shared region's SIZE at the origin, because the C layer reports
-        /// client coordinates. Its `x`/`y` are deliberately zero: the window
-        /// covers the region exactly, so client space *is* region space.
+        /// The shared region's SIZE at the origin, since the C layer reports
+        /// client coordinates; `x`/`y` are deliberately zero (client space IS region space).
         let extent: ScreenRegion
         let onPointer: @Sendable (Int, Double, Double) -> Void
         let onRelease: @Sendable () -> Void
@@ -92,10 +86,9 @@ public final class SharerDrawingSurface: @unchecked Sendable {
             { context, phase, x, y in
                 guard let context else { return }
                 let callbacks = Unmanaged<Callbacks>.fromOpaque(context).takeUnretainedValue()
-                // Clamped and normalized by the tested inverse mapping, not by
-                // arithmetic written here: a drag that leaves the window keeps
-                // reporting, and Win32 hands those coordinates over as a signed
-                // pair that reads as ~65535 if anyone gets the cast wrong.
+                // Clamped/normalized by the tested inverse mapping — a drag
+                // outside the window keeps reporting, and Win32's signed
+                // pair reads as ~65535 if the cast is wrong.
                 let point = callbacks.extent.normalizedPoint(
                     screenX: Int(x), screenY: Int(y))
                 callbacks.onPointer(Int(phase), point.x, point.y)
@@ -114,9 +107,7 @@ public final class SharerDrawingSurface: @unchecked Sendable {
     }
 
     deinit {
-        // Synchronous, and the one place in this port where a bounded wait
-        // leans long rather than short: until this returns, the sharer's
-        // desktop is still swallowing clicks.
+        // Synchronous — until this returns, the sharer's desktop is still swallowing clicks.
         ts_draw_surface_destroy(handle)
         // Only once the C side has promised no further callbacks.
         callbacks.release()

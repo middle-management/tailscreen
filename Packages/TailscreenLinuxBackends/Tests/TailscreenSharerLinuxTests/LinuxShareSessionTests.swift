@@ -4,13 +4,10 @@ import XCTest
 
 @testable import TailscreenSharerLinux
 
-/// Smoke coverage for the GTK app's share engine, now that it lives where a
-/// headless CI job can reach it. Nothing here brings up a node, a capture
-/// backend or an X display — that is `CaptureEncoderTests`' half — so what is
-/// pinned is exactly the orchestration that used to sit untested in the app
-/// target: the ask-to-share inbox wiring, the pre-approve hand-off, the
-/// drawing latch's no-surface refusal, the access facade, and the idle
-/// teardown's quietness.
+/// Smoke coverage for the GTK app's share engine, headless (no node, capture
+/// backend or X display — that's `CaptureEncoderTests`' half): the ask-to-share
+/// inbox wiring, pre-approve hand-off, drawing latch's no-surface refusal,
+/// access facade, and idle teardown's quietness.
 final class LinuxShareSessionTests: XCTestCase {
 
     /// An engine against a throwaway access store — no node, no display, no
@@ -44,10 +41,8 @@ final class LinuxShareSessionTests: XCTestCase {
         engine.answerShareRequest(id: request.id, accept: true)
         XCTAssertEqual(published.last, [], "an answered ask leaves the inbox")
         XCTAssertEqual(startRequests, 1, "accept must hand off to the host's share flow")
-        // Accept happens before a server exists, so the invitee's IP is held
-        // for replay — losing it parks the person just invited at this
-        // machine's own approval gate. The hold/drain rule itself is
-        // `SharerSessionCore`'s and is pinned there for both hosts.
+        // No server yet, so the invitee's IP is held for replay — losing it
+        // parks them at their own approval gate.
         XCTAssertEqual(engine.pendingPreApprovedIPs, ["100.64.0.7"])
     }
 
@@ -155,14 +150,9 @@ final class LinuxShareSessionTests: XCTestCase {
 
     // MARK: Control-grant staleness
 
-    /// The high-water mark alone cannot reject a snapshot from a share that
-    /// has ended, and that is not a detail: teardown **resets** the mark to
-    /// zero, because a fresh server starts its own `onControlGrantChanged`
-    /// sequence at zero and a carried-over mark would discard the next share's
-    /// first snapshots. So a snapshot still in flight from the old server is
-    /// not stale against zero — it lands, telling the sharer somebody is
-    /// driving a machine they just stopped sharing, and it leaves the mark
-    /// high enough to swallow the next share's grant entirely.
+    /// Teardown resets the high-water mark to zero (a fresh server restarts
+    /// its own sequence at zero), so a snapshot still in flight from the old
+    /// server is not stale against zero — the share stamp must reject it instead.
     @MainActor
     func testALateGrantFromAnEndedShareIsIgnoredAndDoesNotPoisonTheNextShare() async throws {
         let engine = makeEngine()
@@ -188,9 +178,8 @@ final class LinuxShareSessionTests: XCTestCase {
         XCTAssertEqual(grants, ["studio-imac"])
     }
 
-    /// Within one share the reorder guard is unchanged: a hop can deliver an
-    /// older snapshot last, and applying its `nil` would tell the sharer
-    /// nobody is controlling their machine while somebody is.
+    /// Within one share, a hop can deliver an older snapshot last; applying
+    /// its `nil` would falsely say nobody is controlling the machine.
     @MainActor
     func testAReorderedGrantSnapshotWithinAShareIsStillDiscarded() async throws {
         let engine = makeEngine()
@@ -211,13 +200,8 @@ final class LinuxShareSessionTests: XCTestCase {
     // MARK: Voice
 
     /// The mic control is absent, not present-and-inert, until a device is
-    /// open — and a toggle while there is none publishes nothing at all rather
-    /// than lighting an indicator over a microphone that does not exist.
-    ///
-    /// The latch that decides this is `VoiceLatch`, shared with the Windows
-    /// engine and both viewers; what this pins is the GTK engine's wiring onto
-    /// it, which is the half that used to guard on the voice while publishing
-    /// the flags.
+    /// open — toggling with none publishes nothing rather than lighting an
+    /// indicator over a microphone that doesn't exist.
     @MainActor
     func testTogglingTheMicWithNoDeviceOpenPublishesNothing() async throws {
         let engine = makeEngine()
@@ -234,9 +218,8 @@ final class LinuxShareSessionTests: XCTestCase {
 
     // MARK: Link sharing
 
-    /// The toggle is a share-time control, so an idle engine ignores it —
-    /// and, crucially, publishes nothing. A `linkBusy` latched on with no
-    /// server behind it is a card stuck on "Creating link…" forever.
+    /// An idle engine ignores the toggle and publishes nothing — a `linkBusy`
+    /// latched with no server would stick the card on "Creating link…" forever.
     @MainActor
     func testLinkToggleWithoutAServerIsAQuietNoOp() async throws {
         let engine = makeEngine()
@@ -252,10 +235,7 @@ final class LinuxShareSessionTests: XCTestCase {
         XCTAssertFalse(engine.isLinkOnlyShare)
     }
 
-    /// A stop with nothing running says nothing about the link either — the
-    /// same quietness `testStopWithoutAServerGoesIdleWithoutAnEndEvent` pins
-    /// for the end event. There was no link, so announcing one dying would
-    /// have the card redraw a section that was never there.
+    /// A stop with nothing running says nothing about the link either.
     @MainActor
     func testStopWithoutAServerSaysNothingAboutTheLink() async throws {
         let engine = makeEngine()

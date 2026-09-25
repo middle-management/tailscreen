@@ -11,143 +11,77 @@ import WinOverlayKit
 /// Runs a share on Windows: the system capture picker, then the portable
 /// `TailscaleScreenShareServer` driven by `WGCCaptureEncoder`.
 ///
-/// A package type rather than an app file for two reasons. The first is that
-/// this half must not touch the UI thread. The sign-in freeze earlier in
-/// this port was exactly that mistake — a `@MainActor`-isolated async method
-/// whose non-suspending body ran tsnet bring-up on the UI thread — and a
-/// screen-share server brings up its own tsnet node the same way. So the
-/// controller is NOT `@MainActor`; it publishes back through a callback the
-/// caller hops for itself.
-///
-/// The picker is the deliberate exception. It is modal system UI that needs an
-/// owner window and a message pump, so `pick` is called from the main thread
-/// (the shim pumps while it waits) and nothing else is.
-///
-/// The second reason is the package's: nothing here imports a UI toolkit, so
-/// Linux CI typechecks it. That matters most for exactly the concurrency
-/// reasoning above, which is the part a Windows-only build would let through
-/// unread until someone ran it.
+/// A package type, not an app file: this half must not touch the UI thread
+/// (an earlier sign-in freeze was exactly this mistake — tsnet bring-up
+/// running on a `@MainActor` method's non-suspending body). The controller
+/// is NOT `@MainActor`; it publishes back through a callback the caller hops
+/// for itself. The picker is the deliberate exception — modal system UI
+/// needing an owner window and message pump, called from the main thread.
+/// Also, nothing here imports a UI toolkit, so Linux CI typechecks it.
 ///
 /// Remote control is offered only when the caller can say WHERE the shared
-/// content is on screen (`controlRegion`). A WGC `GraphicsCaptureItem` does
-/// not expose its HMONITOR or HWND, so a picker-chosen target has no known
-/// geometry and normalized coordinates cannot be mapped onto it — and a click
-/// landing somewhere the viewer did not aim it is worse than a click that does
-/// not happen. Without a region no injector is supplied, the server withholds
-/// `ScreenShareCaps.remoteControl`, and viewers hide Request Control rather
-/// than sending requests this host cannot serve. That conditional capability
-/// is what the portable server gained when it stopped being macOS-only, and it
-/// is what makes an incomplete platform honest rather than broken.
+/// content is on screen (`controlRegion`) — a WGC `GraphicsCaptureItem`
+/// exposes no HMONITOR/HWND, so without a region no injector is supplied and
+/// the server withholds `ScreenShareCaps.remoteControl`.
 public final class WindowsShareSession: @unchecked Sendable {
     /// What the UI needs to render, pushed on every change.
     public struct Status: Sendable {
-        /// Where the share is, in the vocabulary all three hosts share
-        /// (`ShareBringUpPhase`, TailscreenProtocol).
-        ///
-        /// This engine had only the Bool below, so `starting` did not exist
-        /// as a state and the hub's card read "Not sharing" for the whole of
-        /// bring-up — the WGC picker, the encoder, tsnet — flipping only once
-        /// frames were already going out. `failed` did not exist either: a
-        /// start that threw left the reason to the app's own string slot.
+        /// Where the share is (`ShareBringUpPhase`, TailscreenProtocol).
         public var phase: ShareBringUpPhase = .idle
-        /// Live. A projection of `phase`, so the readers that only ask "is a
-        /// share up?" are unchanged and cannot disagree with it.
+        /// A projection of `phase`, so callers asking only "is a share up?" can't disagree with it.
         public var isSharing: Bool { phase.isSharing }
         /// The picker's own name for the target — "Screen 1", a window title.
         public var target = ""
         public var viewerCount = 0
-        /// Who is watching, and enough about each to act on them.
-        ///
-        /// A roster rather than only a count, because this is the surface a
-        /// sharer uses to change their mind about somebody already admitted —
-        /// and without it this app could admit a viewer and then do nothing
-        /// about them, which the alignment plan calls the worst gap in the
-        /// matrix.
+        /// Who is watching, and enough about each to act on them — the
+        /// surface a sharer uses to change their mind about an admitted viewer.
         public var viewers: [ConnectedViewer] = []
         public var message = ""
-        /// Viewers asking for remote control, awaiting an answer.
-        ///
-        /// The server surfaces these and does nothing else with them: a grant
-        /// is a decision only the person at the keyboard can make. The Windows
-        /// app had an injector, advertised the capability and then had nowhere
-        /// to show the request — so a viewer pressed Request Control and
-        /// nothing happened at either end.
+        /// Viewers asking for remote control, awaiting an answer. The server
+        /// surfaces these and does nothing else — the grant is the person's decision.
         public var controlRequests: [ControlRequestInfo] = []
         /// Viewers parked at the approval gate, awaiting Accept or Deny.
-        ///
-        /// Surfaced for exactly the reason above, one step earlier in the same
-        /// story: the gate is useless if the prompt it produces has nowhere to
-        /// appear. A parked viewer sees a Connecting placard and waits
-        /// forever.
         public var pendingViewers: [PendingViewer] = []
-        /// Whether new viewers have to be let in by hand.
-        ///
-        /// Mirrored into the status so the UI's switch reads back from the
-        /// thing it controls rather than from a second copy that can drift out
-        /// of step with the live share.
+        /// Whether new viewers have to be let in by hand. Mirrored into
+        /// status so the UI's switch reads from the thing it controls.
         public var requireApproval = true
         /// Who currently holds control, if anyone.
         public var controlGrantedTo: String?
-        /// Whether a capture device was opened for this share — the capability
-        /// the mic control's existence rides on. False on a machine with no
-        /// microphone, or one whose device failed, and the control is then
-        /// absent rather than present-and-inert.
+        /// Whether a capture device was opened — the capability the mic
+        /// control's existence rides on.
         public var micAvailable = false
-        /// Whether the sharer's voice is reaching viewers. Starts off:
-        /// starting a share must not put somebody on the air.
+        /// Whether the sharer's voice is reaching viewers. Starts off.
         public var micOn = false
-        /// Whether viewers can ask to control this machine.
-        ///
-        /// Reported rather than left implicit because its absence is otherwise
-        /// invisible from both ends: the viewer simply does not offer Request
-        /// Control, and the sharer sees a share that looks completely normal.
+        /// Whether viewers can ask to control this machine. Reported rather
+        /// than left implicit, or its absence is invisible from both ends.
         public var remoteControlAvailable = false
         /// Whether viewers' strokes appear on this screen. Gated on the same
-        /// resolved geometry as control — a stroke's coordinates are normalized
-        /// against what the viewer SEES, so a target whose rect is unknown gets
-        /// neither rather than getting strokes drawn somewhere plausible and
-        /// wrong.
+        /// resolved geometry as control — coordinates are normalized against
+        /// what the viewer sees.
         public var annotationsAvailable = false
-        /// Whether the SHARER can draw on their own screen. The same resolved
-        /// geometry gates it a third time, for the same reason — plus one
-        /// requirement of its own, which is that arming has to be reversible;
-        /// see ``WindowsShareSession/selectDrawingTool(_:)``.
+        /// Whether the SHARER can draw on their own screen. Same geometry
+        /// gate, plus arming must be reversible; see `selectDrawingTool(_:)`.
         public var drawingAvailable = false
-        /// The sharer's armed tool, or nil. Read back from the latch rather
-        /// than from what the toolbar last sent, so a refused arm renders as an
-        /// unarmed toolbar instead of a selected tool that does nothing.
+        /// The sharer's armed tool, or nil. Read back from the latch, so a
+        /// refused arm renders as unarmed rather than a tool that does nothing.
         public var activeDrawingTool: AnnotationTool?
-        /// Why drawing is unavailable or was refused.
-        ///
-        /// Surfaced rather than swallowed, because a refusal is otherwise
-        /// completely invisible: the pointer simply keeps going to the desktop,
-        /// which reads as "drawing is broken" rather than "Windows would not
-        /// hand the surface the keyboard, so there would have been no way out".
+        /// Why drawing is unavailable or was refused — surfaced rather than
+        /// swallowed, or a refusal reads as "drawing is broken."
         public var drawingNote: String?
-        /// The colour this sharer's strokes appear in, for the toolbar swatch.
-        /// Identity-derived like every participant's, never chosen.
+        /// The colour this sharer's strokes appear in. Identity-derived, never chosen.
         public var drawingInkColor = Annotation.defaultColor
-        /// Live capture timings, so "it's slow" can be answered with which
-        /// stage rather than a guess.
+        /// Live capture timings, so "it's slow" answers with which stage.
         public var timings: CaptureTimings?
         /// The most recent preview of what viewers are receiving, refreshed
         /// about once a second, or nil when nothing is being captured.
-        ///
-        /// Worth its own field rather than a note, and worth the bytes: the
-        /// status line reads the same whether the intended window is on the
-        /// wire or the wrong one is, and after a mid-share source change that
-        /// is not a hypothetical.
         public var preview: ThumbnailScaler.Thumbnail?
-        /// The live share link's token — nil while the link is off, which is
-        /// what the card's Share via Link toggle shows. Dies with the share.
+        /// The live share link's token — nil while the link is off. Dies with the share.
         public var linkToken: String?
-        /// True while the link is being created or rotated (the relay
-        /// bootstrap blocks for the network); toggle flips are ignored.
+        /// True while the link is being created or rotated; toggle flips are ignored.
         public var linkBusy = false
         /// This share was started signed out: the guest tunnel is its only
-        /// socket, so the link is the only way in. The card states the mode
-        /// instead of drawing a toggle with no off position short of Stop
-        /// Sharing.
+        /// socket, so the link is the only way in, with no off position short
+        /// of Stop Sharing.
         public var linkIsOnlyWayIn = false
 
         public init() {}
@@ -155,22 +89,16 @@ public final class WindowsShareSession: @unchecked Sendable {
 
     /// Somebody currently watching.
     ///
-    /// A local type for the same reason `PendingViewer` is one, plus a second:
-    /// `stableID` needs saying out loud. The remember/forget actions are about
-    /// the PERSON, and the persistent store is keyed by Tailscale StableNodeID
-    /// — never by `displayName`, which is a hostname the peer supplies and can
-    /// therefore choose. It is nil until the sharer's own netmap lookup lands.
+    /// `stableID` rides along because remember/forget actions key on
+    /// Tailscale StableNodeID, never `displayName` (a peer-chosen hostname).
+    /// Nil until the sharer's netmap lookup lands.
     public struct ConnectedViewer: Sendable, Identifiable, Hashable {
         /// The server's `"ip:port"` viewer key — what `disconnectViewer` takes.
         public let id: String
         public let displayName: String
         public let stableID: String?
         /// The link's state, straight off the server. Passed as the ENUM
-        /// rather than a rendered string: this package has no string catalog,
-        /// so interpolating it here put an untranslated lowercase `degraded`
-        /// beside somebody's hostname in the UI. The host words it, and says
-        /// nothing at all for a healthy viewer — a note on every row makes
-        /// the one that matters invisible.
+        /// rather than a rendered string, since this package has no string catalog.
         public let health: ViewerHealth
         /// A share-by-token guest: no StableNodeID ever resolves (the
         /// remember actions don't apply), and the row carries a badge.
@@ -190,12 +118,10 @@ public final class WindowsShareSession: @unchecked Sendable {
 
     /// A viewer waiting on the sharer's Accept / Deny.
     ///
-    /// A local type rather than the server's `PendingViewerInfo` so the app
-    /// does not have to take a direct dependency on `TailscreenSharer` — and,
-    /// more usefully, so `id` is documented at the point the app touches it:
-    /// it is the server's `"ip:port"` viewer key, and `approveViewer` /
-    /// `denyViewer` match on exactly that. Hand them the bare IP and both
-    /// silently do nothing, which reads as two dead buttons.
+    /// A local type rather than the server's `PendingViewerInfo`, so the app
+    /// avoids a direct `TailscreenSharer` dependency. `id` is the server's
+    /// `"ip:port"` viewer key — `approveViewer`/`denyViewer` match on exactly
+    /// that; a bare IP silently no-ops both.
     public struct PendingViewer: Sendable, Identifiable, Hashable {
         public let id: String
         /// Hostname when the netmap lookup has landed, the Tailscale IP until
@@ -256,18 +182,10 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     /// One-time process setup. **Call at startup, before any window exists.**
-    ///
-    /// Only DPI awareness, but it is not optional for this app: without it
-    /// Windows reports scaled coordinates for every display while
-    /// Windows.Graphics.Capture reports capture items in physical pixels, so
-    /// on any display above 100 % scaling nothing this app measures agrees
-    /// with anything it captures — `resolveControlRegion` finds no matching
-    /// monitor and the share loses remote control and annotations together,
-    /// with no error anywhere to explain it.
-    ///
-    /// A process-wide setting exposed here because this package owns the
-    /// coordinate space it governs; the app calls it once and never thinks
-    /// about it again.
+    /// DPI awareness — without it, Windows reports scaled coordinates while
+    /// WGC reports physical pixels, so above 100% scaling
+    /// `resolveControlRegion` finds no matching monitor and the share
+    /// silently loses remote control and annotations.
     public static func prepareProcess() {
         SendInputInjector.enablePerMonitorDPIAwareness()
     }
@@ -275,77 +193,58 @@ public final class WindowsShareSession: @unchecked Sendable {
     private let lock = NSLock()
     private var server: TailscaleScreenShareServer?
     private var overlay: AnnotationOverlay?
-    /// Where the CURRENT target is on screen, or nil when its geometry could
-    /// not be resolved.
-    ///
-    /// Mutable, and read through a closure rather than captured by value,
-    /// because a source change moves it. Closing over the value — which this
-    /// did until change-source existed — leaves a granted viewer's clicks
-    /// landing on the rectangle of a window they are no longer looking at.
-    /// Guarded by `lock`.
+    /// Where the CURRENT target is on screen, or nil when its geometry
+    /// couldn't be resolved. Read through a closure, not captured by value —
+    /// a source change moves it, and closing over the value would leave a
+    /// granted viewer's clicks landing on a window they've moved off. Guarded by `lock`.
     private var liveRegion: ScreenRegion?
     /// The item the live share is capturing. Held so a source change can be
     /// told apart from a restart, and so teardown releases it.
     private var liveItem: WGC.CaptureItem?
-    /// The sharer's voice for this share — the route installed on each server
-    /// BEFORE `start()`, the device opened only once the share is up, and the
-    /// mute latch `micAvailable` / `micOn` mirror. Owns its own lock, so it is
-    /// deliberately NOT guarded by `lock`; shared with the GTK engine, where
-    /// the same triple had the same ordering hazards. See `SharerVoiceSession`.
+    /// The sharer's voice for this share. Owns its own lock, deliberately NOT
+    /// guarded by `lock`; shared ordering hazards with the GTK engine — see
+    /// `SharerVoiceSession`.
     private let voiceSession = SharerVoiceSession()
     /// Which share attempt this session is on, which grant snapshot was last
     /// applied, and who was invited before there was a server to tell.
     ///
-    /// `beginSharing` releases nothing while it awaits `newServer.start()` —
-    /// that await spans tsnet bring-up, which on an interactive login is
-    /// minutes — so a `stopSharing()` can and does land in the middle. Every
-    /// callback and the post-await tail carry the generation they were made
-    /// under and drop themselves when it no longer matches, so a server the
-    /// session has let go of cannot publish status for a share nobody is
-    /// running.
+    /// `beginSharing` releases nothing while awaiting `newServer.start()`
+    /// (tsnet bring-up, minutes on an interactive login), so a `stopSharing()`
+    /// can land mid-flight. Every callback carries its generation and drops
+    /// itself when stale.
     ///
-    /// A value type held behind `lock`, which is the whole point of
-    /// `SharerSessionCore` being a struct: the GTK engine holds the same state
-    /// machine as an actor-isolated property, and neither host's isolation
-    /// model leaks into the other's. Guarded by `lock`.
+    /// A value type behind `lock` — the GTK engine holds the same state
+    /// machine actor-isolated instead, and neither isolation model leaks
+    /// into the other's.
     private var core = SharerSessionCore()
 
-    /// IPs invited before there was a server to tell. Internal so the package
-    /// suite can pin the held-IP contract with no server, exactly as
-    /// `LinuxShareSessionTests` pins the GTK engine's.
+    /// IPs invited before there was a server to tell.
     var pendingPreApprovedIPs: Set<String> { lock.withLock { core.heldInvites } }
 
     private var status = Status()
-    /// The gate to apply to the next share, and to the running one.
-    ///
-    /// Held here rather than only on the server because the server exists only
-    /// while a share does, and the setting is something the user sets *before*
-    /// pressing Share. Defaults to on: `TailscaleScreenShareServer` defaults
-    /// it OFF — correct for a headless automation sharer, catastrophic for a
-    /// desktop app that forgets to say otherwise — so this wrapper's job is to
-    /// make forgetting fail closed.
+    /// The gate to apply to the next share, and the running one. Held here
+    /// (not just on the server) since the setting is chosen before pressing
+    /// Share. Defaults on: the server itself defaults OFF, so this wrapper
+    /// makes forgetting fail closed.
     private var requireApproval = true
 
     // MARK: Sharer drawing — state
     //
-    // Its own lock, not `lock`. Arming blocks on another thread building a
-    // window, and the disarm path joins that thread; holding the status lock
-    // across either would stall every unrelated publish behind a window
-    // manager. The ordering rule is one-way — `drawingLock` may be held while
-    // taking `lock` (through `update`), never the reverse.
+    // Own lock, not `lock`: arming blocks on another thread building a
+    // window, and holding the status lock across that would stall every
+    // unrelated publish. One-way ordering — `drawingLock` may be held while
+    // taking `lock` (via `update`), never the reverse.
     private let drawingLock = NSLock()
-    /// The sharer's own canvas: the same `AnnotationStore` every viewer runs,
-    /// so stroke geometry, the undo stack and the identity-derived colour are
-    /// shared code rather than a second implementation on the sharing side.
+    /// The sharer's own canvas: the same `AnnotationStore` every viewer runs.
     private let drawing = AnnotationStore()
     /// Which tool is armed, and what a refusal to arm means. Portable and
     /// tested on Linux CI — see `SharerDrawingLatch`.
     private var drawingLatch = SharerDrawingLatch()
-    /// The live click-swallowing window. Nil whenever nothing is armed, which
-    /// is the invariant the whole feature rests on.
+    /// The live click-swallowing window. Nil whenever nothing is armed —
+    /// the invariant the whole feature rests on.
     private var drawingSurface: SharerDrawingSurface?
-    /// Where the shared content is. The same rect the injector and the overlay
-    /// got, so all three agree about what a normalized coordinate means.
+    /// Where the shared content is — the same rect the injector and overlay
+    /// got, so all three agree what a normalized coordinate means.
     private var drawingRegion: ScreenRegion?
 
     /// Whether this machine can capture at all — checked before any UI is
@@ -355,8 +254,8 @@ public final class WindowsShareSession: @unchecked Sendable {
 
     /// Show the capture picker. **Main thread only** (see the type comment).
     ///
-    /// - Returns: the chosen target, or nil if the user dismissed the picker —
-    ///   which is a decision, not an error, and must not raise an alert.
+    /// - Returns: the chosen target, or nil if the user dismissed the picker
+    ///   — a decision, not an error.
     @MainActor
     public func pickTarget() throws -> WGC.CaptureItem? {
         do {
@@ -368,26 +267,17 @@ public final class WindowsShareSession: @unchecked Sendable {
 
     /// Bring up the sharer's tsnet node and start capturing `item`.
     ///
-    /// `nonisolated` and `async`: called from a `Task` on the main actor, it
-    /// runs on the global executor, so the node bring-up inside `start` never
-    /// occupies the UI thread.
-    /// Remote control is enabled automatically when the picked target's
-    /// screen rect can be resolved — see `resolveControlRegion`. It cannot
-    /// always be, and the reason lands in the published status rather than
-    /// being swallowed.
+    /// `nonisolated`/`async`: runs on the global executor, so tsnet bring-up
+    /// never occupies the UI thread. Remote control is enabled automatically
+    /// when the target's screen rect can be resolved (`resolveControlRegion`);
+    /// when it can't, the reason lands in the published status.
     /// - Parameter existingNode: the app's already-signed-in tsnet node.
-    ///   **Supply it.** Without one the server brings up its own, which needs
-    ///   its own state directory — and a state directory holds a machine key,
-    ///   so that is a second machine, needing a second interactive browser
-    ///   login the user is never prompted for. The share then waits at that
-    ///   login forever and never appears on anyone's tailnet. Sharing the
-    ///   node is also what gives the app ONE identity, as the macOS app has.
-    /// - Parameter linkOnly: run this share with **no tsnet node at all** —
-    ///   started signed out, the guest tunnel is the server's only socket and
-    ///   the link is the only way in. `existingNode`, `hostname`, `statePath`
-    ///   and `controlListener` are all inert then: there is no tailnet
-    ///   listener, no ask-to-share channel and no LocalAPI identity, so every
-    ///   viewer arrives as a guest at the mandatory approval gate.
+    ///   **Supply it** — without one the server brings up a second machine
+    ///   identity needing its own interactive login, and the share waits at
+    ///   that login forever.
+    /// - Parameter linkOnly: run with **no tsnet node at all** — started
+    ///   signed out, guest tunnel as the only socket; every viewer arrives as
+    ///   a guest at the mandatory approval gate.
     public func beginSharing(
         item: WGC.CaptureItem,
         hostname: String,
@@ -398,52 +288,39 @@ public final class WindowsShareSession: @unchecked Sendable {
         linkOnly: Bool = false
     ) async throws {
         let generation = beginShareGeneration()
-        // Say so before any of the slow parts — the WGC picker's own dialog is
-        // already behind us, but the encoder, the server and tsnet bring-up
-        // are not, and this engine used to report all of it as "Not sharing".
+        // Say so before the slow parts (encoder, server, tsnet bring-up) —
+        // this engine used to report all of it as "Not sharing".
         update { $0.phase = .starting }
-        // A capture FACTORY, not an instance, because the server respawns the
-        // backend to restart capture. Closing over the item is what makes a
-        // restart re-target the same window without asking the user again —
-        // the equivalent of the macOS helper re-resolving its cached selection,
-        // which a `GraphicsCaptureItem` cannot be turned back into.
+        // A capture FACTORY, not an instance: the server respawns the backend
+        // to restart capture, and closing over the item is what re-targets
+        // the same window without asking the user again.
         // Resolve WHERE the target is before building the server: whether an
-        // injector exists at all is what decides the advertised
-        // `.remoteControl` capability, and that is fixed for the session.
+        // injector exists decides the advertised `.remoteControl` capability.
         let region = Self.resolveControlRegion(for: item)
         let regionNote: String
         switch region {
         case .success:
             regionNote = ""
         case .failure(let reason):
-            // Names BOTH features, because both are gated on this one answer
-            // and a message about remote control alone left the missing
-            // annotations looking like a separate, unexplained fault.
+            // Names BOTH features, since both are gated on this one answer.
             regionNote = "Remote control and annotations are off — \(reason)"
         }
 
-        // A resolved region means remote control is offered; an unresolved one
-        // means no injector, so the server withholds `.remoteControl` and
-        // viewers hide Request Control rather than sending requests that would
-        // land in the wrong place.
+        // A resolved region means remote control is offered; an unresolved
+        // one means no injector, so the server withholds `.remoteControl`.
         var injector: WindowsInputInjector?
         var annotationOverlay: AnnotationOverlay?
         var resolvedRegion: ScreenRegion?
         if case .success(let resolved) = region {
             resolvedRegion = resolved
-            // Re-reads on every activation and every source change (see
-            // `WindowsInputInjector.setSelection`), so a changed target maps
-            // correctly — and a target whose geometry is unknown yields nil,
-            // which makes the injector DROP events rather than place them on
-            // the previous window.
+            // Re-reads on every activation/source-change; unknown geometry
+            // yields nil, so the injector DROPS events rather than
+            // misplacing them on the previous window.
             injector = WindowsInputInjector(regionProvider: { [weak self] in
                 self?.lock.withLock { self?.liveRegion }
             })
-            // Annotations need the same rect as remote control, and for the
-            // same reason: a stroke's coordinates are normalized against what
-            // the viewer can SEE. So they gate together — a target whose
-            // geometry is unknown gets neither, rather than getting strokes
-            // drawn somewhere plausible and wrong.
+            // Annotations gate on the same rect for the same reason — a
+            // target with unknown geometry gets neither, not strokes drawn wrong.
             annotationOverlay = AnnotationOverlay(
                 region: AnnotationOverlay.Region(
                     x: resolved.x, y: resolved.y,
@@ -456,19 +333,17 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         let injectorAvailable = injector != nil
         let overlayAvailable = annotationOverlay != nil
-        // The sharer's own pen rides the overlay that is already there, so it
-        // is available exactly when that is. Nothing is created yet: the
-        // click-swallowing surface comes into existence only when a tool is
-        // armed, and stops existing when it is not.
+        // Nothing is created yet — the click-swallowing surface comes into
+        // existence only when a tool is armed.
         drawingLock.withLock {
             drawingRegion = resolvedRegion
             drawingSurface = nil
             drawingLatch = SharerDrawingLatch()
         }
 
-        // The timings hook is on the concrete backend rather than the
-        // `CaptureEncoding` seam, so it is attached inside the factory — which
-        // also means a restart's fresh backend keeps reporting.
+        // The timings hook is on the concrete backend, not the
+        // `CaptureEncoding` seam, so it's attached inside the factory —
+        // meaning a restart's fresh backend keeps reporting.
         let onTimings: @Sendable (CaptureTimings) -> Void = { [weak self] timings in
             self?.update { $0.timings = timings }
         }
@@ -544,46 +419,31 @@ public final class WindowsShareSession: @unchecked Sendable {
             guard let self, self.isCurrentShare(generation) else { return }
             self.update { $0.controlGrantedTo = grant?.displayName }
         }
-        // Installed HERE, before `start()`, and never reassigned: the server's
-        // callbacks are bare stored vars its receive thread reads with no
-        // lock. `SharerVoiceSession` publishes into the route it hands back
-        // once the capture device is open — see `SharerVoiceRoute` for why the
-        // device is not opened before a node that may still be waiting on a
-        // browser login.
+        // Installed HERE, before `start()`, and never reassigned: the
+        // server's callbacks are bare stored vars its receive thread reads with no lock.
         newServer.onAudioReceived = voiceSession.inboundHandler
-        // Tunnel-level eviction: a Deny (or remembered-deny expel) on a guest
-        // also closes their tunnel and denylists their node key for the
-        // link's life, so a denied guest can't keep knocking.
+        // Tunnel-level eviction: a Deny also closes the guest's tunnel and
+        // denylists their node key for the link's life.
         newServer.onGuestViewerDenied = { [link] ip in
             Task { await link.evict(ip: ip) }
         }
         newServer.onCaptureStopped = { [weak self] error in
             guard let self, self.isCurrentShare(generation) else { return }
-            // The share is over, so the generation ends here rather than only
-            // in `stopSharing`: a link-only `beginSharing` still suspended in
-            // its bootstrap would otherwise pass its own `isCurrentShare`
-            // check on the way out and republish `isSharing` for a capture
-            // that has already died.
+            // Ends here, not only in `stopSharing`: a link-only `beginSharing`
+            // still suspended in bootstrap would otherwise republish
+            // `isSharing` for a capture that already died.
             self.endShareGeneration()
-            // Before the status push: a capture that died must not leave the
-            // microphone open, and the status it publishes says `micAvailable
-            // = false`, so the two would otherwise disagree.
+            // Before the status push, so `micAvailable = false` agrees with
+            // reality, and so a dead capture doesn't leave a click-swallowing
+            // window over a desktop no longer sharing anything.
             self.stopVoice()
-            // And before it for the same reason, more urgently: a capture that
-            // died on its own must not leave a click-swallowing window over a
-            // desktop that is no longer sharing anything.
             self.teardownDrawing()
-            // Captured as the status is blanked — inside the same locked
-            // body, since `status` is lock-guarded — for the same reason the
-            // GTK engine captures it: this task reaches the actor a hop
-            // later, and a Stop → Start in between can have minted a
-            // replacement link that an unscoped teardown would close.
+            // Captured inside the locked body: this task reaches the actor a
+            // hop later, and a Stop → Start meanwhile can have minted a
+            // replacement link an unscoped teardown would close.
             var minted: String?
             self.update {
                 minted = $0.linkToken
-                // A capture that died on its own is a failure, not an idle
-                // sharer: the message below says what happened and the card
-                // offers Start again, which `canStart` allows from here.
                 $0.phase = error.map { .failed("\($0)") } ?? .idle
                 $0.viewerCount = 0
                 $0.viewers = []
@@ -598,35 +458,27 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.linkBusy = false
                 $0.linkIsOnlyWayIn = false
             }
-            // The server drives its own teardown from here (listener close
-            // included); only the guest node remains. The server goes with the
-            // token for the same reason the GTK engine passes it: a
-            // `setLinkSharing(true)` still in flight owns a claim that only
-            // its own server can invalidate, and without that it could publish
-            // a token onto a share whose capture is gone.
+            // The server drives its own teardown; only the guest node
+            // remains. Passed too so a `setLinkSharing(true)` still in
+            // flight can't publish a token onto a dead share's capture.
             Task { [link = self.link, server = newServer] in
                 await link.teardown(for: server, mintedToken: minted)
             }
         }
 
-        // Publish the server, then assert the gate — in that order, and both
-        // before `start`. Reading the setting first and publishing after would
-        // lose a flip that landed in between: `setRequireApproval` would find
-        // no server to push to, and this server would already be holding the
-        // stale value. Doing it after `start` would leave a window, short but
-        // exactly the one an already-waiting peer's HELLO arrives in, where
-        // the share is open door.
+        // Publish the server, then assert the gate — in that order and both
+        // before `start`, or a flip landing in between finds no server to
+        // push to, or leaves a window where an already-waiting peer's HELLO
+        // sees an open door.
         let (gate, invited) = lock.withLock { () -> (Bool, Set<String>) in
             server = newServer
             return (requireApproval, core.drainInvites())
         }
         newServer.setRequireApproval(gate)
         // Anyone whose ask this machine accepted before the server existed.
-        // Replayed here, in the same window as the gate and the policies, so
-        // an invitee's HELLO cannot arrive before the server knows about them.
         for ip in invited { newServer.preApproveViewer(ip: ip) }
         // Before the first HELLO can arrive, so a blocked peer is rejected on
-        // its first attempt rather than admitted and swept out a moment later.
+        // its first attempt.
         newServer.setAccessPolicies(access.policies)
         update {
             $0.requireApproval = gate
@@ -640,60 +492,40 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.drawingInkColor = inkColor
         }
 
-        // A display target with no ID: on Windows the item IS the selection,
-        // and the backend was constructed with it. The kind still matters —
-        // the encoder rejects `.application`, which one item cannot express.
+        // On Windows the item IS the selection; kind still matters — the
+        // encoder rejects `.application`, which one item can't express.
         let selection = PickerSelection(
             kind: .display, displayID: nil, windowID: nil, bundleIDs: [])
         let selectionData = try JSONEncoder().encode(selection)
 
-        // `TAILSCREEN_TS_CONTROL_URL` is honoured the way the rest of the
-        // repo's e2e tooling honours it, but by OMITTING the argument when
-        // unset rather than spelling out a default — that keeps
-        // `kDefaultControlURL`, and therefore a whole TailscaleKit dependency,
-        // out of the app target for the sake of one constant.
+        // Omitting the argument when unset (rather than spelling out a
+        // default) keeps `kDefaultControlURL` out of the app target.
         let controlURL = ProcessInfo.processInfo.environment["TAILSCREEN_TS_CONTROL_URL"]
         let authKey = ProcessInfo.processInfo.environment["TAILSCREEN_TS_AUTHKEY"]
         do {
             if linkOnly {
-                // The guest node comes up first because it is the whole
-                // transport, and the token exists the moment the share does.
+                // Guest node comes up first (it's the whole transport).
                 // `startLinkOnly` unwinds its own node on failure, so the
-                // catch below has only the server left to clear.
+                // catch below has only the server to clear.
                 update {
                     $0.linkIsOnlyWayIn = true
                     $0.linkBusy = true
                 }
                 let token = try await link.startLinkOnly(
                     on: newServer, filterData: selectionData, quality: quality)
-                // Only once this is still the current share: a token on screen
-                // for a share that was stopped mid-start is a link that admits
-                // people to nothing. The stop that landed inside the await
-                // tore down a link that did not exist yet, so close this one.
+                // Only once still current — a token on screen for a stopped
+                // share admits people to nothing.
                 guard isCurrentShare(generation) else {
                     lock.withLock { if server === newServer { server = nil } }
                     await newServer.stop()
-                    // Scoped to the token this attempt minted: the
-                    // replacement share that made this one stale may already
-                    // have minted a link of its own, and closing whichever
-                    // link is current would kill the live one.
-                    //
-                    // Nothing is published from here at all. Closing our own
-                    // node proves only that, not that the STATUS is still
-                    // ours — a replacement that has published its bootstrap
-                    // flags would have them blanked, and its own completion
-                    // does not set them again. The stop path already cleared
-                    // the status of the share this attempt belonged to.
+                    // Scoped to the token this attempt minted: a replacement
+                    // share may already have minted its own link.
                     await link.teardown(mintedToken: token)
                     return
                 }
-                // `linkBusy` deliberately stays true here: it is what the
-                // welcome pane reads as "a start is in flight", and
-                // `isSharing` does not rise until the publish at the end of
-                // this method. Clearing it now opens a window where the pane
-                // classifies the state as idle and offers the button again —
-                // a second click, a second share. The two move together, in
-                // that final update.
+                // `linkBusy` deliberately stays true — it's what the welcome
+                // pane reads as "a start is in flight"; clearing it now would
+                // let a second click start a second share.
                 update { $0.linkToken = token }
             } else if let controlURL {
                 try await newServer.start(
@@ -707,19 +539,15 @@ public final class WindowsShareSession: @unchecked Sendable {
                     existingNode: existingNode, controlListener: controlListener)
             }
         } catch {
-            // Clear only if this session still points at THIS server: a
-            // `stopSharing()` that landed inside the await has already nil'd
-            // it and may have published a newer share, and blanking that one's
-            // status over a failure it had nothing to do with is worse than
-            // saying nothing.
+            // Clear only if this session still points at THIS server — a
+            // `stopSharing()` that landed inside the await may have already
+            // published a newer share.
             lock.withLock { if server === newServer { server = nil } }
             if isCurrentShare(generation) {
                 update {
                     $0.phase = .failed("\(error)")
                     $0.message = ""
-                    // A link-only start that failed leaves the card claiming
-                    // to be minting a link for a share that never happened.
-                    // (`startLinkOnly` already closed its own guest node.)
+                    // `startLinkOnly` already closed its own guest node.
                     $0.linkToken = nil
                     $0.linkBusy = false
                     $0.linkIsOnlyWayIn = false
@@ -727,11 +555,8 @@ public final class WindowsShareSession: @unchecked Sendable {
             }
             throw error
         }
-        // `start()` spans tsnet bring-up — minutes, on an interactive browser
-        // login — so a stop can have landed inside it. The session dropped
-        // `newServer` in that case and nothing else will ever stop it, so stop
-        // it here; and publish nothing, because "Sharing" over an idle session
-        // is a share the person cannot see, cannot stop, and did not ask for.
+        // `start()` spans tsnet bring-up (minutes, on interactive login), so
+        // a stop can have landed inside it — stop here and publish nothing.
         guard isCurrentShare(generation) else {
             await newServer.stop()
             return
@@ -772,15 +597,10 @@ public final class WindowsShareSession: @unchecked Sendable {
     ///
     // MARK: Access control
 
-    /// Remembered allow/deny, plus the queue for decisions made before a peer's
-    /// identity resolved.
-    ///
-    /// Portable and tested on Linux CI (`SharerAccessCoordinatorTests`), which
-    /// is the whole reason this app has the feature at a fraction of the cost:
-    /// the session only forwards taps and re-publishes.
-    ///
-    /// Built lazily against `%LOCALAPPDATA%\Tailscreen`, the same root the
-    /// account registry uses — one place a user's Tailscreen state lives.
+    /// Remembered allow/deny, plus the queue for decisions made before a
+    /// peer's identity resolved. Portable and tested on Linux CI
+    /// (`SharerAccessCoordinatorTests`) — the session only forwards taps and
+    /// re-publishes. Built lazily against `%LOCALAPPDATA%\Tailscreen`.
     private let injectedAccessStore: PeerAccessStore?
 
     private lazy var access: SharerAccessCoordinator = {
@@ -820,19 +640,15 @@ public final class WindowsShareSession: @unchecked Sendable {
         update { _ in }
     }
 
-    /// One-time disconnect of a connected viewer.
-    ///
-    /// Nothing is remembered — their next HELLO goes back through the normal
-    /// admission gate. That difference is why this and Deny & Block both exist.
+    /// One-time disconnect of a connected viewer. Nothing is remembered —
+    /// their next HELLO goes back through the normal admission gate, unlike
+    /// Deny & Block.
     public func disconnectViewer(_ id: String) {
         lock.withLock { server }?.disconnectViewer(addr: id)
     }
 
-    /// Feed the access layer both rosters together.
-    ///
-    /// Both, not one at a time: a peer moves from pending to connected on
-    /// Accept, and a snapshot of only one list would prune the other's queued
-    /// intents as "gone" at exactly that moment.
+    /// Feed the access layer both rosters together — a snapshot of only one
+    /// would prune the other's queued intents when a peer moves between them.
     private func noteRoster() {
         let status = lock.withLock { self.status }
         let identities =
@@ -847,10 +663,8 @@ public final class WindowsShareSession: @unchecked Sendable {
         if access.noteRoster(identities) { update { _ in } }
     }
 
-    /// Takes effect mid-share: `setRequireApproval(false)` also drains anyone
-    /// already parked (minus remembered-deny peers), so turning it off is how
-    /// a sharer admits a queue in one click. Persistence is the caller's —
-    /// this package owns no preferences.
+    /// Takes effect mid-share: turning it off also drains anyone already
+    /// parked (minus remembered-deny), admitting a queue in one click.
     public func setRequireApproval(_ enabled: Bool) {
         let server = lock.withLock { () -> TailscaleScreenShareServer? in
             requireApproval = enabled
@@ -873,9 +687,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         let (server, busy, linkOnly) = lock.withLock {
             (self.server, self.status.linkBusy, self.status.linkIsOnlyWayIn)
         }
-        // A link-only share has nothing to toggle: the link IS the share, and
-        // turning it off would drop every guest and leave a running capture
-        // with no listener at all.
+        // A link-only share has nothing to toggle: the link IS the share.
         guard !busy, !linkOnly, let server else { return }
         update { $0.linkBusy = true }
         Task { [link] in
@@ -920,17 +732,10 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
     }
 
-    /// Waive the approval gate once for a peer this machine INVITED.
-    ///
-    /// Accepting somebody's ask to share and then making them wait at the
-    /// approval gate is the same person being asked twice, seconds apart, and
-    /// the second prompt arrives with no context. Held until a server exists,
-    /// because accept necessarily happens before the share starts — the whole
-    /// point of accepting is that there is not one yet.
-    ///
-    /// One-time and non-overriding: `preApproveViewer` does not beat a
-    /// remembered `.deny`, so inviting somebody previously blocked does not
-    /// silently unblock them.
+    /// Waive the approval gate once for a peer this machine INVITED — else
+    /// they'd be asked twice, seconds apart. Held until a server exists,
+    /// since accept happens before the share starts. One-time and
+    /// non-overriding: does not beat a remembered `.deny`.
     public func preApproveViewer(ip: String) {
         let server: TailscaleScreenShareServer? = lock.withLock {
             core.noteInvite(ip, hasServer: self.server != nil)
@@ -952,11 +757,9 @@ public final class WindowsShareSession: @unchecked Sendable {
         server?.denyViewer(addr: id)
     }
 
-    /// Answer a pending remote-control request.
-    ///
-    /// Returns false when the grant was refused by the platform — which on
-    /// Windows means the injector is absent (an unresolvable capture region),
-    /// since UIPI has no permission to ask for.
+    /// Answer a pending remote-control request. Returns false when the
+    /// injector is absent (an unresolvable capture region) — Windows has no
+    /// UIPI-style permission to ask for.
     @discardableResult
     public func grantControl(to requestID: UUID) -> Bool {
         let server = lock.withLock { self.server }
@@ -977,29 +780,17 @@ public final class WindowsShareSession: @unchecked Sendable {
 
     /// Re-point a live share at a different target, keeping the viewers.
     ///
-    /// **The hazard this has to answer** is that remote control and
-    /// annotations are gated on the target's screen geometry, and a change can
-    /// take that away — display→window is the ordinary case, and a window has
-    /// no resolvable rect. Two things follow, and both are handled here rather
-    /// than left to the seam:
+    /// Remote control/annotations are gated on the target's screen geometry,
+    /// which display→window can take away (a window has no resolvable
+    /// rect): `liveRegion` becomes nil (injector DROPS events instead of
+    /// misplacing them), and a live grant is REVOKED with a reason the
+    /// viewer can read — the `ScreenShareCaps` bit stays advertised (no way
+    /// to withdraw it), matching the "Allow control requests" toggle's own behavior.
     ///
-    ///   * `liveRegion` becomes nil, which the injector's provider reads, so
-    ///     it DROPS events instead of placing them on the previous window's
-    ///     rectangle. That is the safe half, and it is not sufficient on its
-    ///     own: a viewer holding a grant would go on clicking into silence.
-    ///   * So a live grant is REVOKED with a reason the viewer can read. The
-    ///     `ScreenShareCaps` bit stays advertised — it is a static "this
-    ///     platform can inject", and the protocol has no way to withdraw it
-    ///     from viewers already admitted — but that is exactly the distinction
-    ///     the runtime gate already draws: the "Allow control requests" toggle
-    ///     declines live requests the same way while the bit stays set.
+    /// The annotation overlay is rebuilt, not moved — it owns a window on its
+    /// own pump thread, and dropping it is how that thread is joined.
     ///
-    /// The annotation overlay is rebuilt rather than moved: it owns a window
-    /// on its own pump thread, sized at creation, and dropping it is how its
-    /// thread is joined.
-    ///
-    /// - Returns: whether the change took effect. False when nothing is
-    ///   sharing.
+    /// - Returns: whether the change took effect. False when nothing is sharing.
     @discardableResult
     public func changeSource(to item: WGC.CaptureItem) async throws -> Bool {
         guard let running = lock.withLock({ server }) else { return false }
@@ -1029,14 +820,11 @@ public final class WindowsShareSession: @unchecked Sendable {
         drawingLock.withLock { drawingRegion = resolved }
 
         if resolved == nil {
-            // Told, not silently ignored. The injector would already drop
-            // these events; without the revoke the person driving would keep
-            // clicking and wonder why the pointer stopped moving.
+            // Told, not silently ignored — else the person driving would
+            // keep clicking and wonder why nothing moves.
             running.revokeControl(
                 reason: "the sharer switched to a window, which cannot be controlled remotely")
-            // The sharer's own pen goes with it, for the same reason the
-            // capability does: there is no rectangle to normalize against.
-            teardownDrawing()
+            teardownDrawing()  // no rectangle left to normalize against
         }
 
         let onTimings: @Sendable (CaptureTimings) -> Void = { [weak self] timings in
@@ -1045,15 +833,11 @@ public final class WindowsShareSession: @unchecked Sendable {
         let onPreview: @Sendable (ThumbnailScaler.Thumbnail) -> Void = { [weak self] thumbnail in
             self?.update { $0.preview = thumbnail }
         }
-        // Stale the moment the target changes, and this is the one moment the
-        // preview is load-bearing — it is how the person confirms they got the
-        // window they meant. Cleared so the card shows nothing until the new
-        // backend produces its first frame, rather than the old target for
-        // another second.
+        // Cleared so the card shows nothing until the new backend's first
+        // frame, rather than the old target for another second.
         update { $0.preview = nil }
-        // The factory travels with the data: this backend is built against a
-        // capture ITEM, so swapping the selection bytes alone would restart
-        // the old target.
+        // The factory travels with the data: swapping the selection bytes
+        // alone would restart the old target.
         return try await running.changeSource(
             filterData: Self.windowsSelectionData(),
             captureFactory: {
@@ -1064,12 +848,9 @@ public final class WindowsShareSession: @unchecked Sendable {
             })
     }
 
-    /// The `PickerSelection` every Windows share sends.
-    ///
-    /// Always the same bytes: on Windows the ITEM is the selection and the
-    /// backend is constructed with it, so this carries only the kind — which
-    /// still matters, because the encoder rejects `.application`, something a
-    /// single capture item cannot express anyway.
+    /// The `PickerSelection` every Windows share sends. Always the same
+    /// bytes — the item IS the selection — but `kind` still matters, since
+    /// the encoder rejects `.application`.
     static func windowsSelectionData() -> Data {
         let selection = PickerSelection(
             kind: .display, displayID: nil, windowID: nil, bundleIDs: [])
@@ -1077,14 +858,11 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     public func stopSharing() async {
-        // First, and unconditionally: from here on nothing the ending share's
-        // server says reaches this session, including a `beginSharing` still
-        // parked inside `start()`.
+        // Unconditionally first: nothing the ending server says reaches this
+        // session after this.
         endShareGeneration()
-        // Then, before anything that can await or fail. A drawing surface
-        // outliving its share is a desktop that swallows every click with no
-        // share left to explain it, and `await running.stop()` is exactly the
-        // kind of step that can take a while or throw on the way past.
+        // Before anything that can await or fail — a drawing surface
+        // outliving its share swallows every click with nothing to explain it.
         teardownDrawing()
         let running = lock.withLock {
             let value = server
@@ -1098,11 +876,8 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         liveOverlay?.clear()
         stopVoice()
-        // The token dies with the share. The server's stop() below closes
-        // the guest listener and tells every guest, so only the node is left
-        // to close — and the card's toggle drops with the share. Scoped to
-        // this server so a link toggled on mid-share and still bootstrapping
-        // is invalidated with it, and a replacement's is not.
+        // Scoped to this server so a link toggled on mid-share and still
+        // bootstrapping is invalidated with it, not a replacement's.
         await link.teardown(for: running)
         guard let running else {
             update {
@@ -1124,10 +899,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.micAvailable = false
             $0.micOn = false
             $0.timings = nil
-            // A preview outliving its capture is a still picture of a screen
-            // that is no longer going anywhere, and it looks exactly like a
-            // live one.
-            $0.preview = nil
+            $0.preview = nil  // else a stale preview reads exactly like a live one
             $0.linkToken = nil
             $0.linkBusy = false
             $0.linkIsOnlyWayIn = false
@@ -1137,62 +909,41 @@ public final class WindowsShareSession: @unchecked Sendable {
     // MARK: Sharer drawing
 
     /// Connect the sharer's own strokes to their screen and to the viewers.
-    ///
-    /// Two directions, deliberately independent. The overlay shows the stroke
-    /// so the sharer can see what they are drawing; the server broadcasts it so
-    /// viewers see the same thing. Neither is derived from the other — a sharer
-    /// whose viewers have all left still gets to see their own pen, and a
-    /// stroke reaching viewers does not depend on the overlay existing.
+    /// Two independent directions: a sharer with no viewers still sees their
+    /// own pen, and a stroke reaching viewers doesn't depend on the overlay.
     private func wireSharerDrawing(
         overlay: AnnotationOverlay?, server: TailscaleScreenShareServer
     ) {
         drawing.resetForNewSession()
         drawing.onLocalOp = { [weak server] op in
-            // Queued, never one task per op — see `enqueueAnnotationBroadcast`:
-            // a `.undo` that overtakes its `.add` is dropped as an unknown id
-            // and strands the stroke on every viewer's canvas.
+            // Queued, never one task per op — a reordered `.undo` overtaking
+            // its `.add` strands the stroke on every viewer's canvas.
             server?.enqueueAnnotationBroadcast(op)
         }
-        // Every change, including mid-drag — see `setLocalStrokes`. Bound to
-        // the overlay instance rather than read back through `self.overlay`,
-        // because this fires on the drawing surface's pump thread and must not
-        // reach for the status lock from there.
+        // Bound to the overlay instance, not read back through `self.overlay`
+        // — this fires on the drawing surface's pump thread and must not
+        // reach for the status lock.
         drawing.setRedraw { [weak overlay, drawing] in
             overlay?.setLocalStrokes(drawing.visibleAnnotations)
         }
     }
 
     /// Arm a drawing tool, or disarm with nil. Re-selecting the armed tool
-    /// disarms it, matching the viewer's toolbar.
+    /// disarms it.
     ///
-    /// **Arming puts a window over the shared region that swallows every click
-    /// on this machine.** That is the feature — a stroke has to start
-    /// somewhere — and it is also the hazard, because the hub window carrying
-    /// the button that would turn it off is now underneath it.
-    ///
-    /// Three things make that survivable, and none of them is optional:
-    ///
-    ///   * The surface **refuses to arm** unless it also got the keyboard, so
-    ///     Escape is always a way out. Windows will decline
-    ///     `SetForegroundWindow` to a process that is not already in the
-    ///     foreground and report nothing; the surface checks rather than
-    ///     assumes, and a refusal leaves the tool unarmed and says why.
-    ///   * It covers the **shared region, not the desktop**. A second monitor
-    ///     stays completely usable, hub window and all — which is a better
-    ///     answer than the X11 sharer can give, since that one captures the
-    ///     whole root window.
-    ///   * Losing the keyboard **ends drawing**, rather than being noticed.
-    ///     Unlike an X11 override-redirect window, this is an ordinary
-    ///     top-level that Alt-Tab and the Windows key can take focus from, and
-    ///     a surface that kept the mouse after losing the key would be the trap
-    ///     in its purest form.
+    /// Arming puts a window over the shared region that swallows every
+    /// click — the feature, and the hazard, since the hub window that would
+    /// turn it off is now underneath it. Three things make it survivable:
+    /// the surface refuses to arm without the keyboard too (Escape is always
+    /// a way out); it covers the shared region, not the whole desktop; and
+    /// losing the keyboard (Alt-Tab, Windows key) ends drawing rather than
+    /// silently keeping the mouse.
     public func selectDrawingTool(_ tool: AnnotationTool?) {
         typealias Published = (AnnotationTool?, SharerDrawingRefusal?)
         let (activeTool, refusal) = drawingLock.withLock { () -> Published in
-            // Latch the tool BEFORE the surface can exist. The surface starts
-            // delivering the instant it is up, and a press that beat this
-            // assignment would be committed with whatever tool was last set —
-            // the default pen, on the first arm of a share.
+            // Latch the tool BEFORE the surface can exist — it starts
+            // delivering the instant it's up, and a press beating this
+            // assignment would commit with whatever tool was last set.
             if let tool, tool != drawingLatch.activeTool { drawing.mode = .drawing(tool) }
             drawingLatch.select(tool, surface: armDrawingSurfaceLocked)
             drawing.mode = drawingLatch.activeTool.map { .drawing($0) } ?? .off
@@ -1210,15 +961,12 @@ public final class WindowsShareSession: @unchecked Sendable {
             tool: tool, hasSurface: drawingSurface != nil, hasRegion: drawingRegion != nil)
         {
         case .release:
-            // Destroying is the disarm. There is no style bit to restore and
-            // therefore no way for a disarm to half-happen — which is the
-            // entire argument for this being a second window rather than a mode
-            // on the annotation overlay.
+            // Destroying is the disarm — no style bit to restore, so no way
+            // for it to half-happen.
             drawingSurface = nil
             return .armed
         case .keep:
-            // Only the tool changed, so leave the window — and with it the
-            // keyboard focus it had to fight for — exactly where it is.
+            // Only the tool changed — leave the window (and its hard-won focus) alone.
             return .armed
         case .refuse(let why):
             return .refused(why)
@@ -1286,9 +1034,8 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     /// Drop the drawing surface, whatever this session believes about it.
-    ///
-    /// Unconditional on purpose — see `SharerDrawingLatch.teardown`. Callable
-    /// from any teardown path, including the one where capture died on its own.
+    /// Unconditional on purpose — callable from any teardown path, including
+    /// one where capture died on its own.
     private func teardownDrawing() {
         drawingLock.withLock {
             drawingLatch.teardown(surface: armDrawingSurfaceLocked)
@@ -1314,14 +1061,9 @@ public final class WindowsShareSession: @unchecked Sendable {
     // MARK: Voice
 
     /// Open the microphone and start hearing viewers, for this share only.
-    ///
-    /// Best-effort, exactly like the overlay and the injector: a machine with
-    /// no capture device shares perfectly well and simply shows no mic
+    /// Best-effort: a machine with no capture device just shows no mic
     /// control. The failure goes into the status message rather than being
-    /// thrown, because a share that is otherwise working must not be torn down
-    /// over audio. The ordering inside — route before device, `onStopped`
-    /// before `start()` — is `SharerVoiceSession`'s and is shared with the GTK
-    /// engine.
+    /// thrown — a working share must not be torn down over audio.
     private func startVoice(on server: TailscaleScreenShareServer) {
         guard let microphoneFactory else { return }
         do {
@@ -1343,13 +1085,11 @@ public final class WindowsShareSession: @unchecked Sendable {
         voiceSession.toggleMic()
     }
 
-    /// Where the picked target sits on screen, or why that is unknowable.
-    ///
-    /// The item carries no HMONITOR, so its SIZE is matched against the
-    /// enumerated monitors — the decision itself is `WindowsCaptureRegion` in
-    /// TailscreenProtocol, where Linux CI tests the cases that matter,
-    /// especially the two-identical-monitors one that must decline rather than
-    /// guess.
+    /// Where the picked target sits on screen, or why that is unknowable. The
+    /// item carries no HMONITOR, so its SIZE is matched against enumerated
+    /// monitors — the decision is `WindowsCaptureRegion` in TailscreenProtocol,
+    /// tested on Linux CI (notably the two-identical-monitors case that must
+    /// decline rather than guess).
     static func resolveControlRegion(
         for item: WGC.CaptureItem
     ) -> Result<SendInputInjector.Region, WindowsCaptureRegion.Failure> {
@@ -1360,10 +1100,8 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     /// Mutate the published status under the lock and publish the result.
-    ///
-    /// The callback fires OUTSIDE the lock: it hops to the main actor, and
-    /// holding a lock across that hand-off is how a UI callback ends up
-    /// deadlocking against a capture thread.
+    /// The callback fires OUTSIDE the lock — holding it across the main-actor
+    /// hop is how a UI callback deadlocks against a capture thread.
     private func update(_ body: (inout Status) -> Void) {
         let snapshot: Status = lock.withLock {
             body(&status)

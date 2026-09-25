@@ -2,18 +2,14 @@ import CX11Capture
 import Foundation
 
 /// X11 screen capture, producing the tightly-packed I420 planes a video
-/// encoder consumes.
+/// encoder consumes. Grabs the root window of an X display (through MIT-SHM
+/// when offered, so a frame costs a round trip rather than a full transfer)
+/// and converts to limited-range BT.709 I420, the exact convention the
+/// viewer's YUV→RGB shader expects.
 ///
-/// This is the capture half of a Linux `CaptureEncoding` backend. It grabs the
-/// root window of an X display — through MIT-SHM when the server offers it, so
-/// a frame costs a round trip rather than a full-screen transfer — and
-/// converts to **limited-range BT.709** I420, which is the exact convention
-/// the viewer's YUV→RGB shader expects.
-///
-/// Scope, stated plainly: root-window capture only. Per-window and per-app
-/// capture, and Wayland, belong to the `org.freedesktop.portal.ScreenCast`
-/// backend; this one exists because it is the capture path that can run
-/// headlessly in CI (Xvfb), which the portal never can.
+/// Root-window capture only — per-window/app and Wayland belong to the
+/// ScreenCast portal backend; this one exists because it can run headlessly
+/// in CI (Xvfb), which the portal never can.
 public final class X11ScreenCapture: @unchecked Sendable {
     public struct OpenError: Error, CustomStringConvertible {
         public let description: String
@@ -37,16 +33,14 @@ public final class X11ScreenCapture: @unchecked Sendable {
     public let screenWidth: Int
     public let screenHeight: Int
 
-    /// Even-rounded capture geometry. H.264's 4:2:0 chroma is half-resolution
-    /// in both axes, so an odd screen dimension has to lose its last row or
-    /// column; doing it here (rather than letting libavcodec pad) keeps the
-    /// encoder's idea of the frame and ours identical.
+    /// Even-rounded capture geometry: 4:2:0 chroma is half-resolution in both
+    /// axes, so an odd screen dimension loses its last row/column here
+    /// rather than via libavcodec padding.
     public var captureWidth: Int { screenWidth & ~1 }
     public var captureHeight: Int { screenHeight & ~1 }
 
-    /// Whether the zero-copy MIT-SHM path is in use. Diagnostic only — pixels
-    /// are identical either way, but the fallback costs a full-screen transfer
-    /// per frame and is worth logging on a slow share.
+    /// Whether the zero-copy MIT-SHM path is in use. Diagnostic only — the
+    /// fallback costs a full-screen transfer per frame, worth logging on a slow share.
     public let usesSharedMemory: Bool
 
     /// - Parameter display: an X display string (`":0"`), or nil for `$DISPLAY`.
@@ -85,9 +79,8 @@ public final class X11ScreenCapture: @unchecked Sendable {
         public var v: [UInt8]
     }
 
-    /// Allocate planes sized for this capture. Callers hold one set and reuse
-    /// it across frames (see ``grab(into:)``) rather than allocating per frame
-    /// at 60 fps.
+    /// Allocate planes sized for this capture. Callers hold one set and
+    /// reuse it across frames rather than allocating per frame at 60 fps.
     public func makePlanes() -> Planes {
         let w = captureWidth
         let h = captureHeight
@@ -119,9 +112,8 @@ public final class X11ScreenCapture: @unchecked Sendable {
         if rc != 0 { throw GrabError(code: rc) }
     }
 
-    /// Convert a packed BGRA buffer to I420 with the same limited-range BT.709
-    /// math the capture path uses. Exposed so the conversion is testable
-    /// without an X server.
+    /// Convert a packed BGRA buffer to I420 with the same limited-range
+    /// BT.709 math the capture path uses. Testable without an X server.
     public static func convertBGRA(
         _ bgra: [UInt8], stride: Int, width: Int, height: Int
     ) -> Planes {

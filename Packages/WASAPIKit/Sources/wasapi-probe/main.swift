@@ -1,21 +1,11 @@
 import Foundation
 import WASAPIKit
 
-// Exists so that CI links the WASAPI shim, not so that anyone runs it.
-//
-// A SwiftPM library target is compiled but never linked, so an undefined symbol
-// in the COM shim — a GUID from the wrong import library, say — stays invisible
-// until something downstream links it. That is how the first version of this
-// package passed its own build step and failed in the app's link eleven minutes
-// later. An executable makes the linker run against a target small enough that
-// any error in it is ours.
-//
-// Running it is a different question and mostly a bad one: CI's Windows runners
-// have no audio endpoint, so a legitimate "no device" failure would be
-// indistinguishable from a broken build. On a real desktop it is a useful
-// one-liner — it prints each endpoint's negotiated mix format, which is the
-// input `MonoPCMConverter` has to match, and it is the ONLY way anything in this
-// repo exercises the capture path end to end.
+// Exists so CI links the WASAPI shim, not so anyone runs it — a library
+// target is compiled but never linked, so an undefined symbol stays
+// invisible until something downstream links it. Not run in CI (no audio
+// endpoint on Windows runners); on a real desktop it prints each endpoint's
+// negotiated mix format, the input `MonoPCMConverter` has to match.
 do {
     let player = try WASAPI.Player()
     print("default output: \(player.format.sampleRate) Hz, \(player.format.channelCount) ch")
@@ -23,11 +13,9 @@ do {
     print("no usable output endpoint: \(error)")
 }
 
-// The capture half. It reports peak amplitude rather than a frame count on
-// purpose: a WASAPI capture session that is running but recording nothing —
-// wrong endpoint, muted device, or the SILENT flag being copied instead of
-// honoured — delivers a perfectly healthy stream of zeros, and a frame count
-// cannot tell that apart from a working microphone. Speak while it runs.
+// Reports peak amplitude, not just a frame count — a session recording
+// silence (wrong endpoint, muted device) still delivers a healthy stream of
+// zeros. Speak while it runs.
 do {
     let recorder = try WASAPI.Recorder()
     print("default input:  \(recorder.format.sampleRate) Hz, \(recorder.format.channelCount) ch")
@@ -43,8 +31,7 @@ do {
         for sample in chunk.mono {
             peak = max(peak, abs(sample))
         }
-        // The read does not block; without this the loop is a spin. 10 ms is
-        // half the 20 ms frame the Opus path wants, so nothing accumulates.
+        // Read doesn't block; 10ms is half the 20ms Opus frame, so nothing accumulates.
         Thread.sleep(forTimeInterval: 0.01)
     }
     let seconds = Double(frames) / Double(recorder.format.sampleRate)

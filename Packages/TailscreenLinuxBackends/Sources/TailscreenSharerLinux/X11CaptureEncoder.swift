@@ -7,48 +7,27 @@ import X11CaptureKit
 
 /// A Linux `CaptureEncoding` backend: X11 root-window capture into a
 /// libavcodec encoder, producing the AVCC access units the sharer fans out.
+/// Linux counterpart of macOS's `HelperScreenCapture`; encode-send scaffolding
+/// shared with the other FFmpeg backends is `FFmpegCaptureEncoderBase` — this
+/// file is the capture loop and X11 specifics.
 ///
-/// This is the Linux counterpart of macOS's `HelperScreenCapture`. Everything
-/// above it — viewer admission, RTP fan-out, NACK/FEC, congestion control —
-/// is the portable `TailscaleScreenShareServer`, unchanged; this supplies only
-/// pixels and honours the three congestion levers. The encode-send
-/// scaffolding all three FFmpeg backends share (callbacks, encoder ladder,
-/// stop sequence, levers, pacing) is `FFmpegCaptureEncoderBase`; this file is
-/// the capture loop and the X11 specifics.
+/// **Scope.** Root-window capture on X11 only:
+/// - Per-window/app shares need the compositor (ScreenCast portal); `start`
+///   rejects them rather than silently sharing the whole screen.
+/// - No system-audio capture; viewer voice still works separately.
+/// - `onPreviewImage` never fires (that seam carries encoded bytes, the mac
+///   helper's shape) — publishes raw pixels through `onPreviewThumbnail` instead.
+/// - Wayland is the portal backend's job.
 ///
-/// **Scope, stated plainly.** Root-window capture on X11 only:
-/// - Per-window and per-application shares are not implemented — those need
-///   the compositor's cooperation, which is what the ScreenCast portal is for.
-///   `start` rejects them rather than silently sharing the whole screen, which
-///   would be a privacy failure, not a missing feature.
-/// - No system-audio capture, so `setAudioEnabled` is a no-op and
-///   `onAudioAccessUnit` never fires. Viewer voice still works — that path
-///   doesn't come through here.
-/// - `onPreviewImage` never fires — that seam carries *encoded* image data,
-///   which is the mac helper's shape (it has ImageIO on the far side of an
-///   IPC boundary). This host has neither, so it publishes raw pixels through
-///   `onPreviewThumbnail` instead.
-/// - Wayland is not covered. The portal backend is the answer there, behind
-///   this same protocol.
-///
-/// **No helper subprocess.** macOS isolates capture in a child because
-/// process death is the only way to release `replayd`'s slot. Linux has no
-/// such coupling (plans/porting-plan.md #10), so capture runs in-process and
-/// `stop()` genuinely stops it.
+/// **No helper subprocess** — unlike macOS, which isolates capture in a child
+/// to release `replayd`'s slot on process death; Linux has no such coupling.
 public final class X11CaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding, @unchecked Sendable {
     // MARK: Preview
 
     /// The sharer's own "this is what they can see" thumbnail, at most once a
-    /// second (`ThumbnailScaler.intervalNs`).
-    ///
-    /// Not part of `CaptureEncoding`: the seam's `onPreviewImage` hands over
-    /// *encoded* bytes because the mac helper is a separate process and has
-    /// ImageIO to encode with. This backend is in-process and has neither, so
-    /// it hands raw pixels to the host, which owns the toolkit that can draw
-    /// them. Attached in the host's capture factory, like `onTimings` on
-    /// Windows — which also means a restart's fresh backend keeps publishing.
-    ///
-    /// Fires on the capture thread.
+    /// second. Not part of `CaptureEncoding` (that seam's `onPreviewImage`
+    /// carries encoded bytes for the mac helper); this in-process backend
+    /// hands raw pixels instead. Fires on the capture thread.
     public var onPreviewThumbnail: ((ThumbnailScaler.Thumbnail) -> Void)?
 
     private var capture: X11ScreenCapture?
@@ -113,8 +92,8 @@ public final class X11CaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding,
     // MARK: Congestion levers
 
     /// Forwarded straight to the encoder: X11 grabbing always produces a
-    /// frame per pass, so there is never a keyframe owed with nothing to
-    /// encode it from (the case the base's pending latch exists for).
+    /// frame per pass, so a keyframe is never owed with nothing to encode it
+    /// from (the case the base's pending latch exists for).
     override public func requestKeyframe() {
         lock.lock()
         let e = encoder
@@ -133,15 +112,13 @@ public final class X11CaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding,
         lock.unlock()
 
         var planes = cap.makePlanes()
-        // First frame must be a keyframe: a viewer that connects before the
-        // GOP backstop fires has nothing to decode otherwise.
+        // First frame must be a keyframe, or a viewer connecting before the
+        // GOP backstop fires has nothing to decode.
         enc.requestKeyframe()
 
         var budget = SourceGoneBudget()
-        // Preview scratch, allocated once rather than per thumbnail: this is a
-        // full-frame BGRA buffer (33 MB at 4 K), and churning one of those
-        // through the allocator once a second for the life of a share is a
-        // cost with nothing to show for it.
+        // Allocated once, not per thumbnail: a full-frame BGRA buffer (33 MB
+        // at 4K) churned through the allocator once a second is wasted cost.
         var previewScratch: [UInt8] = []
         var lastPreviewNs: UInt64?
         while true {
@@ -156,10 +133,8 @@ public final class X11CaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding,
                 try cap.grab(into: &planes)
                 let aus = try enc.encode(yPlane: planes.y, uPlane: planes.u, vPlane: planes.v)
                 budget.noteSuccess()
-                // Proof of life for the server's hung-backend watchdog. Fired
-                // per frame because this backend has no separate heartbeat —
-                // and deliberately fired even when the encoder emitted nothing,
-                // since a static screen is healthy, not wedged.
+                // Proof of life for the watchdog, fired per frame even when
+                // the encoder emitted nothing — a static screen is healthy, not wedged.
                 onActivity?()
                 for au in aus {
                     if au.isKeyframe {
@@ -167,9 +142,7 @@ public final class X11CaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding,
                     }
                     onAccessUnit?(au.data, au.isKeyframe)
                 }
-                // Preview last: the encode is what viewers are waiting on, and
-                // this is a courtesy to the person already looking at their own
-                // screen.
+                // Preview last: the encode is what viewers are waiting on.
                 if let sink = onPreviewThumbnail,
                     ThumbnailScaler.shouldCapture(lastCaptureNs: lastPreviewNs, nowNs: frameStart)
                 {
@@ -191,15 +164,10 @@ public final class X11CaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding,
         }
     }
 
-    /// Turn the frame just captured into a preview thumbnail.
-    ///
-    /// **Yes, this converts back.** `X11ScreenCapture.grab` does BGRA→I420
-    /// inside its C shim and hands out planes only, so the BGRA it read is gone
-    /// by the time we get here and the only way back to pixels is I420→BGRA.
-    /// That round trip costs chroma resolution — which at 240 px across is
-    /// below anything a thumbnail could show — and the alternative is widening
-    /// the capture shim's contract to keep a copy of a full-size frame nobody
-    /// else wants, on every frame, so that one frame a second can be scaled.
+    /// Turn the frame just captured into a preview thumbnail. Converts back
+    /// I420→BGRA since `X11ScreenCapture.grab` does BGRA→I420 in its C shim
+    /// and discards the original; the chroma-resolution cost is below what a
+    /// 240px thumbnail could show anyway.
     private func publishPreview(
         planes: X11ScreenCapture.Planes,
         scratch: inout [UInt8],

@@ -4,30 +4,23 @@ import XCTest
 
 @testable import TailscreenSharerWGC
 
-/// The WINDOWS share engine's first tests.
+/// The WINDOWS share engine's tests, driven headless on Linux CI:
+/// `Apps/windows` has no test target, and the engine's Windows-bound
+/// dependencies all stub out off Windows, so generation stamping, the invite
+/// hold-and-replay, the approval gate mirror, the mute latch, idle guards and
+/// the access facade can all be exercised with no display, capture item,
+/// node or WinUI.
 ///
-/// It had none: `Apps/windows` has no test target, and everything this engine
-/// decided was covered only by Linux CI typechecking the file. That gap is not
-/// symmetric with the platform — the engine's Windows-bound dependencies all
-/// stub out off Windows, so the whole orchestration layer (generation stamping,
-/// the invite hold-and-replay, the approval gate mirror, the mute latch, the
-/// idle guards, the access facade) can be driven headless on a Linux runner
-/// with no display, no capture item, no node and no WinUI.
-///
-/// The deliberate counterpart of `LinuxShareSessionTests` in
-/// `Packages/TailscreenLinuxBackends`, asserting the same contracts against the
-/// other isolation model — this engine is lock-guarded where that one is
-/// `@MainActor` — which is exactly what `SharerSessionCore` and
-/// `SharerVoiceSession` exist to let both hosts share without unifying.
+/// The deliberate counterpart of `LinuxShareSessionTests`, asserting the
+/// same contracts against the other isolation model (lock-guarded here,
+/// `@MainActor` there) — what `SharerSessionCore`/`SharerVoiceSession` exist
+/// to let both hosts share without unifying.
 ///
 /// Nothing here calls `prepareProcess()`, `pickTarget()` or `beginSharing` —
 /// those need real Windows.
-/// Collects the session's `@Sendable` status pushes.
-///
-/// A box rather than a captured `var` because `onStatus` is deliberately
-/// `@Sendable`: this engine publishes from whichever thread moved the state —
-/// a network thread, the capture thread, the mic thread — and the callback's
-/// signature is what says so.
+/// Collects the session's `@Sendable` status pushes. A box, not a captured
+/// `var`, since `onStatus` is deliberately `@Sendable` — this engine
+/// publishes from whichever thread moved the state.
 private final class StatusLog: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [WindowsShareSession.Status] = []
@@ -43,10 +36,9 @@ private final class StatusLog: @unchecked Sendable {
 
 final class WindowsShareSessionTests: XCTestCase {
 
-    /// A session against a throwaway access store. Injectable specifically so
-    /// this suite does not write into whoever ran it: the production default
-    /// resolves `%LOCALAPPDATA%`, which off Windows falls back to the home
-    /// directory.
+    /// A session against a throwaway access store, so this suite doesn't
+    /// write into whoever ran it (the production default off Windows falls
+    /// back to the home directory).
     private func makeSession() -> WindowsShareSession {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("tailscreen-wgc-tests-\(UUID().uuidString)")
@@ -55,11 +47,8 @@ final class WindowsShareSessionTests: XCTestCase {
 
     // MARK: Invitations accepted before a share exists
 
-    /// Accepting somebody's ask to share necessarily happens before the share
-    /// starts — that is what accepting means — so the invitee's IP has to
-    /// survive until a server exists to tell. Losing it parks the person this
-    /// machine just invited at its own approval gate, seconds later, with no
-    /// context.
+    /// Accepting an ask happens before a server exists, so the invitee's IP
+    /// must survive for replay, or they land at their own approval gate seconds later.
     func testInviteWithNoServerIsHeldForReplay() {
         let session = makeSession()
         session.preApproveViewer(ip: "100.64.0.7")
@@ -73,22 +62,11 @@ final class WindowsShareSessionTests: XCTestCase {
 
     // MARK: Approval gate
 
-    /// The server's own gate defaults OFF — right for a headless automation
-    /// sharer, wrong for a desktop app — so this wrapper has to fail closed
-    /// **before anybody configures it**.
-    ///
-    /// Asserted separately from the mirroring below because the two fail
-    /// differently and only this one is silent. The app pushes
-    /// `ViewerApprovalPreference.load()` at startup, so in normal operation
-    /// this default is only the value during the window before that runs — but
-    /// it is also the safety net if a future path forgets to push, and a wrong
-    /// answer here does not break anything visible: the share works perfectly
-    /// and admits strangers with no prompt.
-    ///
-    /// Found by mutation: flipping both `requireApproval = true` declarations
-    /// in the engine to `false` left all ten tests in this file green,
-    /// including the mirroring one that carried "DefaultsClosed" in its name
-    /// without ever reading the default.
+    /// The server's own gate defaults OFF (right for headless automation,
+    /// wrong for a desktop app), so this wrapper must fail closed **before
+    /// anybody configures it**. Asserted separately from the mirroring
+    /// below: this default silently admits strangers if wrong, with nothing
+    /// visibly broken.
     func testApprovalIsRequiredBeforeAnybodyConfiguresIt() {
         let session = makeSession()
         let published = StatusLog()
@@ -107,8 +85,6 @@ final class WindowsShareSessionTests: XCTestCase {
             "the published status must start closed too — the UI switch reads back from it")
     }
 
-    /// The gate is mirrored into the status so the UI's switch reads back from
-    /// the thing it controls rather than from a second copy that can drift.
     func testApprovalGateMirrorsIntoTheStatus() {
         let session = makeSession()
         let published = StatusLog()
@@ -123,10 +99,7 @@ final class WindowsShareSessionTests: XCTestCase {
     // MARK: The mute latch
 
     /// A toggle with no capture device open moves nothing and publishes
-    /// nothing. The engine used to guard on the *voice* while publishing the
-    /// *flags*, so a device that had already failed — voice still held,
-    /// `micAvailable` already false — could be toggled into `micOn == true`: a
-    /// live-microphone indicator over a device recording nothing.
+    /// nothing.
     func testMicToggleWithNoDeviceIsAQuietNoOp() {
         let session = makeSession()
         let published = StatusLog()
@@ -138,14 +111,8 @@ final class WindowsShareSessionTests: XCTestCase {
         XCTAssertEqual(published.count, 0, "nothing is open, so nothing moved")
     }
 
-    /// Releasing a device that was never opened publishes nothing at all.
-    ///
-    /// The pairing itself — both flags always moving together, so a `micOn`
-    /// left true over a released device can never happen — is `VoiceLatch`'s
-    /// and is pinned in `VoiceLatchTests` with a device that really opens.
-    /// What is asserted here is that this engine adds no idle status churn on
-    /// top of it: `stopVoice` runs on every teardown path, including ones that
-    /// never got as far as a microphone.
+    /// Releasing a device that was never opened publishes nothing — this
+    /// engine adds no idle status churn on top of `VoiceLatch`'s own pairing.
     func testStoppingVoiceThatNeverOpenedIsSilent() {
         let session = makeSession()
         let published = StatusLog()
@@ -159,10 +126,9 @@ final class WindowsShareSessionTests: XCTestCase {
 
     // MARK: Idle guards
 
-    /// Every control action with no live share is a quiet no-op rather than a
-    /// crash or a lie. `grantControl` in particular must report false: on this
-    /// host that also covers an unresolvable capture region, which the app
-    /// words for the person.
+    /// Every control action with no live share is a quiet no-op. `grantControl`
+    /// must report false — on this host that also covers an unresolvable
+    /// capture region.
     func testControlActionsWithoutAServerAreQuietNoOps() {
         let session = makeSession()
         XCTAssertFalse(session.grantControl(to: UUID()), "no server means no grant")
@@ -187,14 +153,9 @@ final class WindowsShareSessionTests: XCTestCase {
 
     // MARK: The share stamp
 
-    /// The engine's own share-generation gate, driven with no server behind it.
-    ///
-    /// The rule this pins is the one PR #244 added: `beginSharing`'s await spans
-    /// tsnet bring-up — minutes, on an interactive browser login — so a stop can
-    /// land in the middle, and the tail that wakes up afterwards must recognise
-    /// that the share it belongs to is over. Before the stamp it published
-    /// "Sharing" over an idle session: a share the person could not see, could
-    /// not stop, and did not ask for.
+    /// `beginSharing`'s await spans tsnet bring-up (minutes, on an
+    /// interactive login), so a stop can land mid-flight; the tail that
+    /// wakes up afterward must recognize the share it belongs to is over.
     func testAStoppedShareIsNoLongerTheCurrentOne() {
         let session = makeSession()
         let first = session.beginShareGeneration()
@@ -215,20 +176,16 @@ final class WindowsShareSessionTests: XCTestCase {
 
     // MARK: Selection bytes
 
-    /// Always the same bytes, and always the `.display` kind — on Windows the
-    /// ITEM is the selection and the backend was constructed with it. The kind
-    /// still matters: the encoder rejects `.application`, which one capture item
-    /// cannot express anyway.
+    /// Always the same bytes and always `.display` — the item IS the
+    /// selection, but `kind` still matters since the encoder rejects `.application`.
     func testWindowsSelectionDataIsAlwaysADisplayKind() throws {
         let data = WindowsShareSession.windowsSelectionData()
         let decoded = try JSONDecoder().decode(PickerSelection.self, from: data)
         XCTAssertEqual(decoded.kind, .display)
         XCTAssertNil(decoded.displayID)
         XCTAssertNil(decoded.windowID)
-        // Compared decoded, not byte-for-byte: `JSONEncoder` does not order
-        // keys unless asked to, so two encodes of one value legitimately differ
-        // as bytes. What has to hold is that a share and its mid-share source
-        // change send the same SELECTION.
+        // Compared decoded, not byte-for-byte: JSONEncoder doesn't order keys
+        // unless asked to.
         let again = try JSONDecoder().decode(
             PickerSelection.self, from: WindowsShareSession.windowsSelectionData())
         XCTAssertEqual(again.kind, decoded.kind)
@@ -237,9 +194,7 @@ final class WindowsShareSessionTests: XCTestCase {
 
     // MARK: Access facade
 
-    /// "Always Allow" / "Deny & Block" round-trip, and every change re-publishes
-    /// — a block on somebody already watching expels them, so the roster the
-    /// sharer is looking at is about to be wrong.
+    /// "Always Allow" / "Deny & Block" round-trip, and every change re-publishes.
     func testRememberForgetRoundTripsAndRepublishes() {
         let session = makeSession()
         let published = StatusLog()
@@ -257,9 +212,7 @@ final class WindowsShareSessionTests: XCTestCase {
         XCTAssertGreaterThan(published.count, afterRemember)
     }
 
-    /// A decision made about a row whose StableNodeID has not resolved yet is
-    /// queued, not dropped — the coordinator's contract, asserted here because
-    /// this host forwards taps into it and nothing else in this package does.
+    /// A decision on a row whose StableNodeID hasn't resolved yet is queued, not dropped.
     func testADecisionOnAnUnresolvedRowIsDeferredRatherThanLost() {
         let session = makeSession()
         session.remember(

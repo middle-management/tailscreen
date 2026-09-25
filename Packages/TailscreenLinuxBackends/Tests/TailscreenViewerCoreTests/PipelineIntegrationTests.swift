@@ -6,13 +6,11 @@ import XCTest
 @testable import TailscreenViewer
 @testable import TailscreenViewerCore
 
-/// End-to-end coverage of the Linux viewer's real data path — the one thing the
-/// per-backend unit suites (FFmpegKit / ALSAKit) and the portable
-/// `ViewerSessionTests` each cover only in isolation. Here a *real* H.264
-/// keyframe is encoded in process, RTP-packetized with the production
+/// End-to-end coverage of the Linux viewer's real data path: a real H.264
+/// keyframe encoded in process, RTP-packetized with the production
 /// `H264Packetizer`, fed through a `ViewerPipeline` wired to the real
-/// `FFmpegVideoDecoder`, and the decoded frame is observed at a collecting
-/// `VideoSink`. No tsnet, no window, no audio device — so it runs on CI.
+/// `FFmpegVideoDecoder`, observed at a collecting `VideoSink`. No tsnet,
+/// window or audio device, so it runs on CI.
 final class PipelineIntegrationTests: XCTestCase {
 
     // MARK: - Collecting sinks
@@ -73,9 +71,8 @@ final class PipelineIntegrationTests: XCTestCase {
         XCTAssertEqual(first.height, height)
         XCTAssertEqual(first.yPlane.count, width * height)
         XCTAssertEqual(first.uPlane.count, ((width + 1) / 2) * ((height + 1) / 2))
-        // A solid mid-grey source must decode to a roughly uniform mid-luma
-        // plane (lossy, so not exactly 128) — proof the pixels are real, not
-        // an all-zero placeholder.
+        // A solid mid-grey source decodes to roughly mid-luma (lossy, so not
+        // exactly 128) — proof the pixels are real, not an all-zero placeholder.
         let centre = first.yPlane[(height / 2) * width + (width / 2)]
         XCTAssertGreaterThan(centre, 96)
         XCTAssertLessThan(centre, 160)
@@ -83,10 +80,9 @@ final class PipelineIntegrationTests: XCTestCase {
 
     // MARK: - Decode failure asks for a keyframe
 
-    /// A corrupt access unit (valid RTP framing, garbage payload) must not crash
-    /// the pipeline; the decode throw is answered with a PLI so the stream can
-    /// recover. This exercises the adapter's error path against the real
-    /// FFmpeg decoder rather than a stub.
+    /// A corrupt access unit (valid RTP framing, garbage payload) must not
+    /// crash the pipeline; the decode throw is answered with a PLI. Exercises
+    /// the adapter's error path against the real FFmpeg decoder.
     func testCorruptAccessUnitRequestsKeyframe() throws {
         var controlBytes: [Data] = []
         let pipeline = ViewerPipeline(
@@ -97,13 +93,9 @@ final class PipelineIntegrationTests: XCTestCase {
             onControlToSend: { controlBytes.append($0) }
         )
 
-        // One NAL of junk that is not a valid H.264 access unit — but typed as
-        // an IDR (first byte 0x65, nal_type 5), because ViewerSession now gates
-        // pre-keyframe AUs: a non-IDR first AU is dropped before the decoder
-        // ever sees it (deliberately — that is normal stream-join noise, not an
-        // error), so only an IDR-flagged AU can exercise the decode-throw → PLI
-        // path this test exists for. A corrupt KEYFRAME is precisely the case
-        // where an immediate PLI is the right answer.
+        // Typed as an IDR (0x65, nal_type 5): a non-IDR first AU is dropped
+        // before the decoder ever sees it (normal stream-join noise), so
+        // only an IDR-flagged AU exercises the decode-throw → PLI path.
         let junk = Data([0x65, 0x9A, 0x00, 0xFF, 0x13, 0x37, 0x42, 0x24])
         let packetizer = H264Packetizer()
         let packets = packetizer.packetize(nals: [junk], timestamp: 0, ssrc: 0, startSequence: 0)
@@ -152,11 +144,9 @@ final class PipelineIntegrationTests: XCTestCase {
     }
 }
 
-/// Minimal in-process H.264 encoder on libavcodec, used only to generate real
-/// bitstream for the pipeline test (no-reorder / low-latency, SPS/PPS in-band,
-/// one Annex-B access unit per input frame). Mirrors FFmpegKit's own test
-/// encoder — duplicated here rather than made public API, since it's pure test
-/// scaffolding.
+/// Minimal in-process H.264 encoder on libavcodec, for real bitstream
+/// generation only. Mirrors FFmpegKit's own test encoder — duplicated rather
+/// than made public API, since it's pure test scaffolding.
 private final class TestH264Encoder {
     private let ctx: UnsafeMutablePointer<AVCodecContext>
     private let pkt: UnsafeMutablePointer<AVPacket>

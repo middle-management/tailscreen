@@ -5,32 +5,23 @@ import XTestInjectKit
 
 // x11-hotkey-probe — the link check, and the one gate that presses a real key.
 //
-//   x11-hotkey-probe --live-check   grab the mute chord on the current display,
-//                                   synthesize it through XTEST, and assert the
-//                                   grab fired. Then grab it a SECOND time from
-//                                   another connection and assert it is
-//                                   REFUSED. Needs an X server (CI uses Xvfb).
+//   x11-hotkey-probe --live-check   grab the mute chord on the current
+//                                   display, synthesize it through XTEST,
+//                                   assert the grab fired, then grab it a
+//                                   SECOND time from another connection and
+//                                   assert it is REFUSED. Needs an X server (Xvfb in CI).
 //   x11-hotkey-probe --support      print the environment decision and exit 0.
 //   x11-hotkey-probe                report what it found on this display.
 //
-// The link check is why this is an executable at all: a SwiftPM library target
-// is compiled but never linked, so a missing `-lX11` stays invisible until
-// something downstream links it.
-//
-// The live check exists because everything else about this feature is testable
-// without a server — the mapping, the mask variants, the repeat latch — and
-// the two things that are not are exactly the two that fail silently: a grab
-// that was refused and reported as taken, and a grabbed key the server never
-// delivers.
+// The live check covers the two things that fail silently: a grab refused
+// but reported as taken, and a grabbed key the server never delivers.
 
 let args = Array(CommandLine.arguments.dropFirst())
 
 func out(_ line: String) { FileHandle.standardOutput.write(Data("\(line)\n".utf8)) }
 
-/// The chord under test: whatever the catalog says the mute hotkey is. Reading
-/// it from the catalog rather than hard-coding ⌃⌥M is the point — if somebody
-/// retunes the shortcut, this gate follows it instead of testing a chord the
-/// app no longer uses.
+/// The chord under test, from the catalog rather than hard-coded, so a
+/// retuned shortcut is followed rather than left untested.
 guard let micEntry = ShortcutCatalog.entry(for: .toggleMicrophone) else {
     out("X11_HOTKEY result=FAIL the catalog has no toggleMicrophone entry")
     exit(3)
@@ -62,11 +53,9 @@ if args.contains("--live-check") {
         "grabbed \(micEntry.chord.display(.words)) "
             + "detectableAutoRepeat=\(hotkey.honoursDetectableAutoRepeat)")
 
-    // Phase 1 — a grabbed key must actually be delivered.
-    //
-    // Synthesized through XTEST because that is the only way to press a key
-    // with nobody at the keyboard. It goes through the server's ordinary event
-    // processing, grabs included, so what this proves is the real path.
+    // Phase 1 — a grabbed key must actually be delivered. Synthesized
+    // through XTEST, which goes through the server's ordinary event
+    // processing (grabs included), so this proves the real path.
     let injector = XTestInjector()
     guard injector.isTrusted(), let region = injector.rootRegion() else {
         out("X11_HOTKEY_LIVE result=FAIL no XTEST to synthesize the chord with")
@@ -85,10 +74,8 @@ if args.contains("--live-check") {
 
     injector.activate(region: region)
 
-    /// Press the chord and wait for the grab to see it.
-    ///
-    /// Polls rather than sleeping once, so a slow Xvfb is a slower pass and
-    /// not a flake.
+    /// Press the chord and wait for the grab to see it. Polls rather than
+    /// sleeping once, so a slow Xvfb is a slower pass, not a flake.
     func pressChordAndCountActivations() -> Int {
         injector.apply(.keyDown(key: usage, modifiers: modifiers))
         injector.apply(.keyUp(key: usage, modifiers: modifiers))
@@ -117,14 +104,11 @@ if args.contains("--live-check") {
         exit(3)
     }
 
-    // Phase 1b — the same chord with NUM LOCK ON.
-    //
-    // `XGrabKey` matches modifier state EXACTLY, so a grab installed only
-    // under Ctrl|Alt stops matching the instant Mod2 joins the state. Nothing
-    // errors; the key just quietly does nothing, which is the single most
-    // likely way for this feature to look broken while every unit test passes.
-    // `X11HotkeyMapping.grabMasks` enumerates the variants and THIS is what
-    // proves they are installed.
+    // Phase 1b — the same chord with NUM LOCK ON. `XGrabKey` matches
+    // modifier state EXACTLY, so a grab installed only under Ctrl|Alt stops
+    // matching once Mod2 joins the state — nothing errors, the key just
+    // quietly does nothing. This proves `X11HotkeyMapping.grabMasks`'s
+    // variants are actually installed.
     toggleLock(hidUsage: 0x53)  // Num Lock
     let lockedActivations = pressChordAndCountActivations()
     toggleLock(hidUsage: 0x53)  // and back off, so the server is left as found
@@ -139,8 +123,7 @@ if args.contains("--live-check") {
 
     // Phase 2 — a chord somebody else owns must be REFUSED, not reported as
     // taken. `XGrabKey` reports that asynchronously, so a shim without the
-    // error handler + XSync returns success here and the user gets a hotkey
-    // that never fires with nothing anywhere saying why.
+    // error handler + XSync returns success here.
     guard let rival = X11Hotkey() else {
         out("X11_HOTKEY_LIVE result=FAIL could not open a second display connection")
         exit(3)

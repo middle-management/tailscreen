@@ -2,19 +2,12 @@
 import PackageDescription
 
 // X11CaptureKit — X11 screen capture for the Linux sharer's `CaptureEncoding`
-// backend.
+// backend. C shim (`CX11Capture`) owns XCB + SysV shared-memory boilerplate
+// and BGRA→I420 conversion, over system libxcb.
 //
-// Wrapped the way ALSAKit wraps libasound and FFmpegKit wraps libavcodec: a
-// C shim (`CX11Capture`) that owns the XCB + SysV shared-memory boilerplate
-// and the per-pixel BGRA→I420 conversion, plus a Foundation-only Swift
-// wrapper. Builds against system libxcb (apt `libxcb1-dev libxcb-shm0-dev`).
-//
-// Why X11 and not the ScreenCast portal first: the portal is the right
-// production path on Wayland, but it needs a session bus, a compositor, and a
-// user consent dialog, so it can never run in CI. X11 capture runs headlessly
-// under Xvfb, which buys a capture backend the test suite can actually
-// exercise. Both sit behind the same `CaptureEncoding` seam, so adding the
-// portal backend later changes no caller.
+// X11 rather than the ScreenCast portal: the portal needs a session bus,
+// compositor and consent dialog, so it can never run in CI; X11 capture runs
+// headlessly under Xvfb. Both sit behind the same `CaptureEncoding` seam.
 let package = Package(
     name: "X11CaptureKit",
     products: [
@@ -31,11 +24,9 @@ let package = Package(
             name: "CX11Capture",
             dependencies: ["CXCB"],
             path: "Sources/CX11Capture",
-            // `xcb` arrives via CXCB's pkg-config, but the SHM extension is a
-            // separate library whose own .pc emits only `-lxcb-shm` and which
-            // pkg-config therefore never pulls in transitively. A module-map
-            // `link` directive isn't enough — SwiftPM doesn't propagate those
-            // to a C target's link line — so name it explicitly.
+            // xcb-shm's .pc is separate from xcb's and never pulled in
+            // transitively; SwiftPM doesn't propagate module-map `link`
+            // directives to a C target's link line either, so name it here.
             linkerSettings: [.linkedLibrary("xcb-shm")]
         ),
         .target(

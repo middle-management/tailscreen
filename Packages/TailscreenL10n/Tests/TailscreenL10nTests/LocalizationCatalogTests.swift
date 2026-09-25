@@ -3,25 +3,14 @@ import XCTest
 @testable import TailscreenL10n
 
 /// Guards the CLAUDE.md invariant that every `L("…")` call-site key in every
-/// app's sources exists byte-for-byte in the base catalog.
+/// app's sources exists byte-for-byte in the base catalog. Scans all four
+/// source trees (three apps plus their shared chrome) and runs on Linux CI —
+/// the only machine that builds the GTK/WinUI sources on every PR.
 ///
-/// It moved here from `Apps/macOS/Tests` when the catalog became shared. Two
-/// things changed with the move and both matter: it now scans **all four**
-/// source trees (three apps plus the chrome they share) rather than one, and
-/// it runs on **Linux CI**, which is the only machine that builds the GTK and
-/// WinUI apps' sources on every PR. A catalog test that only ran on macOS
-/// would have watched the mac app's keys and let the other two rot.
-///
-/// Interpolated call sites (`L("Viewing \(host)")`) are matched against their
-/// format-specifier form in the catalog (`"Viewing %@"`) via the SAME
-/// normalizer the runtime lookup uses, so the test cannot pass on a
-/// correspondence the app itself does not make.
-///
-/// Reads only the repository source tree, located relative to `#filePath`.
+/// Interpolated call sites (`L("Viewing \(host)")`) are matched against the
+/// catalog's specifier form (`"Viewing %@"`) via the same normalizer the
+/// runtime lookup uses. Reads the repository source tree relative to `#filePath`.
 final class LocalizationCatalogTests: XCTestCase {
-    /// Placeholder both sides normalize to. Shared with the runtime, which is
-    /// the point: `LocalizationFormat.normalizeSpecifiers` is what the catalog
-    /// lookup falls back to when an exact key misses.
     private static let placeholder = LocalizationFormat.specifierPlaceholder
 
     /// Every tree whose `L("…")` keys this catalog has to cover.
@@ -91,18 +80,9 @@ final class LocalizationCatalogTests: XCTestCase {
                 + missing.joined(separator: "\n"))
     }
 
-    /// The inverse of `testEveryLCallSiteKeyExistsInCatalog`: every key the base
-    /// catalog carries must be reachable from some `L("…")` call site.
-    ///
-    /// The forward direction is the one that breaks a build; this one is the one
-    /// that wastes translator time. An orphan is a string somebody reworded or
-    /// deleted in code without touching the catalog — so it stays in `en.lproj`
-    /// forever, gets sent out for translation, comes back in every language, and
-    /// is never rendered. Nothing anywhere complains, which is why it accumulates.
-    ///
-    /// Failing rather than warning is deliberate: the fix is a one-line delete
-    /// and the check only ever fires on a commit that just orphaned something,
-    /// when the person holding the context is still there.
+    /// Inverse of `testEveryLCallSiteKeyExistsInCatalog`: every base catalog
+    /// key must be reachable from some `L("…")` call site, or it's an orphan
+    /// that gets translated in every language and never rendered.
     func testEveryCatalogKeyHasACallSite() throws {
         let base = catalogURL("en")
         guard FileManager.default.fileExists(atPath: base.path) else {
@@ -122,9 +102,7 @@ final class LocalizationCatalogTests: XCTestCase {
         XCTAssertGreaterThan(
             reachable.count, 300, "suspiciously few distinct L() keys — scanner broken?")
 
-        // A call site's key is normalized (interpolations become %@/%lld), so
-        // the catalog side has to be compared in the same form — the exact
-        // correspondence the runtime lookup makes.
+        // Compare in normalized form — the same correspondence the runtime lookup makes.
         let orphans =
             catalog.keys
             .filter { !reachable.contains(LocalizationFormat.normalizeSpecifiers($0)) }
@@ -143,26 +121,17 @@ final class LocalizationCatalogTests: XCTestCase {
     /// tree. Each needs a reason: the point of the list is that it stays short
     /// enough to read, not that it absorbs whatever the test finds.
     static let keysWithoutASwiftCallSite: Set<String> = [
-        // The browser viewer's audio button (web/viewer/viewer.js, listed in
-        // web/viewer/tools/strings.txt). It is the one viewer with no app
-        // around it and the only one whose audio starts off — a browser will
-        // not run an AudioContext until someone clicks — so these four words
-        // exist nowhere in Swift. The page reads the same catalog through
-        // `export_strings.py`, which fails if a key here goes missing.
+        // The browser viewer's audio button (web/viewer/viewer.js). No Swift
+        // call site; read via `export_strings.py` instead.
         "Enable Audio",
         "Mute Audio",
         "Unmute Audio",
         "Audio Unavailable"
     ]
 
-    /// A translation may lag the base catalog — a missing key falls back to
-    /// English by design — but it may not contain keys the base does not, and
-    /// it may not disagree with the base about how many values a string takes.
-    ///
-    /// Both failures are silent in the app. An orphaned key is a translation
-    /// that stopped being used when someone reworded the English and will
-    /// never be seen again; a specifier mismatch renders a sentence with a
-    /// value missing from it, in one language only.
+    /// A translation may lag the base catalog (missing key falls back to
+    /// English), but may not carry keys the base doesn't, or disagree with it
+    /// on argument count — both fail silently in the app otherwise.
     func testTranslationsAgreeWithTheBaseCatalog() throws {
         let base = catalogURL("en")
         guard FileManager.default.fileExists(atPath: base.path) else {
@@ -196,10 +165,8 @@ final class LocalizationCatalogTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Recursive walk, hand-rolled rather than `FileManager.enumerator` —
-    /// that returns an `NSEnumerator`, whose `Sequence` conformance is an
-    /// overlay detail this test would rather not depend on given it has to run
-    /// on Linux as well as Darwin.
+    /// Hand-rolled rather than `FileManager.enumerator`, whose `Sequence`
+    /// conformance is an overlay detail this shouldn't depend on cross-platform.
     private static func swiftFiles(under root: URL) throws -> [URL] {
         var found: [URL] = []
         var pending = [root]
@@ -221,20 +188,16 @@ final class LocalizationCatalogTests: XCTestCase {
         return found.sorted { $0.path < $1.path }
     }
 
-    /// How many values a format string consumes. Position and length are
-    /// deliberately ignored — `%1$@`, `%@` and `%lld` are all one value, and a
-    /// translation is free to reorder or retype them (the renderer takes each
-    /// argument from the list, not from the conversion character). Dropping or
-    /// inventing one is the failure worth catching.
+    /// How many values a format string consumes. Position/type ignored —
+    /// `%1$@`, `%@`, `%lld` are all one value; only a wrong count is a failure.
     static func argumentCount(in text: String) -> Int {
         LocalizationFormat.normalizeSpecifiers(text)
             .components(separatedBy: placeholder).count - 1
     }
 
-    /// Drop whole-line `//` comments so doc-comment examples like
-    /// `L("Viewing \(host)")` in Localization.swift aren't treated as call
-    /// sites. String-aware lexing is deliberately not attempted — trailing
-    /// comments containing `L("` don't occur in this codebase.
+    /// Drop whole-line `//` comments so doc-comment examples aren't treated
+    /// as call sites. No string-aware lexing — trailing `//` comments
+    /// containing `L("` don't occur in this codebase.
     static func stripLineComments(_ text: String) -> String {
         text.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.drop(while: { $0 == " " || $0 == "\t" }).hasPrefix("//") }
@@ -242,10 +205,9 @@ final class LocalizationCatalogTests: XCTestCase {
     }
 
     /// Find every `L("…")` string literal in `text` and return its normalized
-    /// key: interpolations (`\(…)`, with nested parens and nested string
-    /// literals handled) become the placeholder; standard escapes are
-    /// resolved. Nested calls like `L("… \(flag ? L("a") : L("b")) …")` yield
-    /// the outer key *and* each inner key.
+    /// key: interpolations become the placeholder, escapes resolved. Nested
+    /// calls like `L("… \(flag ? L("a") : L("b")) …")` yield the outer key
+    /// and each inner key.
     static func scanLKeys(_ text: String) -> [String] {
         var keys: [String] = []
         let chars = Array(text)
@@ -274,10 +236,9 @@ final class LocalizationCatalogTests: XCTestCase {
             while k < n, chars[k] != "\"" {
                 if chars[k] == "\\" {
                     if k + 1 < n, chars[k + 1] == "(" {
-                        // Interpolation: skip to the matching paren, tracking
-                        // nesting and string literals inside it. Inner `L(`
-                        // calls are picked up by the outer while-loop later
-                        // because we only advance `i` past the *outer* L(.
+                        // Skip to the matching paren, tracking nesting and
+                        // string literals; inner `L(` calls are found later
+                        // since `i` only advances past the outer L(.
                         var depth = 1
                         k += 2
                         while k < n, depth > 0 {
@@ -308,8 +269,7 @@ final class LocalizationCatalogTests: XCTestCase {
                 k += 1
             }
             keys.append(unescape(raw))
-            // Resume *inside* what we just scanned so nested L( calls within
-            // interpolations are found too.
+            // Resume inside what we just scanned to find nested L( calls too.
             i += 2
         }
         return keys

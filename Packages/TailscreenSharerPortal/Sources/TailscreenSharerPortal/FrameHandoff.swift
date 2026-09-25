@@ -1,34 +1,24 @@
 import Foundation
 import TailscreenProtocol
 
-/// The hand-off of converted I420 frames from PipeWire's thread to the encode
-/// thread.
+/// The hand-off of converted I420 frames from PipeWire's thread to the
+/// encode thread. Its own type so the invariant is testable with real
+/// threads and no PipeWire/portal/encoder.
 ///
-/// Its own type because it is the only genuinely concurrent thing in this
-/// backend, and because a bug in it is silent: a torn frame is a moment of
-/// visible garbage on somebody's screen and nothing in any log. Isolating it
-/// means the invariant can be tested with real threads and no PipeWire, no
-/// portal, no encoder and no consent dialog.
+/// **Two buffers rather than one lock**: encoding under the same lock as
+/// conversion would make PipeWire's thread wait out an x264 encode (longer
+/// than one frame interval at 1080p), and PipeWire starts dropping buffers
+/// on a thread that stops servicing the graph — stuttering the sharer's
+/// whole desktop, not just the share. Here the lock is held only for a swap.
 ///
-/// **Why two buffers rather than one lock.** The obvious version — convert and
-/// encode under the same lock — makes PipeWire's thread wait out an x264
-/// encode, which at 1080p is comfortably longer than the frame interval. A
-/// thread that stops servicing the graph is one PipeWire starts dropping
-/// buffers on, so the stutter would show up on the *sharer's* whole desktop,
-/// not just in the share. Here the lock is held for a few instructions at a
-/// time and never across a conversion or an encode.
-///
-/// **The invariant**, and the whole reason this is a type:
-///
-/// > The encoder never reads a buffer the converter is writing.
-///
-/// It holds because only the encode thread ever swaps, and it only swaps when
-/// the converter is provably not inside `write` — the `writing` flag is raised
-/// and lowered under the same lock the swap takes.
+/// **The invariant:** the encoder never reads a buffer the converter is
+/// writing. Holds because only the encode thread swaps, and only when the
+/// `writing` flag (raised/lowered under the same lock) says the converter
+/// isn't mid-`write`.
 ///
 /// Latest-wins by construction: a frame converted while the encoder is busy
-/// simply overwrites the previous unpublished one. That is right for a screen
-/// share, where the newest picture is the only interesting one.
+/// overwrites the previous unpublished one — right for a screen share, where
+/// only the newest picture matters.
 final class FrameHandoff: @unchecked Sendable {
     /// One set of I420 planes, sized for one encoder configuration.
     final class Planes {
@@ -89,12 +79,10 @@ final class FrameHandoff: @unchecked Sendable {
     /// Publish the newest converted frame, if there is one and the converter
     /// is not mid-write.
     ///
-    /// - Returns: the planes to encode, and whether they are new since the last
-    ///   call. A non-new result is still returned rather than nil, because the
-    ///   encode thread needs the last picture to answer a keyframe request
-    ///   while the screen is still — a compositor sends nothing at all then,
-    ///   and a viewer joining during a motionless moment would otherwise wait
-    ///   for the user to move something before it could decode anything.
+    /// - Returns: the planes to encode, and whether they are new. A non-new
+    ///   result is still returned (not nil) — the encode thread needs the
+    ///   last picture to answer a keyframe request while the screen is
+    ///   still, when the compositor sends nothing at all.
     func publish() -> (planes: Planes, isNew: Bool) {
         lock.withLock {
             guard backDirty, !writing else { return (front, false) }
@@ -114,10 +102,8 @@ final class FrameHandoff: @unchecked Sendable {
 
     private var hasPublished = false
 
-    /// Re-make both buffers at a new geometry, discarding what was in them.
-    ///
-    /// Keeping the old front across a resize would leave the encoder reading
-    /// planes sized for the previous resolution on its very next pass.
+    /// Re-make both buffers at a new geometry — keeping the old front would
+    /// leave the encoder reading planes sized for the previous resolution.
     func resize(width: Int, height: Int) {
         lock.withLock {
             front = Planes(width: width, height: height)

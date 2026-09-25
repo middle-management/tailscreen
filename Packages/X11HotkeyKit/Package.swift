@@ -1,36 +1,27 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// X11HotkeyKit — a SYSTEM-WIDE hotkey on X11, via `XGrabKey`. What
-// `RegisterHotKey` is on Windows (WinHotkeyKit) and Carbon's
-// `RegisterEventHotKey` is on macOS (`Apps/macOS/Sources/GlobalHotkey.swift`).
+// X11HotkeyKit — system-wide hotkey on X11 via `XGrabKey`. What
+// `RegisterHotKey` is on Windows and Carbon's hotkey API is on macOS.
 //
-// **Separate from XTestInjectKit** even though both are thin Xlib shims, and
-// the split is not tidiness: that package WRITES input for the sharer's remote
-// control, this one READS a chord for the local user. A viewer-only host wants
-// this and must not link an injector it will never call — and the sharer's
-// injector must not grow a keyboard grab, which is the one thing on X11 that
-// can make the rest of the desktop stop receiving a key.
+// Separate from XTestInjectKit though both are thin Xlib shims: that package
+// WRITES input for remote control, this one READS a chord locally — a
+// viewer-only host must not link an injector it never calls, and the
+// injector must not grow a keyboard grab (can freeze the rest of X11 input).
 //
-// The C part owns a `Display *` and `XKeysymToKeycode`, and nothing else.
-// Every decision — keysym, modifier mask, the lock-key mask variants, what
-// counts as an auto-repeat — is in TailscreenProtocol's `X11HotkeyMapping` /
-// `GlobalHotkeyRepeatFilter`, where Linux CI tests it without an X server.
-//
-// Install: apt `libx11-dev`.
+// C part owns only `Display *` + `XKeysymToKeycode`; every decision (keysym,
+// modifier mask, lock-key variants, auto-repeat) is in TailscreenProtocol's
+// `X11HotkeyMapping`/`GlobalHotkeyRepeatFilter`, tested on Linux CI without an X server.
 let package = Package(
     name: "X11HotkeyKit",
     products: [
         .library(name: "X11HotkeyKit", targets: ["X11HotkeyKit"]),
-        // See the target comment: this exists to be LINKED, and to be the one
-        // gate that presses a real key against a real server.
         .executable(name: "x11-hotkey-probe", targets: ["x11-hotkey-probe"]),
     ],
     dependencies: [
         .package(path: "../TailscreenKit"),
-        // Probe only: the live check needs to SYNTHESIZE the chord, which is
-        // the injection direction and therefore XTEST's. The library itself
-        // does not depend on it.
+        // Probe only: the live check synthesizes the chord via XTEST. The
+        // library itself does not depend on it.
         .package(path: "../XTestInjectKit"),
     ],
     targets: [
@@ -53,17 +44,10 @@ let package = Package(
             ],
             path: "Sources/X11HotkeyKit"
         ),
-        // The link check AND the live gate. A SwiftPM library target is
-        // compiled but never LINKED, so a missing `-lX11` stays invisible
-        // until something downstream links it — the failure mode WASAPIKit's
-        // missing GUIDs shipped past its own CI step.
-        //
-        // Its second job is the one no unit test can do: grab the chord on a
-        // real server, synthesize the keystroke through XTEST, and assert the
-        // callback fired. Everything up to the Xlib call is covered by the
-        // portable mapping tests; this covers the call, the lock-mask
-        // variants, the XSync-based failure detection, and the fact that a
-        // grabbed key is delivered at all.
+        // Link check (see WASAPIKit's probe comment) plus the live gate:
+        // grabs the chord on a real server, synthesizes the keystroke via
+        // XTEST, asserts the callback fired — covers the Xlib call, lock-mask
+        // variants and XSync-based failure detection no unit test can reach.
         .executableTarget(
             name: "x11-hotkey-probe",
             dependencies: [

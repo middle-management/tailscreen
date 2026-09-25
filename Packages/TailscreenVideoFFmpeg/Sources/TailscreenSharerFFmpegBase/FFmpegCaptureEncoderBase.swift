@@ -5,49 +5,29 @@ import TailscreenProtocol
 /// The shared scaffolding of the three FFmpeg-based `CaptureEncoding`
 /// backends — Linux X11 (`X11CaptureEncoder`), Windows WGC
 /// (`WGCCaptureEncoder`) and the ScreenCast portal (`PortalCaptureEncoder`).
+/// Each owns a genuinely different capture loop; what was identical (callback
+/// storage, quality decode, bitrate anchor, encoder ladder, stop sequence,
+/// congestion levers, pacing, parameter-set emission, failure budget) lives here once.
 ///
-/// Each of those backends owns a genuinely different capture loop (XSHM
-/// grabbing with damage-free pacing, WGC's frame-pool acquire with the
-/// still-target keyframe re-encode, PipeWire's push model through
-/// `FrameHandoff`), and none of that lives here. What was identical in all
-/// three — the seam's callback storage, the start-time quality decode, the
-/// bitrate anchor, the encoder-attempt ladder, the stop sequence, the
-/// congestion levers, the pacing tail, the parameter-set emission and the
-/// consecutive-failure budget — was ~130 lines of scaffolding copied three
-/// times, and lives here once.
+/// **Does not conform to `CaptureEncoding` itself** — supplies every member
+/// except `start`; each backend declares the conformance. Keeps this
+/// module's dependencies to FFmpegKit + `TailscreenProtocol` only, so its
+/// test bundle links no `libtailscale.a`.
 ///
-/// **This class does not conform to `CaptureEncoding` itself** — it supplies
-/// every member of that seam except `start`, and each backend declares the
-/// conformance (satisfied by these inherited members plus its own `start`).
-/// That keeps this module's dependencies to FFmpegKit + `TailscreenProtocol`
-/// only: no `TailscreenSharer`, so its test bundle links no `libtailscale.a`,
-/// and consuming it costs a backend nothing it did not already link.
+/// **Subclassing:** Swift has no `protected` and subclasses live in other
+/// modules, so the shared mutable state below is `public` SPI, guarded by `lock`.
 ///
-/// **Subclassing notes.** Swift has no `protected`, and the subclasses live
-/// in other modules, so the shared mutable state below is `public`. It is SPI
-/// for conforming backends, not API for hosts: everything is guarded by
-/// `lock`, and a subclass's capture loop reads `running`/`targetFPS` under it
-/// exactly as the three existing loops do.
-///
-/// **Callback contract: set every callback before `start()`, and do not
-/// mutate one afterwards.** The capture thread reads them on every frame, so a
-/// host that reassigns one mid-share is racing the encode loop — and the
-/// *timing* of the swap is unobservable from the host, which is why this is a
-/// rule rather than a suggestion. The accessors below are guarded, so the
-/// worst case is a torn *decision* rather than a torn closure reference: a
-/// reassignment can still land between the parameter-set emission and the
-/// first access unit that needs it, and a viewer then installs nothing and
-/// sits on black. Every shipped host (the server's `CaptureEncoding` wiring,
-/// and the two backends' own `onTimings`/`onPreviewThumbnail`) wires all of
-/// them inside the capture factory, before `start` is called.
+/// **Callback contract: set every callback before `start()`, never mutate
+/// after.** The capture thread reads them on every frame; a reassignment can
+/// land between the parameter-set emission and the access unit that needs
+/// it, leaving a viewer on black. Every shipped host wires them inside the
+/// capture factory, before `start` is called.
 open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     // MARK: CaptureEncoding callbacks
     //
-    // Stored behind `lock` rather than as bare vars: they are written by the
-    // host on its own thread and read by the capture thread on every frame.
-    // Computed accessors keep every subclass call site (`onAccessUnit?(…)`)
-    // compiling unchanged — and none of the three invokes one while holding
-    // `lock`, which matters because `NSLock` is not recursive.
+    // Stored behind `lock`, not as bare vars: written by the host thread,
+    // read by the capture thread every frame. None of the three subclasses
+    // invokes one while holding `lock` — `NSLock` is not recursive.
 
     public var onAccessUnit: ((Data, Bool) -> Void)? {
         get { lock.withLock { accessUnitSink } }
@@ -94,12 +74,9 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     // MARK: Errors
 
     /// The one start-error shape all three backends throw.
-    ///
-    /// `unsupportedSelection` and `captureUnavailable` carry the **complete
-    /// message** — each backend words its own refusal ("this backend captures
-    /// a whole X display; …" vs "a capture item is one display or one
-    /// window; …") — while the two texts that were identical everywhere live
-    /// in `description` here so they cannot drift apart again.
+    /// `unsupportedSelection`/`captureUnavailable` carry the complete
+    /// message, worded by each backend; the identical texts live in
+    /// `description` here so they can't drift apart.
     public enum StartError: Error, CustomStringConvertible {
         /// The picker selection decoded but this backend cannot serve its
         /// kind. The payload is the full sentence, worded by the backend.
@@ -126,16 +103,11 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
 
     /// Encoders tried in order until one opens.
     ///
-    /// **Software only, deliberately.** The hardware encoders most distro
-    /// libavcodec builds carry — `h264_vaapi`/`h264_nvenc` on Linux,
-    /// `h264_qsv`/`h264_nvenc`/`h264_amf` on Windows — are found by
-    /// `avcodec_find_encoder_by_name` but consume *hardware* frames: using
-    /// one means creating an `AVHWFramesContext` and uploading each captured
-    /// frame to GPU memory, which the backends' software-plane paths don't
-    /// do. Listing one here would pick an encoder that then fails at
-    /// `avcodec_open2` on any machine without the matching device. Hardware
-    /// encode is worth having (it's most of the CPU cost of a share) but it's
-    /// a separate piece of work, not a name in a list.
+    /// **Software only, deliberately.** Distro hardware encoders
+    /// (`h264_vaapi`/`h264_nvenc`/`h264_qsv`/`h264_amf`) consume *hardware*
+    /// frames — needing an `AVHWFramesContext` upload the backends' software
+    /// paths don't do — so listing one here would fail `avcodec_open2` on any
+    /// machine without the matching device. Separate work, not a name in a list.
     public static let defaultH264Encoders = ["libx264", "libopenh264"]
     public static let defaultHEVCEncoders = ["libx265"]
 
@@ -159,10 +131,9 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
         }
     }
 
-    /// Anchor the starting bitrate the same way the mac helper does — the
-    /// shared formula in `EncoderTuning`, clamped to any ceiling — so a share
-    /// of the same pixels starts at the same budget on every platform and the
-    /// congestion controller inherits a comparable baseline.
+    /// Anchor the starting bitrate the same way the mac helper does —
+    /// `EncoderTuning`'s shared formula, clamped to any ceiling — so a share
+    /// of the same pixels starts at the same budget on every platform.
     public static func anchoredBitrate(
         width: Int, height: Int, fps: Int, wantHEVC: Bool, ceiling: Int?
     ) -> Int {
@@ -170,24 +141,15 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
         let formulaBitrate = EncoderTuning.computeBitrate(
             width: width, height: height, fps: fps,
             bitsPerPixel: EncoderTuning.defaultBitsPerPixel(for: codec))
-        // `automaticCeilingBps`, not `formulaBitrate`, when no ceiling is
-        // set: "automatic" bounds the formula rather than surrendering to
-        // it. Same rule as `QualitySettings.cappedBitrate`, which the mac
-        // sharer's anchor and capture helper both call — this backend takes
-        // a bare `Int?` rather than the settings value, so it spells the
-        // fallback out instead.
+        // `automaticCeilingBps`, not `formulaBitrate`, when no ceiling is set
+        // — "automatic" bounds the formula rather than surrendering to it.
         return min(formulaBitrate, ceiling ?? QualitySettings.automaticCeilingBps)
     }
 
     /// The attempt ladder, generic over how an encoder opens so the ordering
     /// is testable without libavcodec having any encoder installed.
-    ///
-    /// Presence and usability are different questions — an encoder can be
-    /// compiled in and still refuse to open — so the ladder is driven by
-    /// `open` failing (`avcodec_open2` in production), the same shape as the
-    /// mac encoder's `sessionAttempts` fallback. Names failing `isAvailable`
-    /// are skipped without an attempt entry, exactly as the original
-    /// `where FFmpeg.isEncoderAvailable(name)` loops did.
+    /// Presence and usability differ — an encoder can be compiled in and
+    /// still refuse to open — so the ladder is driven by `open` failing.
     public static func firstOpenableEncoder<Encoder>(
         names: [String],
         isAvailable: (String) -> Bool,
@@ -234,9 +196,8 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
 
     // MARK: Failure budget
 
-    /// The consecutive-capture-failure budget: a transient grab failure (the
-    /// screen resized under us) is worth retrying; a persistent one means the
-    /// source is gone and the share should tear down rather than spin. The
+    /// The consecutive-capture-failure budget: a transient grab failure is
+    /// worth retrying; a persistent one means the source is gone. The
     /// `source-gone:` prefix routes the exit to the server's gentle
     /// shared-window-closed handling instead of an error alert.
     public struct SourceGoneBudget: Sendable {
@@ -255,9 +216,7 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
 
         /// Count a failure. Returns the `onUnexpectedExit` reason once the
         /// budget is exhausted, nil while retrying is still worthwhile.
-        /// `subject` names the failing stage in the message ("X11 capture"
-        /// on Linux, "capture" on Windows — the strings each backend always
-        /// emitted).
+        /// `subject` names the failing stage in the message.
         public mutating func noteFailure(subject: String, error: any Error) -> String? {
             consecutiveFailures += 1
             guard consecutiveFailures >= limit else { return nil }
@@ -285,9 +244,8 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
 
     // MARK: Shared state
 
-    /// Guards every mutable field below, in this class and in the subclass —
-    /// one lock, so a backend's own state (its capture handle, its rebuild
-    /// request) and the shared state can be read together consistently.
+    /// Guards every mutable field below, in this class and the subclass —
+    /// one lock, so a backend's own state and the shared state read together consistently.
     public let lock = NSLock()
     public var encoder: FFmpeg.VideoEncoder?
     public var thread: Thread?
@@ -296,18 +254,15 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     /// ladder's second congestion lever.
     public var targetFPS = 30
     public var sentParameterSets = false
-    /// Set by `requestKeyframe` (in the two backends that keep the default)
-    /// and consumed by their capture loops via ``takeOwedKeyframe()`` —
-    /// needed where a keyframe may have to be produced when no NEW frame is
-    /// arriving. The X11 backend forwards straight to the encoder instead
-    /// and never reads this.
+    /// Set by `requestKeyframe` and consumed via `takeOwedKeyframe()` —
+    /// needed where a keyframe may have to be produced with no new frame
+    /// arriving. X11 forwards straight to the encoder instead and never reads this.
     public var keyframePending = false
 
     public init() {}
 
     deinit {
-        // Synchronous teardown only — no Task capturing self after deinit has
-        // begun (the same rule the mac side follows).
+        // Synchronous teardown only — no Task capturing self after deinit has begun.
         lock.lock()
         running = false
         lock.unlock()
@@ -316,18 +271,13 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     // MARK: Lifecycle
 
     /// Spawn the capture loop's thread and record it. The body should be
-    /// `{ [weak self] in self?.captureLoop() }` — weak, because the thread
-    /// must not keep a stopped backend alive.
+    /// `{ [weak self] in self?.captureLoop() }` — weak, so the thread doesn't
+    /// keep a stopped backend alive.
     ///
-    /// **Call it with `running` already true** (all three backends set the
-    /// flag in the same locked block that installs the encoder, then call
-    /// this). The check-and-record is one critical section for two reasons: a
-    /// `stop()` that landed between them used to clear `thread` *before* this
-    /// assigned it, leaving a stopped backend holding a live thread reference
-    /// it would never clear again — and starting the thread before recording
-    /// it meant `stop()` could return having never seen the loop it was
-    /// supposed to wind down. A `stop()` that already won the race leaves the
-    /// thread unstarted, which is what "stopped" should mean.
+    /// **Call it with `running` already true.** Check-and-record is one
+    /// critical section: a `stop()` landing between them used to clear
+    /// `thread` before this assigned it, or let `stop()` return having never
+    /// seen the loop. A `stop()` that already won the race leaves the thread unstarted.
     public func startCaptureThread(named name: String, _ body: @escaping @Sendable () -> Void) {
         let captureThread = Thread { body() }
         captureThread.name = name
@@ -347,14 +297,13 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     open var stopSettleMilliseconds: Int { 300 }
 
     /// Called by `stop()` right after the running flag drops and before the
-    /// settle sleep. The portal backend releases its stream here (its deinit
-    /// stops PipeWire's thread, guaranteeing no frame callback is in flight
-    /// by the time the buffers go away).
+    /// settle sleep. The portal backend releases its stream here — its
+    /// deinit stops PipeWire's thread, guaranteeing no frame callback is in
+    /// flight when buffers go away.
     open func willStopBeforeSettle() {}
 
     /// Called by `stop()` under `lock` after the settle sleep, for the
-    /// subclass to nil out its own capture resources (the X11 capture, the
-    /// WGC session, the portal's hand-off buffers).
+    /// subclass to nil out its own capture resources.
     open func releaseCaptureResourcesLocked() {}
 
     public func stop() async {
@@ -379,10 +328,9 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
 
     // MARK: Congestion levers
 
-    /// Force an IDR on the next frame. The default latches
-    /// ``keyframePending`` for the capture loop to consume — the right shape
-    /// for backends that may have to re-encode a retained frame — and the
-    /// X11 backend overrides it to forward straight to the encoder.
+    /// Force an IDR on the next frame. Default latches `keyframePending` for
+    /// backends that may re-encode a retained frame; X11 overrides to
+    /// forward straight to the encoder.
     open func requestKeyframe() {
         lock.withLock { keyframePending = true }
     }
@@ -401,15 +349,13 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
         encoder?.setBitrate(bps)
     }
 
-    /// None of the three backends captures system audio, so the emission
-    /// latch has nothing to gate. An explicit no-op rather than an omission,
-    /// so the server's re-send after every backend restart is harmless.
+    /// None of the three backends captures system audio. An explicit no-op
+    /// so the server's re-send after a backend restart is harmless.
     public func setAudioEnabled(_ on: Bool) {}
 
-    /// Retune the capture rate. Only the *pacing* changes — the encoder
-    /// keeps its original time base, which is fine because RTP timestamps
-    /// come from the server's own clock, not from encoder PTS. Recreating
-    /// the encoder to match would drop the stream mid-share for no benefit.
+    /// Retune the capture rate. Only pacing changes — RTP timestamps come
+    /// from the server's own clock, not encoder PTS, so recreating the
+    /// encoder would drop the stream for no benefit.
     public func setFrameInterval(_ fps: Int) {
         guard fps > 0 else { return }
         lock.withLock { targetFPS = fps }
@@ -418,19 +364,14 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     // MARK: Parameter sets
 
     /// Pull SPS/PPS (or VPS/SPS/PPS) out of a keyframe access unit and hand
-    /// them up once per encoder configuration.
+    /// them up once per encoder configuration. Parameter sets stay in-band on
+    /// every keyframe regardless (lets a viewer join mid-stream); this
+    /// callback exists because the server caches the codec from it, and the
+    /// ordering contract (`onParameterSets` before `onEncoderResolution`)
+    /// drives its bitrate anchor.
     ///
-    /// The parameter sets stay in-band on every keyframe regardless — that's
-    /// what lets a viewer join mid-stream. This callback exists because the
-    /// server caches the codec from it, and because the *ordering* contract
-    /// (`onParameterSets` before `onEncoderResolution`) drives its
-    /// adaptive-bitrate anchor.
-    ///
-    /// The NAL-type masks differ between the codecs and getting them crossed
-    /// fails silently — viewers install nothing and sit on black while this
-    /// side looks perfect — so the table lives in `ParameterSetExtraction`,
-    /// tested on Linux CI. Splitting Annex-B stays FFmpeg-side (`NALUnit`),
-    /// which the portable tier cannot name.
+    /// NAL-type masks differ between codecs, and crossing them fails
+    /// silently, so the table lives in `ParameterSetExtraction`, tested on Linux CI.
     public func emitParameterSets(from avcc: Data) {
         let (already, isHEVC, handler) = lock.withLock {
             (sentParameterSets, encoder?.codec == .hevc, parameterSetsSink)
@@ -442,13 +383,10 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
                 fromAnnexBNALs: NALUnit.annexBNALs(annexB),
                 codec: isHEVC ? .hevc : .h264)
         else { return }
-        // CLAIM the latch, do not merely set it. The read above is a cheap
-        // early-out that two threads can both pass — the portal backend's
-        // rebuild path re-arms `sentParameterSets` while the encode thread is
-        // mid-keyframe — and "once per encoder configuration" is a contract
-        // the server's bitrate anchor reads: emitting twice re-anchors on the
-        // second set and undoes whatever the congestion controller had done.
-        // The parse stays outside the lock; only the flip is atomic.
+        // CLAIM the latch, don't merely set it — the read above is a cheap
+        // early-out two threads can both pass, and emitting twice re-anchors
+        // the server's bitrate controller on the second set. Parse stays
+        // outside the lock; only the flip is atomic.
         let claimed = lock.withLock { () -> Bool in
             guard !sentParameterSets else { return false }
             sentParameterSets = true

@@ -7,105 +7,63 @@ import TailscreenSharerFFmpegBase
 
 /// A Linux `CaptureEncoding` backend built on the ScreenCast portal: PipeWire
 /// frames into a libavcodec encoder, producing the AVCC access units the
-/// sharer fans out.
+/// sharer fans out. The third sibling of macOS's `HelperScreenCapture`,
+/// Linux's `X11CaptureEncoder` and Windows' `WGCCaptureEncoder`; adds what
+/// X11 structurally can't — native Wayland surfaces, single window/app.
 ///
-/// The third sibling of macOS's `HelperScreenCapture`, Linux's
-/// `X11CaptureEncoder` and Windows' `WGCCaptureEncoder`. Everything above it —
-/// admission, RTP fan-out, NACK/FEC, congestion control — is the portable
-/// `TailscaleScreenShareServer`, unchanged; the scaffolding all three FFmpeg
-/// backends share is `FFmpegCaptureEncoderBase`, and this file is the
-/// PipeWire push model, the hand-off, and the resize/rebuild path.
+/// **Constructed against an already-negotiated session, not a selection** —
+/// negotiating raises a consent dialog, so the host consents once and the
+/// capture factory closes over the `PortalSession`, keeping the server's
+/// restart budget dialog-free.
 ///
-/// **What it adds over `X11CaptureEncoder`** is everything the X11 path
-/// structurally cannot do: native Wayland surfaces, a single window, a single
-/// application. That is the reason this exists; it is not a second way to do
-/// the same job.
+/// Takes a **closure returning a fresh PipeWire descriptor**, not the
+/// `PortalSession` itself: the session's D-Bus connection must be driven from
+/// ONE thread, while `start()` can be called from any thread. The closure
+/// keeps that threading discipline in the host and keeps this type free of
+/// any D-Bus concept.
 ///
-/// **It is constructed against an already-negotiated session, not a
-/// selection.** Same shape as the Windows backend taking an already-picked
-/// `WGC.CaptureItem`, and for a sharper reason: negotiating raises a consent
-/// dialog. The host consents once, holds the `PortalSession`, and the capture
-/// factory closes over it — which is what makes the server's restart budget
-/// safe to use. A backend that renegotiated on restart would answer a dropped
-/// PipeWire connection by putting a dialog in front of somebody who is already
-/// mid-share.
+/// `selectionData`'s `kind` is deliberately not checked — unlike the other
+/// backends, the portal can serve every kind; the portal's own picker decided
+/// which one the user got.
 ///
-/// It takes a **closure returning a fresh PipeWire descriptor**, not the
-/// `PortalSession` itself, and that is deliberate: a session owns a private
-/// D-Bus connection libdbus expects to be driven from ONE thread, while
-/// `start()` is called by the server from whichever thread it likes. Handing
-/// over a closure leaves the threading discipline where the session actually
-/// lives — in the host — instead of spreading it across a seam. It also keeps
-/// this type free of any D-Bus concept at all.
+/// **Scope.** Not covered: system-audio capture; `onPreviewImage` (raw
+/// pixels go through `onPreviewThumbnail` instead, as on the other non-mac
+/// backends); multiple streams (takes the one it was constructed with).
 ///
-/// `selectionData` still arrives and is still read: it carries the quality
-/// knobs. Its `kind` is *not* checked, because unlike the other two backends
-/// the portal genuinely can serve every kind — which one the user got is
-/// something the portal's own picker decided, not something this side chooses.
-///
-/// **Scope.** Not covered here:
-/// - System-audio capture, so `setAudioEnabled` is a no-op and
-///   `onAudioAccessUnit` never fires. Viewer voice is unaffected; that path
-///   does not come through here.
-/// - `onPreviewImage`, which carries *encoded* image bytes because the mac
-///   helper is a separate process with ImageIO on the far side. Raw pixels go
-///   up through `onPreviewThumbnail` instead, as on the other two non-mac
-///   backends.
-/// - Multiple streams. The portal can hand back several; this takes the one it
-///   was constructed with. Sharing two monitors as one share is a separate
-///   piece of work, not a flag.
-///
-/// One encoder note beyond the shared ladder's software-only rationale: there
-/// is a real hardware opportunity here that the X11 path does not have. A
-/// PipeWire stream can carry DMA-BUF frames that are already on the GPU, so a
-/// future hardware path could skip the download entirely — separate work, and
-/// it starts with the `SPA_PARAM_BUFFERS_dataType` constraint this package
-/// currently sets to exclude exactly those buffers.
+/// Future hardware opportunity X11 doesn't have: PipeWire can carry DMA-BUF
+/// frames already on the GPU — separate work, starting with the
+/// `SPA_PARAM_BUFFERS_dataType` constraint this package currently sets to exclude them.
 public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding, @unchecked Sendable {
     // MARK: Preview
 
     /// The sharer's own "this is what they can see" thumbnail, at most once a
-    /// second (`ThumbnailScaler.intervalNs`).
+    /// second. Not part of `CaptureEncoding` — see the type comment.
     ///
-    /// Not part of `CaptureEncoding` — see `onPreviewImage` above. Attached in
-    /// the host's capture factory, so a restart's fresh backend keeps
-    /// publishing.
-    ///
-    /// **Fires on PipeWire's thread**, from inside `ingest`. That thread must
-    /// not be blocked, which is why this is throttled to once a second and
-    /// scales straight out of the frame it was already handed rather than
-    /// keeping a copy for someone else to scale later: one pass over pixels
-    /// that are already in cache, next to the BGRA→I420 conversion that runs
-    /// on every frame and costs more.
+    /// **Fires on PipeWire's thread**, which must not be blocked — throttled
+    /// to once a second and scaled straight out of the frame already handed,
+    /// rather than keeping a copy for later.
     public var onPreviewThumbnail: ((ThumbnailScaler.Thumbnail) -> Void)?
 
     /// Opens a fresh PipeWire descriptor on the host's already-consented
-    /// session. Called once per `start`, including after a restart — which is
-    /// why it is a closure and not a value: `PortalStream` takes ownership of
-    /// the descriptor, so a second start needs a second one.
-    ///
-    /// The host is responsible for calling this on whatever thread owns its
-    /// D-Bus connection.
+    /// session. A closure, not a value, because `PortalStream` takes
+    /// ownership of the descriptor, so a second start needs a second one.
+    /// The host must call this on whatever thread owns its D-Bus connection.
     private let openFileDescriptor: @Sendable () throws -> Int32
     private let nodeID: UInt32
 
     private var stream: PortalStream?
 
     /// The double-buffered hand-off from PipeWire's thread to the encode
-    /// thread. Its own type because it is the only real concurrency here and
-    /// the only part of this file with a deterministic test — see
-    /// `FrameHandoff`.
+    /// thread — see `FrameHandoff`.
     private var handoff: FrameHandoff?
 
     /// Set by the frame callback when the stream's geometry stopped matching
-    /// the encoder; acted on by the encode thread, because `avcodec_open2` on
+    /// the encoder; acted on by the encode thread, since `avcodec_open2` on
     /// PipeWire's thread would stall the whole graph.
     private var rebuildRequest: (width: Int, height: Int)?
     private var lastRebuildNs: UInt64?
-    /// When the last preview thumbnail was produced. Read and written only
-    /// on PipeWire's thread, but under the lock like everything else here —
-    /// the cost is a few instructions and the alternative is a field whose
-    /// thread confinement is a comment rather than a fact.
+    /// Read/written only on PipeWire's thread, but still under the lock like
+    /// everything else here, for a few instructions' cost.
     private var lastPreviewNs: UInt64?
 
     /// Codec choice, resolved at `start` and reused by every rebuild so a
@@ -120,8 +78,7 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
     /// - Parameters:
     ///   - nodeID: which of the session's streams to capture.
     ///   - openFileDescriptor: opens a PipeWire descriptor on the host's
-    ///     already-negotiated session. **Consent has already been given**;
-    ///     this backend never raises a dialog.
+    ///     already-negotiated session — this backend never raises a dialog.
     public init(nodeID: UInt32, openFileDescriptor: @escaping @Sendable () throws -> Int32) {
         self.nodeID = nodeID
         self.openFileDescriptor = openFileDescriptor
@@ -146,9 +103,7 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
         bitrateCeiling = settings.bitrateCeiling
         currentBitrate = nil
         sentParameterSets = false
-        // A viewer that connects before the GOP backstop fires has nothing to
-        // decode, so the first frame out is always an IDR.
-        keyframePending = true
+        keyframePending = true  // first frame out is always an IDR
         encoder = nil
         handoff = nil
         rebuildRequest = nil
@@ -157,9 +112,8 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
         running = true
         lock.unlock()
 
-        // Ownership of this descriptor passes to PortalStream, including when
-        // its initializer throws — so there is nothing to close on the error
-        // path here.
+        // Ownership passes to PortalStream, even when its init throws — so
+        // nothing to close on the error path here.
         let fileDescriptor: Int32
         do {
             fileDescriptor = try openFileDescriptor()
@@ -185,18 +139,15 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
         stream = opened
         lock.unlock()
 
-        // The encoder is NOT opened here. Its geometry comes from the
-        // negotiated PipeWire format, and that is not known until the first
-        // frame arrives — the portal's own reported size is advisory (see
-        // `PortalSession.Stream`). So the first frame builds it, through the
-        // same rebuild path a later resize uses, and `onEncoderResolution`
-        // fires from there rather than from `start`.
+        // The encoder is NOT opened here — its geometry comes from the
+        // negotiated PipeWire format, unknown until the first frame arrives
+        // (the portal's reported size is advisory). The first frame builds
+        // it through the same rebuild path a later resize uses.
         startCaptureThread(named: "PortalCaptureEncoder") { [weak self] in self?.captureLoop() }
     }
 
-    /// Release the stream first. Its deinit stops PipeWire's thread before
-    /// returning, which is what guarantees no frame callback is in flight by
-    /// the time the buffers go away.
+    /// Release the stream first — its deinit stops PipeWire's thread before
+    /// returning, guaranteeing no frame callback is in flight when buffers go away.
     override public func willStopBeforeSettle() {
         lock.withLock { stream = nil }
     }
@@ -209,10 +160,8 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
 
     override public func setBitrate(_ bps: Int) {
         let encoder = lock.withLock { () -> FFmpeg.VideoEncoder? in
-            // Remembered so a rebuild picks up where the controller left off
-            // rather than resetting to the formula figure — on this backend a
-            // rebuild happens whenever a shared window is resized, which is
-            // far too often to be discarding congestion state.
+            // Remembered so a rebuild (frequent — every window resize) picks
+            // up where the controller left off rather than resetting to the formula figure.
             currentBitrate = bps
             return self.encoder
         }
@@ -221,11 +170,9 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
 
     // MARK: PipeWire callbacks
 
-    /// Route a stream condition through the tested plan.
-    ///
-    /// The translation below is the only part not covered by
-    /// `PortalCapturePlanTests`, and it is four lines with no arithmetic
-    /// precisely so that it can't be the part that is wrong.
+    /// Route a stream condition through the tested plan. The translation
+    /// below is the only part not covered by `PortalCapturePlanTests`, kept
+    /// to four lines with no arithmetic so it can't be the part that's wrong.
     private func handle(_ state: PortalStream.State) {
         let condition: PortalCapturePlan.Condition
         switch state {
@@ -250,11 +197,9 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
     /// Convert one PipeWire frame into the back buffer.
     ///
     /// **Runs on PipeWire's own thread, and must not block it.** The frame
-    /// pointer is valid only for this call, so the conversion has to happen
-    /// here; the *encode* deliberately does not, because a thread that stops
-    /// servicing the graph is one PipeWire starts dropping buffers on. The
-    /// lock is taken twice for a few instructions each and never held across
-    /// the conversion itself.
+    /// pointer is valid only for this call, so conversion happens here; the
+    /// encode deliberately does not, since PipeWire drops buffers on a
+    /// thread that stops servicing the graph.
     private func ingest(_ frame: PortalStream.Frame) {
         let now = DispatchTime.now().uptimeNanoseconds
         let decision = lock.withLock { () -> PortalCapturePlan.FrameAction? in
@@ -268,13 +213,11 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
 
         switch decision {
         case .drop:
-            // Still proof of life: a frame we chose not to encode is a
-            // healthy backend, not a wedged one.
+            // Still proof of life: an unencoded frame is a healthy backend.
             onActivity?()
             return
         case .rebuildEncoder(let width, let height):
-            // Hand the work to the encode thread. `avcodec_open2` here would
-            // stall the graph for as long as x264 takes to initialize.
+            // Hand to the encode thread — `avcodec_open2` here would stall the graph.
             lock.withLock { rebuildRequest = (width, height) }
             onActivity?()
             return
@@ -283,8 +226,8 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
         }
 
         guard let handoff = lock.withLock({ self.handoff }) else { return }
-        // The conversion runs inside `write`, which holds no lock across it —
-        // blocking PipeWire's thread is what this whole design avoids.
+        // `write` holds no lock across the conversion — blocking PipeWire's
+        // thread is what this whole design avoids.
         handoff.write { planes in
             planes.y.withUnsafeMutableBufferPointer { y in
                 planes.u.withUnsafeMutableBufferPointer { u in
@@ -306,11 +249,8 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
     }
 
     /// Scale the frame just ingested into a preview, at most once a second.
-    ///
-    /// Deliberately reads `frame` rather than the converted planes: the BGRA is
-    /// right there and still valid for the length of this call, so the preview
-    /// costs one extra pass over pixels already in cache instead of a
-    /// round trip back out of I420.
+    /// Reads `frame` (still valid, in cache) rather than the converted
+    /// planes, avoiding a round trip back out of I420.
     private func publishPreview(frame: PortalStream.Frame, nowNs: UInt64) {
         guard let sink = onPreviewThumbnail else { return }
         let due = lock.withLock { () -> Bool in
@@ -330,13 +270,10 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
 
     // MARK: Encode loop
 
-    /// Paces and encodes. Owns the encoder, and is the only caller of
-    /// `FrameHandoff.publish` — which is what lets that type keep the encoder
-    /// off any buffer PipeWire's thread is mid-conversion into.
-    ///
-    /// It also owns every `avcodec_open2`: rebuilding on PipeWire's thread
-    /// would stall the graph for as long as x264 takes to initialize, which on
-    /// a window being dragged is exactly when the desktop can least afford it.
+    /// Paces and encodes. Owns the encoder and is the only caller of
+    /// `FrameHandoff.publish`. Also owns every `avcodec_open2` — rebuilding
+    /// on PipeWire's thread would stall the graph, worst exactly while a
+    /// window is being dragged.
     private func captureLoop() {
         while true {
             let (stillRunning, fps) = lock.withLock { (running, targetFPS) }
@@ -352,22 +289,16 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
 
             let owedKeyframe = takeOwedKeyframe()
             let (handoff, encoder) = lock.withLock { (self.handoff, self.encoder) }
-            // Publish a completed frame, if PipeWire finished one and is not
-            // in the middle of the next.
             let published = handoff?.publish()
             // `hasFrame` gates the still-screen keyframe path: without it a
-            // PLI arriving before the first real frame would encode the
-            // initial grey buffer and send it to viewers as the sharer's
-            // screen.
+            // PLI before the first real frame would encode the initial grey
+            // buffer and send it to viewers as the sharer's screen.
             let haveNew = published?.isNew ?? false
             let planes = (handoff?.hasFrame ?? false) ? published?.planes : nil
 
-            // Encode when there is something new, OR when a keyframe is owed
-            // and there is a previous frame to make one from. That second case
-            // is not an optimisation: a compositor delivers nothing while the
-            // screen is still, so a viewer that joins — or PLIs — during a
-            // motionless moment would otherwise wait for the user to move
-            // something before it could decode anything at all.
+            // Encode when new, OR when a keyframe is owed and there's a
+            // previous frame — a compositor delivers nothing on a still
+            // screen, so a joining viewer would otherwise wait for motion.
             if let planes, let encoder, haveNew || owedKeyframe {
                 if owedKeyframe { encoder.requestKeyframe() }
                 do {
@@ -378,8 +309,7 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
                         onAccessUnit?(accessUnit.data, accessUnit.isKeyframe)
                     }
                 } catch {
-                    // An encode that failed did not produce the keyframe
-                    // somebody is waiting for, so put the request back.
+                    // Didn't produce the keyframe someone's waiting for — put it back.
                     if owedKeyframe { lock.withLock { keyframePending = true } }
                 }
             } else if owedKeyframe {
@@ -392,21 +322,15 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
     }
 
     /// Open an encoder at `width`x`height`, replacing any existing one.
-    ///
-    /// Called for the first frame and for every accepted resize. Re-emitting
-    /// `onParameterSets` and `onEncoderResolution` is not a special case: the
-    /// seam documents parameter sets as "once per encoder configuration", and
-    /// the server's anchor handler already compares against its last inputs and
-    /// re-anchors only when they genuinely changed.
+    /// Called for the first frame and every accepted resize.
     private func rebuild(width: Int, height: Int) {
         let (hevc, fps, ceiling, previousBitrate) = lock.withLock {
             (wantHEVC, sessionFPS, bitrateCeiling, currentBitrate)
         }
 
-        // The controller's current figure wins if it has one: this backend
-        // rebuilds whenever a shared window is resized, and re-anchoring to the
-        // formula each time would undo every cut the congestion controller had
-        // made on a link that has not changed.
+        // The controller's current figure wins if it has one — re-anchoring
+        // to the formula on every resize would undo its cuts on an
+        // unchanged link.
         let anchored =
             previousBitrate
             ?? Self.anchoredBitrate(
@@ -425,9 +349,6 @@ public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncodi
 
         lock.withLock {
             encoder = opened
-            // Both buffers are re-made at the new geometry. Keeping the old
-            // front would leave the encoder reading planes sized for the
-            // previous resolution on the very next pass.
             if let handoff {
                 handoff.resize(width: width, height: height)
             } else {

@@ -119,9 +119,6 @@ final class ViewerInputMappingTests: XCTestCase {
 
     // MARK: scrollDisposition
 
-    /// The headline regression: this viewer used to consume every scroll
-    /// locally, so a controlling viewer's wheel zoomed their own window and
-    /// the sharer's content never moved.
     func testScrollForwardsToTheSharerWhileControlling() {
         let d = ViewerInputMapping.scrollDisposition(
             dx: 0, dy: 1, gdkState: 0, isControlling: true)
@@ -143,8 +140,6 @@ final class ViewerInputMappingTests: XCTestCase {
             .local)
     }
 
-    /// Zoom has to stay reachable while controlling, or the split trades one
-    /// missing feature for another.
     func testControlWheelKeepsZoomingLocallyWhileControlling() {
         XCTAssertEqual(
             ViewerInputMapping.scrollDisposition(
@@ -153,16 +148,14 @@ final class ViewerInputMappingTests: XCTestCase {
     }
 
     /// Shift+scroll is the horizontal-scroll convention on the sharer, so it
-    /// forwards (carrying the modifier) rather than panning the local view —
-    /// panning is what you do when you are NOT driving the other machine.
+    /// forwards rather than panning the local view.
     func testShiftScrollForwardsWithTheModifier() {
         let d = ViewerInputMapping.scrollDisposition(
             dx: 0, dy: 1, gdkState: ViewerInputMapping.gdkShiftMask, isControlling: true)
         XCTAssertEqual(d, .forward(deltaX: 0, deltaY: -1, modifiers: [.shift]))
     }
 
-    /// Smooth (touchpad) scrolling reports fractions of a notch, and they must
-    /// survive to the wire — every injector handles sub-line deltas.
+    /// Smooth (touchpad) fractional deltas must survive to the wire.
     func testFractionalTouchpadDeltasAreNotRounded() {
         let d = ViewerInputMapping.scrollDisposition(
             dx: 0, dy: 0.25, gdkState: 0, isControlling: true)
