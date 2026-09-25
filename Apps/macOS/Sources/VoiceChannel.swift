@@ -67,6 +67,14 @@ final class VoiceChannel: @unchecked Sendable {
     /// reads as 0 instead of holding its last count forever.
     private var voiceSSRCsThisWindow: Set<UInt32> = []
     private var systemAudioThisWindow = false
+    /// Models the playback queue with no cap, so the jitter target can be
+    /// sized on what a burst actually demanded rather than on smoothed
+    /// jitter, which does not see bursts. Fed from `emitMixed` — the queue's
+    /// own input — and drained by the ~1 Hz target sweep.
+    private var playoutBacklog = VoiceReceiveDecisions.PlayoutBacklog()
+    /// Worst backlog seen since the last `audio.summary`, so a row can say
+    /// what the target was sized against.
+    private var burstDepthSinceSummary = 0
     private let statsLock = OSAllocatedUnfairLock<VoiceStats>(initialState: VoiceStats())
     private let jitterTargetDepth = OSAllocatedUnfairLock<Int>(
         initialState: VoiceChannel.initialJitterTargetDepth)
@@ -141,6 +149,8 @@ final class VoiceChannel: @unchecked Sendable {
             self.lastSummaryStats = VoiceStats()
             self.voiceSSRCsThisWindow.removeAll()
             self.systemAudioThisWindow = false
+            self.playoutBacklog.reset()
+            self.burstDepthSinceSummary = 0
             self.jitterTargetDepth.withLock { $0 = Self.initialJitterTargetDepth }
             self.statsLock.withLock { $0 = VoiceStats() }
         }
@@ -337,16 +347,19 @@ final class VoiceChannel: @unchecked Sendable {
         }
         let worstJitterMs = receiveStates.values.map(\.smoothedJitterMs).max() ?? 0
         statsLock.withLock { $0.smoothedJitterMs = worstJitterMs }
+        let burstDepth = playoutBacklog.drainPeak()
+        burstDepthSinceSummary = max(burstDepthSinceSummary, burstDepth)
         let (previous, next) = jitterTargetDepth.withLock { depth -> (Int, Int) in
             let old = depth
             depth = VoiceReceiveDecisions.jitterBufferTarget(
-                smoothedJitterMs: worstJitterMs, currentTarget: old)
+                smoothedJitterMs: worstJitterMs, burstDepth: burstDepth, currentTarget: old)
             return (old, depth)
         }
         guard next != previous else { return }
         logger.log(
             "VoiceChannel: jitter buffer target \(previous) → \(next) buffers "
-                + "(smoothed jitter \(String(format: "%.1f", worstJitterMs)) ms)")
+                + "(smoothed jitter \(String(format: "%.1f", worstJitterMs)) ms, "
+                + "burst \(burstDepth) buffers)")
     }
 
     /// Emit `frames` frames of silence to cover a sequence gap, ramping
@@ -382,6 +395,10 @@ final class VoiceChannel: @unchecked Sendable {
     private func emitMixed(ssrc: UInt32, samples: [Float], nowNs: UInt64) {
         guard let emit = onMixedPCM else { return }
         for frame in mixer.add(ssrc: ssrc, samples: samples, nowNs: nowNs) {
+            // After the mixer, not before: one slot's several speakers leave
+            // here as the single frame the playback queue receives, and
+            // counting raw arrivals would read two people talking as a burst.
+            playoutBacklog.noteFrameQueued(nowNs: nowNs)
             emit(frame)
         }
     }
@@ -489,6 +506,7 @@ final class VoiceChannel: @unchecked Sendable {
             systemAudioPlaying: systemAudio,
             microphoneOn: !_isMuted,
             jitterTargetDepth: jitterTargetDepth.withLock { $0 },
+            burstDepth: takeBurstDepthForSummary(),
             outputDevice: outputDeviceName.withLock { $0 },
             playbackQueueTracked: true)
         // Window bookkeeping above still advanced — a suppressed window
@@ -502,6 +520,16 @@ final class VoiceChannel: @unchecked Sendable {
             .audioSummary,
             fields: snapshot.audioSummaryFields(
                 since: previous, windowNs: windowNs, context: context))
+    }
+
+    /// Worst backlog since the previous row, then reset — a summary reports
+    /// its own window, like every counter beside it. The open backlog is
+    /// folded in so a burst still draining at the row boundary is reported
+    /// by the window it happened in.
+    private func takeBurstDepthForSummary() -> Int {
+        let depth = max(burstDepthSinceSummary, playoutBacklog.peakDepth)
+        burstDepthSinceSummary = 0
+        return depth
     }
 
     private func ensureDecoder(for ssrc: UInt32) throws -> OpusVoiceDecoder {

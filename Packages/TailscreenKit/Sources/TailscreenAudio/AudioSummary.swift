@@ -24,6 +24,13 @@ extension VoiceStats {
         /// Current adaptive jitter target, in 20 ms buffers — the same
         /// overrun count means something different at depth 3 vs. 8.
         public var jitterTargetDepth: Int
+        /// Deepest the playback queue would have had to be to keep every
+        /// frame delivered in this window — see
+        /// `VoiceReceiveDecisions.PlayoutBacklog`. Read it beside
+        /// `jitterTargetDepth`: the two far apart is the shape that produces
+        /// overruns and underruns at the same time, and is precisely what
+        /// smoothed jitter alone could never show.
+        public var burstDepth: Int
         /// Effective output device, when known. Absent rather than a placeholder.
         public var outputDevice: String?
         /// Whether the playback queue's depth is tracked by whoever built
@@ -37,6 +44,7 @@ extension VoiceStats {
             systemAudioPlaying: Bool = false,
             microphoneOn: Bool = false,
             jitterTargetDepth: Int = 0,
+            burstDepth: Int = 0,
             outputDevice: String? = nil,
             playbackQueueTracked: Bool = false
         ) {
@@ -44,6 +52,7 @@ extension VoiceStats {
             self.systemAudioPlaying = systemAudioPlaying
             self.microphoneOn = microphoneOn
             self.jitterTargetDepth = jitterTargetDepth
+            self.burstDepth = burstDepth
             self.outputDevice = outputDevice
             self.playbackQueueTracked = playbackQueueTracked
         }
@@ -74,6 +83,7 @@ extension VoiceStats {
                 systemAudioClampedBuffers - previous.systemAudioClampedBuffers),
             "jitter_ms": .double((smoothedJitterMs * 10).rounded() / 10),
             "jitter_target": DiagnosticValue(context.jitterTargetDepth),
+            "burst_depth": DiagnosticValue(context.burstDepth),
             "voice_streams": DiagnosticValue(context.voiceStreams),
             "system_audio": .bool(context.systemAudioPlaying),
             "mic_on": .bool(context.microphoneOn)

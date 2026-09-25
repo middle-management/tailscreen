@@ -122,11 +122,68 @@ final class VoiceResilienceDecisionTests: XCTestCase {
         XCTAssertEqual(VoiceReceiveDecisions.jitterBufferTarget(smoothedJitterMs: 0, currentTarget: 2), 2)
     }
 
-    func testHighJitterStepsUpByOne() {
-        // 100 ms of jitter wants ~6 buffers of slack, but growth is bounded
-        // to one step per call.
-        XCTAssertEqual(VoiceReceiveDecisions.jitterBufferTarget(smoothedJitterMs: 100, currentTarget: 3), 4)
-        XCTAssertEqual(VoiceReceiveDecisions.jitterBufferTarget(smoothedJitterMs: 100, currentTarget: 4), 5)
+    /// Growth goes straight to the ideal; shrink is one step. The asymmetry
+    /// is the point: being too shallow costs dropped audio every frame until
+    /// the target catches up, and at a ~1 Hz sweep one-step growth spends
+    /// nine more seconds dropping on the way from 3 to 12. Being too deep
+    /// costs latency the next shrink gives back.
+    func testGrowthIsImmediateAndShrinkIsOneStep() {
+        // 100 ms of jitter wants ceil(100/20) + 1 = 6 buffers.
+        XCTAssertEqual(VoiceReceiveDecisions.jitterBufferTarget(smoothedJitterMs: 100, currentTarget: 3), 6)
+        XCTAssertEqual(VoiceReceiveDecisions.jitterBufferTarget(smoothedJitterMs: 100, currentTarget: 5), 6)
+        // Coming back down from a deep buffer is gradual, so one quiet
+        // window cannot collapse a buffer the path still needs.
+        XCTAssertEqual(VoiceReceiveDecisions.jitterBufferTarget(smoothedJitterMs: 0, currentTarget: 12), 11)
+    }
+
+    // MARK: - Sizing on burst depth
+
+    /// The reason this parameter exists. These are the real readings from a
+    /// 0.10.0-rc.16 sharer bundle: smoothed jitter between 32 and 39 ms for
+    /// two minutes, which asks for a target of 3 — and 3 is exactly where the
+    /// target sat while the receiver dropped 9 % of the frames it had been
+    /// handed and starved 327 times. The burst reading is what the queue
+    /// actually needed.
+    func testSmoothedJitterAloneUnderSizesABurstyPath() {
+        let jitterOnly = VoiceReceiveDecisions.jitterBufferTarget(
+            smoothedJitterMs: 34.8, currentTarget: 3)
+        XCTAssertEqual(jitterOnly, 3, "this is the rc.16 behaviour, kept as the baseline")
+
+        let withBurst = VoiceReceiveDecisions.jitterBufferTarget(
+            smoothedJitterMs: 34.8, burstDepth: 15, currentTarget: 3)
+        XCTAssertGreaterThan(
+            withBurst, jitterOnly,
+            "a 15-frame burst must size the buffer, and smoothed jitter never sees it")
+        XCTAssertEqual(withBurst, 12, "clamped at maxDepth")
+    }
+
+    /// And it is self-limiting: a path that does not burst keeps today's
+    /// buffer and today's latency. Without this the fix would be "add 240 ms
+    /// of delay to every call" rather than "to the calls that need it".
+    func testACleanPathKeepsTheJitterDerivedTarget() {
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 5, burstDepth: 1, currentTarget: 2),
+            2)
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 30, burstDepth: 2, currentTarget: 3),
+            3)
+    }
+
+    /// The deeper of the two readings wins, in both directions — neither
+    /// input may mask the other.
+    func testTargetTakesTheDeeperOfJitterAndBurst() {
+        // Jitter wants 6, burst saw 2 → 6.
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 100, burstDepth: 2, currentTarget: 2),
+            6)
+        // Jitter wants 2, burst saw 7 → 7.
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 0, burstDepth: 7, currentTarget: 2),
+            7)
     }
 
     func testTargetClampsAtMaxDepth() {
@@ -139,6 +196,16 @@ final class VoiceResilienceDecisionTests: XCTestCase {
         XCTAssertEqual(VoiceReceiveDecisions.jitterBufferTarget(smoothedJitterMs: 30, currentTarget: 3), 3)
     }
 
+    func testTargetMonotoneInBurstDepth() {
+        var previous = 0
+        for burst in 0...20 {
+            let target = VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 0, burstDepth: burst, currentTarget: 2)
+            XCTAssertGreaterThanOrEqual(target, previous, "target must not shrink as bursts grow")
+            previous = target
+        }
+    }
+
     func testTargetMonotoneInJitter() {
         var previous = 0
         for jitterMs in stride(from: 0.0, through: 300.0, by: 10.0) {
@@ -146,6 +213,118 @@ final class VoiceResilienceDecisionTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(target, previous, "target must not shrink as jitter grows")
             previous = target
         }
+    }
+
+
+    // MARK: - PlayoutBacklog
+
+    private static let frameNs = VoiceReceiveDecisions.frameDurationNs
+
+    /// A stream arriving exactly on time never needs more than one buffer.
+    /// If this drifts upward the tracker would inflate every target on every
+    /// healthy call, which is the one way this change could make things worse.
+    func testSteadyArrivalsNeverBacklog() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        for i in 0..<500 {
+            backlog.noteFrameQueued(nowNs: UInt64(i) * Self.frameNs)
+        }
+        XCTAssertEqual(backlog.peakDepth, 1)
+    }
+
+    /// A sender whose clock runs fast genuinely does back the queue up, and
+    /// the model says so — but it stays bounded rather than running away.
+    ///
+    /// Worth being exact about, because this is the one case where sizing on
+    /// backlog behaves differently from sizing on jitter, and not entirely
+    /// for the better. Drift is not a burst: the right answer to it is the
+    /// cap (bound the latency, drop the excess), which is what the cap was
+    /// always for. Sizing on backlog lets the buffer follow the drift up to
+    /// `maxDepth` first, so a persistently fast sender reaches a deeper
+    /// buffer — and more mouth-to-ear latency — before dropping starts than
+    /// it used to. It is bounded either way, and the rates that matter are
+    /// slow: at a realistic 0.1 % the climb to `maxDepth` takes minutes.
+    /// This pins the bound, not an absence of accumulation.
+    func testClockDriftBacklogsButStaysBounded() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        let fast = Self.frameNs - 100_000  // 19.9 ms — a 0.5 % fast sender
+        for i in 0..<2000 {
+            backlog.noteFrameQueued(nowNs: UInt64(i) * fast)
+        }
+        XCTAssertGreaterThan(backlog.peakDepth, 1, "drift does back the queue up")
+        XCTAssertLessThanOrEqual(
+            backlog.peakDepth, VoiceReceiveDecisions.PlayoutBacklog.depthCeiling,
+            "but the model is bounded, so nothing runs away")
+    }
+
+    /// The shape the whole change exists for: the path stalls, then delivers
+    /// everything it was holding at once.
+    func testAStallThenABurstReportsTheBurstDepth() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        backlog.noteFrameQueued(nowNs: 0)
+        // 300 ms of nothing, then 15 frames inside 2 ms.
+        let burstStart: UInt64 = 300_000_000
+        for i in 0..<15 {
+            backlog.noteFrameQueued(nowNs: burstStart + UInt64(i) * 100_000)
+        }
+        XCTAssertEqual(backlog.peakDepth, 15)
+    }
+
+    /// Playout keeps consuming during a slower burst, so the depth demanded
+    /// is the arrivals minus what played — not the raw arrival count.
+    func testASpreadBurstDemandsLessThanItsFrameCount() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        backlog.noteFrameQueued(nowNs: 0)
+        let burstStart: UInt64 = 300_000_000
+        // 15 frames over 100 ms — playout drains ~5 of them on the way.
+        for i in 0..<15 {
+            backlog.noteFrameQueued(nowNs: burstStart + UInt64(i) * (Self.frameNs / 3))
+        }
+        XCTAssertGreaterThan(backlog.peakDepth, 5)
+        XCTAssertLessThan(backlog.peakDepth, 15)
+    }
+
+    /// Draining hands over the peak and opens the next window at the depth
+    /// still outstanding — a burst mid-drain is a demand the next window
+    /// inherits, and resetting to zero would under-report it exactly when it
+    /// matters most.
+    func testDrainCarriesTheOutstandingDepthIntoTheNextWindow() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        backlog.noteFrameQueued(nowNs: 0)
+        let burstStart: UInt64 = 300_000_000
+        for i in 0..<10 {
+            backlog.noteFrameQueued(nowNs: burstStart + UInt64(i) * 100_000)
+        }
+        XCTAssertEqual(backlog.drainPeak(), 10)
+        XCTAssertEqual(backlog.peakDepth, 10, "still 10 frames deep, so the next window starts there")
+    }
+
+    /// A clock that steps backwards must not hang the drain loop or invent
+    /// a backlog — the monotonic clock should not do this, but the tracker
+    /// cannot know its caller used one.
+    func testBackwardClockIsSurvivable() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        backlog.noteFrameQueued(nowNs: 1_000_000_000)
+        backlog.noteFrameQueued(nowNs: 0)
+        backlog.noteFrameQueued(nowNs: 500_000)
+        XCTAssertLessThanOrEqual(backlog.peakDepth, VoiceReceiveDecisions.PlayoutBacklog.depthCeiling)
+    }
+
+    /// The model is capped, so a pathological gap cannot make the drain loop
+    /// long or the reported demand absurd.
+    func testDepthIsCeilinged() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        for i in 0..<500 {
+            backlog.noteFrameQueued(nowNs: UInt64(i))  // all inside one frame
+        }
+        XCTAssertEqual(backlog.peakDepth, VoiceReceiveDecisions.PlayoutBacklog.depthCeiling)
+    }
+
+    func testResetForgetsEverything() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        for i in 0..<10 { backlog.noteFrameQueued(nowNs: UInt64(i)) }
+        XCTAssertGreaterThan(backlog.peakDepth, 1)
+        backlog.reset()
+        XCTAssertEqual(backlog.peakDepth, 0)
     }
 
     // MARK: - shouldLogClamp
