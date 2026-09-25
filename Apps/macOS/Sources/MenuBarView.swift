@@ -23,7 +23,11 @@ struct MenuBarView: View {
         // click, including the alert's own buttons, before the handler runs.
         mainView
             .id(viewID)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+            } action: {
+                contentHeight = $0
+            }
             .background(PanelHeightFitter(height: contentHeight))
             .onAppear {
                 // Second stash site for the main-window opener (see
