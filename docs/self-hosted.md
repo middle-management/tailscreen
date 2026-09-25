@@ -155,7 +155,7 @@ bootstrap.
   node down on the control plane just as it does against
   `controlplane.tailscale.com`.
 - **ACLs are still your access-control plane.** All the guidance in
-  [Privacy & Security]({{ site.baseurl }}{% link security.md %}#access-control) about TCP
+  [Privacy & Security]({{ site.baseurl }}{% link security.md %}#access-control-at-the-network-layer) about TCP
   and UDP port 7447 applies — just enforce it via your control plane's
   ACL system instead of Tailscale's.
 </content>
