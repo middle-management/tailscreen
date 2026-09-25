@@ -22,6 +22,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private static let stats = NSToolbarItem.Identifier("action.stats")
     private static let shortcuts = NSToolbarItem.Identifier("action.shortcuts")
     private static let remoteControl = NSToolbarItem.Identifier("action.remoteControl")
+    private static let openLink = NSToolbarItem.Identifier("action.openLink")
 
     private static let toolGroup = NSToolbarItem.Identifier("group.tools")
 
@@ -46,6 +47,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private weak var controlToolbarItem: NSToolbarItem?
     private var controlCancellable: AnyCancellable?
     private var controlState: ViewerControlState = .none
+    private var openLinkCancellable: AnyCancellable?
     private weak var colorMenuItem: NSMenuToolbarItem?
     private var colorCancellable: AnyCancellable?
     private var currentColor: Annotation.RGBA = Annotation.defaultColor
@@ -75,6 +77,12 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] state, supported in
                     self?.updateControlItem(state: state, supported: supported)
+                }
+            openLinkCancellable = appState.$sharerSupportsOpenLink
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] supported in
+                    self?.updateOpenLinkItem(supported: supported)
                 }
         }
     }
@@ -108,6 +116,20 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         }
         if let item = controlToolbarItem {
             applyControlVisuals(to: item)
+        }
+    }
+
+    /// Present only while the sharer advertised `.openLink`, beside the
+    /// remote-control item.
+    private func updateOpenLinkItem(supported: Bool) {
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == Self.openLink }
+        if supported, index == nil {
+            let statsIndex = toolbar.items.firstIndex { $0.itemIdentifier == Self.stats }
+            toolbar.insertItem(
+                withItemIdentifier: Self.openLink,
+                at: statsIndex ?? toolbar.items.count)
+        } else if !supported, let index {
+            toolbar.removeItem(at: index)
         }
     }
 
@@ -219,7 +241,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // `remoteControl` inserted dynamically, see `updateControlItem`.
+        // `remoteControl`/`openLink` inserted dynamically, see
+        // `updateControlItem`/`updateOpenLinkItem`.
         [
             Self.toolGroup, Self.colorMenu, .flexibleSpace, Self.stats, Self.shortcuts,
             Self.microphone, Self.undo, Self.clearAll
@@ -228,8 +251,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
-            Self.toolGroup, Self.colorMenu, Self.remoteControl, Self.stats, Self.shortcuts,
-            Self.microphone, Self.undo, Self.clearAll, .flexibleSpace, .space
+            Self.toolGroup, Self.colorMenu, Self.remoteControl, Self.openLink, Self.stats,
+            Self.shortcuts, Self.microphone, Self.undo, Self.clearAll, .flexibleSpace, .space
         ]
     }
 
@@ -287,6 +310,14 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             controlToolbarItem = item
             applyControlVisuals(to: item)
             return item
+        case Self.openLink:
+            return makeButton(
+                id: itemIdentifier,
+                label: L("Open Link on Sharer…"),
+                symbol: "link",
+                action: #selector(ViewerCommands.openLinkOnSharer(_:)),
+                toolTip: L("The sharer sees the whole link and chooses whether to open it.")
+            )
         case Self.stats:
             let item = makeButton(
                 id: itemIdentifier,

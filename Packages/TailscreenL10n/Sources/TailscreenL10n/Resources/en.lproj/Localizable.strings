@@ -737,5 +737,7 @@
 "The sharer sees the whole link and chooses whether to open it." = "The sharer sees the whole link and chooses whether to open it.";
 "That isn't a link the sharer can open. Use a full http:// or https:// address with no spaces." = "That isn't a link the sharer can open. Use a full http:// or https:// address with no spaces.";
 "Link sent. The sharer decides whether to open it." = "Link sent. The sharer decides whether to open it.";
+"https://…" = "https://…";
 "Link Received" = "Link Received";
 "%@ sent a link. Open Tailscreen to see it." = "%@ sent a link. Open Tailscreen to see it.";
+"The link couldn't be sent. Try again." = "The link couldn't be sent. Try again.";

@@ -708,5 +708,7 @@
 "The sharer sees the whole link and chooses whether to open it." = "Delaren ser hela länken och väljer själv om den ska öppnas.";
 "That isn't a link the sharer can open. Use a full http:// or https:// address with no spaces." = "Det är ingen länk som delaren kan öppna. Använd en fullständig http://- eller https://-adress utan mellanslag.";
 "Link sent. The sharer decides whether to open it." = "Länken är skickad. Delaren bestämmer om den ska öppnas.";
+"https://…" = "https://…";
 "Link Received" = "Länk mottagen";
 "%@ sent a link. Open Tailscreen to see it." = "%@ skickade en länk. Öppna Tailscreen för att se den.";
+"The link couldn't be sent. Try again." = "Länken kunde inte skickas. Försök igen.";

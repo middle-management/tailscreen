@@ -23,15 +23,17 @@ extension TailscaleScreenShareServer {
     /// is the only reliable way to release `replayd`'s per-bundle slot, hence
     /// a factory rather than one long-lived object) plus `CGEvent` injection.
     ///
-    /// Passing the injector/`rendersAnnotations: true` is what makes the
-    /// portable server advertise `ScreenShareCaps.remoteControl`/`.annotations`
-    /// — the sole place this build states its capabilities.
+    /// Passing the injector/`rendersAnnotations: true`/`promptsForLinks: true`
+    /// is what makes the portable server advertise
+    /// `ScreenShareCaps.remoteControl`/`.annotations`/`.openLink` — the sole
+    /// place this build states its capabilities.
     convenience init() {
         self.init(
             port: NetworkConfig.tailscreenPort,
             captureFactory: { HelperScreenCapture() },
             inputInjector: RemoteControlInjector(),
-            rendersAnnotations: true
+            rendersAnnotations: true,
+            promptsForLinks: true
         )
     }
 }
