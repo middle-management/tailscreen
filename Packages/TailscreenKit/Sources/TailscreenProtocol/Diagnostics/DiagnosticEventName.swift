@@ -139,6 +139,18 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
     case congestionArmed = "congestion.armed"
     case receiveLoopFailed = "transport.receive_loop.failed"
 
+    /// Per-window rollup of viewer annotations crossing the framed control
+    /// channel, sharer side: how many ops were applied, how many the
+    /// admitted-viewer gate dropped, how many were relayed on.
+    ///
+    /// Transport rather than media because what it measures is the control
+    /// channel, not the picture. Recorded only for a window in which
+    /// something happened — unlike ``transportSummary``, whose silence on a
+    /// clean window is the failure it was added to catch. Here a window with
+    /// no ops means nobody drew, which is the answer rather than the gap:
+    /// annotations are discrete user actions, not a continuous stream.
+    case annotationSummary = "annotation.summary"
+
     // MARK: Audio
 
     /// The set of audio devices the session can choose from changed — or was
@@ -152,6 +164,20 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
     case systemAudioStarted = "system_audio.started"
     case systemAudioStopped = "system_audio.stopped"
     case voiceSSRCAssigned = "voice.ssrc.assigned"
+
+    /// Per-window rollup of the voice RECEIVE path's health — concealment,
+    /// overruns, underruns, clamping and jitter — plus what is playing while
+    /// they were measured. See ``DiagnosticsTransportSampler`` for the
+    /// cadence and `VoiceStats.audioSummaryFields` for the row.
+    ///
+    /// Recorded every window in which audio is running, whether or not a
+    /// counter moved. The counters existed long before this and reached a
+    /// bundle only through a log line gated on "at most once a minute, and
+    /// only if something changed" — so a call that sounded wrong while the
+    /// counters sat still produced no rows at all, indistinguishable from a
+    /// call with no voice in it. That is the same silence
+    /// ``transportSummary`` was added to break, in the audio path.
+    case audioSummary = "audio.summary"
 
     // MARK: Remote control
 
@@ -244,12 +270,12 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
             return .media
 
         case .transportSummary, .fecArmed, .fecDisarmed,
-            .congestionArmed, .receiveLoopFailed:
+            .congestionArmed, .receiveLoopFailed, .annotationSummary:
             return .transport
 
         case .audioDevicesChanged, .micAttached, .micDetached, .micFailed,
             .micMuteChanged, .systemAudioStarted, .systemAudioStopped,
-            .voiceSSRCAssigned:
+            .voiceSSRCAssigned, .audioSummary:
             return .audio
 
         case .actionShareStart, .actionShareStop, .actionConnect,

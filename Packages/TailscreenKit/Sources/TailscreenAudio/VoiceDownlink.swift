@@ -130,10 +130,67 @@ public final class VoiceDownlink: @unchecked Sendable {
     private var concealed = 0
     private var discontinuities = 0
     private var clampedBuffers = 0
+    private var systemAudioClamped = 0
+    /// Worst live stream's smoothed jitter as of the last sweep, in ms.
+    private var worstJitterMs = 0.0
 
     var concealedFrameCount: Int { lock.withLock { concealed } }
     var discontinuityCount: Int { lock.withLock { discontinuities } }
     var clampedBufferCount: Int { lock.withLock { clampedBuffers } }
+
+    // MARK: - `audio.summary`
+
+    /// Cadence gate in front of `audio.summary` — the same five-second window
+    /// the transport rows use, so an audio row lines up with the transport row
+    /// beside it.
+    private var summarySampler = DiagnosticsTransportSampler()
+    /// Counters as of the previous row, so each carries deltas.
+    private var lastSummaryStats = VoiceStats()
+    /// Which streams actually delivered inside the open window. "Delivered",
+    /// not "has a decoder", so a stream that stops reads as 0 rather than
+    /// holding its last count until the stale sweep gets to it.
+    private var voiceSSRCsThisWindow: Set<UInt32> = []
+    private var systemAudioThisWindow = false
+
+    /// The counters this type owns, as the portable snapshot.
+    ///
+    /// `overrunDrops` and `underruns` stay zero here and the row omits them:
+    /// they are the playback queue's, and this type does not own one — see
+    /// `VoiceStats.PlaybackContext.playbackQueueTracked`.
+    private var statsSnapshot: VoiceStats {
+        var stats = VoiceStats()
+        stats.concealedFrames = concealed
+        stats.discontinuities = discontinuities
+        stats.clampedBuffers = clampedBuffers
+        stats.systemAudioClampedBuffers = systemAudioClamped
+        stats.smoothedJitterMs = worstJitterMs
+        return stats
+    }
+
+    /// Close the window if it is due and return the row to record — **empty
+    /// when there is none**, which `audioSummaryFields` never produces, so
+    /// the two are not confusable.
+    ///
+    /// Called with the lock held; the caller records **outside** it, for the
+    /// same reason `ingest` hands its frames out before invoking the sink.
+    private func audioSummaryRowLocked(nowNs: UInt64) -> [String: DiagnosticValue] {
+        guard let windowNs = summarySampler.windowClosed(nowNs: nowNs) else { return [:] }
+        let context = VoiceStats.PlaybackContext(
+            voiceStreams: voiceSSRCsThisWindow.count,
+            systemAudioPlaying: systemAudioThisWindow,
+            microphoneOn: false,
+            jitterTargetDepth: jitterTarget,
+            outputDevice: nil,
+            playbackQueueTracked: false)
+        voiceSSRCsThisWindow.removeAll(keepingCapacity: true)
+        systemAudioThisWindow = false
+        guard VoiceStats.shouldRecordSummary(context: context) else { return [:] }
+        let snapshot = statsSnapshot
+        let previous = lastSummaryStats
+        lastSummaryStats = snapshot
+        return snapshot.audioSummaryFields(
+            since: previous, windowNs: windowNs, context: context)
+    }
 
     public init() {}
 
@@ -151,25 +208,34 @@ public final class VoiceDownlink: @unchecked Sendable {
     ///   testable); nil reads the process's monotonic uptime clock.
     public func ingest(_ packet: Data, nowNs: UInt64? = nil) {
         let now = nowNs ?? Self.monotonicNowNs()
-        let (sink, frames) = lock.withLock {
-            () -> ((([Float]) -> Void)?, [[Float]]) in
-            guard let parsed = depacketizer.unpack(packet) else { return (nil, []) }
+        let (sink, frames, summary) = lock.withLock {
+            () -> ((([Float]) -> Void)?, [[Float]], [String: DiagnosticValue]) in
+            guard let parsed = depacketizer.unpack(packet) else {
+                return (nil, [], audioSummaryRowLocked(nowNs: now))
+            }
             ingestCount &+= 1
             lastSeen[parsed.ssrc] = ingestCount
 
             var out: [Emission] = []
             switch VoiceReceiveDecisions.audioRoute(payloadType: parsed.payloadType) {
             case .drop:
-                return (nil, [])  // Unreachable — `unpack` admits only PT 98/99 — but total.
+                return (nil, [], [:])  // Unreachable — `unpack` admits only PT 98/99 — but total.
             case .systemAudio:
+                systemAudioThisWindow = true
                 ingestSystemAudio(parsed, nowNs: now, into: &out)
             case .voice:
+                voiceSSRCsThisWindow.insert(parsed.ssrc)
                 ingestVoice(parsed, nowNs: now, into: &out)
             }
             sweepIfDue(nowNs: now)
             // Per-SSRC output becomes per-slot output here, in decode order.
             let mixed = out.flatMap { mixer.add(ssrc: $0.ssrc, samples: $0.samples, nowNs: now) }
-            return (pcmSink, mixed)
+            // Taken under the lock, recorded outside it — the recorder takes
+            // its own lock, and nesting the two is how a deadlock gets built.
+            return (pcmSink, mixed, audioSummaryRowLocked(nowNs: now))
+        }
+        if !summary.isEmpty {
+            DiagnosticsCenter.shared.recorder?.record(.audioSummary, fields: summary)
         }
         guard let sink else { return }
         for frame in frames { sink(frame) }
@@ -194,6 +260,12 @@ public final class VoiceDownlink: @unchecked Sendable {
             concealed = 0
             discontinuities = 0
             clampedBuffers = 0
+            systemAudioClamped = 0
+            worstJitterMs = 0
+            summarySampler.reset()
+            lastSummaryStats = VoiceStats()
+            voiceSSRCsThisWindow.removeAll()
+            systemAudioThisWindow = false
         }
     }
 
@@ -282,7 +354,7 @@ public final class VoiceDownlink: @unchecked Sendable {
             var samples = try decoder.decode(au: parsed.au)
             decoderFailures.removeValue(forKey: parsed.ssrc)
             guard !samples.isEmpty else { return }
-            if VoiceReceiveDecisions.clampToUnitRange(&samples) { clampedBuffers += 1 }
+            if VoiceReceiveDecisions.clampToUnitRange(&samples) { systemAudioClamped += 1 }
             out.append((parsed.ssrc, samples))
         } catch {
             recordDecodeFailure(for: parsed.ssrc, nowNs: nowNs)
@@ -431,7 +503,7 @@ public final class VoiceDownlink: @unchecked Sendable {
             decoderFailures.removeValue(forKey: ssrc)
             lastSeen.removeValue(forKey: ssrc)
         }
-        let worstJitterMs = receiveStates.values.map(\.smoothedJitterMs).max() ?? 0
+        worstJitterMs = receiveStates.values.map(\.smoothedJitterMs).max() ?? 0
         jitterTarget = VoiceReceiveDecisions.jitterBufferTarget(
             smoothedJitterMs: worstJitterMs, currentTarget: jitterTarget)
     }

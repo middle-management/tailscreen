@@ -340,6 +340,24 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// inflates multi-viewer recovery sums and deflates throttled
         /// viewers' rates, destabilizing their parity gate).
         var packetsSentThisWindow: Int = 0
+        /// Audio RTP packets accepted from this viewer this sweep window
+        /// (reset each window).
+        ///
+        /// The sharer's `transport.summary` used to describe the downstream
+        /// only — what it sent this viewer and what the viewer reported back
+        /// — so "the sharer cannot hear me" had nothing in a bundle at all:
+        /// silence from a muted microphone, a viewer whose audio never left
+        /// its machine, and audio arriving and being rejected all produced an
+        /// identical row.
+        var audioPacketsThisWindow: Int = 0
+        /// Audio RTP packets from this viewer REJECTED this window by the
+        /// source-SSRC gate (`audioRelayDecision`) — a viewer sending under
+        /// an SSRC the sharer did not assign it.
+        ///
+        /// Counted apart from the accepted ones because it is the one case
+        /// that looks like silence from the outside while the viewer's own
+        /// bundle shows it sending: the packets arrive and go nowhere.
+        var audioRejectedThisWindow: Int = 0
         /// Per-viewer token bucket for the retransmit rate limit.
         var retransmitBudget = RetransmitBuffer.BudgetState(tokens: 0, lastRefillNs: 0)
         /// While `DispatchTime.now() < throttledUntilNs`, this viewer is in
@@ -1879,6 +1897,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // the sharer's overlay and never fanned out.
             let peerIP = peerAddress.map { Self.ipFromAddr($0) }
             guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
+                self.annotationCounters.withLock { $0.dropped += 1 }
                 self.logDroppedAnnotation(peerAddress: peerAddress)
                 return
             }
@@ -1891,6 +1910,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             self.annotationsByConnection.withLock { state in
                 if state[connectionID] == nil { state[connectionID] = [] }
             }
+            self.annotationCounters.withLock { $0.applied += 1 }
             self.trackAnnotationOp(op, connectionID: connectionID)
             self.onAnnotationReceived?(op)
             // Fan out to every OTHER viewer so window / application share
@@ -1898,6 +1918,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // on SCStream catching the sharer's overlay panel. Queued rather
             // than spawned: this viewer's ops must reach the others in the
             // order it drew them.
+            self.annotationCounters.withLock { $0.relayed += 1 }
             self.enqueueAnnotationBroadcast(op, excludingConnection: connectionID)
         }
         listener.onControlRequest = { [weak self] connectionID, peerAddress in
@@ -2695,12 +2716,24 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// is forwarded byte-for-byte (no transcode) so the receiving viewer
     /// sees the original sender's SSRC.
     private func handleInboundAudioRTP(_ packet: Data, header: RTPHeader, from sender: String) {
-        let validated = viewers.withLock { state in
-            Self.audioRelayDecision(
+        let validated = viewers.withLock { state -> (valid: Bool, recipients: [String]) in
+            let decision = Self.audioRelayDecision(
                 viewerAudioSSRCs: state.mapValues { $0.audioSSRC },
                 sender: sender,
                 headerSSRC: header.ssrc
             )
+            // Counted here, under the same lock that judged it, so the
+            // accepted and rejected tallies can never disagree about one
+            // packet.
+            if var viewer = state[sender] {
+                if decision.valid {
+                    viewer.audioPacketsThisWindow += 1
+                } else {
+                    viewer.audioRejectedThisWindow += 1
+                }
+                state[sender] = viewer
+            }
+            return decision
         }
         guard validated.valid else { return }
         if let pl = media {
@@ -3851,6 +3884,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // counters are read here as this window's totals, then zeroed.
             recordTransportSummaries(
                 now: now, windowNs: windowNs, pliCounts: pliCounts, healthByAddr: healthByAddr)
+            recordAnnotationSummary(windowNs: windowNs)
 
             // Drain the per-window NACK-served counters (loss/PLI inputs already
             // computed by `congestionInputs`, excluding throttled viewers).
@@ -3860,6 +3894,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                     guard var viewer = state[key] else { continue }
                     nacks += viewer.nackServedThisWindow
                     viewer.nackServedThisWindow = 0
+                    // Same window, same drain point: the summary above has
+                    // already read these as this window's totals.
+                    viewer.audioPacketsThisWindow = 0
+                    viewer.audioRejectedThisWindow = 0
                     state[key] = viewer
                 }
                 return nacks
@@ -4059,6 +4097,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                         fecRecovered: viewer.fecRecoveredThisWindow,
                         nackRecovered: viewer.nackRecoveredThisWindow,
                         packetsSent: viewer.packetsSentThisWindow,
+                        audioPacketsReceived: viewer.audioPacketsThisWindow,
+                        audioPacketsRejected: viewer.audioRejectedThisWindow,
                         droppedVideoFrames: videoDrops[addr] ?? 0,
                         droppedAudioFrames: audioDrops[addr] ?? 0,
                         health: healthByAddr[addr] ?? .good,
@@ -4085,6 +4125,41 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// final row). Written only by the sweep; `Guarded` so the sanitiser can
     /// see it like every other cross-task field on this class.
     private let lastTransportSummaryNs = Guarded<UInt64>(0)
+
+    /// Viewer annotations seen on the framed control channel since the last
+    /// `annotation.summary`. Written from the listener's handler threads,
+    /// drained by the sweep.
+    private let annotationCounters = Guarded<AnnotationCounters>(AnnotationCounters())
+
+    /// One `annotation.summary` for a window in which a viewer annotation
+    /// actually crossed the control channel, and nothing for a window in
+    /// which none did.
+    ///
+    /// The opposite rule from `transport.summary` beside it, and deliberately
+    /// so. A transport row's silence on a clean window is the failure that
+    /// summary exists to break, because the transport is always running and
+    /// "nothing to report" and "nothing measured" look alike. Annotations are
+    /// discrete acts: a window with none means nobody drew, which is the
+    /// answer rather than the absence of one — and a row per empty window
+    /// would crowd the recorder's ring for a feature most sessions never use.
+    ///
+    /// Counted here rather than per viewer because the gate that drops an op
+    /// does so before the peer is resolved to a roster entry — a dropped op
+    /// has no viewer to be attributed to, which is the whole reason it was
+    /// dropped.
+    private func recordAnnotationSummary(windowNs: UInt64) {
+        guard let recorder else { return }
+        let counters = annotationCounters.withLock { state -> AnnotationCounters in
+            let snapshot = state
+            state = AnnotationCounters()
+            return snapshot
+        }
+        guard !counters.isEmpty else { return }
+        recorder.record(
+            .annotationSummary,
+            role: .sharer,
+            fields: Self.annotationSummaryFields(counters: counters, windowNs: windowNs))
+    }
 
     /// Push a new bitrate to the live encoder and update the bookkeeping
     /// the sweep reads on the next tick. Forces a keyframe on a down-step

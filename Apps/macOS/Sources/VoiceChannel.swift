@@ -86,9 +86,25 @@ final class VoiceChannel: @unchecked Sendable {
     private var lastTargetRefreshNs: UInt64 = 0
     private var lastStatsLogNs: UInt64 = 0
     private var lastLoggedStats = VoiceStats()
+    /// Cadence gate in front of `audio.summary`, the same five-second window
+    /// the transport rows use so an audio row lines up with the transport row
+    /// beside it. Queue-confined like the rest of the inbound bookkeeping.
+    private var audioSummarySampler = DiagnosticsTransportSampler()
+    /// Counters as they stood when the previous `audio.summary` was recorded,
+    /// so each row carries deltas rather than running totals.
+    private var lastSummaryStats = VoiceStats()
+    /// Distinct voice SSRCs that delivered a packet in the open window, and
+    /// whether system audio did. Both are what `audio.summary` reports as
+    /// what was playing — deliberately "delivered in this window" rather than
+    /// "has a decoder", so a stream that stops reads as 0 instead of holding
+    /// its last count forever, which is what makes "the microphone is on and
+    /// nothing is arriving" a legible row.
+    private var voiceSSRCsThisWindow: Set<UInt32> = []
+    private var systemAudioThisWindow = false
     private let statsLock = OSAllocatedUnfairLock<VoiceStats>(initialState: VoiceStats())
     private let jitterTargetDepth = OSAllocatedUnfairLock<Int>(
         initialState: VoiceChannel.initialJitterTargetDepth)
+    private let outputDeviceName = OSAllocatedUnfairLock<String?>(initialState: nil)
     private let logger = TSLogger()
 
     // Portable constants, forwarded so `MicCapture` and the mac tests keep
@@ -143,6 +159,11 @@ final class VoiceChannel: @unchecked Sendable {
     func processOutboundFrame(_ pcm: [Float]) {
         queue.async {
             guard !self._isMuted else { return }
+            // Also the summary's clock while transmitting: a session whose
+            // inbound voice has stopped would otherwise stop reporting at
+            // exactly the moment "nothing is arriving" became the thing
+            // worth recording.
+            self.maybeRecordAudioSummary(nowNs: DispatchTime.now().uptimeNanoseconds)
             do {
                 guard let au = try self.encoder.encode(pcm: pcm) else { return }
                 let packet = self.packetizer.packetize(au: au)
@@ -174,6 +195,10 @@ final class VoiceChannel: @unchecked Sendable {
             self.lastTargetRefreshNs = 0
             self.lastStatsLogNs = 0
             self.lastLoggedStats = VoiceStats()
+            self.audioSummarySampler.reset()
+            self.lastSummaryStats = VoiceStats()
+            self.voiceSSRCsThisWindow.removeAll()
+            self.systemAudioThisWindow = false
             self.jitterTargetDepth.withLock { $0 = Self.initialJitterTargetDepth }
             self.statsLock.withLock { $0 = VoiceStats() }
         }
@@ -193,6 +218,18 @@ final class VoiceChannel: @unchecked Sendable {
         statsLock.withLock { $0 }
     }
 
+    /// The effective output device, for `audio.summary` to name.
+    ///
+    /// Pushed in by the host rather than read out: the device is Core Audio
+    /// state that lives on the MainActor, and every row wants it, so it is
+    /// lock-published here exactly as `jitterTargetDepth` is published the
+    /// other way. A row's whole purpose is to be self-contained — a reader
+    /// should not have to scroll back to the last `audio.devices.changed` to
+    /// learn what the numbers beside it were measured through.
+    func setOutputDeviceName(_ name: String?) {
+        outputDeviceName.withLock { $0 = name }
+    }
+
     /// Record a playback-side drop of an incoming buffer at the queue cap.
     /// Called from the MainActor (`MicCapture`).
     func noteOverrunDrop() {
@@ -210,10 +247,12 @@ final class VoiceChannel: @unchecked Sendable {
 
     private func processInbound(_ packet: Data) {
         guard let parsed = depacketizer.unpack(packet) else { return }
+        maybeRecordAudioSummary(nowNs: DispatchTime.now().uptimeNanoseconds)
         switch VoiceReceiveDecisions.audioRoute(payloadType: parsed.payloadType) {
         case .drop:
             return
         case .systemAudio:
+            systemAudioThisWindow = true
             processSystemAudioInbound(parsed)
             return
         case .voice:
@@ -221,6 +260,7 @@ final class VoiceChannel: @unchecked Sendable {
         }
         // Drop our own loopback if the network somehow returned it.
         guard parsed.ssrc != localSSRC else { return }
+        voiceSSRCsThisWindow.insert(parsed.ssrc)
         let now = DispatchTime.now().uptimeNanoseconds
         // Single dictionary fetch per packet (50 Hz hot path): the helpers
         // thread `state` through and each exit path writes it back once.
@@ -287,7 +327,9 @@ final class VoiceChannel: @unchecked Sendable {
             var samples = try decoder.decode(au: parsed.au)
             decoderFailures.removeValue(forKey: parsed.ssrc)
             guard !samples.isEmpty else { return }
-            _ = VoiceReceiveDecisions.clampToUnitRange(&samples)
+            if VoiceReceiveDecisions.clampToUnitRange(&samples) {
+                statsLock.withLock { $0.systemAudioClampedBuffers += 1 }
+            }
             emit(samples)
         } catch {
             recordDecodeFailure(for: parsed.ssrc, error: error, nowNs: now)
@@ -515,6 +557,45 @@ final class VoiceChannel: @unchecked Sendable {
                 + "discontinuities=\(snapshot.discontinuities) overruns=\(snapshot.overrunDrops) "
                 + "underruns=\(snapshot.underruns) clamped=\(snapshot.clampedBuffers) "
                 + "jitter=\(String(format: "%.1f", snapshot.smoothedJitterMs))ms")
+    }
+
+    /// Record one `audio.summary` per closed window, whether or not a counter
+    /// moved.
+    ///
+    /// The difference from `maybeLogStats` above is the point of the event.
+    /// That line fires at most once a minute and only when a counter changed,
+    /// which is right for a log somebody is watching scroll past and wrong for
+    /// a bundle: a call that sounds bad while the counters sit still produces
+    /// no lines at all, and a reader cannot tell that from a call with no
+    /// voice in it. This fires on the window regardless, and carries what was
+    /// playing so the numbers mean something.
+    private func maybeRecordAudioSummary(nowNs: UInt64) {
+        guard let windowNs = audioSummarySampler.windowClosed(nowNs: nowNs) else { return }
+        let streams = voiceSSRCsThisWindow.count
+        let systemAudio = systemAudioThisWindow
+        voiceSSRCsThisWindow.removeAll(keepingCapacity: true)
+        systemAudioThisWindow = false
+
+        let context = VoiceStats.PlaybackContext(
+            voiceStreams: streams,
+            systemAudioPlaying: systemAudio,
+            microphoneOn: !_isMuted,
+            jitterTargetDepth: jitterTargetDepth.withLock { $0 },
+            outputDevice: outputDeviceName.withLock { $0 },
+            // `MicCapture` counts both, on the MainActor, through
+            // `noteOverrunDrop` / `noteUnderrun`.
+            playbackQueueTracked: true)
+        // Cheap when nothing is playing, and the window bookkeeping above
+        // still advanced — a suppressed window must not fold into the next.
+        guard VoiceStats.shouldRecordSummary(context: context) else { return }
+
+        let snapshot = statsLock.withLock { $0 }
+        let previous = lastSummaryStats
+        lastSummaryStats = snapshot
+        DiagnosticsCenter.shared.recorder?.record(
+            .audioSummary,
+            fields: snapshot.audioSummaryFields(
+                since: previous, windowNs: windowNs, context: context))
     }
 
     private func ensureDecoder(for ssrc: UInt32) throws -> OpusVoiceDecoder {

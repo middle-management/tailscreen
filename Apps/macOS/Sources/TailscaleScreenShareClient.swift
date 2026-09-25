@@ -193,12 +193,44 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// Safe to call concurrently; writes are serialized through
     /// ``ConnectionWriter``. Drops silently if the back-channel isn't open.
     func sendAnnotationOp(_ op: AnnotationOp) async {
-        guard let conn = annotationChannel, isConnected else { return }
+        guard let conn = annotationChannel, isConnected else {
+            // Once per session, because the alternative is a silent return on
+            // a best-effort dial that reconnects in the background: a viewer
+            // drawing before the back-channel is up loses those strokes with
+            // nothing said anywhere, which from the sharer's seat is
+            // indistinguishable from the sharer having dropped them.
+            if Self.takeLatch(annotationDropLogged) {
+                logger.log("Client: annotation dropped — back-channel not open")
+            }
+            return
+        }
         let data = ScreenShareMessage.annotation(op).encode()
         do {
             try await annotationWriter.send(data, over: conn)
+            // Likewise once: the question a bundle has to answer is whether
+            // this viewer's strokes ever reached the wire at all, and one
+            // line answers it without a row per stroke.
+            if Self.takeLatch(annotationSentLogged) {
+                logger.log("Client: first annotation op sent")
+            }
         } catch {
             logger.log("Client: sendAnnotationOp failed: \(error)")
+        }
+    }
+
+    /// One-shot latches for the two annotation lines above — a bundle needs
+    /// to answer "did this viewer's strokes ever reach the wire", not to
+    /// carry a line per stroke at drag rate.
+    private let annotationSentLogged = Guarded<Bool>(false)
+    private let annotationDropLogged = Guarded<Bool>(false)
+
+    /// True the first time it is called for a given latch, false after —
+    /// the shape `TailscaleScreenShareServer.logDroppedAnnotation` uses.
+    private static func takeLatch(_ latch: Guarded<Bool>) -> Bool {
+        latch.withLock { taken -> Bool in
+            if taken { return false }
+            taken = true
+            return true
         }
     }
 

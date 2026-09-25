@@ -34,6 +34,12 @@ extension TailscaleScreenShareServer {
         public var nackRecovered: Int = 0
         /// Video packets planned for this viewer in the window.
         public var packetsSent: Int = 0
+        /// Audio RTP packets accepted FROM this viewer in the window — the
+        /// upstream half, which this row had none of.
+        public var audioPacketsReceived: Int = 0
+        /// Audio RTP packets from this viewer rejected by the source-SSRC
+        /// anti-spoof gate in the window.
+        public var audioPacketsRejected: Int = 0
         /// Cumulative video frames dropped behind this viewer's stalled send.
         public var droppedVideoFrames: Int = 0
         /// Cumulative audio frames dropped behind this viewer's stalled send.
@@ -47,6 +53,7 @@ extension TailscaleScreenShareServer {
             pliCount: Int = 0, lossFractionQ8: Int = 0, rttNs: UInt64 = 0,
             lastRRAtNs: UInt64 = 0, nackServed: Int = 0, fecRecovered: Int = 0,
             nackRecovered: Int = 0, packetsSent: Int = 0,
+            audioPacketsReceived: Int = 0, audioPacketsRejected: Int = 0,
             droppedVideoFrames: Int = 0, droppedAudioFrames: Int = 0,
             health: ViewerHealth = .good, fecGated: Bool = false
         ) {
@@ -58,6 +65,8 @@ extension TailscaleScreenShareServer {
             self.fecRecovered = fecRecovered
             self.nackRecovered = nackRecovered
             self.packetsSent = packetsSent
+            self.audioPacketsReceived = audioPacketsReceived
+            self.audioPacketsRejected = audioPacketsRejected
             self.droppedVideoFrames = droppedVideoFrames
             self.droppedAudioFrames = droppedAudioFrames
             self.health = health
@@ -111,6 +120,50 @@ extension TailscaleScreenShareServer {
         }
     }
 
+    /// Viewer annotations seen on the framed control channel in one window.
+    public struct AnnotationCounters: Equatable, Sendable {
+        /// Ops that passed the admitted-viewer gate and reached the sharer's
+        /// own overlay.
+        public var applied: Int = 0
+        /// Ops the admitted-viewer gate rejected — a pending, denied,
+        /// blocked or expelled peer, or one whose address did not reduce to
+        /// an admitted viewer's.
+        public var dropped: Int = 0
+        /// Ops fanned out to the other viewers.
+        public var relayed: Int = 0
+
+        public init(applied: Int = 0, dropped: Int = 0, relayed: Int = 0) {
+            self.applied = applied
+            self.dropped = dropped
+            self.relayed = relayed
+        }
+
+        /// Nothing crossed the channel this window.
+        public var isEmpty: Bool { applied == 0 && dropped == 0 && relayed == 0 }
+    }
+
+    /// The `annotation.summary` fields for one window.
+    ///
+    /// Three numbers because the three failures they separate were, until
+    /// this existed, one symptom: "I drew and the sharer saw nothing". A row
+    /// with `applied` climbing says the strokes arrived and were handed to
+    /// the overlay, which moves the question to what is on screen. A row with
+    /// `dropped` climbing says the admitted-viewer gate refused them, and
+    /// names a policy or an address-parsing problem. No row at all says
+    /// nothing reached this machine, which points back at the viewer or the
+    /// channel between them. The sharer's own once-per-share "dropped
+    /// annotation" log line could only ever say the middle one, and only once.
+    public static func annotationSummaryFields(
+        counters: AnnotationCounters, windowNs: UInt64
+    ) -> [String: DiagnosticValue] {
+        [
+            "window_ms": DiagnosticValue(windowNs / 1_000_000),
+            "applied": DiagnosticValue(counters.applied),
+            "dropped": DiagnosticValue(counters.dropped),
+            "relayed": DiagnosticValue(counters.relayed)
+        ]
+    }
+
     /// The `transport.summary` fields for one viewer.
     ///
     /// Two fields exist for the failure the summary was added to catch.
@@ -128,6 +181,15 @@ extension TailscaleScreenShareServer {
     /// expected count (`fecRecoveredQ8`), which is the number the FEC arm
     /// gates on. Both are Q8 like the wire field (255 = 100 %), with
     /// `loss_pct` beside them for a reader who does not want to divide.
+    ///
+    /// `audio_packets_in` and `audio_rejected_in` are the upstream half this
+    /// row did not have. Every other field describes what the sharer sent
+    /// this viewer or what the viewer said about it, so "the sharer cannot
+    /// hear me" left nothing behind at all: a muted microphone, a viewer
+    /// whose audio never reached the wire, and audio arriving and being
+    /// rejected by the source-SSRC gate all produced the same row. The two
+    /// are separate because only the third case looks like silence from here
+    /// while the viewer's own bundle shows it sending.
     ///
     /// The window carries two durations, on purpose — see ``SummaryWindow``.
     public static func transportSummaryFields(
@@ -160,6 +222,8 @@ extension TailscaleScreenShareServer {
             "fec_recovered": DiagnosticValue(sample.fecRecovered),
             "nack_recovered": DiagnosticValue(sample.nackRecovered),
             "packets_sent": DiagnosticValue(sample.packetsSent),
+            "audio_packets_in": DiagnosticValue(sample.audioPacketsReceived),
+            "audio_rejected_in": DiagnosticValue(sample.audioPacketsRejected),
             "video_drops_total": DiagnosticValue(sample.droppedVideoFrames),
             "audio_drops_total": DiagnosticValue(sample.droppedAudioFrames),
             "health": .string(sample.health.rawValue),
