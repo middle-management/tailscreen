@@ -2,26 +2,17 @@ import Foundation
 
 /// Getting a bundle out of the app and into somebody else's hands.
 ///
-/// Two outputs, on purpose:
-///
-///   * ``write(_:to:)`` writes the **`.jsonl` bundle** — the machine-readable
-///     artifact, one side per file, meant to be sent.
-///   * ``renderTimeline(_:)`` renders a **merged, readable timeline** across
-///     however many bundles were collected. This is what somebody pastes into
-///     a chat or an issue, and what an agent reads first.
-///
-/// The second is not a convenience. A bundle pair is two files of a few
-/// thousand JSON lines each; the useful thing is the forty lines where the two
-/// sides interleave around the moment it went wrong. Rendering that is the
-/// difference between "here are the logs" and an answer.
+/// Two outputs: ``write(_:to:)`` writes the machine-readable `.jsonl` bundle,
+/// one side per file; ``renderTimeline(_:)`` renders a merged, readable
+/// timeline across however many bundles were collected — the forty lines
+/// where two sides interleave around the moment it went wrong, not two files
+/// of a few thousand lines each.
 public enum DiagnosticsExport {
 
     /// Filename for one side's bundle:
-    /// `tailscreen-sharer-roberts-mac-20260917-100402.jsonl`.
-    ///
-    /// Role and device are in the name because these files arrive in pairs, in
-    /// a chat thread, out of order, often renamed. A name that says which end
-    /// it came from survives that; `diagnostics.jsonl` twice does not.
+    /// `tailscreen-sharer-roberts-mac-20260917-100402.jsonl`. Role and device
+    /// are in the name since these files arrive in pairs, renamed and out of
+    /// order — `diagnostics.jsonl` twice would not survive that.
     public static func filename(
         role: DiagnosticRole,
         device: String,
@@ -30,13 +21,10 @@ public enum DiagnosticsExport {
         "tailscreen-\(role.rawValue)-\(slug(device))-\(stamp(date)).jsonl"
     }
 
-    /// A name that cannot collide with one already in `directory`.
-    ///
-    /// The stamp has one-second resolution, so two exports inside the same
-    /// second produced the same path and the atomic write silently destroyed
-    /// the first — which, for a feature whose whole job is preserving evidence,
-    /// is the worst possible rounding error. A double-click on Export is enough
-    /// to hit it.
+    /// A name that cannot collide with one already in `directory`. The
+    /// stamp's one-second resolution means two exports in the same second
+    /// (a double-click on Export is enough) would otherwise silently
+    /// overwrite the first.
     static func uniqueFilename(
         role: DiagnosticRole,
         device: String,
@@ -54,21 +42,16 @@ public enum DiagnosticsExport {
     }
 
     /// Filename for a MERGED timeline: `tailscreen-merged-20260918-100402.txt`.
-    ///
-    /// `.txt` and not `.jsonl` on purpose. A merged timeline is rendered prose
-    /// for a person to read, not a bundle — feeding it back into the merge
-    /// would fail, and a name that invites that is a name that wastes
-    /// somebody's afternoon. It also carries no role or device, because it has
-    /// two of each; the devices are named inside, on every line.
+    /// `.txt`, not `.jsonl`: rendered prose, not a bundle, feeding it back
+    /// into the merge would fail. No role or device — it has two of each,
+    /// named inside on every line.
     public static func mergedFilename(at date: Date = Date()) -> String {
         "tailscreen-merged-\(stamp(date)).txt"
     }
 
     /// A merged-timeline name that cannot collide with one already in
-    /// `directory` — the same one-second-resolution problem
-    /// ``uniqueFilename(role:device:at:existsAtPath:)`` solves, and for the
-    /// same reason: merging twice in a second must not silently destroy the
-    /// first answer.
+    /// `directory` — same one-second-resolution problem as
+    /// ``uniqueFilename(role:device:at:existsAtPath:)``.
     static func uniqueMergedFilename(
         at date: Date = Date(),
         existsAtPath: (String) -> Bool
@@ -81,13 +64,9 @@ public enum DiagnosticsExport {
         return "\(base)-\(UUID().uuidString.prefix(8)).txt"
     }
 
-    /// Write a bundle, creating intermediate directories.
-    ///
-    /// Atomic: the file is never observed half-written. Diagnostics are
-    /// exported at exactly the moments things are going wrong — including, in
-    /// the worst case, on the way out of a crash-adjacent teardown — and a
-    /// truncated bundle that parses to a plausible-but-short session is worse
-    /// than no bundle, because nothing about it looks wrong.
+    /// Write a bundle, creating intermediate directories. Atomic: never
+    /// observed half-written — a truncated bundle that parses to a
+    /// plausible-but-short session is worse than no bundle at all.
     @discardableResult
     public static func write(_ bundle: DiagnosticsBundle, to url: URL) throws -> URL {
         let directory = url.deletingLastPathComponent()
@@ -97,21 +76,16 @@ public enum DiagnosticsExport {
         return url
     }
 
-    /// Render a merged timeline as text.
-    ///
-    /// The shape is fixed-width columns, because the reader is scanning for a
-    /// change in one of them — which device, which category, what happened —
-    /// and ragged columns defeat that. Reading order:
+    /// Render a merged timeline as text, fixed-width columns so a reader can
+    /// scan for a change in device/category/name:
     ///
     /// ```text
     ///   +1.841s  sharer-mac  handshake  hello.received       addr=100.64.0.3 caps=nack|rr|fec
     ///   +1.847s  viewer-pc   handshake  hello.ack.received   server_caps=nack|rr|fec ssrc=2
     /// ```
     ///
-    /// Times are relative to the first event, which is what a reader actually
-    /// wants ("three seconds in, the viewer was denied"); the absolute clock
-    /// is in the header of each bundle for anyone who needs to line this up
-    /// against something external.
+    /// Times are relative to the first event ("three seconds in, the viewer
+    /// was denied"); absolute clock is in each bundle's header.
     public static func renderTimeline(_ timeline: DiagnosticsMerge.Timeline) -> String {
         guard let first = timeline.lines.first else {
             return "No diagnostic events were recorded.\n"
@@ -131,18 +105,14 @@ public enum DiagnosticsExport {
         }
         out += "\n"
 
-        // Column widths from the data, so a run of one device and a run of ten
-        // both come out aligned rather than one being padded to the other's
-        // worst case.
+        // Column widths from the data, so columns align regardless of device count.
         let deviceWidth = timeline.lines.map(\.device.count).max() ?? 0
         let categoryWidth = timeline.lines.map(\.event.category.rawValue.count).max() ?? 0
         let nameWidth = min(timeline.lines.map(\.event.name.count).max() ?? 0, 36)
         let start = first.event.wallClock
 
-        // Gap markers are interleaved rather than only summarized above,
-        // because a total at the top does not tell a reader whether the hole is
-        // anywhere near the two events they are drawing a conclusion between.
-        // The list is sorted the same way `lines` is, so one index walks it.
+        // Gap markers interleaved, not just summarized at top, so a reader
+        // sees whether a hole sits near the events they're comparing.
         var nextGap = timeline.gaps.startIndex
         func emitGaps(upTo moment: Date) {
             while nextGap < timeline.gaps.endIndex, timeline.gaps[nextGap].at <= moment {
@@ -154,11 +124,8 @@ public enum DiagnosticsExport {
             }
         }
 
-        // Where one device's session gives way to the next. A process shares
-        // or views several times and a bundle retains the last few, so without
-        // this the stream reads as one long run and a reader draws conclusions
-        // between two events belonging to different shares. Per device, and
-        // only on a CHANGE, so the ordinary single-session bundle says nothing.
+        // Where one device's session gives way to the next, per device, only
+        // on change, so an ordinary single-session bundle says nothing.
         var lastSession: [String: UInt32] = [:]
         for line in timeline.lines {
             emitGaps(upTo: line.event.wallClock)
@@ -190,11 +157,8 @@ public enum DiagnosticsExport {
         return out
     }
 
-    /// Fields as `key=value`, sorted by key.
-    ///
-    /// Sorted so the same event always renders its fields in the same order:
-    /// a reader comparing two occurrences is looking for the one value that
-    /// differs, and dictionary order would make every pair look different.
+    /// Fields as `key=value`, sorted by key, so the same event always
+    /// renders in the same order for easy comparison.
     static func renderFields(_ fields: [String: DiagnosticValue]) -> String {
         fields.sorted { $0.key < $1.key }
             .map { "\($0.key)=\(render($0.value))" }
@@ -204,14 +168,8 @@ public enum DiagnosticsExport {
     private static func render(_ value: DiagnosticValue) -> String {
         switch value {
         case .string(let text):
-            // Escaped, then quoted when it would otherwise be ambiguous.
-            //
-            // The escaping is not cosmetic: this timeline is one event per
-            // line, and a captured log message or error description containing
-            // a newline would SPLIT one event across several lines — silently
-            // turning a readable trace into one that appears to contain events
-            // nothing recorded. A quote or backslash does the smaller version
-            // of the same damage, ending a value early.
+            // Escaped, then quoted if ambiguous — an unescaped newline in a
+            // captured message would split one event across several lines.
             let escaped = escape(text)
             let ambiguous =
                 escaped.contains(" ") || escaped.contains("=") || escaped != text
@@ -253,19 +211,10 @@ public enum DiagnosticsExport {
     }
 
     /// Reduce a device name to something safe in a filename on all three
-    /// platforms, without mangling the ordinary case.
-    ///
-    /// Device names are user-chosen and arrive with spaces, apostrophes and
-    /// emoji in them ("Robert's MacBook Pro"). Windows additionally rejects
-    /// `<>:"/\|?*`, so the conservative rule — keep ASCII alphanumerics, fold
-    /// everything else to a single dash — is the one that works everywhere.
-    ///
-    /// Apostrophes are the one exception, **dropped rather than folded**.
-    /// They are extremely common in device names, because that is what both
-    /// macOS and Windows generate by default from an account name, and folding
-    /// gives `robert-s-macbook-pro` where dropping gives `roberts-macbook-pro`.
-    /// A filename is something a person reads in a chat attachment before
-    /// deciding whether to open it, so the difference is worth one branch.
+    /// platforms: keep ASCII alphanumerics, fold everything else to a single
+    /// dash (Windows rejects `<>:"/\|?*`). Apostrophes are dropped rather
+    /// than folded — common in device names, and dropping reads better
+    /// (`roberts-macbook-pro` vs. `robert-s-macbook-pro`).
     static func slug(_ name: String) -> String {
         var out = ""
         var lastWasDash = false
@@ -282,24 +231,18 @@ public enum DiagnosticsExport {
                 lastWasDash = true
             }
         }
-        // Trimmed, capped, then trimmed AGAIN: capping after the first trim can
-        // hand back a trailing dash (a 40-character name whose 41st character
-        // was a space), which is the very thing the first trim exists to
-        // prevent.
+        // Trimmed, capped, then trimmed again — capping alone can reintroduce a trailing dash.
         let trimmed = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         let capped = String(trimmed.prefix(40))
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        // A name that was entirely non-ASCII would slug to nothing and produce
-        // `tailscreen-viewer--20260917-100402`, which reads like a bug.
+        // An entirely non-ASCII name would otherwise slug to nothing.
         return capped.isEmpty ? "device" : capped
     }
 }
 
 extension String {
-    /// Right-pad to `width`. Left alone when already at or over it — this is
-    /// for column alignment, not truncation, and clipping an event name would
-    /// hide exactly the tail that distinguishes `hello.ack.sent` from
-    /// `hello.ack.received`.
+    /// Right-pad to `width`, unless already at or over it — for column
+    /// alignment, not truncation.
     fileprivate func padded(to width: Int) -> String {
         count >= width ? self : self + String(repeating: " ", count: width - count)
     }

@@ -2,48 +2,31 @@ import SwiftCrossUI
 import TailscreenL10n
 import TailscreenProtocol
 
-/// The pre-sign-in hub: one card per way in.
+/// The pre-sign-in hub: one card per way in — the tailnet (sign in once, see
+/// every Tailscreen by name) and a share link (no sign-in, both directions,
+/// mandatory guest approval), not variants of each other. Matches the macOS
+/// welcome pane's split, card for card.
 ///
-/// There are two and they are not variants of each other — the tailnet (sign
-/// in once, then every Tailscreen shows up by name) and a share link (nothing
-/// to sign into, works in both directions, guest approval mandatory). The
-/// Windows app used to render a single sign-in card with the join affordance
-/// hanging under it, beneath a sentence that described only the tailnet, so
-/// the copy had already excluded what sat below it. A link-only share is a
-/// whole mode of the app — no account on either end — not a footnote to
-/// signing in. The macOS welcome pane makes the same split, card for card;
-/// this is that layout in the shared chrome, so all three apps' empty states
-/// read as one product.
-///
-/// One deliberate difference from macOS, forced by these hosts having no
-/// second surface: a running link-only share does not appear here at all.
-/// The host swaps this pane for the sharing view outright — two things that
-/// each want the whole column, stacked, is a screen that says "get started"
-/// above a share already running. The share-link card's own button is what
-/// starts one, and `shareNote` is what a *failed* start says, next to the
-/// button that retries it.
+/// Difference from macOS: a running link-only share doesn't appear here at
+/// all — the host swaps this pane for the sharing view outright. `shareNote`
+/// is what a *failed* start says, beside the retry button.
 public struct HubSignInPane: View {
     let title: String
     let subtitle: String
     /// The tailnet card's body copy: the pitch by default, or whatever went
-    /// wrong — a failed bring-up, a saved sign-in that needs the browser
-    /// again. The reason belongs on the card its button is on.
+    /// wrong (failed bring-up, sign-in needing the browser again).
     let tailnetMessage: String
     let signInLabel: String
     let onSignIn: @MainActor @Sendable () -> Void
-    /// Joining by link. Receives a parsed token — the field's own parse is
-    /// `ShareLinkFormat`, the same one every host's copy buttons produce
-    /// links with. Nil hides the field (previews, a host with no viewer).
+    /// Joining by link. Receives a token parsed via `ShareLinkFormat`. Nil
+    /// hides the field.
     let onJoin: (@MainActor @Sendable (String) -> Void)?
-    /// What the share-link card offers for the *sharing* half — the pinned
-    /// `WelcomePaneDecision`, taken rather than re-derived so both hosts and
-    /// the tests agree on one branch.
+    /// What the share-link card offers for sharing — the pinned
+    /// `WelcomePaneDecision`, not re-derived, so hosts and tests agree.
     let shareAction: WelcomePaneDecision.LinkShareAction
     let shareLabel: String
     let onShare: (@MainActor @Sendable () -> Void)?
-    /// Why the last share attempt did not take, if one did not. Rendered
-    /// under the button that would try again — a failure reported anywhere
-    /// else is one nobody reads, and this pane is the whole window.
+    /// Why the last share attempt failed, if it did. Rendered under the retry button.
     let shareNote: String?
 
     public init(
@@ -73,9 +56,7 @@ public struct HubSignInPane: View {
     }
 
     public var body: some View {
-        // Scrolling because two cards plus a paste field outgrow a short
-        // window, and a sign-in button you cannot reach is the one control
-        // this pane exists for.
+        // Scrolling: two cards plus a paste field outgrow a short window.
         ScrollView {
             VStack(spacing: 14) {
                 VStack(spacing: 6) {
@@ -103,8 +84,7 @@ public struct HubSignInPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Lane one: sign in, and what signing in buys — the screens list itself,
-    /// which is the thing a link cannot give you.
+    /// Lane one: sign in, and what it buys — the screens list a link can't give you.
     private var tailnetCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L("Your tailnet"))
@@ -121,18 +101,13 @@ public struct HubSignInPane: View {
     }
 }
 
-/// Lane two: the no-account paths, both directions.
+/// Lane two: the no-account paths, both directions. Joining is an inline
+/// field, not a collapsed button like `HubJoinCard` — an otherwise empty
+/// window gains nothing from the extra click. Sharing stays a button, since
+/// it mints a token rather than taking one.
 ///
-/// Joining is an inline field rather than a button that expands one — joining
-/// always starts with a pasted token, and on a window that is otherwise empty
-/// the extra click bought nothing. (The hub's own `HubJoinCard` keeps its
-/// collapsed form: there the affordance sits beside a list of screens and
-/// must not shout.) Sharing stays a button, because it mints a token instead
-/// of taking one.
-///
-/// Its own view rather than a method on the pane so the paste field's
-/// `@State` belongs to the card that owns it, and so a host can drop the
-/// whole lane by passing neither handler.
+/// Its own view, not a method on the pane, so the paste field's `@State`
+/// belongs to the card that owns it.
 struct HubShareLinkCard: View {
     let onJoin: (@MainActor @Sendable (String) -> Void)?
     let shareAction: WelcomePaneDecision.LinkShareAction
@@ -150,9 +125,7 @@ struct HubShareLinkCard: View {
                     .font(.headline)
                     .fontWeight(.semibold)
                 Spacer()
-                // Said as a badge rather than a sentence: it is the one fact
-                // that distinguishes this lane from the one above it, and it
-                // is a property of the lane, not a step in it.
+                // A badge, not a sentence: a property of this lane, not a step in it.
                 Text(L("No account needed"))
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
@@ -166,10 +139,7 @@ struct HubShareLinkCard: View {
                     .padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 8).fill(HubStyle.searchFill))
                 if inputRejected {
-                    // secondaryText, matching every other failure note in
-                    // this chrome — there is no danger token, and inventing
-                    // one for a paste-validation line would out-shout real
-                    // problems.
+                    // secondaryText, not a danger colour this chrome has none of.
                     Text(L("That doesn't look like a share link or token."))
                         .font(.caption)
                         .foregroundColor(HubStyle.secondaryText)
@@ -194,9 +164,7 @@ struct HubShareLinkCard: View {
                 Button(shareLabel, action: onShare)
             }
         case .sharingViaLink:
-            // Where the mac pane names the menu bar, these hosts name the
-            // card directly below: it is the same answer to "where is my
-            // link", pointed at the surface each app actually has.
+            // Points at the card below, where these hosts (unlike macOS's menu bar) keep the link.
             Text(L("You're sharing via link — the link and your guests are on the card below."))
                 .font(.caption)
                 .foregroundColor(HubStyle.secondaryText)
@@ -210,17 +178,15 @@ struct HubShareLinkCard: View {
         }
     }
 
-    /// Parse, then hand over a plausible bare token and nothing else. Real
-    /// validation is the guest dial's; this only keeps obvious non-tokens out
-    /// of a session attempt, with the inline line as the answer.
+    /// Parse and hand over a plausible bare token. Real validation is the
+    /// guest dial's; this only screens out obvious non-tokens.
     private func join() {
         guard let onJoin else { return }
         guard let token = ShareLinkFormat.token(fromUserInput: input) else {
             inputRejected = true
             return
         }
-        // Cleared before handing over: the session UI takes the window, and
-        // coming back should land on an empty field rather than a stale one.
+        // Cleared before handing over, so returning finds an empty field.
         input = ""
         inputRejected = false
         onJoin(token)

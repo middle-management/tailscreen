@@ -8,47 +8,28 @@ import TailscreenProtocol
 
 extension VoiceStats {
 
-    /// What was playing while the counters were measured.
-    ///
-    /// The counters alone cannot answer the question a crackle report asks.
-    /// "Concealed 0, overran 0, underran 0" is equally true of a clean call
-    /// and of a call whose distortion happened somewhere the voice path never
-    /// looks — and on macOS one such place is the engine's own mixer, where a
-    /// remote voice and the sharer's shared system audio are summed by
-    /// `mainMixerNode` into one output with no headroom of ours. So the row
-    /// carries what was feeding that mixer, which is the difference between
-    /// "the voice path was fine and something downstream was not" and "there
-    /// was nothing to hear".
+    /// What was playing while the counters were measured. Clean counters are
+    /// equally true of a good call and one whose distortion happened
+    /// downstream (e.g. macOS's `mainMixerNode` summing voice with system
+    /// audio with no headroom of ours), so this row carries what fed that mixer.
     public struct PlaybackContext: Equatable, Sendable {
-        /// Distinct remote voices being decoded — the number of live SSRC
-        /// decoders. `VoiceMixer` sums the ones landing in the same 20 ms
-        /// slot, so above 1 this is also the mixing depth.
+        /// Distinct remote voices being decoded (live SSRC decoders).
+        /// `VoiceMixer` sums same-slot ones, so above 1 this is mixing depth.
         public var voiceStreams: Int
-        /// Whether shared system audio is playing alongside those voices. A
-        /// separate player node on macOS, summed with voice only at the
-        /// engine's main mixer, so nothing in `VoiceStats` sees it.
+        /// Whether shared system audio is playing alongside — a separate
+        /// player node on macOS, only summed with voice at the main mixer.
         public var systemAudioPlaying: Bool
-        /// Whether this host's own microphone is open. Not a receive-path
-        /// counter either, but it is what engages voice processing (AEC),
-        /// and enabling it restarts the engine.
+        /// Whether this host's own microphone is open — engages AEC and restarts the engine.
         public var microphoneOn: Bool
-        /// Current adaptive jitter target, in 20 ms buffers. The gauge the
-        /// overrun and underrun counters are relative to: the same overrun
-        /// count means something different at depth 3 and at depth 8.
+        /// Current adaptive jitter target, in 20 ms buffers — the same
+        /// overrun count means something different at depth 3 vs. 8.
         public var jitterTargetDepth: Int
-        /// Effective output device, when the host knows it. Absent rather
-        /// than a placeholder on a host that does not name its devices.
+        /// Effective output device, when known. Absent rather than a placeholder.
         public var outputDevice: String?
-        /// Whether the playback queue's depth is accounted for by whoever
-        /// built this context.
-        ///
-        /// `overrunDrops` and `underruns` are counted by the *host's* audio
-        /// sink, not by the decode path, so a host that does not track its
-        /// queue has no value for them — and a zero in that case would read
-        /// as "nothing was dropped", which is the opposite of "nobody
-        /// looked". False omits both fields instead, on the same principle
-        /// as `transport.summary` leaving out `rr_age_ms` when no report has
-        /// ever arrived.
+        /// Whether the playback queue's depth is tracked by whoever built
+        /// this context. `overrunDrops`/`underruns` come from the host's
+        /// audio sink; false omits both fields rather than reading a
+        /// no-tracking zero as "nothing was dropped".
         public var playbackQueueTracked: Bool
 
         public init(
@@ -68,33 +49,19 @@ extension VoiceStats {
         }
     }
 
-    /// Whether a window is worth recording at all.
-    ///
-    /// True while audio is actually running — any voice decoding, system
-    /// audio playing, or a live microphone. This is deliberately **not** the
-    /// "only when a counter moved" guard that kept these numbers out of
-    /// bundles in the first place: suppressing an unchanged window hides a
-    /// steady-state fault, which is the whole failure being fixed, while
-    /// suppressing a window with no audio in it hides nothing — the
-    /// lifecycle events (`mic.attached`, `system_audio.started`,
-    /// `voice.ssrc.assigned`) already say whether audio should have been
-    /// running, so an absent row is unambiguous rather than silent.
+    /// Whether a window is worth recording — true while audio is actually
+    /// running. Deliberately not an "only when a counter moved" guard, which
+    /// would hide the steady-state faults this exists to catch.
     public static func shouldRecordSummary(context: PlaybackContext) -> Bool {
         context.voiceStreams > 0 || context.systemAudioPlaying || context.microphoneOn
     }
 
-    /// The `audio.summary` fields for one window.
+    /// The `audio.summary` fields for one window: deltas for every counter,
+    /// gauges as they stand now — like the viewer's transport row.
     ///
-    /// Deltas for every counter and gauges as they stand now, exactly like
-    /// the viewer's transport row: the question a summary answers is "what
-    /// happened in these five seconds", and a running total makes a reader
-    /// subtract two rows to find out.
-    ///
-    /// `clamped` is the one to read first on a distortion report. It counts
-    /// decoded buffers holding a sample outside [-1, 1] — i.e. voice that was
-    /// already hot before anything else was summed onto it — so a non-zero
-    /// count with `voice_streams` above 1, or alongside `system_audio`, says
-    /// the mix is clipping rather than the network dropping anything.
+    /// `clamped` counts decoded buffers with a sample outside [-1, 1] — voice
+    /// already hot before summing — so non-zero alongside `voice_streams` > 1
+    /// or `system_audio` says the mix is clipping, not the network dropping.
     public func audioSummaryFields(
         since previous: VoiceStats, windowNs: UInt64, context: PlaybackContext
     ) -> [String: DiagnosticValue] {

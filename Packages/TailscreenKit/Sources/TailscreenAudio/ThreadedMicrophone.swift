@@ -1,47 +1,30 @@
 import Foundation
 
-/// A capture device that hands over PCM by blocking until it has some.
+/// A capture device that hands over PCM by blocking until it has some — the
+/// shape a callback on a platform-owned thread cannot support, so the capture
+/// thread is written once here rather than once per platform.
 ///
-/// The shape worth standardising on, because the alternative — a callback on a
-/// thread the platform owns and will not tell you about — cannot be pumped by
-/// shared code at all. Naming it means the capture thread is written once,
-/// here, rather than once per platform with a slightly different idea of what
-/// "stop" means.
-///
-/// The two shipped backends do not both arrive this way, which is the point of
-/// having a seam: `ALSA.PCMRecorder.read(frames:)` genuinely blocks, while
-/// `WASAPI.Recorder.read()` returns immediately and is frequently empty. The
-/// Windows adapter is what makes the second one honour this contract — see
-/// `readPCM`.
+/// The two shipped backends don't both arrive this way: `ALSA.PCMRecorder`
+/// genuinely blocks, while `WASAPI.Recorder.read()` returns immediately and
+/// is frequently empty (its adapter sleeps out the difference; see `readPCM`).
 ///
 /// Implementations are driven from exactly one thread and need no locking of
 /// their own; `ThreadedMicrophone` guarantees that.
 public protocol BlockingPCMSource: AnyObject {
-    /// The device's negotiated format, as `readPCM` is currently delivering it.
-    ///
-    /// Read after every buffer rather than cached, because a device can be
-    /// reconfigured underneath a running stream — the same reason
-    /// `MicrophoneCapturing.onPCM` carries its format.
-    ///
-    /// **Describes the buffer, not the hardware.** A source that folds to mono
-    /// itself reports `channelCount: 1`; see `MicrophoneCapturing.onPCM` for
-    /// what forwarding the device's own channel count costs.
+    /// The device's negotiated format, as `readPCM` is currently delivering
+    /// it. Read after every buffer, not cached — a device can be
+    /// reconfigured mid-stream. Describes the buffer, not the hardware: a
+    /// source that folds to mono reports `channelCount: 1`.
     var inputFormat: AudioInputFormat { get }
 
     /// Block until the device has audio, then return it interleaved at
-    /// `inputFormat`. An empty result is legal (a timeout, a dropped period)
-    /// and is not an error.
-    ///
-    /// **Blocking is the source's job, not the pump's.** WASAPI's read returns
-    /// immediately and is frequently empty; an adapter over it must sleep out a
-    /// fraction of a device period rather than hand back nothing in a tight
-    /// loop, or the pump spins a core. Naming the requirement here is what
-    /// keeps that decision in the one file that knows the device's cadence.
+    /// `inputFormat`. An empty result is legal (a timeout, a dropped period).
+    /// Blocking is the source's job, not the pump's — an adapter over a
+    /// non-blocking read must sleep out a fraction of a device period, or the pump spins a core.
     func readPCM() throws -> CapturedPCM
 
-    /// Release the device. Must unblock a `readPCM` in flight — by closing the
-    /// handle, dropping the stream, whatever the platform's escape hatch is.
-    /// Called exactly once, and possibly while `readPCM` is blocked.
+    /// Release the device. Must unblock a `readPCM` in flight. Called
+    /// exactly once, possibly while `readPCM` is blocked.
     func closePCM()
 }
 
@@ -51,16 +34,11 @@ public struct CapturedPCM: Sendable {
     /// Interleaved Float32 at the source's `inputFormat`.
     public let samples: [Float]
 
-    /// The device dropped audio just before these samples — a WASAPI glitch
-    /// flag, an ALSA overrun.
-    ///
-    /// Carried rather than swallowed because the consumer holds state *across*
-    /// buffers: `CapturePCMConverter` keeps the previous buffer's last sample
-    /// as the left neighbour of the next interpolation. Interpolating across a
-    /// cut smears one artefact over both sides of a discontinuity that was
-    /// already going to be audible. Whoever holds the state resets it — which
-    /// is why this reaches `MicrophonePipeline.noteDiscontinuity()` rather than
-    /// being logged and dropped.
+    /// The device dropped audio just before these samples (WASAPI glitch
+    /// flag, ALSA overrun). Carried, not swallowed, because
+    /// `CapturePCMConverter` keeps the previous buffer's last sample as an
+    /// interpolation neighbour, and interpolating across a cut smears the
+    /// artefact — hence this reaches `MicrophonePipeline.noteDiscontinuity()`.
     public let discontinuity: Bool
 
     public init(samples: [Float], discontinuity: Bool = false) {
@@ -69,30 +47,22 @@ public struct CapturedPCM: Sendable {
     }
 }
 
-/// A microphone that can report device glitches.
-///
-/// A separate protocol rather than a field on `MicrophoneCapturing`, so a host
-/// backend that has no glitch signal (or has not got round to plumbing one)
-/// conforms to the seam unchanged. `VoiceUplink` asks for this conformance and
-/// wires it when present.
+/// A microphone that can report device glitches. A separate protocol, not a
+/// field on `MicrophoneCapturing`, so a backend with no glitch signal
+/// conforms unchanged. `VoiceUplink` wires it in when present.
 public protocol DiscontinuityReporting: AnyObject {
     var onDiscontinuity: (() -> Void)? { get set }
 }
 
 /// Drives a `BlockingPCMSource` on its own thread and publishes the result
-/// through the portable `MicrophoneCapturing` seam.
+/// through the portable `MicrophoneCapturing` seam. The mirror of
+/// `ThreadedAudioSink`: the read blocks, and both GUI hosts service transport
+/// from the UI thread, where a microphone read would freeze it.
 ///
-/// The mirror of `ThreadedAudioSink`, and mandatory for the same reason: the
-/// read blocks, and both GUI hosts service their transport from the UI thread.
-/// A microphone read on that thread is a frozen window between periods.
-///
-/// **Nothing is delivered after `stop()` returns.** That is the one guarantee
-/// worth stating, because the obvious implementation — check a flag, then call
-/// the callback — leaves a window where a buffer captured before the stop
-/// arrives after it, and a host that tore its encoder down in between crashes
-/// on a thread it does not know exists. The flag is therefore read *and* the
+/// **Nothing is delivered after `stop()` returns.** The flag is read and the
 /// callback invoked under one lock, so `stop()` either precedes a delivery
-/// entirely or waits for it.
+/// entirely or waits for it — the naive check-then-call leaves a window
+/// where a buffer arrives after a host has torn its encoder down.
 public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable {
     public var onPCM: (([Float], AudioInputFormat) -> Void)?
     public var onStopped: ((Error?) -> Void)?
@@ -100,8 +70,7 @@ public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable 
 
     private let source: BlockingPCMSource
     private let threadName: String
-    /// Guards `running` *and* the callback invocations, which is the point —
-    /// see the type's note on why checking the flag separately is not enough.
+    /// Guards `running` and the callback invocations together — the point.
     private let lock = NSLock()
     private var running = false
     private var thread: Thread?
@@ -111,9 +80,8 @@ public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable 
         self.threadName = threadName
     }
 
-    /// Begin capturing. A second call while already running is a no-op — the
-    /// same shape as `stop`, so a host that resends its state does not end up
-    /// with two threads reading one device.
+    /// Begin capturing. A second call while already running is a no-op, so a
+    /// host that resends its state doesn't end up with two threads reading one device.
     public func start() throws {
         let shouldStart = lock.withLock { () -> Bool in
             guard !running else { return false }
@@ -130,18 +98,12 @@ public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable 
         thread.start()
     }
 
-    /// Stop capturing and release the device.
-    ///
-    /// Idempotent. It does not join the capture thread — it does not need to,
-    /// because the lock discipline above already means no callback can be
-    /// *delivered* after this returns, which is the property a caller actually
-    /// depends on. Joining would additionally park the caller for however long
-    /// the source's blocking read takes to notice the close.
-    ///
-    /// It *can* block for the length of a delivery already in flight, since
-    /// that delivery holds the lock. That is the guarantee, not a wart — but it
-    /// is why `MicrophoneCapturing.onPCM` is documented as arithmetic only, and
-    /// why the one rule for a host is that `onPCM` must not call back in here.
+    /// Stop capturing and release the device. Idempotent. Does not join the
+    /// capture thread — the lock discipline already guarantees no callback
+    /// delivers after this returns, without parking the caller for however
+    /// long the close takes to be noticed. Can block for a delivery already
+    /// in flight (it holds the lock) — which is why a host's `onPCM` must
+    /// never call back into this.
     public func stop() {
         let wasRunning = lock.withLock { () -> Bool in
             let was = running
@@ -163,17 +125,13 @@ public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable 
             do {
                 captured = try source.readPCM()
             } catch {
-                // A read that failed *because we closed the device* is not a
-                // device failure — it is the stop we asked for, and reporting
-                // it as an error would put "your microphone disconnected" in
-                // front of somebody who just clicked mute.
+                // A read failing because we closed the device is the stop we
+                // asked for, not a failure — don't report "disconnected" for a mute click.
                 let stillRunning = lock.withLock { running }
                 deliverStopped(stillRunning ? error : nil)
                 return
             }
-            // Reported even for an empty buffer: the hole is in the stream, not
-            // in these samples, and a glitch that arrives with nothing attached
-            // still means the carried interpolation neighbour is stale.
+            // Reported even for an empty buffer: the hole is in the stream, not these samples.
             if captured.discontinuity {
                 let report = lock.withLock { running ? onDiscontinuity : nil }
                 report?()
@@ -201,14 +159,9 @@ public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable 
         }
     }
 
-    /// Fire `onStopped` exactly once, after the pump has given up.
-    ///
-    /// The callback is *fetched* under the lock and invoked outside it. Holding
-    /// the lock across it would deadlock the obvious host reaction to "the
-    /// microphone went away", which is to tear the capture down — and `stop()`
-    /// takes this same lock. `onPCM` is different: it is delivered under the
-    /// lock deliberately (see the type's note), which is why the one rule for
-    /// a host is that `onPCM` must not call back into the microphone.
+    /// Fire `onStopped` exactly once, after the pump has given up. Fetched
+    /// under the lock, invoked outside it — holding the lock across it would
+    /// deadlock a host reaction that calls `stop()`, which takes this same lock.
     private func deliverStopped(_ error: Error?) {
         let callback = lock.withLock { () -> ((Error?) -> Void)? in
             running = false
@@ -218,7 +171,5 @@ public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable 
     }
 }
 
-// Declared in an extension rather than on the type so the class line stays a
-// single line: with three conformances it wraps, and a wrapped declaration puts
-// the opening brace on its own line, which this repo's lint rejects.
+// In an extension so the class line stays single-line (wrapped with three conformances, which lint rejects).
 extension ThreadedMicrophone: DiscontinuityReporting {}

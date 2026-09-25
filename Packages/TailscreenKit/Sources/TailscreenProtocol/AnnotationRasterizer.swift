@@ -6,33 +6,20 @@ import CoreGraphics
 
 /// Draws annotations into a BGRA pixel buffer.
 ///
-/// macOS renders them with Core Graphics and the GTK viewer with OpenGL, both
-/// of which hand the hard part to a library. Windows has no equivalent that is
-/// reachable from here: GDI+ is C++ and drags in the standard library that
-/// already broke WASAPIKit, and Direct2D is a COM stack larger than the
-/// feature. What the platform DOES offer for free is `UpdateLayeredWindow`,
-/// which takes a premultiplied BGRA bitmap and composites it — so the missing
-/// piece is not a drawing API, it is a rasterizer, and a rasterizer is
-/// arithmetic.
+/// macOS and GTK hand this to Core Graphics/OpenGL, but Windows has no
+/// reachable equivalent (GDI+ is C++, Direct2D a large COM stack) — only
+/// `UpdateLayeredWindow`, which composites a premultiplied BGRA bitmap. The
+/// missing piece there is a rasterizer, which is arithmetic and belongs here,
+/// where Linux CI can check it.
 ///
-/// Which means it belongs here, where Linux CI can check it, rather than in a
-/// Windows shim where nothing could.
-///
-/// **Premultiplied alpha**, because that is what `UpdateLayeredWindow`
-/// requires and getting it wrong produces a dark halo around every stroke
-/// rather than an error.
+/// **Premultiplied alpha**, since that's what `UpdateLayeredWindow` requires;
+/// getting it wrong produces a dark halo, not an error.
 public enum AnnotationRasterizer {
     /// Bytes per pixel in the output.
     public static let bytesPerPixel = 4
 
     /// The destination: where the pixels are and how they are laid out.
-    ///
-    /// Grouped rather than passed as four parameters, the same way
-    /// ``BGRAToI420`` groups its source and planes — and for the same
-    /// immediate reason, that the alternative trips swiftlint's
-    /// `function_parameter_count`. It also reads better: these four are one
-    /// thing, and a caller that got `stride` and `width` the wrong way round
-    /// would produce a sheared image rather than an error.
+    /// Grouped rather than four parameters, like ``BGRAToI420``.
     public struct Surface {
         public let bgra: UnsafeMutablePointer<UInt8>
         /// Bytes per row; `width * bytesPerPixel` when tightly packed.
@@ -74,20 +61,10 @@ public enum AnnotationRasterizer {
     }
 
     /// Draw `annotations` over whatever is already in `surface`, without
-    /// clearing it first.
-    ///
-    /// The half of ``render(_:into:)`` that composites, split out because the
-    /// two viewers want opposite things. A sharer overlay is its own
-    /// transparent window, so it wants the clear; a *viewer* has a decoded
-    /// frame and wants the strokes drawn straight onto it, which is what the
-    /// WinUI viewer does — it has no second surface to composite, and adding
-    /// one (a XAML canvas, a D2D device) would be a large amount of platform
-    /// for something the rasterizer already does.
-    ///
-    /// The blend is unchanged and correct against an opaque destination:
-    /// source-over with a destination alpha of 255 leaves alpha at 255 and the
-    /// colour channels correctly mixed — the premultiplication that
-    /// `UpdateLayeredWindow` needs is the same arithmetic.
+    /// clearing it first. Split from ``render(_:into:)`` because a sharer
+    /// overlay wants the clear (its own transparent window) while a viewer
+    /// wants strokes drawn straight onto its decoded frame, with no second
+    /// surface to composite.
     public static func draw(_ annotations: [Annotation], into surface: Surface) {
         let width = surface.width
         let height = surface.height
@@ -107,12 +84,9 @@ public enum AnnotationRasterizer {
                 aspect: aspect)
             guard points.count >= 2 else { continue }
 
-            // `Annotation.width` is in points relative to the video's short
-            // edge, which needs a reference to mean anything in pixels:
-            // `referenceShortEdge` is that reference, so the default 3-point
-            // stroke is 3 px on a 1000-px-tall surface and scales with the
-            // display instead of becoming a hairline on a 4K one. Floored at
-            // one pixel, because a stroke nobody can see is not a stroke.
+            // `referenceShortEdge` turns the short-edge-relative width into
+            // pixels (3 pt = 3 px at 1000 px tall), scaling with the display
+            // instead of hairlining on 4K. Floored at one pixel.
             let strokePixels = max(1, annotation.width * shortEdge / Self.referenceShortEdge)
             let halfWidth = strokePixels / 2
             for index in 0..<(points.count - 1) {
@@ -123,12 +97,10 @@ public enum AnnotationRasterizer {
         }
     }
 
-    /// One round-capped segment, antialiased by coverage.
-    ///
-    /// Coverage is `halfWidth + 0.5 - distance` clamped to 0…1 — the standard
-    /// signed-distance trick. Round caps come free from measuring distance to
-    /// the SEGMENT rather than to the infinite line, which is also what makes
-    /// a polyline's joints look continuous without any join handling.
+    /// One round-capped segment, antialiased by coverage (`halfWidth + 0.5 -
+    /// distance` clamped to 0…1). Round caps come free from measuring
+    /// distance to the segment rather than the infinite line, which also
+    /// makes joints look continuous with no join handling.
     private static func drawSegment(
         from start: CGPoint,
         to end: CGPoint,

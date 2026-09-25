@@ -3,38 +3,11 @@ import PackageDescription
 
 // TailscreenKit — the platform-portable core of Tailscreen.
 //
-// These sources live only here and build on Linux (and eventually
-// Windows). The macOS app consumes this package as a real SwiftPM
-// dependency (re-exported via Sources/ProtocolReexports.swift), so the
-// package's public API is the app's compile-time contract. CI enforces
-// the portability boundary (linux-protocol job).
-//
-// Six portability tiers, one source target each (test targets sit beside
-// them and are not part of the tier contract):
-//   - TailscreenProtocol: wire protocol + pure decision logic. NO Apple
-//     frameworks, NO dependencies — Foundation/Synchronization only.
-//   - TailscreenTransport: tsnet-facing peer discovery + IPN-bus watcher +
-//     the shared node bring-up (TsnetNodeFactory).
-//     Depends on TailscaleKit (and thus on the checked-out submodule with
-//     patches applied — `make -C ../TailscaleKit apply-patches`);
-//     compiling it needs only the patched header, not the built
-//     libtailscale.a (that's a link-time input).
-//   - TailscreenAudio: the voice path both endpoints share — the Opus codec
-//     (Float32↔Int16 + 960-sample framing over OpusKit/libopus), the
-//     microphone seam and its capture thread, and the RTP uplink/downlink.
-//     Foundation + OpusKit + TailscreenProtocol — also builds on Linux (needs
-//     libopus-dev + pkg-config). Kept out of TailscreenProtocol so that tier
-//     stays dependency-free; the edge runs the other way.
-//   - TailscreenViewer: the host-agnostic viewer data plane (ViewerSession
-//     + the decoder/sink seams, ViewerPipeline, FrameStore).
-//   - TailscreenSharer: the host-agnostic sharer data plane
-//     (TailscaleScreenShareServer + the CaptureEncoding / InputInjecting
-//     seams). Like the viewer tier it owns no capture, encoder, or input
-//     backend — the macOS app plugs in its capture helper and CGEvent
-//     injector; a Linux sharer plugs in portal/PipeWire + libavcodec.
-//   - TailscreenViewerTsnet: the tsnet-backed viewer transport the Linux
-//     and Windows apps drive their viewers with (see the comment on its
-//     target declaration below).
+// Builds on Linux too; the macOS app consumes it as a real SwiftPM
+// dependency (re-exported via Sources/ProtocolReexports.swift), so its
+// public API is the app's compile-time contract. CI enforces the
+// portability boundary (linux-protocol job). Six tiers — see
+// `.claude/rules/portable-packages.md` for what each depends on and owns.
 let package = Package(
     name: "TailscreenKit",
     platforms: [
@@ -88,11 +61,7 @@ let package = Package(
         .target(
             name: "TailscreenAudio",
             dependencies: [
-                // The RTP audio packetizer/depacketizer, for VoiceUplink and
-                // VoiceDownlink. This edge points AT the dependency-free tier,
-                // so it costs nothing a consumer of the codec was not already
-                // going to link, and it is what lets the two endpoints share
-                // one voice path instead of one each.
+                // RTP audio packetizer/depacketizer for VoiceUplink/VoiceDownlink.
                 "TailscreenProtocol",
                 .product(name: "OpusKit", package: "OpusKit")
             ],
@@ -119,13 +88,6 @@ let package = Package(
         // browser-login URL), peer discovery, the UDP media socket and the TCP
         // back-channel, assembled onto ViewerPipeline.
         //
-        // It lived in Packages/TailscreenLinuxBackends until the Windows app needed it. Nothing about
-        // it was ever Linux-specific — it is Foundation + TailscaleKit + the
-        // portable tiers, and the `import TailscreenViewerCore` that tied it to
-        // FFmpeg and ALSA referenced no symbol from that module at all. Moving
-        // it here lets a host consume the transport without also acquiring a
-        // video decoder and an audio backend it may implement differently.
-        //
         // Like TailscreenTransport, compiling this needs only the patched
         // libtailscale header; the archive is a link-time input, so the `-L`
         // flag belongs on the executable that links it, not here.
@@ -143,17 +105,10 @@ let package = Package(
             ],
             path: "Sources/TailscreenViewerTsnet"
         ),
-        // The diagnostics merge, as something runnable.
-        //
-        // `DiagnosticsMerge` + `DiagnosticsExport.renderTimeline` shipped
-        // complete and tested with no caller outside their own suites, so the
-        // pair of bundles a session produces could be exported and never read
-        // together — which is the only reason to record two sides at all.
-        //
-        // It takes `TailscreenProtocol` and nothing else, so it builds with a
-        // bare Swift toolchain: no `libtailscale.a`, no Go, no libopus. That
-        // is also why it lives in this package rather than beside the macOS
-        // app — anybody holding two bundles can build it, on any platform.
+        // The diagnostics merge, as something runnable. Depends only on
+        // `TailscreenProtocol`, so it builds with a bare Swift toolchain — no
+        // libtailscale.a, Go, or libopus — and anybody holding two bundles
+        // can build it, on any platform.
         .executableTarget(
             name: "tailscreen-diagnostics-merge",
             dependencies: ["TailscreenProtocol"],
@@ -173,19 +128,14 @@ let package = Package(
         ),
         .testTarget(
             name: "TailscreenSharerTests",
-            // TailscreenTransport is named explicitly — it already arrives
-            // transitively through TailscreenSharer — so
-            // `SharerAskToShareCoordinatorTests` can spell
-            // `TailscreenControlListener`, the type its listener-lifecycle
-            // seams hand back.
+            // TailscreenTransport named explicitly (already arrives
+            // transitively) so tests can spell `TailscreenControlListener`.
             dependencies: ["TailscreenSharer", "TailscreenProtocol", "TailscreenTransport"],
             path: "Tests/TailscreenSharerTests"
         )
     ]
 )
 
-// The Swift↔Go differential suite (Packages/TailscreenDifferential) is
-// deliberately NOT a test target here: it links libtailscreen.a — the public
-// Go SDK as a c-archive — and two Go c-archives cannot share one binary
-// (their cgo export symbols collide), while this package's test executable
-// already links libtailscale.a through TailscreenSharerTests.
+// TailscreenDifferential is deliberately not a test target here: it links
+// libtailscreen.a, and two Go c-archives can't share one binary (this
+// package's test executable already links libtailscale.a).

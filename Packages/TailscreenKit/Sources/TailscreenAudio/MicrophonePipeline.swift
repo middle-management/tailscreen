@@ -29,8 +29,8 @@ public struct PCMFramer {
         return frames
     }
 
-    /// Drop the partial frame. A new session or a device change — carrying
-    /// audio across either splices two unrelated moments together.
+    /// Drop the partial frame — carrying it across a session/device change
+    /// splices two unrelated moments together.
     public mutating func reset() {
         carry.removeAll(keepingCapacity: true)
     }
@@ -41,18 +41,13 @@ public struct PCMFramer {
 }
 
 /// Everything between a `MicrophoneCapturing` backend and an encoded Opus
-/// packet: downmix, resample, frame, encode — and the mute latch.
+/// packet: downmix, resample, frame, encode — and the mute latch. Each step
+/// fails quietly if wrong: a bad resample ratio chipmunks, a dropped
+/// remainder climbs pitch, a leaking mute is a privacy failure.
 ///
-/// Host-agnostic and therefore testable, which matters because each of these
-/// steps fails quietly. A wrong resample ratio is a chipmunk, a dropped
-/// remainder is a slow pitch climb, and a mute that leaks is a privacy
-/// failure nobody notices until it is too late.
-///
-/// **Not** thread-safe: it is driven from the backend's capture thread, which
-/// is serial. `isMuted` is the exception — it is set from the UI — and is an
-/// atomic-by-construction `Bool` read once per buffer. A torn read there costs
-/// one 20 ms frame in the wrong direction, which is why the mute *decision*
-/// also happens at the top of `ingest` rather than after encoding.
+/// **Not** thread-safe: driven from the backend's serial capture thread.
+/// `isMuted` is the exception (set from the UI), which is why the mute
+/// decision happens at the top of `ingest`, not after encoding.
 public final class MicrophonePipeline: @unchecked Sendable {
     private let converter = CapturePCMConverter()
     private var framer: PCMFramer
@@ -72,13 +67,8 @@ public final class MicrophonePipeline: @unchecked Sendable {
         self.framer = PCMFramer(frameSamples: frameSamples)
     }
 
-    /// Muting stops audio leaving this machine.
-    ///
-    /// It drops at the SOURCE rather than encoding silence: silence still costs
-    /// bandwidth on every 20 ms frame, and — the part that matters — a bug that
-    /// leaked audio while "muted" would be indistinguishable from working
-    /// software until somebody heard something they should not have. Nothing
-    /// downstream of this gate ever sees a muted sample.
+    /// Muting stops audio leaving this machine — drops at the source rather
+    /// than encoding silence, so a leak bug can't hide as working software.
     public var isMuted: Bool {
         get { lock.withLock { muted } }
         set {
@@ -112,15 +102,10 @@ public final class MicrophonePipeline: @unchecked Sendable {
         lock.withLock { framer.reset() }
     }
 
-    /// The device dropped audio just before the next buffer.
-    ///
-    /// Resets the **converter** and deliberately not the framer. The converter
-    /// holds the previous buffer's last sample as an interpolation neighbour,
-    /// and that sample now sits on the far side of a hole — using it smears one
-    /// artefact across a cut that was already going to be audible. The framer's
-    /// carry is different: those are real samples the person actually said, and
-    /// dropping them would turn a device glitch into a second, self-inflicted
-    /// gap.
+    /// The device dropped audio just before the next buffer. Resets the
+    /// converter, not the framer: the converter's carried sample now sits
+    /// across a hole and would smear an artefact; the framer's carry is real
+    /// audio that dropping would turn into a second, self-inflicted gap.
     public func noteDiscontinuity() {
         converter.reset()
     }

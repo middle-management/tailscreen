@@ -17,27 +17,18 @@ public struct VoiceStats: Equatable, Sendable {
     public var discontinuities = 0
     /// Decoded buffers that contained at least one out-of-[-1, 1] sample.
     public var clampedBuffers = 0
-    /// Decoded SYSTEM-AUDIO buffers that contained at least one
-    /// out-of-[-1, 1] sample.
-    ///
-    /// Counted apart from `clampedBuffers` because the two clip for
-    /// different reasons and only one of them is the voice path's doing.
-    /// System audio is a separate stream that meets voice only at the
-    /// host's output mixer, so a session clipping here and not there is
-    /// the sharer's machine sending hot audio, while both at once is the
-    /// sum — and the counters are the only way to tell those apart from
-    /// "it sounded bad".
+    /// Decoded system-audio buffers with at least one out-of-[-1, 1] sample.
+    /// Counted apart from `clampedBuffers` since the two clip for different
+    /// reasons — this tells "sharer sent hot audio" from "voice path clipped".
     public var systemAudioClampedBuffers = 0
     /// RFC 3550 smoothed inter-arrival jitter of the worst SSRC, in ms.
     public var smoothedJitterMs = 0.0
 
     public init() {}
 
-    /// True when any *counter* differs from `other`. `smoothedJitterMs` is
+    /// True when any counter differs from `other`. `smoothedJitterMs` is
     /// excluded — it moves constantly and would defeat the "only log when
-    /// something happened" guard. Compares via `Equatable` with the
-    /// non-counter field normalized, so a future counter can't be
-    /// forgotten here.
+    /// something happened" guard.
     public func countersDiffer(from other: VoiceStats) -> Bool {
         var normalizedSelf = self
         var normalizedOther = other
@@ -47,15 +38,11 @@ public struct VoiceStats: Equatable, Sendable {
     }
 }
 
-/// The pure decision layer of the voice *receive* path — the loss-resilience
-/// rules extracted from the macOS app's `VoiceChannel` inbound pipeline, made
-/// portable so the Linux and Windows voice paths (`VoiceDownlink`) can share
-/// them and so Linux CI can pin them.
-///
-/// A namespace of pure `static func`s plus the Foundation-only value types
-/// they decide over. Nothing here owns state, a clock, or a device: callers
-/// (the mac `VoiceChannel` queue, the portable `VoiceDownlink`) thread their
-/// own per-SSRC state and timestamps through.
+/// The pure decision layer of the voice *receive* path — loss-resilience
+/// rules extracted from macOS's `VoiceChannel` inbound pipeline, portable so
+/// Linux/Windows (`VoiceDownlink`) share them and CI can pin them. A
+/// namespace of pure `static func`s; callers thread their own per-SSRC state
+/// and timestamps through.
 public enum VoiceReceiveDecisions {
     /// One Opus frame's worth of samples at 48 kHz = 20 ms.
     public static let samplesPerFrame = OpusVoiceEncoder.frameSamples
@@ -65,18 +52,15 @@ public enum VoiceReceiveDecisions {
     /// Startup playback queue depth, in `samplesPerFrame` buffers.
     public static let initialJitterTargetDepth = 3
     /// Headroom above the adaptive target depth before a playback side drops
-    /// an incoming buffer instead of scheduling it — the clock-drift
-    /// backstop (see the macOS `MicCapture.scheduleSamples`). Lives here so
-    /// the concealment cap (`concealmentEmitCount`) and the playback cap can
-    /// never drift apart.
+    /// an incoming buffer instead of scheduling it (clock-drift backstop).
+    /// Lives here so this and `concealmentEmitCount` can't drift apart.
     public static let playbackSlackBuffers = 3
-    /// Idle time after which a peer's receive state is evicted (10 s).
-    /// A departed peer's frozen `smoothedJitterMs` would otherwise pin the
-    /// jitter target high for the rest of the session.
+    /// Idle time after which a peer's receive state is evicted (10 s) — a
+    /// departed peer's frozen `smoothedJitterMs` would otherwise pin the
+    /// jitter target high.
     public static let receiveStateIdleNs: UInt64 = 10_000_000_000
-    /// Live-path values for `decoderGateAction`'s cooldown/permanent knobs —
-    /// also the function's defaults; kept as named constants so the gate
-    /// and the failure logging agree on when we've given up.
+    /// `decoderGateAction`'s cooldown/permanent defaults, named so the gate
+    /// and failure logging agree on when we've given up.
     public static let decoderInitRetryCooldownNs: UInt64 = 5_000_000_000
     public static let decoderInitFailureLimit = 5
 
@@ -155,12 +139,9 @@ public enum VoiceReceiveDecisions {
         }
     }
 
-    /// Pure retry-with-cooldown gate decision. `nil` record → allow.
-    /// After `permanentAfter` consecutive init failures → drop for the
-    /// session (matches the old permanent-block behavior after ~25 s of
-    /// trying). Otherwise drop until `cooldownNs` has elapsed since the last
-    /// failure, then allow one retry — a failure re-arms the cooldown, so
-    /// failure logging stays ≤ 1 line per cooldown window.
+    /// Pure retry-with-cooldown gate decision. `nil` record → allow. After
+    /// `permanentAfter` consecutive init failures → drop for the session;
+    /// otherwise drop until `cooldownNs` has elapsed, then allow one retry.
     public static func decoderGateAction(
         record: DecoderFailureRecord?,
         nowNs: UInt64,
@@ -172,13 +153,10 @@ public enum VoiceReceiveDecisions {
         return nowNs &- record.lastFailureNs > cooldownNs ? .allow : .drop
     }
 
-    /// Pure wrap-aware sequence-gap decision, via `UInt16` two's-complement
-    /// delta against the expected next sequence number. Delta 0 → in order;
-    /// behind half-space (duplicate or reordered-late) → drop stale; a
-    /// forward gap of `1...maxConcealFrames` → conceal then decode; larger →
-    /// discontinuity (resync, no fill). First packet per SSRC (`lastSeq ==
-    /// nil`) always decodes — priming's short/empty decoder output never
-    /// enters the gap math because gaps are keyed on sequence numbers.
+    /// Pure wrap-aware sequence-gap decision via `UInt16` two's-complement
+    /// delta. 0 → in order; behind half-space → drop stale; forward gap of
+    /// `1...maxConcealFrames` → conceal then decode; larger → discontinuity.
+    /// First packet per SSRC always decodes.
     public static func gapAction(lastSeq: UInt16?, newSeq: UInt16, maxConcealFrames: Int = 5) -> GapAction {
         guard let lastSeq else { return .decode }
         let delta = newSeq &- (lastSeq &+ 1)
@@ -188,10 +166,9 @@ public enum VoiceReceiveDecisions {
         return .discontinuity
     }
 
-    /// Pure jitter-buffer sizing: target queue depth in 20 ms buffers.
-    /// One buffer of slack per frame-duration of smoothed jitter, +1 base;
-    /// clamped to `[minDepth, maxDepth]`; moves at most one step per call
-    /// (bounded growth, no oscillation — equal ideal holds steady).
+    /// Pure jitter-buffer sizing: target queue depth in 20 ms buffers. One
+    /// buffer of slack per frame-duration of smoothed jitter, +1 base;
+    /// clamped, moves at most one step per call.
     public static func jitterBufferTarget(
         smoothedJitterMs: Double,
         currentTarget: Int,
@@ -215,11 +192,9 @@ public enum VoiceReceiveDecisions {
     }
 
     /// Single-pass clamp of decoded PCM to [-1, 1]. Returns whether any
-    /// sample was out of range. Opus decodes to Int16, so `int16ToFloat`
-    /// output is already within [-1, 1] but for the lone -32768 → -1.00003
-    /// case; the clamp stays as cheap defense-in-depth (it was load-bearing
-    /// under the old AudioToolbox AAC decoder, which emitted peaks ~6.0), so
-    /// nothing beyond [-1, 1] can ever clip the speakers into painful clicks.
+    /// sample was out of range. Opus's `int16ToFloat` output is already
+    /// within range but for the lone -32768 → -1.00003 case; kept as cheap
+    /// defense-in-depth.
     public static func clampToUnitRange(_ samples: inout [Float]) -> Bool {
         var clamped = false
         for i in samples.indices where samples[i] < -1.0 || samples[i] > 1.0 {
@@ -230,11 +205,9 @@ public enum VoiceReceiveDecisions {
     }
 
     /// Pure eviction decision: SSRCs whose last packet arrived more than
-    /// `idleNs` ago (strictly). The receive side evicts these so a
-    /// departed peer's frozen `smoothedJitterMs` can't pin the jitter
-    /// target high for the rest of the session; a returning peer starts
-    /// fresh. Arrivals stamped ahead of `nowNs` (clock skew) are never
-    /// stale. Sorted for determinism.
+    /// `idleNs` ago, so a returning peer starts fresh rather than inheriting
+    /// a frozen jitter target. Arrivals ahead of `nowNs` (clock skew) are
+    /// never stale. Sorted for determinism.
     public static func staleSSRCs(
         lastArrivalsNs: [UInt32: UInt64],
         nowNs: UInt64,
@@ -246,12 +219,8 @@ public enum VoiceReceiveDecisions {
     }
 
     /// Pure concealment-emission cap: at most `slackBuffers - 1` silence
-    /// frames per gap. The playback queue caps at `targetDepth +
-    /// playbackSlackBuffers`; reserving one slot of that slack guarantees
-    /// the silence fill alone can never push the gap's next *real* decoded
-    /// frame into an overrun drop. (Live headroom isn't readable from the
-    /// receive side — the pending count lives with the playback backend —
-    /// so this is the conservative static form.)
+    /// frames per gap, reserving one slot of playback slack so silence fill
+    /// alone can never push the gap's next real frame into an overrun drop.
     public static func concealmentEmitCount(
         missing: Int, slackBuffers: Int = VoiceReceiveDecisions.playbackSlackBuffers
     ) -> Int {
@@ -259,9 +228,7 @@ public enum VoiceReceiveDecisions {
     }
 
     /// Pure first-concealment-frame synthesis: a linear ramp from the last
-    /// emitted sample down to zero across `fadeSamples`, then silence.
-    /// Ramping from the actual last sample — not a replay of the previous
-    /// frame's tail, which would be an audible 63-samples-back step —
+    /// emitted sample down to zero across `fadeSamples`, then silence —
     /// keeps the gap boundary click-free.
     public static func concealmentFadeOut(
         from lastSample: Float,
@@ -278,9 +245,8 @@ public enum VoiceReceiveDecisions {
     }
 
     /// Pure underrun verdict: a drain-to-zero is an audible underrun only
-    /// when new audio arrives within `resumeWindowNs` of it — the
-    /// starve-then-resume pattern. A drain followed by a long silence is
-    /// benign (mute, end of stream, teardown) and must not count.
+    /// when new audio arrives within `resumeWindowNs` of it. A drain
+    /// followed by long silence (mute, end of stream) doesn't count.
     /// `drainedAtNs == 0` means no drain is pending.
     public static func isStarveResume(
         drainedAtNs: UInt64, nowNs: UInt64, resumeWindowNs: UInt64 = 1_000_000_000
@@ -288,13 +254,11 @@ public enum VoiceReceiveDecisions {
         drainedAtNs != 0 && nowNs &- drainedAtNs < resumeWindowNs
     }
 
-    /// Pure pause detector for the jitter estimator. A send-side mute
-    /// keeps sequence numbers contiguous but stops the packets, so the
-    /// resume packet shows an arrival-vs-RTP deviation of the whole pause
-    /// length; folding that into RFC 3550's `J += (|D| - J) / 16` would
-    /// pin the jitter target at max for the better part of a minute.
-    /// Deviations past `thresholdMs` skip the fold and just resync the
-    /// arrival/RTP baseline.
+    /// Pure pause detector for the jitter estimator. A send-side mute stops
+    /// packets without breaking sequence numbers, so the resume packet's
+    /// arrival-vs-RTP deviation spans the whole pause — folding that into
+    /// RFC 3550's jitter formula would pin the target at max. Deviations past
+    /// `thresholdMs` skip the fold and resync the baseline instead.
     public static func isPauseDeviation(deviationMs: Double, thresholdMs: Double = 500) -> Bool {
         deviationMs > thresholdMs
     }

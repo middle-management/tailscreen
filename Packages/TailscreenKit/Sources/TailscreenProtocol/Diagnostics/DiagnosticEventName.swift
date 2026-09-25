@@ -1,43 +1,23 @@
 import Foundation
 
-/// Every event this app can record, and what each one means.
+/// Every event this app can record, and what each one means. A registry like
+/// the wire-byte one: readers match on these strings (agents triaging a
+/// bundle, saved query filters, ``DiagnosticsBundle``'s pairing by name), so
+/// renaming a case breaks all three silently.
 ///
-/// This is a registry in the same sense as the wire-byte registry, and for the
-/// same reason: **a reader downstream depends on these strings.** An agent
-/// triaging a bundle matches on `hello.ack.sent`; a saved query filters on
-/// `action.`; the merge in ``DiagnosticsBundle`` pairs `hello.ack.sent` with
-/// `hello.ack.received` by name. Renaming a case silently breaks all three,
-/// and nothing at the call site would show it — the call site still compiles,
-/// still records, still reads correctly in English. So the rules match the
-/// wire's:
+/// **Add a case in the same commit as the code that records it, never rename
+/// or reuse a shipped one.** `DiagnosticEventNameTests` pins the full set.
+/// Retiring an event is fine — stop recording it, keep the case.
 ///
-/// > **Add a case in the same commit as the code that records it, and never
-/// > rename or reuse a shipped one.** `DiagnosticEventNameTests` pins the full
-/// > set, so a rename fails CI instead of failing a reader six months later.
-///
-/// Retiring an event is fine — stop recording it, keep the case. Its meaning
-/// is spent; the string still has to mean what old bundles say it meant.
-///
-/// ## Why the name owns its category and severity
-///
-/// Both are derived here rather than passed at the call site. Two call sites
-/// recording the same event with different categories is a real and completely
-/// invisible bug: the event is right, the filter that was supposed to find it
-/// silently returns half the rows. Deriving them makes that unrepresentable,
-/// and it makes adding an event one decision instead of three.
+/// Category and severity are derived here, not passed at the call site, so
+/// two call sites can't silently disagree about one event's category.
 /// ``DiagnosticsRecorder/record(_:severity:fields:nowNs:wallClock:)`` still
-/// takes a severity override for the handful of events whose weight genuinely
-/// depends on the outcome (a share phase moving to `failed`, a log line the
-/// tee classified as a warning).
+/// takes a severity override for events whose weight depends on outcome.
 ///
-/// ## Naming
-///
-/// `subject.thing.past-tense-verb`, lowercase, dot-separated, `snake_case`
-/// inside a segment. The subject leads so a prefix match is a useful filter:
-/// `viewer.` is everything about viewers, `hello.` the whole handshake.
-/// Directional events name the direction last (`.sent` / `.received`) because
-/// that is the axis a merged bundle is read along — the same event from both
-/// ends, next to each other.
+/// Naming: `subject.thing.past-tense-verb`, lowercase, dot-separated,
+/// `snake_case` inside a segment. Subject leads so a prefix match filters
+/// (`viewer.`, `hello.`). Directional events name the direction last
+/// (`.sent`/`.received`), the axis a merged bundle reads along.
 public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
 
     // MARK: Recording lifecycle
@@ -140,15 +120,9 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
     case receiveLoopFailed = "transport.receive_loop.failed"
 
     /// Per-window rollup of viewer annotations crossing the framed control
-    /// channel, sharer side: how many ops were applied, how many the
-    /// admitted-viewer gate dropped, how many were relayed on.
-    ///
-    /// Transport rather than media because what it measures is the control
-    /// channel, not the picture. Recorded only for a window in which
-    /// something happened — unlike ``transportSummary``, whose silence on a
-    /// clean window is the failure it was added to catch. Here a window with
-    /// no ops means nobody drew, which is the answer rather than the gap:
-    /// annotations are discrete user actions, not a continuous stream.
+    /// channel, sharer side: ops applied, dropped by the admitted-viewer
+    /// gate, relayed on. Recorded only for a window where something
+    /// happened, unlike ``transportSummary`` — no ops just means nobody drew.
     case annotationSummary = "annotation.summary"
 
     // MARK: Audio
@@ -165,18 +139,10 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
     case systemAudioStopped = "system_audio.stopped"
     case voiceSSRCAssigned = "voice.ssrc.assigned"
 
-    /// Per-window rollup of the voice RECEIVE path's health — concealment,
-    /// overruns, underruns, clamping and jitter — plus what is playing while
-    /// they were measured. See ``DiagnosticsTransportSampler`` for the
-    /// cadence and `VoiceStats.audioSummaryFields` for the row.
-    ///
-    /// Recorded every window in which audio is running, whether or not a
-    /// counter moved. The counters existed long before this and reached a
-    /// bundle only through a log line gated on "at most once a minute, and
-    /// only if something changed" — so a call that sounded wrong while the
-    /// counters sat still produced no rows at all, indistinguishable from a
-    /// call with no voice in it. That is the same silence
-    /// ``transportSummary`` was added to break, in the audio path.
+    /// Per-window rollup of the voice receive path's health — concealment,
+    /// overruns, underruns, clamping, jitter — plus what was playing. See
+    /// ``DiagnosticsTransportSampler`` for cadence, `VoiceStats.audioSummaryFields`
+    /// for the row. Recorded every window audio is running, even if no counter moved.
     case audioSummary = "audio.summary"
 
     // MARK: Remote control
@@ -297,13 +263,9 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
         }
     }
 
-    /// How much this event should pull a reader's eye when nothing at the call
-    /// site says otherwise.
-    ///
-    /// Only the events that are *always* trouble are `error` here. Anything
-    /// whose weight depends on the outcome stays `info` and is overridden at
-    /// the call site — a share phase moving to `failed` is an error, the same
-    /// event moving to `sharing` is not, and the registry cannot know which.
+    /// How much this event should pull a reader's eye when nothing at the
+    /// call site says otherwise. Only events that are *always* trouble are
+    /// `error` — outcome-dependent ones stay `info` and are overridden at the call site.
     public var defaultSeverity: DiagnosticSeverity {
         switch self {
         case .nodeBringUpFailed, .captureFailed, .micFailed,

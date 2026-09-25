@@ -1,49 +1,32 @@
 import Foundation
 
 /// The recording indicator: a border drawn around exactly the region being
-/// captured, for the life of a share.
-///
-/// **Why this rather than a tray icon.** Working out what would actually go on
-/// a tray killed the tray plan — everything on the candidate list was either
-/// already reachable from the window, blocked on a capability, or better as a
-/// notification. What was left was a status indicator, and a 16×16 glyph in a
-/// corner nobody is looking at is a poor one. It also answers the weaker
-/// question: "a share is running somewhere" rather than "**this** is what they
-/// can see."
-///
-/// An outline answers the sharper one, in the place the person is already
-/// looking. On a mid-share source change it is also the only thing on screen
-/// that says the capture moved.
+/// captured, for the life of a share. Chosen over a tray icon, which only
+/// answers "a share is running somewhere," not "this is what they can see" —
+/// an outline answers the sharper question in the place the person is
+/// already looking, and is the only on-screen sign the capture moved on a
+/// mid-share source change.
 ///
 /// Pure arithmetic on a BGRA buffer, so it lives here rather than beside a
-/// window: the two hosts that draw it have completely different windowing, and
-/// the part that can be silently wrong — covering the screen instead of edging
-/// it — is the same on both.
+/// window — the two hosts that draw it have different windowing, but "covers
+/// the screen instead of edging it" is the same bug on both.
 public enum CaptureOutline {
     /// Premultiplied BGRA, matching `AnnotationRasterizer` — the outline shares
     /// its surface, drawn underneath the strokes.
     public static let bytesPerPixel = AnnotationRasterizer.bytesPerPixel
 
-    /// Border width in pixels.
-    ///
-    /// Thin enough not to hide content at the edges of what is being shared,
-    /// thick enough to read as deliberate rather than as a rendering artifact
-    /// on a high-DPI screen.
+    /// Border width in pixels — thin enough not to hide edge content, thick
+    /// enough to read as deliberate on a high-DPI screen.
     public static let defaultThickness = 4
 
-    /// The border colour. Opaque and warm, the near-universal recording idiom;
-    /// it has to be legible against both a light and a dark desktop, which
-    /// rules out anything low-contrast.
+    /// The border colour: opaque and warm, the near-universal recording
+    /// idiom, legible against both light and dark desktops.
     public static let defaultColor = Annotation.RGBA(r: 0.98, g: 0.35, b: 0.15, a: 1)
 
-    /// The largest border that still leaves something inside it.
-    ///
-    /// **Not a tidiness clamp.** The surface is the size of the captured
-    /// region, and a thickness at or above half its smaller dimension fills the
-    /// buffer completely — so a share of a small window would paint a solid
-    /// rectangle over it, on the sharer's own screen, for the whole share. The
-    /// outline exists to say where the boundary is; one with no interior says
-    /// the opposite.
+    /// The largest border that still leaves something inside it. Not a
+    /// tidiness clamp: a thickness at or above half the smaller dimension
+    /// fills the buffer completely, painting a solid rectangle over a small
+    /// shared window for the whole share.
     public static func usableThickness(width: Int, height: Int, requested: Int) -> Int {
         guard width > 0, height > 0, requested > 0 else { return 0 }
         // `- 1` / 2 rather than / 2: at exactly half there is no interior left.
@@ -51,14 +34,9 @@ public enum CaptureOutline {
         return max(0, min(requested, limit))
     }
 
-    /// Draw the border into `surface`, over whatever is already there.
-    ///
-    /// Does **not** clear: the caller composites the outline first and the
-    /// annotations over it, so a stroke drawn near the edge stays visible
-    /// rather than being framed out.
-    ///
-    /// A geometry with no room for a border draws nothing at all, which is the
-    /// honest answer — better an absent indicator than a covered window.
+    /// Draw the border into `surface`, over whatever is already there. Does
+    /// not clear: the caller composites the outline first, annotations over
+    /// it, so an edge stroke stays visible. No room for a border draws nothing.
     public static func draw(
         into surface: AnnotationRasterizer.Surface,
         thickness: Int = defaultThickness,
@@ -78,9 +56,7 @@ public enum CaptureOutline {
                 for column in 0..<width { write(rowBase + column * bytesPerPixel, color) }
                 continue
             }
-            // Between the bars: only the left and right uprights. Everything
-            // between them is left EXACTLY as it was, which is the whole
-            // contract — this runs over the sharer's own screen.
+            // Between the bars: only the left and right uprights; everything else untouched.
             for column in 0..<border {
                 write(rowBase + column * bytesPerPixel, color)
                 write(rowBase + (width - 1 - column) * bytesPerPixel, color)
@@ -88,10 +64,7 @@ public enum CaptureOutline {
         }
     }
 
-    /// Premultiplied BGRA, same convention and byte order as
-    /// `AnnotationRasterizer.blend` — the two write into one buffer, and a
-    /// disagreement here shows up as an outline in the wrong colour rather
-    /// than as an error.
+    /// Premultiplied BGRA, same convention as `AnnotationRasterizer.blend` — they write into one buffer.
     @inline(__always)
     private static func write(_ pixel: UnsafeMutablePointer<UInt8>, _ color: Annotation.RGBA) {
         let alpha = min(max(color.a, 0), 1)

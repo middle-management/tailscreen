@@ -27,9 +27,8 @@ public struct HubStatusPane: View {
 
 /// Interactive-login card: the sign-in prompt over the URL to open.
 ///
-/// The URL is shown as selectable text rather than hidden behind the button:
-/// launching a browser is the part most likely to fail on a locked-down or
-/// remote machine, and a URL you can select and paste always works.
+/// URL shown as selectable text, not just behind the button: launching a
+/// browser is the part most likely to fail on a locked-down/remote machine.
 public struct HubLoginCard: View {
     let url: String
     var onOpen: (@MainActor @Sendable () -> Void)?
@@ -63,33 +62,17 @@ public struct HubLoginCard: View {
 /// The sharing half of the hub: start or stop sharing this screen, say who is
 /// watching, and answer anything that is asking for a decision.
 ///
-/// The macOS app puts this in a menubar popover. Neither of the other two
-/// platforms has that surface through swift-cross-ui, so it sits at the top of
-/// the hub window instead, above the screen list, and one window covers both
-/// directions.
-///
-/// `prompts` is why approvals and control requests are one control rather than
-/// two: this window is the *only* surface these apps have — there is no
-/// menubar to fall back on — so a prompt that is not rendered here is a prompt
-/// nobody will ever answer, and the viewer on the other end waits forever.
-///
-/// `settings` is the other half of that argument. A prompt only appears if
-/// something *asks*, and the switch that decides whether anyone has to ask —
-/// "Require approval for new viewers" — has nowhere else to live either. A
-/// card that can render the prompts but not the gate is a card where the gate
-/// can only be off.
+/// macOS puts this in a menubar popover; GTK/WinUI have no such surface, so it
+/// sits atop the hub window instead. `prompts` and `settings` both render here
+/// because this window is the *only* surface those two hosts have — a prompt
+/// or gate not rendered here is one nobody can ever answer or flip.
 public struct ShareCard: View {
     let statusLine: String
     let isSharing: Bool
     /// A share is coming up but not live yet — `ShareBringUpPhase.starting`.
-    ///
-    /// Only the action row reads it, and only to render NOTHING: there is no
-    /// Stop to offer for a share that has not started, and the Start button
-    /// this used to draw was inert (both hosts guard their start on
-    /// `canStart`, which `starting` fails). A control that is visibly
-    /// pressable and does nothing is the one thing worse than no control.
-    /// Live STYLING deliberately still keys off `isSharing`, because the card
-    /// should not go green until frames are actually going out.
+    /// Only the action row reads it, to render neither Start nor Stop (both
+    /// hosts gate Start on `canStart`, which `starting` fails). Live styling
+    /// still keys off `isSharing`, not this — no green until frames flow.
     let isStarting: Bool
     let canShare: Bool
     let startLabel: String
@@ -98,68 +81,45 @@ public struct ShareCard: View {
     /// time goes, why a capability is unavailable.
     let notes: [String]
     /// Who is currently watching, and what can be done about each of them.
-    ///
-    /// A structured roster rather than more `notes` lines, because this is the
-    /// one place a sharer can change their mind about somebody already
-    /// admitted. It sits ABOVE the notes and BELOW the prompts: a person
-    /// waiting to be let in is more urgent than a person already watching,
-    /// and both are more urgent than a frame-time statistic.
+    /// Renders above notes, below prompts — approvals waiting are the most
+    /// urgent, then people already watching, then statistics.
     let viewers: [HubViewerRow]
     let prompts: [HubPrompt]
     /// Persistent on/off controls for this share — today the approval gate.
-    /// Rendered as the card's footer, below the prompts and notes: a setting
-    /// is the least urgent thing on the card, and a viewer waiting to be let
-    /// in is the most.
+    /// Rendered as the card's footer: least urgent thing on the card.
     let settings: [HubToggle]
     /// The quality knobs, when this host offers them. Nil renders no menu —
     /// a viewer-only build has nothing to set.
     let quality: HubQuality?
     /// An extra action the current state calls for, e.g. taking control back.
     let extraAction: HubAction?
-    /// The sharer's microphone, when a device was opened for this share.
-    ///
-    /// Nil renders nothing — the same capability rule the viewer's control
-    /// follows, and the reason this is not a `HubToggle` in `settings`: a
-    /// setting persists and is the least urgent thing on the card, whereas
-    /// talking is a live session control that belongs beside Stop Sharing.
+    /// The sharer's microphone, when a device was opened for this share. Not
+    /// a `HubToggle`/`settings` entry: talking is a live session control that
+    /// belongs beside Stop Sharing, not the persisted-settings footer.
     let microphone: HubMicrophone?
     /// The sharer's own drawing tools, when this host can put strokes on its
     /// own screen. Nil renders nothing.
     let drawing: HubDrawing?
-    /// A SECOND way to begin a share, when this host has one that the primary
-    /// button cannot express — today "share one window or app", which on Linux
-    /// needs the ScreenCast portal and so is not always available.
-    ///
-    /// Nil renders nothing, the capability-not-configuration rule the
-    /// microphone and drawing slots already follow. Windows passes nil: its
-    /// WGC picker already offers windows alongside displays, so a second
-    /// button there would be a second door into the same room.
+    /// A second way to begin a share when the primary button can't express it
+    /// — today "share one window or app" (Linux, via the ScreenCast portal;
+    /// not always available). Nil ⇒ no such option. Windows passes nil: its
+    /// WGC picker already offers windows alongside displays.
     let secondaryStart: HubAction?
-    /// Re-point a LIVE share at something else without dropping the viewers
-    /// already watching — the mirror of `secondaryStart`, offered beside Stop
-    /// while sharing rather than beside Start while idle.
-    ///
-    /// Nil renders nothing, and that is a real state rather than a lazy
-    /// default: an X11 session has exactly one thing it can capture (the root
-    /// window), so there is nothing on that host for this button to change.
+    /// Re-point a LIVE share without dropping current viewers — the mirror of
+    /// `secondaryStart`, beside Stop rather than Start. Nil is a real state:
+    /// an X11 session can only ever capture the root window.
     let changeSource: HubAction?
-    /// A thumbnail of what viewers are actually receiving. Nil renders nothing.
-    ///
-    /// It answers a question the status line cannot: "Sharing to 2" is equally
-    /// true when the right window is on the wire and when the wrong one is, and
-    /// on this platform the difference has been invisible to the one person who
-    /// most needs to see it. It sits directly under the status line — above
-    /// even the Stop button — because if it shows the wrong thing, stopping is
-    /// what the next click is for.
+    /// A thumbnail of what viewers are actually receiving, so "Sharing to 2"
+    /// can be checked against what's really on the wire. Sits directly under
+    /// the status line — above Stop, since a wrong thumbnail means stopping.
+    /// Nil renders nothing.
     let preview: HubPreview?
     /// The share-by-token half, when this host's engine has it. Nil renders
     /// nothing — same capability rule as the microphone and drawing slots.
     let linkSharing: HubLinkSharing?
     /// The nuance under the headline — "Nobody watching yet", "1 waiting for
-    /// approval". Separate from `statusLine` because the headline says the
-    /// STATE and this says what is true about it right now, which is the
-    /// macOS card's split (headline + resolution beneath). Nil renders
-    /// nothing rather than an empty line.
+    /// approval". Separate from `statusLine` (state vs. detail), matching the
+    /// macOS card's split. Nil renders nothing rather than an empty line.
     let statusDetail: String?
     let onStart: @MainActor @Sendable () -> Void
     let onStop: @MainActor @Sendable () -> Void
@@ -216,12 +176,8 @@ public struct ShareCard: View {
         self.onDecline = onDecline
     }
 
-    /// No section heading above the card, matching the macOS hub window: its
-    /// share section opens straight on the dot and the headline, and only the
-    /// peer list below carries a big "Screens" title. A heading here read as a
-    /// second one stacked on the card's own — "My screen" over "Sharing your
-    /// screen" — which is a label for something that has already said what it
-    /// is.
+    /// No section heading above the card, matching the macOS hub window —
+    /// only the peer list below carries a "Screens" title.
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             statusRow
@@ -237,21 +193,15 @@ public struct ShareCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Green while live — the macOS sharer card's identity, and the
-        // strongest at-a-glance answer to "is my screen going out".
+        // Green while live — at-a-glance answer to "is my screen going out".
         .hubCard(
             fill: isSharing ? HubStyle.sharingCardFill : HubStyle.cardFill,
             stroke: isSharing ? HubStyle.sharingCardStroke : HubStyle.cardStroke)
     }
 
     /// The macOS card's header: a live dot, the state as a headline, the
-    /// viewer count as a pill, and the nuance underneath.
-    ///
-    /// The count is a pill rather than words in the status line because it is
-    /// the one number a sharer re-reads mid-share, and because it belongs to
-    /// the *people* half of the card — the roster below spells out who they
-    /// are. Nothing here relies on colour alone: the dot has a headline
-    /// beside it and the pill has a number in it.
+    /// viewer count as a pill, and the nuance underneath. Nothing relies on
+    /// colour alone — the dot has a headline beside it, the pill a number.
     private var statusRow: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 7) {
@@ -282,34 +232,22 @@ public struct ShareCard: View {
         }
     }
 
-    /// The preview on a dark rounded mat, at its own aspect ratio, with the
-    /// macOS card's "Capturing…" placeholder holding the space until the
-    /// first thumbnail lands.
-    ///
-    /// `fittedSize` (the scaler's own fit) rather than a fixed frame: the
-    /// capture can be any shape — a portrait monitor, one narrow window — and
-    /// stretching it to a 16:10 box would show viewers something the wire
-    /// does not carry. It also never scales up, so a thumbnail from an older
-    /// host renders at its natural size instead of as a blur.
+    /// The preview at its own aspect ratio via `fittedSize` rather than a
+    /// fixed frame: the capture can be any shape (portrait monitor, narrow
+    /// window), and it never scales up, so an older host's thumbnail renders
+    /// at natural size instead of blurred.
     @ViewBuilder private var previewMat: some View {
         if let preview, let image = preview.image,
             let fitted = ThumbnailScaler.fittedSize(
                 width: preview.width, height: preview.height,
                 longestEdge: ThumbnailScaler.defaultLongestEdge)
         {
-            // Rounded like the macOS card's `clipShape(RoundedRectangle)`,
-            // and with nothing behind it: a mat around the image reads as a
-            // bevel, and the capture is opaque so there is nothing to bed it
-            // on. Both backends implement `cornerRadius` natively.
             Image(image)
                 .resizable()
                 .frame(width: Double(fitted.width), height: Double(fitted.height))
                 .cornerRadius(Int(HubStyle.rowRadius))
         } else if isSharing {
-            // Sharing with nothing to show yet. A placeholder rather than
-            // nothing, so the card does not visibly jump when the first
-            // thumbnail arrives a moment later — and so a backend that never
-            // produces one says why it looks empty.
+            // Placeholder so the card doesn't jump when the first thumbnail lands.
             Text(L("Capturing…"))
                 .font(.caption)
                 .foregroundColor(HubStyle.secondaryText)
@@ -321,13 +259,9 @@ public struct ShareCard: View {
     }
 
     /// The share's controls on one row: change source / microphone / Stop
-    /// while sharing, the one or two ways to start while idle. A row rather
-    /// than a stack because these are peers of one decision — what is on the
-    /// wire — and a column of lone buttons read as unrelated features.
-    ///
-    /// Stop goes LAST, as it does on the macOS card: it is the one control
-    /// here whose press is felt immediately by everyone watching, so it does
-    /// not sit where a hand aiming for the microphone lands.
+    /// while sharing, the one or two ways to start while idle. Stop goes
+    /// last, as on the macOS card, so a hand aiming for the microphone
+    /// doesn't land on it — Stop's press is felt by everyone watching.
     @ViewBuilder private var actionsRow: some View {
         if canShare {
             HStack(spacing: 8) {
@@ -343,9 +277,7 @@ public struct ShareCard: View {
                     Button(stopLabel, action: onStop)
                 } else if !isStarting {
                     Button(startLabel, action: onStart)
-                    // Only while idle: mid-share this would start a second
-                    // one, and the card has a Stop button in that state
-                    // precisely because there is already something to stop.
+                    // Only while idle — mid-share this would start a second one.
                     if let secondaryStart {
                         Button(secondaryStart.label, action: secondaryStart.perform)
                     }
@@ -355,16 +287,12 @@ public struct ShareCard: View {
         }
     }
 
-    /// The drawing tools on a subtle sub-panel, their caption beneath. The
-    /// panel exists so ten glyph buttons across two rows read as one control
-    /// group rather than scattered card content.
+    /// The drawing tools on a subtle sub-panel, their caption beneath.
     @ViewBuilder private var drawingCluster: some View {
         if let drawing {
             VStack(alignment: .leading, spacing: 6) {
-                // `.twoRows`: a single row of these buttons is wider than the
-                // hub window, and a card child wider than the window makes
-                // swift-cross-ui clip every label in the card — see
-                // `AnnotationToolbar.Arrangement`.
+                // `.twoRows`: a single row is wider than the hub window, which
+                // makes swift-cross-ui clip every label — see `AnnotationToolbar.Arrangement`.
                 AnnotationToolbar(
                     activeTool: drawing.activeTool,
                     inkColor: drawing.inkColor,
@@ -378,11 +306,8 @@ public struct ShareCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: HubStyle.rowRadius).fill(HubStyle.barFill))
-                // The caption is load-bearing rather than decorative:
-                // arming a tool hands the whole screen to a
-                // click-through-no-longer overlay, so the way back has
-                // to be on screen BEFORE it is needed — once armed,
-                // this window is behind the overlay and unreadable.
+                // Load-bearing: arming a tool puts an overlay over this
+                // window, so the way back must be visible BEFORE it's needed.
                 Text(
                     drawing.note
                         ?? (drawing.activeTool == nil
@@ -395,11 +320,8 @@ public struct ShareCard: View {
         }
     }
 
-    /// The people: viewers waiting at the gate (or asking for control, or
-    /// asking this machine to share) first, then everyone watching. Behind a
-    /// divider because these rows are about *others* where everything above
-    /// is about this machine — and each on its own row card, two lines, so
-    /// the name is never crowded out by its own buttons.
+    /// Pending prompts first, then everyone watching, behind a divider —
+    /// everything above this is about this machine, these rows about others.
     @ViewBuilder private var peopleCluster: some View {
         if !prompts.isEmpty || !viewers.isEmpty {
             Divider()
@@ -410,8 +332,7 @@ public struct ShareCard: View {
                             .font(.callout)
                             .fontWeight(.bold)
                         if prompt.isGuest {
-                            // The answer admits someone from OUTSIDE the
-                            // tailnet — said at the moment of deciding.
+                            // Flags that this admits someone outside the tailnet.
                             HubGuestChip()
                         }
                         Spacer()
@@ -424,9 +345,7 @@ public struct ShareCard: View {
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                // Amber, like the macOS pending-viewer list: this is the one
-                // row in the card that is waiting on an answer, and it must
-                // not look like the rows that are merely reporting.
+                // Amber, like the macOS pending-viewer list — waiting on an answer.
                 .background(
                     RoundedRectangle(cornerRadius: HubStyle.rowRadius)
                         .fill(HubStyle.attentionFill))
@@ -437,20 +356,16 @@ public struct ShareCard: View {
         }
     }
 
-    /// The share-by-token controls: the Share via Link toggle, and — while a
-    /// link is live — the link itself as selectable text (these toolkits have
-    /// no clipboard affordance, and a link you can select and paste always
-    /// works — the `HubLoginCard` lesson), the guest count, New Link, and the
-    /// consent caption. Only while sharing: the link is minted per share and
-    /// dies with it, so an idle card has nothing honest to show here.
+    /// The share-by-token controls: the toggle, and while a link is live, the
+    /// link as selectable text (no clipboard affordance in these toolkits),
+    /// guest count, New Link, and consent caption. Only while sharing — the
+    /// link is minted per share and dies with it.
     @ViewBuilder private var linkCluster: some View {
         if isSharing, let linkSharing {
             Divider()
             if linkSharing.isOnlyWayIn {
-                // A link-only share IS its link: there is no off position
-                // short of Stop Sharing, so a toggle here would be a switch
-                // that refuses to flip. State the mode instead — the macOS
-                // menubar's `ShareViaLinkSection` splits the same way.
+                // Link-only share IS its link — no off position short of Stop
+                // Sharing, so state the mode instead of a toggle that can't flip.
                 Text(L("Sharing via link — the link is the only way in"))
                     .font(.callout)
                     .foregroundColor(HubStyle.secondaryText)
@@ -486,20 +401,14 @@ public struct ShareCard: View {
         }
     }
 
-    /// The link, in whichever form this host can hand over.
+    /// The link, in whichever form this host can hand over. With a clipboard:
+    /// one truncated line plus buttons for the `tailscreen:` link, the
+    /// `https:` fallback, and the bare token. Without one: both links in
+    /// full, selectable text.
     ///
-    /// With a clipboard: one truncated line so the card stays compact, and
-    /// the macOS card's three buttons — the `tailscreen:` link for a machine
-    /// with the app, the `https:` one for a browser with nothing installed,
-    /// and the bare token for pasting into a join field. Without one: both
-    /// links in full, selectable, exactly as before — a link you can select
-    /// and paste always works, which is why the fallback is not a disabled
-    /// button.
-    ///
-    /// A method taking the closure rather than reading `linkSharing` inside
-    /// the cluster: an `if let` over a captured optional closure nested in
-    /// that builder is one of the shapes this result builder typechecks
-    /// badly, and the cluster is already three levels deep.
+    /// Takes the closure as a parameter rather than reading `linkSharing`
+    /// inline — an `if let` over a captured optional closure nested this deep
+    /// is a shape swift-cross-ui's result builder typechecks badly.
     @ViewBuilder private func linkBody(
         token: String, copy: (@MainActor @Sendable (String) -> Void)?
     ) -> some View {
@@ -518,7 +427,7 @@ public struct ShareCard: View {
             Text(ShareLinkFormat.link(token: token))
                 .font(.caption)
                 .textSelectionEnabled()
-            // The browser form: same token, opens in any browser, no app.
+            // Browser form: same token, opens in any browser, no app.
             Text(ShareLinkFormat.webLink(token: token))
                 .font(.caption)
                 .textSelectionEnabled()
@@ -533,9 +442,8 @@ public struct ShareCard: View {
         }
     }
 
-    /// Notes, the approval gate, and quality — the standing configuration,
-    /// behind a divider so it reads as the card's footer rather than more
-    /// controls for the live share.
+    /// Notes, the approval gate, and quality — standing configuration, behind
+    /// a divider so it reads as the card's footer.
     @ViewBuilder private var settingsCluster: some View {
         if !notes.isEmpty || !settings.isEmpty || quality != nil {
             Divider()
@@ -546,25 +454,17 @@ public struct ShareCard: View {
             }
             ForEach(Array(settings.enumerated()), id: \.offset) { setting in
                 VStack(alignment: .leading, spacing: 2) {
-                    // The value and the setter are separate on the way in
-                    // (see `HubToggle`) and are stitched back together
-                    // here, because `Toggle` speaks only `Binding`. The
-                    // getter closes over the value this render was built
-                    // with, so the switch tracks the host's state rather
-                    // than a copy of it that could drift.
+                    // `HubToggle` separates value from setter; `Toggle` wants
+                    // a `Binding`, stitched back together here.
                     Toggle(
                         setting.element.label,
                         isOn: Binding(
                             get: { setting.element.isOn },
                             set: { setting.element.set($0) })
                     )
-                    // SwiftCrossUI defaults `toggleStyle` to `.button`,
-                    // which draws a *button* that happens to be accented
-                    // while on. On a settings row that is two mistakes:
-                    // it invites a press as if it were an action, and its
-                    // state is carried by a colour a glance can miss. A
-                    // switch says "setting", and says which way it is set
-                    // — which for the approval gate is the whole point.
+                    // SwiftCrossUI's default `.button` style reads as a
+                    // pressable action with state carried only by colour; a
+                    // switch says "setting" and shows which way it's set.
                     .toggleStyle(.switch)
                     if let caption = setting.element.caption {
                         Text(caption)
@@ -576,13 +476,9 @@ public struct ShareCard: View {
             if let quality {
                 VStack(alignment: .leading, spacing: 2) {
                     HubQualityMenu(model: quality)
-                    // The caption is where the honesty lives. These knobs
-                    // are read when a share STARTS — the capture backend
-                    // takes them at construction on both hosts — so a
-                    // change made mid-share does nothing until the next
-                    // one. Saying so beats a menu that appears to work and
-                    // silently doesn't. (macOS re-pushes through its
-                    // helper-restart path; neither of these hosts has one.)
+                    // These knobs are read at share start (capture backend
+                    // takes them at construction on both hosts), so a
+                    // mid-share change does nothing until the next share.
                     Text(
                         quality.isSharing
                             ? L("Applies to your next share")
@@ -596,13 +492,10 @@ public struct ShareCard: View {
     }
 }
 
-/// A thumbnail of the frame viewers are currently receiving.
-///
-/// Raw packed RGBA rather than an encoded image, because the two hosts that
-/// render it have no image encoder between them and their capture backends —
-/// on macOS the preview crosses a process boundary and is JPEG for that reason,
-/// and there is no boundary here to pay for. `ThumbnailScaler` produces exactly
-/// this, already scaled and already channel-swapped.
+/// A thumbnail of the frame viewers are currently receiving. Raw packed RGBA
+/// rather than an encoded image: neither host has an image encoder between
+/// it and its capture backend. `ThumbnailScaler` produces this, already
+/// scaled and channel-swapped.
 public struct HubPreview: Sendable, Equatable {
     public let width: Int
     public let height: Int
@@ -616,24 +509,18 @@ public struct HubPreview: Sendable, Equatable {
     }
 
     /// The pixels as swift-cross-ui wants them, or nil if they do not describe
-    /// an image.
-    ///
-    /// The length check is not defensive habit: `Image` hands these bytes to a
-    /// backend that reads `width * height * 4` of them, so a buffer that is
-    /// short reads past the end of an array. Refusing to render is the only
-    /// answer to that which is not a crash in somebody's toolkit.
+    /// an image. The length check matters: `Image` hands these bytes to a
+    /// backend that reads `width * height * 4` of them, so a short buffer
+    /// reads past the array's end.
     var image: ImageFormats.Image<RGBA>? {
         guard width > 0, height > 0, rgba.count == width * height * 4 else { return nil }
         return ImageFormats.Image<RGBA>(width: width, height: height, bytes: rgba)
     }
 }
 
-/// The sharer's live microphone, as the share card needs it.
-///
-/// A value, not a binding: swift-cross-ui rebuilds the card from the host's
-/// state on every change, so the button reads the value this render was built
-/// with and reports the press back through `toggle` — the same shape
-/// `HubToggle` uses, and for the same reason.
+/// The sharer's live microphone, as the share card needs it. A value, not a
+/// binding — swift-cross-ui rebuilds the card from host state each change, so
+/// the button reports the press back through `toggle`, like `HubToggle`.
 public struct HubMicrophone: Sendable {
     public let isOn: Bool
     public let toggle: @MainActor @Sendable () -> Void
@@ -644,14 +531,11 @@ public struct HubMicrophone: Sendable {
     }
 }
 
-/// The sharer's own drawing tools, as the share card needs them.
-///
-/// Values plus callbacks, like `HubMicrophone` and `HubToggle`, because
-/// swift-cross-ui rebuilds the card from the host's state on every change.
+/// The sharer's own drawing tools, as the share card needs them. Values plus
+/// callbacks, like `HubMicrophone` and `HubToggle`.
 public struct HubDrawing: Sendable {
     public let activeTool: AnnotationTool?
-    /// The colour this sharer's strokes appear in — identity-derived, like
-    /// every participant's.
+    /// The colour this sharer's strokes appear in — identity-derived.
     public let inkColor: Annotation.RGBA
     /// Why drawing is unavailable or refused, when it is. Nil renders the
     /// ordinary hint instead.

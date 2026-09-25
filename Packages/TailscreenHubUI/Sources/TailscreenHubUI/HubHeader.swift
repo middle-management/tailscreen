@@ -1,12 +1,9 @@
 import SwiftCrossUI
 import TailscreenL10n
 
-/// One signed-in account, for the header's account menu.
-///
-/// Deliberately not either app's profile type: the chrome needs a name and a
-/// way to say which one was picked, and nothing else. Keeping it that way is
-/// what stops a UI package from acquiring an opinion about where state
-/// directories live.
+/// One signed-in account, for the header's account menu. Deliberately not
+/// either app's profile type — this UI package should have no opinion about
+/// where state directories live.
 public struct HubAccount: Identifiable, Sendable, Equatable {
     public let id: String
     public let name: String
@@ -20,14 +17,10 @@ public struct HubAccount: Identifiable, Sendable, Equatable {
 /// Header bar: the session status on the left, and on the right a spinner
 /// while something is in flight, a Refresh button, and the account menu.
 ///
-/// No "Tailscreen" wordmark here, deliberately. The macOS app hides its native
-/// title bar, so its hub header doubles as one and carries the wordmark; both
-/// swift-cross-ui hosts keep their native title bars — which already say
-/// "Tailscreen" — and repeating it directly underneath read as redundant (it
-/// did, on the first Windows desktop build). The header is ordinary content
-/// with a fixed height, which is also why every optional below hides its
-/// control rather than disabling it: a quiet header reads as chrome, a header
-/// full of dead buttons does not.
+/// No "Tailscreen" wordmark: unlike macOS (which hides its title bar and uses
+/// this header as one), both swift-cross-ui hosts keep a native title bar
+/// that already says it. Every optional below hides its control rather than
+/// disabling it — a quiet header reads as chrome, dead buttons don't.
 public struct ViewerHeader: View {
     let subtitle: String
     var showSpinner = false
@@ -81,9 +74,8 @@ public struct ViewerHeader: View {
             if showSpinner {
                 ProgressView()
             }
-            // Filter sits before Refresh, mirroring the macOS header's order
-            // (filter, refresh, account): both act on the list below, and the
-            // one that changes what the list *means* reads first.
+            // Filter before Refresh, mirroring macOS's order: the one that
+            // changes what the list *means* reads first.
             if let filter {
                 HubFilterMenu(model: filter)
             }

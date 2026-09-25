@@ -1,22 +1,16 @@
 import Foundation
 
-/// The module's one set of big-endian `Data` helpers — every wire codec in
-/// TailscreenProtocol (RTP + UDP control, the framed TCP channel, the
-/// capture-helper pipe) writes multi-byte fields network-order, and three
-/// files had grown identical `fileprivate` copies of these before they were
-/// promoted here.
+/// The module's one set of big-endian `Data` helpers — every wire codec here
+/// writes multi-byte fields network-order, and three files had grown
+/// identical `fileprivate` copies before these were promoted.
 ///
-/// Internal on purpose: the helpers are an implementation detail of the
-/// codecs, not wire API — the pinned bytes are the codecs' outputs, covered
-/// by `RTPPacketTests` / `ScreenShareProtocolTests` / `CaptureHelperWireTests`
-/// and the wire registry. (Being `internal`, they also stop at the module
-/// boundary: other modules — e.g. `TailscreenSharer`'s in-place header
-/// rewrite — keep their own bytes.)
+/// Internal on purpose: an implementation detail of the codecs, not wire API
+/// — the pinned bytes are covered by `RTPPacketTests` /
+/// `ScreenShareProtocolTests` / `CaptureHelperWireTests` and the wire registry.
 ///
-/// The `read` variants trust the caller for bounds, exactly as the inlined
-/// shifts they replaced did: every call site sits behind a length check.
-/// Indexes are `Data.Index`-relative (`self.index(_:offsetBy:)`), so slices
-/// with non-zero `startIndex` read correctly.
+/// `read` variants trust the caller for bounds — every call site sits behind
+/// a length check. Indexes are `Data.Index`-relative, so slices with
+/// non-zero `startIndex` read correctly.
 extension Data {
     mutating func appendBE(_ value: UInt16) {
         append(UInt8((value >> 8) & 0xFF))

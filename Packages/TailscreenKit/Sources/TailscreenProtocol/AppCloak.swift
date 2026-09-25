@@ -18,23 +18,17 @@ public struct CloakedAppEntry: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
-/// Persistent Cloaked Apps list backing the Settings "Cloaked Apps" section: apps
-/// whose windows are hidden from viewers whenever a whole display is
-/// shared, so the user never has to "clean up" their screen before
-/// sharing. The list feeds `PickerSelection.excludedBundleIDs` via
+/// Persistent Cloaked Apps list backing the Settings "Cloaked Apps" section:
+/// apps whose windows are hidden from viewers whenever a whole display is
+/// shared. Feeds `PickerSelection.excludedBundleIDs` via
 /// `AppCloak.effectiveExclusions`.
 ///
-/// `@MainActor` because it's UI-owned state (AppState holds it, SwiftUI
-/// renders it) — same ownership model as `ViewerAccessPolicyStore`. The
+/// `@MainActor`, UI-owned state like `ViewerAccessPolicyStore`. The
 /// screen-share server / capture-helper never touch this store; they see a
-/// value snapshot baked into the selection JSON at share start (and on
-/// each cloak-list change while a display share is live).
+/// value snapshot baked into the selection JSON at share start.
 ///
-/// Persistence is a JSON blob (the entries) plus a Bool (the main
-/// toggle) under two `UserDefaults` keys. The defaults instance is
-/// injectable so tests can use a scratch suite. The toggle defaults **on**
-/// (a cloak list you built should protect you without a second switch);
-/// the tri-state read keeps an explicit opt-out sticky.
+/// Persistence is a JSON blob plus a Bool under two `UserDefaults` keys, with
+/// an injectable defaults instance for tests. The toggle defaults on.
 @MainActor
 public final class AppCloakStore: ObservableObject {
     public static let entriesKey = "appCloakEntries"
@@ -44,7 +38,7 @@ public final class AppCloakStore: ObservableObject {
     @Published private(set) public var entries: [CloakedAppEntry] = []
 
     /// Main toggle: when off, the list is kept but no apps are cloaked —
-    /// Tuple-style "temporarily uncloak" without losing the list.
+    /// lets a person temporarily uncloak without losing the list.
     @Published public var isEnabled: Bool {
         didSet { defaults.set(isEnabled, forKey: Self.enabledKey) }
     }
@@ -104,11 +98,9 @@ public final class AppCloakStore: ObservableObject {
 /// (`AppCloakTests`) — the store above is the stateful wrapper.
 public enum AppCloak {
     /// Which bundle IDs a share of `kind` should exclude. Only `.display`
-    /// shares cloak: a `.window` share captures exactly one window, and an
-    /// `.application` share's include-list already hides every app the
-    /// user didn't pick — and an app the user *explicitly picked* to share
-    /// wins over its cloak entry (a deliberate choice beats a standing
-    /// default). Order-stable dedupe so the encoded JSON is deterministic.
+    /// shares cloak: a `.window` share captures one window, and an
+    /// `.application` share's include-list already hides everything else.
+    /// Order-stable dedupe so the encoded JSON is deterministic.
     public static func effectiveExclusions(
         kind: PickerSelection.Kind, cloaked: [String], enabled: Bool
     ) -> [String] {

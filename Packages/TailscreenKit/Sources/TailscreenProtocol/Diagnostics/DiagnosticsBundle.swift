@@ -2,25 +2,10 @@ import Foundation
 
 /// One side's recording, packaged for somebody else to read.
 ///
-/// ## Why JSON Lines
-///
-/// A bundle is one header line followed by one line per event. Not a JSON
-/// document, not a zip, not a proprietary format — because of who reads it:
-///
-///   * **It greps.** `grep hello. bundle.jsonl` works, and so does
-///     `jq -c 'select(.severity=="error")'`. A single top-level JSON array
-///     makes both need a parser first.
-///   * **It streams and truncates.** A bundle cut short by a failed upload is
-///     still readable up to the cut; a truncated JSON document is not
-///     readable at all.
-///   * **It diffs and it merges.** Interleaving two sides is a sort on lines.
-///   * **It is legible to a person over somebody's shoulder**, which a binary
-///     format is not, and that matters for a file you are asking a user to
-///     look at before they send it to you.
-///
-/// The header comes first so a reader knows the build, the platform and the
-/// role before it reads an event, and so `head -1` is a complete answer to
-/// "what am I looking at".
+/// JSON Lines, not a JSON document or a zip: it greps (`jq -c 'select(...)'`
+/// works line by line), streams and truncates safely, diffs and merges as a
+/// sort on lines, and is legible over somebody's shoulder. The header comes
+/// first so `head -1` answers "what am I looking at".
 public struct DiagnosticsBundle: Sendable, Equatable {
 
     /// What the reader needs to know before the first event.
@@ -59,19 +44,13 @@ public struct DiagnosticsBundle: Sendable, Equatable {
         public var wasRecording: Bool
 
         /// Plain-language statement of what is in the file, written into the
-        /// bundle itself.
-        ///
-        /// Not decoration. A user is being asked to send this to somebody, and
-        /// the honest version of that request names what they are sending. It
-        /// lives in the file rather than only in the UI that produced it
-        /// because the file is what gets forwarded, and the second recipient
-        /// never saw the dialog.
+        /// bundle itself — not decoration, since the file gets forwarded and
+        /// a second recipient never saw the export dialog.
         public var contentNotice: String
 
-        /// The disclosure every bundle carries. States both halves of
-        /// ``DiagnosticsRedaction``'s rule — what was removed, and what was
-        /// deliberately kept — because a notice that only mentions the
-        /// redaction implies the rest is anonymous.
+        /// The disclosure every bundle carries: both halves of
+        /// ``DiagnosticsRedaction``'s rule, what was removed and what was
+        /// deliberately kept.
         public static let standardContentNotice = """
             This file records what this device did during a Tailscreen session: \
             connections, handshakes, actions taken, and errors. It names your \
@@ -126,12 +105,9 @@ public struct DiagnosticsBundle: Sendable, Equatable {
         self.events = events
     }
 
-    /// Package a snapshot with the build facts the host knows and the portable
-    /// tier does not.
-    ///
-    /// `BuildInfo` deliberately stays a per-app file (it is stamped by each
-    /// platform's own workflow), so those values arrive in a
-    /// ``DiagnosticsEnvironment`` rather than being read here.
+    /// Package a snapshot with the build facts the host knows and the
+    /// portable tier does not — `BuildInfo` stays per-app, so those values
+    /// arrive via ``DiagnosticsEnvironment``.
     public static func make(
         from snapshot: DiagnosticsSnapshot,
         environment: DiagnosticsEnvironment,
@@ -139,9 +115,7 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     ) -> DiagnosticsBundle {
         let header = Header(
             role: snapshot.role,
-            // The recorder's label, not the environment's: the snapshot is what
-            // actually recorded these events, and if the two ever disagree the
-            // events are the ones telling the truth.
+            // The recorder's label, not the environment's: the snapshot is what actually recorded these events.
             device: snapshot.deviceLabel,
             platform: environment.platform,
             appVersion: environment.appVersion,
@@ -159,17 +133,13 @@ public struct DiagnosticsBundle: Sendable, Equatable {
 
     // MARK: - Serialization
 
-    /// The whole bundle as JSON Lines text, header first.
-    ///
-    /// Built as `Data` by ``jsonLinesData()`` and converted once at the end.
-    /// The bytes are what gets written to disk, so producing them directly and
-    /// converting only for callers that want text is both the cheaper order
-    /// and the one that keeps a single definition of the format.
+    /// The whole bundle as JSON Lines text, header first. Built as `Data` by
+    /// ``jsonLinesData()`` and converted once, since the bytes are what's
+    /// written to disk.
     public func jsonLines() throws -> String {
         guard let text = String(bytes: try jsonLinesData(), encoding: .utf8) else {
-            // JSONEncoder emits valid UTF-8, so this is unreachable in
-            // practice — but a failable conversion beats one that silently
-            // substitutes U+FFFD into a file somebody is going to read.
+            // Unreachable in practice (JSONEncoder emits valid UTF-8), but a
+            // failable conversion beats silently substituting U+FFFD.
             throw DiagnosticsBundleError.encodingFailed
         }
         return text
@@ -179,19 +149,16 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     /// disk.
     public func jsonLinesData() throws -> Data {
         let encoder = JSONEncoder()
-        // Sorted keys so two exports of the same events are byte-identical and
-        // a bundle diffs against itself usefully. ISO-8601 with fractional
-        // seconds because merging two machines on whole seconds would reorder
-        // a handshake that takes milliseconds.
+        // Sorted keys so two exports of the same events are byte-identical.
+        // ISO-8601 with fractional seconds, since whole-second merging would
+        // reorder a millisecond handshake.
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .custom { date, encoder in
             var container = encoder.singleValueContainer()
             try container.encode(DiagnosticsBundle.format(date))
         }
 
-        // Trailing newline after every line, including the last: the file is a
-        // stream of lines, and a reader that appends to it must not land on the
-        // same line as the last event.
+        // Trailing newline after every line, including the last, so an appending reader lands on a new line.
         let newline = Data([0x0A])
         var out = Data()
         out.append(try encoder.encode(HeaderLine(header: header)))
@@ -203,15 +170,9 @@ public struct DiagnosticsBundle: Sendable, Equatable {
         return out
     }
 
-    /// Parse a bundle back.
-    ///
-    /// **Tolerant by design.** Unknown event names, unknown categories, blank
-    /// lines and lines a newer build wrote with fields this one has never
-    /// heard of all survive — the same instinct as the wire's tolerant
-    /// `decodeHelloAckCaps`. A reader that refuses a bundle from a slightly
-    /// newer build is a reader that fails exactly when it is needed, since the
-    /// person with the problem is by definition the one running the newer
-    /// build.
+    /// Parse a bundle back. Tolerant by design: unknown event names,
+    /// categories, blank lines, and fields from a newer build all survive —
+    /// a reader that refuses a slightly newer bundle fails exactly when it's needed.
     public static func parse(jsonLines text: String) throws -> DiagnosticsBundle {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
@@ -233,31 +194,24 @@ public struct DiagnosticsBundle: Sendable, Equatable {
                 header = parsed.header
                 continue
             }
-            // A line that will not parse is skipped rather than fatal: one
-            // corrupt line in the middle must not cost the other four thousand.
+            // A line that won't parse is skipped, not fatal — one corrupt
+            // line must not cost the other four thousand.
             if let event = try? decoder.decode(DiagnosticEvent.self, from: data) {
                 events.append(event)
             }
         }
         guard let header else { throw DiagnosticsBundleError.missingHeader }
-        // The ONE thing this otherwise-tolerant parser refuses.
-        //
-        // Unknown event names, unknown categories and corrupt lines are all
-        // skipped on purpose — a reader that rejects a bundle from a newer
-        // build fails exactly when it is needed, since the person with the
-        // problem is the one running the newer build. A schema bump is the
-        // opposite case by definition: `currentSchema` changes only when an
-        // older reader would produce the WRONG answer, so guessing produces a
-        // confidently incorrect timeline, which this whole feature treats as
-        // worse than no timeline. Older schemas stay readable.
+        // The one thing this otherwise-tolerant parser refuses: `currentSchema`
+        // only bumps when an older reader would produce the wrong answer, so
+        // guessing here is worse than refusing. Older schemas stay readable.
         guard header.schema <= Header.currentSchema else {
             throw DiagnosticsBundleError.unsupportedSchema(header.schema)
         }
         return DiagnosticsBundle(header: header, events: events)
     }
 
-    /// Wrapper that tags the header line so `parse` can tell it from an event
-    /// without positional trust — a concatenated pair of bundles still reads.
+    /// Tags the header line so `parse` can tell it from an event without
+    /// positional trust — a concatenated pair of bundles still reads.
     struct HeaderLine: Codable {
         /// Always `"tailscreen.diagnostics.header"`.
         var kind: String
@@ -279,27 +233,17 @@ public struct DiagnosticsBundle: Sendable, Equatable {
         }
     }
 
-    /// The timestamp formatters, behind a lock.
+    /// The timestamp formatters, behind a lock. `ISO8601DateFormatter` is a
+    /// mutable class, not `Sendable`, so two threads exporting at once would
+    /// share its state without one. `NSLock`, not `Synchronization.Mutex`
+    /// (see ``Guarded``'s TSan note) — bare, not `Guarded`, since this guards
+    /// two statics, not one value.
     ///
-    /// `ISO8601DateFormatter` is a mutable class and therefore not `Sendable`,
-    /// so a plain `static let` does not compile under this package's strict
-    /// concurrency — correctly, because two threads exporting at once would
-    /// share its internal state. `NSLock` rather than `Synchronization.Mutex`
-    /// for the reason spelled out on ``Guarded`` (TSan cannot see through
-    /// `Mutex`, so it cannot check a type behind one) — and bare rather than a
-    /// ``Guarded`` because this guards two separate statics, not one value.
-    /// The contention is nothing either way, since formatting happens on
-    /// export and parse, not on the recording path.
-    ///
-    /// Two formatters because the fractional-seconds option is not tolerant —
-    /// a formatter configured `.withFractionalSeconds` returns nil for a
-    /// stamp without them, so reading needs both and tries them in order.
+    /// Two formatters: `.withFractionalSeconds` returns nil for a stamp
+    /// without them, so reading tries both in order.
     private static let formattersLock = NSLock()
     /// `nonisolated(unsafe)` because `formattersLock` is what makes it safe,
-    /// and the compiler cannot see that. Same bargain as the `@unchecked
-    /// Sendable` conformances elsewhere in this repo: we own the invariant,
-    /// the compiler is not checking it — and here the invariant is one lock
-    /// around two accessors, both in this file.
+    /// which the compiler can't see — same bargain as `@unchecked Sendable` elsewhere.
     nonisolated(unsafe) private static let formatters = Formatters()
 
     private final class Formatters {
@@ -325,9 +269,7 @@ public struct DiagnosticsBundle: Sendable, Equatable {
     static func parseDate(_ text: String) -> Date? {
         formattersLock.lock()
         defer { formattersLock.unlock() }
-        // Tolerate a stamp without fractional seconds — hand-edited bundles
-        // and other producers exist, and losing a whole file over a missing
-        // `.123` would be absurd.
+        // Tolerate a stamp without fractional seconds (hand-edited bundles, other producers).
         return formatters.fractional.date(from: text) ?? formatters.plain.date(from: text)
     }
 }
