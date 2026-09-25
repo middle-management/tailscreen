@@ -1,113 +1,79 @@
 # CLAUDE.md
 
-Guidance for Claude (and other AI assistants) working in this repo. Keep it accurate — if you change the build, layout, or protocol, update this file (or the matching file under `.claude/rules/`) in the same commit.
+Guidance for AI agents in this repo. If you change the build, layout, or protocol, update this file (or the matching `.claude/rules/` file) in the same commit. Keep these files terse: rules, pitfalls with their symptom and fix, and non-obvious "why" — not history or anything `rg` can find.
 
 ## Project
 
-**Tailscreen** is a low-latency, encrypted peer-to-peer screen-sharing app over Tailscale, with native apps for **macOS 15+** (`Apps/macOS`), **Linux** (`Apps/linux`, GTK4) and **Windows** (`Apps/windows`, WinUI) that all speak one wire protocol — any of them can view or share to any other (the Linux sharer captures X11 directly or a Wayland session via the ScreenCast portal, and injects remote control via XTEST; system-audio capture is macOS-only today). The macOS app is the reference implementation and most of this file describes it: the UI is a regular docked main window (sign-in, accounts, the peer list — the hub) plus a menubar item that acts as the sharer tool (share status, start/stop, mic/system-audio/drawing controls). While a share is live the **whole** sharing view — preview, session controls, viewer roster, approvals, link controls — renders on **both** surfaces out of the same components, so a sharer never has to hop between them. Beside the tailnet path, **Share via Link** (share-by-token) admits guests with no Tailscale account over a per-link ephemeral WireGuard tunnel — all three apps mint and join links, guests get the full feature set behind mandatory per-join approval, and a macOS share can even run link-only with no sign-in at all (`plans/share-by-token.md` is the feature's history; `docs/spec.md` Appendix D the transport note). It uses tsnet ephemeral nodes (no manual device registration), captures via ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, and renders with Metal. SwiftPM only — no Xcode project.
+**Tailscreen**: low-latency encrypted P2P screen sharing over Tailscale. Native apps for **macOS 15.2+** (`Apps/macOS`, the reference implementation), **Linux** (`Apps/linux`, GTK4) and **Windows** (`Apps/windows`, WinUI) speak one wire protocol and interoperate fully. System-audio capture is macOS-only. **Share via Link** (share-by-token) admits guests without a Tailscale account over a per-link ephemeral WireGuard tunnel, behind mandatory per-join approval; a macOS share can run link-only with no sign-in. SwiftPM only — no Xcode project.
+
+macOS UI: a docked main window (sign-in, accounts, peer list — the hub) plus a `MenuBarExtra` sharer tool. While sharing, the whole sharing view renders on **both** surfaces from the same components.
 
 ## Tech stack
 
-- **Swift 6** with strict concurrency (`@MainActor`, `Sendable`).
-- **macOS 15.2 (Sequoia)** deployment target. Not iOS. The 15.2 floor (vs. 15.0) is dictated by the `SCContentFilter.includedDisplays` / `includedWindows` / `includedApplications` getters the picker-helper uses to extract primitives.
-- **Go** required at build time to compile `libtailscale.a` (the C archive that TailscaleKit wraps). The submodule's `go.mod` pins the floor (currently a `go 1.26.x` directive); any reasonably recent Go works because `GOTOOLCHAIN=auto` downloads the required toolchain — except Debian/Ubuntu's apt Go, which patches that default off, so CI provisions Go via `actions/setup-go` reading the submodule's `go.mod`.
-- **libopus** required at build time: the app links it (via `./Packages/OpusKit`'s `COpus` systemLibrary) for the Opus audio path. Install with `brew install opus` (macOS) / `apt install libopus-dev` (Linux); pkg-config resolves it.
-- **SwiftUI** (`Window` main scene + `MenuBarExtra` sharer tool; the app runs at `.regular` activation policy — Dock icon, always-reachable menu bar), **ScreenCaptureKit**, **VideoToolbox**, **Metal** (`CAMetalLayer`).
-- **TailscaleKit** consumed as a local SwiftPM package (`./Packages/TailscaleKit`); **OpusKit** likewise (`./Packages/OpusKit`).
+- **Swift 6**, strict concurrency. macOS target **15.2** (needed for `SCContentFilter.includedDisplays`/`includedWindows`/`includedApplications` getters used by the picker-helper).
+- **Go** at build time for `libtailscale.a`. `GOTOOLCHAIN=auto` fetches the version the submodule's `go.mod` pins — except Debian/Ubuntu apt Go, which disables that (CI uses `actions/setup-go`).
+- **libopus** at build time (`brew install opus` / `apt install libopus-dev`), via `Packages/OpusKit`'s `COpus` systemLibrary.
+- ScreenCaptureKit, VideoToolbox (H.264/HEVC), Metal (`CAMetalLayer`); tsnet ephemeral nodes.
 
-Runtime needs: Screen Recording permission, and either interactive Tailscale login or `TAILSCREEN_TS_AUTHKEY` (+ optional `TAILSCREEN_TS_CONTROL_URL`). The share-by-token paths need neither: joining by link and macOS's link-only sharing run over the guest tunnel with no Tailscale account.
+Runtime: Screen Recording permission, and interactive Tailscale login or `TAILSCREEN_TS_AUTHKEY` (+ optional `TAILSCREEN_TS_CONTROL_URL`). Link join and macOS link-only sharing need neither.
 
-## Repository layout
+## Layout
 
-One directory is not Swift at all: **`sdk/go`** is the public Go implementation of the wire protocol (plus a `-buildmode=c-archive` build of it as `libtailscreen.a`), which `conformance/` runs the vectors against. **`web/viewer`** is the other non-Swift corner: the browser viewer's Go module (the fork's `guest` client + `sdk/go` compiled to js/wasm, a `localderp` relay stand-in, the spike page and its Playwright harness — `plans/browser-viewer.md`); `make web-viewer` builds it, `make test-web-spike` runs the browser↔sharer end-to-end. Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (a submodule of [our fork](https://github.com/middle-management/libtailscale), branch `tailscreen-main`, which carries our changes as commits on top of upstream); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps; **TailscreenL10n** is the string catalog all three apps share. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`TailscreenSharerPortal`/`XTestInjectKit`/`X11HotkeyKit`/`GNotifyKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WinHotkeyKit`/`WinNotifyKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
+- `Apps/{macOS,linux,windows}` — one SwiftPM package each (linux/windows use swift-cross-ui).
+- `Packages/TailscreenKit` — portable (Linux-buildable) protocol + viewer + sharer core used by all three apps.
+- `Packages/TailscaleKit` — wraps libtailscale, a submodule of [our fork](https://github.com/middle-management/libtailscale) (branch `tailscreen-main`).
+- `Packages/TailscreenHubUI` — shared hub UI for the swift-cross-ui apps. `Packages/TailscreenL10n` — the one string catalog (`L(_:)`) all apps read.
+- Other `Packages/*` are platform backends (X11/portal/XTEST/ALSA… on Linux; WGC/SendInput/WASAPI… on Windows) or codec wrappers.
+- `sdk/go` — public Go SDK of the wire protocol, written from `docs/spec.md` and sharing no code with ours; also built as `libtailscreen.a`. `conformance/` — language-neutral vectors. `web/viewer` — browser viewer (Go → js/wasm).
+- `docs/` — published site. `plans/` — internal plans, not published; roadmap/status prose goes there.
 
-**TailscreenL10n** is the string catalog — one `.lproj` set plus a portable
-`L(_:)` — that all three apps and TailscreenHubUI read, so a string translated
-once is translated everywhere.
+## Build & test
 
-Use `rg` to find specific files; the per-area rules files below carry the rest.
+**Always go through `make`** — it sets `PKG_CONFIG_PATH` so SwiftPM finds `libtailscale.pc` (and `sdk/go/libtailscreen.pc`). After a fresh clone: `git submodule update --init --recursive`. First build needs network.
 
-## Build & run
+Non-obvious targets (each reproduces the CI job of the same name):
+- `make test-protocol` — portable TailscreenKit, no Apple frameworks; runs on Linux (`linux-protocol`). Builds `libtailscale.a` first (a link-time input for `TailscreenSharerTests`).
+- `make test-differential` — Swift pipeline vs Go SDK driven with identical seeded input (`Packages/TailscreenDifferential`). Separate package because two Go c-archives can't share one binary.
+- `make test-conformance` — vectors against `sdk/go`. CI's `linux-conformance` also runs `cd sdk/go && go test ./...` and `make libtailscreen-check`; reproduce all three before calling it flaky.
+- `make test-l10n` — catalog tests, plain and under TSan; scans all app source trees for missing `L("…")` keys (the only check on GTK/WinUI strings).
+- `make merge-diagnostics FILES="a.jsonl b.jsonl"` — merge two diagnostics bundles; needs no libtailscale/Go/libopus.
+- `make test-e2e` — local headscale in Docker. `make web-viewer` / `make test-web-spike` — see `.claude/rules/web-viewer.md`.
 
-Always go through `make` (`make build`, `test`, `run`, `release`, …) — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`. Two targets whose purpose isn't obvious from the Makefile:
+Bare `swift` commands for the mac app run from `Apps/macOS/` (no manifest at the root), and only after `make tailscale`.
 
-- `make test-protocol` — builds + smoke-tests the portable TailscreenKit package with no Apple frameworks. Also runs on Linux, and is how you reproduce a `linux-protocol` CI failure locally. It builds `libtailscale.a` first: the package's `TailscreenSharerTests` bundle links `TailscreenSharer` → `TailscaleKit`, so the archive is a link-time input even though no test calls tsnet.
-- `make test-differential` — the Swift↔Go differential suite (`Packages/TailscreenDifferential`): the shipping Swift pipeline and the public Go SDK, built as `libtailscreen.a` and linked through the `CTailscreen` systemLibrary (resolved via `sdk/go/libtailscreen.pc` — the Makefile's `PKG_CONFIG_PATH` carries `sdk/go` for it), driven with identical seeded input and asserted identical at every step. A **separate** package on purpose: two Go c-archives cannot share one binary, and TailscreenKit's test executable already links `libtailscale.a`. Reproduces a `linux-differential` CI failure.
-- `make test-conformance` — runs the protocol conformance vectors (`conformance/vectors/`) against **`sdk/go`**, the public Go SDK, which was written from `docs/spec.md` and shares no code with ours. Needs Go, nothing else. CI's `linux-conformance` leg runs this **plus** `cd sdk/go && go test ./...` **plus** `make libtailscreen-check` — reproduce all three before concluding a failure there is flaky. The Swift half of the same pair rides inside `make test-protocol`. Neighbours: `make fuzz-conformance` (coverage-guided fuzzing of the same parsers, off the PR path) and `make libtailscreen-check` (the SDK as a C static library — `-buildmode=c-archive`, same mechanism as `libtailscale.a` — plus the C smoke test that links it).
-- `make test-l10n` — builds + tests the shared string catalog, twice: once plain and once under ThreadSanitizer (the catalog is a process-wide singleton with a lazy first load, and this dependency-free package carries its own `Guarded`, so this is the only job that can observe that lock). Its suites scan **all four** source trees for `L("…")` keys the catalog is missing, so it is the only check on the GTK and WinUI apps' user-facing strings; reproduces a `linux-l10n` CI failure.
-- `make merge-diagnostics FILES="a.jsonl b.jsonl"` — merges exported diagnostics bundles into one ordered timeline (the two clocks need not agree; the offset comes from the handshake). Wraps the `tailscreen-diagnostics-merge` executable target in TailscreenKit, which depends on `TailscreenProtocol` alone and so needs no `libtailscale.a`, Go or libopus — deliberately, so triaging a bundle pair does not require building the world.
-- `make test-e2e` — one-shot `e2e-up` → `swift test --filter TailscaleConnectivityTests` → `e2e-down` against a local headscale in Docker.
-- `make web-viewer` / `make test-web-spike` — the browser viewer (`web/viewer`, `.claude/rules/web-viewer.md`). The first is the js/wasm build (Go only; prints the raw/gzip/brotli sizes and exports the page's strings); the second is the browser↔sharer end-to-end and Linux-only: it needs Go, Node with a global `playwright` module plus Google Chrome (`playwright install --with-deps chrome`), Xvfb, and `xdotool` for the remote-control leg. Reproduces a `linux-web-spike` CI failure.
+## Protocol
 
-The app package lives in `Apps/macOS/` — bare `swift` commands for the app must run from that directory (from the repo root there is no manifest at all). And running `swift build` there before `make tailscale` will fail to link — you need `libtailscale.a` first.
+Port **7447** TCP+UDP (`NetworkConfig.tailscreenPort` — never write the literal). RTP over UDP: video PT 96 H.264 / 97 HEVC, audio PT 98 voice / 99 system. Loss recovery FEC → NACK → PLI, negotiated in HELLO/HELLO_ACK. Control channel over TCP: `[type:1][len:4 BE][payload:N]`, JSON payloads. The same protocol runs unchanged inside the guest tunnel; guests are a second admission class (identity = node key, deny evicts at the tunnel). Details: `.claude/rules/protocol.md`.
 
-First build downloads Go modules; **network access required**.
+- **Every wire constant is pinned by `WireByteRegistryTests`; never renumber a shipped one.** A wire change touches four things in one commit: code, registry test, `docs/spec.md` registry appendix, and a conformance vector.
+- `docs/spec.md` is normative (RFC 2119, requirement IDs like `TS-CTL-001`).
+- **Session diagnostics** are a local JSONL event stream, not on the wire. On by default in release candidates, off in stable. Event names are a never-rename registry (`DiagnosticEventNameTests`). See `.claude/rules/diagnostics.md`.
 
-After a fresh clone: `git submodule update --init --recursive` (the libtailscale submodule).
+## Swift conventions
 
-## Protocol at a glance
+- `@MainActor` on UI state and anything constructing an `NSWindow`. `@unchecked Sendable` on networking classes that own their thread safety.
+- **Never `Synchronization.Mutex`** — TSan can't see it, so `linux-tsan` passing says nothing. Use `Guarded` (TailscreenProtocol) for new lock-guarded state, or a plain `NSLock`. Multi-threaded types need a test that touches them from several threads.
+- `CVPixelBuffer` isn't `Sendable` — convert to `CGImage` before hopping to `@MainActor`.
+- No `Task { … self … }` in `deinit`.
+- Log with `TSLogger`, not `print`. Surface UI errors via `appState.showAlertMessage(title:message:)`.
+- The `-L` to `Packages/TailscaleKit/lib` in `Package.swift` must stay **relative**.
 
-Port **7447**, TCP **and** UDP. Video and audio are RTP over UDP (video PT 96 = H.264 / 97 = HEVC, audio PT 98 = voice / 99 = system audio; the viewer auto-detects, nothing is negotiated out of band). Loss recovery is layered FEC → NACK → PLI, capability-negotiated in an extended HELLO/HELLO_ACK. Annotations, remote control, metadata and request-to-share ride a framed TCP channel (`[type:1][len:4 BE][payload:N]`, JSON payloads). The same protocol, both channels, also runs over the **guest (share-by-token) tunnel** — a per-link ephemeral WireGuard pair the fork's `guest` package bootstraps from an opaque `tc…` token, carried by second UDP/TCP listeners beside the tailnet ones; nothing on the wire inside the tunnel differs, and guests form a second admission class (mandatory per-join approval, identity = node key, deny evicts at the tunnel).
+## Pitfalls
 
-**Every wire constant is pinned by `WireByteRegistryTests`. Add a registry row in the same commit as any new wire byte, and never renumber a shipped one.** Full protocol details: `.claude/rules/protocol.md`.
+- **Linker errors on `swift build`** → run `make tailscale` first.
+- **Two local instances see no peers** → shared state dir; use `./test-local.sh` or `TAILSCREEN_INSTANCE`.
+- **`Packages/TailscaleKit/Sources/` are symlinks into the submodule** → commit + push in the submodule on `tailscreen-main`, then bump the pointer, or the edit is lost.
+- **Interactive login needs a running node** (after Start Sharing / Connect to…).
+- **New workflows that build need `submodules: recursive`.**
 
-**Session diagnostics ride alongside, not on the wire.** All three apps record a structured event stream of one session — handshakes, admission decisions, the package's own log lines (the half two bundles merge on), and the picture's health: the first decoded frame, decode failures and the recovery ladder up to a stall, the sharer's codec choice and every bitrate/fps step, and a per-window `transport.summary` from both ends (loss, NACKs, FEC recoveries, RTT, receiver-report freshness) — and the macOS app additionally records user actions, active views and surfaced failures, and is the only host with a Settings toggle and an export button so far (Linux and Windows switch via `TAILSCREEN_DIAGNOSTICS`; see `docs/platform-support.md`). A bundle is JSON Lines; two sides' bundles merge into one ordered timeline, with clock skew solved from the handshake's own four timestamps and the two ends paired on the SSRC the HELLO_ACK already carries, so nothing was added to the wire for it. **On by default in release candidates**, off in stable releases, and event names are a registry with the same never-rename rule as the wire bytes (`DiagnosticEventNameTests`). See `.claude/rules/diagnostics.md`.
+## Where details live
 
-The **normative** definition — RFC 2119 MUST/SHOULD/MAY with stable requirement IDs (`TS-CTL-001`, …) — is `docs/spec.md`, and `conformance/` carries the language-neutral vectors that pin it: `make test-conformance` runs them against `sdk/go` (the public Go SDK, written from the spec and sharing no code with ours — also buildable as `libtailscreen.a` for non-Go clients), and `make test-protocol` runs the same files against the shipping Swift codecs. The stateful pipeline (reorder, depacketizers, NACK scheduling, FEC group solving, RR accounting) is pinned the other way — vectors can't express clock-driven interleavings, so `make test-differential` links the Go SDK's c-archive and drives both implementations with identical seeded input, asserting identical output at every step. A wire change touches four things in one commit: the code, the registry test, the spec's registry appendix, and a vector.
+`.claude/rules/*.md` load automatically by `paths:` frontmatter; read one directly if needed sooner: `protocol`, `testing`, `portable-packages`, `macos-app`, `localization`, `linux`, `windows`, `tailscalekit`, `ci`, `web-viewer`, `diagnostics`. The **`test-catalog`** skill covers where a new test goes and the test seams — invoke it when adding or moving a test.
 
-## Swift 6 conventions used here
+**User-facing changes update `docs/` in the same PR** (`index.md`, `install.md`, `usage.md`, `platform-support.md`, `troubleshooting.md`, …). Safe to do eagerly: `main`'s docs publish only to tailscreen.dev/next; the root site builds from the latest release tag. `docs/platform-support.md` changes with any platform gap opening or closing.
 
-- `@MainActor` on all UI-touching state and anywhere that constructs an `NSWindow`.
-- `@unchecked Sendable` on networking classes that handle their own thread safety. We're owning the invariants, the compiler isn't checking them.
-- **Never `Synchronization.Mutex`.** ThreadSanitizer can't see through it — it reports a race *inside* the lock body on correct code, and worse, a `Mutex`-guarded type can't be checked by the sanitiser at all, so `linux-tsan` passing says nothing about it. `Guarded` (TailscreenProtocol) is `Mutex`'s `withLock { $0 … }` shape over an `NSLock` and replaced every one; it's the default for new lock-guarded state. A bare `NSLock` beside the state is still fine and still common here — NSLock-backed is what the sanitiser needs; `Guarded` just also makes the state unreachable without the lock. `Guarded.swift` has the argument, `.claude/rules/testing.md` the reproduction. A genuinely multi-threaded type also needs a test that touches it from several threads, or the gate has nothing to watch.
-- `CVPixelBuffer` is **not** `Sendable` — convert to `CGImage` *before* hopping to `@MainActor` (e.g. for preview thumbnails).
-- No `Task { … self … }` in `deinit` — do synchronous cleanup; capturing `self` after deinit starts is undefined.
-- `ObservableObject` + `@Published` for UI-bound state; `@StateObject` to own, `@EnvironmentObject` to consume.
-- Logging: prefer `TSLogger` from TailscaleKit. Bare `print` is fine in legacy/example code, avoid in new code.
-- Errors at the UI: catch and surface via `appState.showAlertMessage(title:message:)` rather than swallowing.
+## Git
 
-## Linker / package conventions
-
-`Package.swift` links libtailscale through a `-L` flag pointing at `Packages/TailscaleKit/lib`. Keep that path **relative** — making it absolute breaks portability and CI. Both the `Tailscreen` target and the `TailscreenTests` target carry the flag.
-
-## Common pitfalls
-
-- **`swift build` fails with linker errors** — you skipped `make tailscale`. The Go build emits `libtailscale.a`; without it nothing links. (And "no Package.swift" at the repo root means you forgot to `cd Apps/macOS` first.)
-- **Two local instances see no peers** — both processes are sharing one Tailscale state dir. Use `./test-local.sh` (or set `TAILSCREEN_INSTANCE` manually).
-- **Editing `Packages/TailscaleKit/Sources/` directly** — those paths are symlinks into the fork submodule. Fine to edit, but the change must be committed *in the submodule* on the fork's `tailscreen-main` branch, pushed to `middle-management/libtailscale`, and the submodule pointer bumped here — an uncommitted submodule edit vanishes for everyone else.
-- **Port 7447 lives in `NetworkConfig.tailscreenPort`** (TailscreenProtocol/NetworkConfig.swift) — the discovery, server, client, and metadata paths all read it from there. Route any new listener or dial through it rather than writing the literal.
-- **Auth flow needs an active node** — interactive login only works after `Start Sharing` or `Connect to…` has initialized the tsnet node.
-- **CI uses submodules.** Workflows already pass `submodules: recursive`; if you add a new workflow that builds, do the same.
-
-Platform- and area-specific pitfalls live in the rules files below — read the matching one before working in that area.
-
-## Where the details live
-
-Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter so it loads only when working on matching files. Read one directly whenever you need it sooner:
-
-| File | Covers | Loads for |
-|------|--------|-----------|
-| `.claude/rules/protocol.md` | The full 7447 wire protocol: video/audio RTP, NACK+FEC+RR loss recovery, viewer admission, annotations, remote control, metadata | TailscreenKit, both backends packages, app sources that touch the transport |
-| `.claude/rules/testing.md` | Running the unit/E2E/tsnet suites, env-var affordances, `test-local.sh`, `net-impair.sh` | any `Tests/`, `scripts/`, `e2e/` |
-| `.claude/rules/portable-packages.md` | TailscreenKit's six tiers, what must be `public`, which suites live where, the shared codec/HubUI/L10n packages | `Packages/TailscreenKit`, `TailscreenHubUI`, codec wrappers |
-| `.claude/rules/macos-app.md` | Data-flow diagram, UI surfaces, capture-helper + picker-helper IPC, ScreenCaptureKit rules | `Apps/macOS/**` |
-| `.claude/rules/localization.md` | `L(_:)`, the shared catalog, call-site conventions per UI toolkit, what not to localize | all three apps' sources, TailscreenHubUI, TailscreenL10n |
-| `.claude/rules/linux.md` | GTK app, X11/portal capture, ALSA, XTEST injection + their pitfalls | `Apps/linux`, Linux backend packages |
-| `.claude/rules/windows.md` | WinUI app, WGC capture, SendInput, layered-window overlay, DPI awareness | `Apps/windows`, Windows backend packages |
-| `.claude/rules/tailscalekit.md` | The fork submodule, how to change it, the Windows Go↔C bridge and runtime-start commits | `Packages/TailscaleKit/**` |
-| `.claude/rules/ci.md` | Shared build definitions, the linux-packages matrix, release/soak/Pages workflows | `.github/**` |
-| `.claude/rules/web-viewer.md` | The browser viewer: the wasm surface, the page, its strings, the gzip loader, hosting, the e2e's traps | `web/viewer/**` |
-| `.claude/rules/diagnostics.md` | Session diagnostics: the event registry, the recorder's prologue/ring buffer, redaction, the JSONL bundle, the cross-side merge + clock-skew correction, the on-by-default-in-RC rule | `TailscreenProtocol/Diagnostics`, the mac app's diagnostics files |
-
-One skill loads on demand rather than by path: **`test-catalog`** — the extracted pure-decision suites, the test-only seams, and which package a new suite belongs in. Invoke it when adding or moving a test.
-
-Longer-form design docs (published site) live in `docs/`: `architecture.md`, `protocol.md` (with `spec.md`, the normative wire spec, as its child page), `security.md`, `platform-support.md` (the public per-platform feature matrix — update it in the same commit as any change that opens or closes a platform gap). Internal working plans — porting, the per-platform viewer plans, `platform-alignment.md` and friends — live in `plans/` at the repo root and are deliberately **not** published; keep roadmap/status prose there, not in `docs/`.
-
-**The docs site ships with the change that makes it true.** A PR that changes anything user-facing — a feature, an install step, an artifact name, a permission prompt, a platform gap opening or closing — updates the matching page under `docs/` (`index.md`, `install.md`, `usage.md`, `platform-support.md`, `troubleshooting.md`, …) in the same PR; there is no separate docs catch-up step. This is safe to do eagerly: `docs/` on `main` publishes only to the **/next** preview channel (tailscreen.dev/next, banner + noindex), while the root site builds from the **latest release tag** (see `pages.yml`), so docs merged with a feature never promise anything unreleased — and the root flips to them automatically when the release publishes.
-
-## Git workflow notes
-
-- The libtailscale submodule points at our fork (`middle-management/libtailscale`, branch `tailscreen-main`). A dirty submodule now shows in `git status` (the old `ignore = dirty` is gone with the patch series) — if you edited it, commit and push in the submodule first, then bump the pointer.
-- AI sessions develop on a designated `claude/...` branch — **do not push to `main`**. The active branch is named in the per-session prompt.
-- **AI remote sessions: plain `curl` to `api.github.com` is authenticated** — the session's outbound proxy injects credentials for the scoped repos, even when no `gh` CLI or API tool is available and the environment notes claim otherwise. That covers reads the tool surface lacks: listing and **downloading workflow artifacts** (`/actions/artifacts/<id>/zip` — how the landing-page screenshots get refreshed from the Screenshots workflow), run/job queries, re-run endpoints. Writes stay gated: pushing tags and creating Releases are refused, so publishing a release is a human's one click on a prepared `releases/new?tag=…&prerelease=1&body=…` link (the tag is created at publish time — see the rc.5/rc.6 sessions).
-- License: MIT; upstream `libtailscale` is BSD-3-Clause.
+- Develop on the designated `claude/...` branch; **never push to `main`**.
+- AI remote sessions: plain `curl` to `api.github.com` is authenticated by the proxy for the scoped repos (artifacts download via `/actions/artifacts/<id>/zip`, run/job queries, re-runs). Pushing tags and creating Releases are refused — hand the human a prepared `releases/new?tag=…&prerelease=1&body=…` link.
+- License MIT; upstream libtailscale BSD-3-Clause.

@@ -9,12 +9,11 @@ paths:
 
 # Localization (all three apps)
 
-One catalog serves macOS, Linux and Windows. It lives in
-**`Packages/TailscreenL10n`** — base at
-`Sources/TailscreenL10n/Resources/en.lproj/Localizable.strings`, translations in
-sibling `<lang>.lproj` directories — and every app depends on that package. A
-string that appears on two platforms is ONE key, translated once. See the
-package README for the mechanism and for why it isn't `String(localized:)`.
+One catalog serves macOS, Linux and Windows: **`Packages/TailscreenL10n`**
+(base at `Sources/TailscreenL10n/Resources/en.lproj/Localizable.strings`,
+translations in sibling `<lang>.lproj` dirs). A string on two platforms is ONE
+key, translated once. See the package README for the mechanism and why it
+isn't `String(localized:)`.
 
 - **Route every user-facing string through `L(_:)`.** `import TailscreenL10n`
   (the macOS app re-exports it via `ProtocolReexports.swift`, so mac call sites
@@ -27,9 +26,9 @@ package README for the mechanism and for why it isn't `String(localized:)`.
   already, so `Button(L("…"), action:)` is the whole story.
 - **Keys are the English source text** (base-language-as-key). Interpolation
   works: `L("Viewing \(host)")` looks up `"Viewing %@"`, `Int` → `%lld`,
-  anything else → `%@`. Keep keys in the catalog byte-for-byte in sync with call
-  sites — `LocalizationCatalogTests` enforces this across **all four** source
-  trees, and it runs on Linux CI (`make test-l10n`, the `linux-l10n` leg).
+  anything else → `%@`. `LocalizationCatalogTests` enforces byte-for-byte sync
+  across **all four** source trees, on Linux CI (`make test-l10n`,
+  `linux-l10n`).
 - **One literal per call.** `L("a" + "b")` does not compile: the argument is a
   `LocalizationKey`, and the catalog key is the whole sentence. A long line is
   the right answer.
@@ -38,8 +37,8 @@ package README for the mechanism and for why it isn't `String(localized:)`.
   `CAPTURE_BACKEND_REPORT`), error codes (`TS-…`), key-equivalent glyphs
   (`⌘Q`), toolbar glyphs (`✎`, `↶`), SF Symbol names, codec names ("HEVC",
   "H.264"), or brand nouns ("Tailscreen", "Tailscale").
-- **Interpolating a caught `error` is fine** — the key takes `%@` and the value
-  renders through `String(describing:)`. Wrap the *sentence*, not the error.
+- **Interpolating a caught `error` is fine** — the key takes `%@`, rendered via
+  `String(describing:)`. Wrap the *sentence*, not the error.
 - **To add a language:** copy `en.lproj/Localizable.strings` to
   `<lang>.lproj/Localizable.strings` and translate the values only. No code
   changes. A key you skip falls back to English.
@@ -49,13 +48,12 @@ package README for the mechanism and for why it isn't `String(localized:)`.
 
 - **A new string renders in English on Linux/Windows but works on macOS** —
   the resource bundle didn't ship. The catalog is found beside the executable,
-  in a `…_TailscreenL10n.bundle` directory (matched by SUFFIX — SwiftPM derives
-  the prefix from the package and it is not stable across toolchains); a
-  missing bundle degrades silently to the English keys rather than failing,
-  which is why every packaging path
-  (`app-macos.yml`, `app-linux.yml`, `scripts/windows/stage-app.sh`, the
-  AppImage script, the Flatpak manifest) hard-fails when it can't find it. Add
-  the copy to any new packaging path you write.
+  in a `…_TailscreenL10n.bundle` directory (matched by SUFFIX — the prefix
+  isn't stable across toolchains); a missing bundle degrades silently to
+  English rather than failing, so every packaging path (`app-macos.yml`,
+  `app-linux.yml`, `scripts/windows/stage-app.sh`, the AppImage script, the
+  Flatpak manifest) hard-fails when it can't find it. Add the copy to any new
+  packaging path.
 - **Never reach for `Bundle.module` here.** SwiftPM's synthesized accessor
-  `fatalError`s when the bundle is absent, which would turn that silent
-  degradation into a crash on launch.
+  `fatalError`s when the bundle is absent, turning the silent degradation
+  above into a launch crash.
