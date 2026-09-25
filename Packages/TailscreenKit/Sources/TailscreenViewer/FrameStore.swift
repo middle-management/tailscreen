@@ -27,6 +27,17 @@ public final class FrameStore: @unchecked Sendable {
         return frame
     }
 
+    /// Drops the held frame and requests a repaint, so a new session doesn't
+    /// paint the previous one's last frame before its own first decode.
+    /// Not for a mid-session stall — that keeps the frozen frame on purpose.
+    public func clear() {
+        lock.lock()
+        frame = nil
+        let redraw = requestRedraw
+        lock.unlock()
+        redraw?()
+    }
+
     /// Registers the renderer's repaint request, invoked on each `set`.
     public func setRedraw(_ redraw: @escaping () -> Void) {
         lock.lock()

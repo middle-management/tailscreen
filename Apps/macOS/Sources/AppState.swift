@@ -2302,6 +2302,9 @@ class AppState: ObservableObject {
         dismissViewerNotice()
         isAwaitingAdmission = true
         let renderer = ensureViewer()
+        // Reconnect from the ended pane skips `dismissViewerWindow`, so the
+        // frozen frame would otherwise sit under the connecting placard.
+        renderer.clearPendingBuffer()
         syncViewerPresentationEffects()
         refreshViewerVideoAccessibilityLabel()
         // Belt-and-braces zoom reset at session entry: disconnect()

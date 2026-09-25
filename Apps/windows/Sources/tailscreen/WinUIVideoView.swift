@@ -131,7 +131,12 @@ struct WinUIVideoView: WinUIElementRepresentable {
             from store: FrameStore, into element: WinUI.Image,
             interaction: WindowsViewerInteraction
         ) {
-            guard let frame = store.current() else { return }
+            guard let frame = store.current() else {
+                // A cleared store (new session): black out the bound source
+                // rather than keep showing the previous session's frame.
+                if source != nil { _ = winvideo_clear() }
+                return
+            }
             lastVideoWidth = frame.width
             lastVideoHeight = frame.height
 
