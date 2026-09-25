@@ -2,11 +2,9 @@ import TailscreenProtocol
 import TailscreenSharer
 import XCTest
 
-/// Unit tests for the pure viewer-lifecycle decisions extracted from
-/// `TailscaleScreenShareServer` — the audio-relay SSRC anti-spoof gate, the
-/// idle-sweep staleness math shared by the connected and pending sweeps, the
-/// bounded PLI ring, and the per-viewer RTP header rewrite. No tsnet, no
-/// helper — same pattern as `AdaptiveBitrateTests`.
+/// Pure viewer-lifecycle decisions from `TailscaleScreenShareServer`: the
+/// audio-relay SSRC anti-spoof gate, idle-sweep staleness math, the bounded
+/// PLI ring, and the per-viewer RTP header rewrite. No tsnet, no helper.
 final class ViewerLifecycleDecisionTests: XCTestCase {
 
     // MARK: - audioRelayDecision
@@ -28,9 +26,8 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
     }
 
     func testSpoofedSSRCFromRegisteredViewerIsRejected() {
-        // Registered viewer b stuffs a's SSRC into its RTP header. The
-        // source-address keyed check must reject it — this is the anti-spoof
-        // property the relay depends on.
+        // b stuffs a's SSRC into its RTP header; source-address-keyed check
+        // must reject it (the relay's anti-spoof property).
         let ssrcs: [String: UInt32] = ["a:1": 111, "b:2": 222]
         let (valid, recipients) = TailscaleScreenShareServer.audioRelayDecision(
             viewerAudioSSRCs: ssrcs, sender: "b:2", headerSSRC: 111)
@@ -39,8 +36,6 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
     }
 
     func testSoleViewerIsValidWithNoRecipients() {
-        // The sharer still hears the audio (onAudioReceived); there's just
-        // nobody to relay to.
         let (valid, recipients) = TailscaleScreenShareServer.audioRelayDecision(
             viewerAudioSSRCs: ["a:1": 111], sender: "a:1", headerSSRC: 111)
         XCTAssertTrue(valid)
@@ -139,8 +134,7 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
     // MARK: - rewriteRTPHeader
 
     func testRewriteOverwritesSequenceAndSSRCOnly() {
-        // 12-byte RTP header + 4 payload bytes, all distinct so any
-        // out-of-place write is visible.
+        // All-distinct bytes so any out-of-place write is visible.
         var packet = Data((0..<16).map { UInt8($0 &+ 0x40) })
         let original = packet
         TailscaleScreenShareServer.rewriteRTPHeader(
@@ -149,16 +143,12 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
         XCTAssertEqual(packet[2], 0xAB)
         XCTAssertEqual(packet[3], 0xCD)
         XCTAssertEqual(Array(packet[8...11]), [0x01, 0x02, 0x03, 0x04])
-        // Everything else — version/flags, payload type, timestamp, payload —
-        // is untouched.
         for i in [0, 1, 4, 5, 6, 7, 12, 13, 14, 15] {
             XCTAssertEqual(packet[i], original[i], "byte \(i) should be untouched")
         }
     }
 
     func testRewrittenPacketDecodesWithNewValues() throws {
-        // Build a real packet via the packetizer (ssrc/seq zeroed templates,
-        // exactly how `broadcast` uses it), rewrite, and decode it back.
         let packetizer = H264Packetizer()
         let nal = Data([0x65, 0x11, 0x22, 0x33])
         let packets = packetizer.packetize(
@@ -212,12 +202,10 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
     }
 
     func testThrottledViewerSequenceStaysContiguousAcrossSkips() {
-        // Mirror the broadcast plan loop: advance the seq cursor only for
-        // frames actually sent. A throttled viewer sees a gapless keyframe-
-        // only stream, so the depacketizer never reads a skipped inter frame
-        // as loss (the PLI-storm feedback loop the plan warns about).
+        // Sequence advances only for sent frames, so a throttled viewer sees
+        // a gapless keyframe-only stream — no skipped inter frame reads as
+        // loss (which would trigger a PLI-storm feedback loop).
         let throttledUntilNs: UInt64 = 10_000
-        // Frame pattern over one throttle window: KF, then 4 inter, then KF…
         let frames: [(isKeyframe: Bool, nowNs: UInt64)] = [
             (true, 0), (false, 1), (false, 2), (false, 3), (false, 4), (true, 5)
         ]
@@ -230,8 +218,6 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
             sentSeqs.append(nextSequence)
             nextSequence &+= 1  // one packet per frame in this model
         }
-        // Only the two keyframes were sent, and their sequence numbers are
-        // contiguous — no reserved gap for the skipped inter frames.
         XCTAssertEqual(sentSeqs, [100, 101])
     }
 }

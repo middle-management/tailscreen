@@ -4,17 +4,13 @@ import XCTest
 
 @testable import TailscreenViewer
 
-/// Unit tests for `FrameStoreVideoSink` — the store-plus-callbacks sink both
-/// swift-cross-ui viewers now share.
-///
-/// The legs here are the ones a per-host copy gets wrong: announcing the first
-/// frame more than once, announcing it again for a reused sink without a
-/// reset, publishing stats on every frame instead of once a window, and
-/// forwarding a frame the CPU blit path cannot read.
+/// Tests for `FrameStoreVideoSink` — the store-plus-callbacks sink both
+/// swift-cross-ui viewers share. Covers the legs a per-host copy gets wrong:
+/// double-announcing the first frame, missing the re-announce after a reset,
+/// publishing stats per-frame instead of per-window, forwarding an unreadable
+/// frame shape.
 final class FrameStoreVideoSinkTests: XCTestCase {
-    /// A frame of another shape entirely — the case the `as?` guard exists
-    /// for. Nothing shipping emits one; that is why it must be dropped rather
-    /// than force-cast.
+    /// The case the `as?` guard exists for; nothing shipping emits one.
     private struct ForeignFrame: DecodedFrame {
         let width = 64
         let height = 64
@@ -33,9 +29,7 @@ final class FrameStoreVideoSinkTests: XCTestCase {
             colorInfo: colorInfo)
     }
 
-    /// Mutable counters shared with the sink's `@Sendable` callbacks. The sink
-    /// documents that `present` is driven serially, which is the same reason
-    /// its own state needs no lock.
+    /// `present` is documented as driven serially, so no lock is needed.
     private final class Counts: @unchecked Sendable {
         var firstFrames = 0
         var frames = 0
@@ -66,9 +60,6 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertEqual(store.current()?.width, 128)
     }
 
-    /// Announced once, then never again for the life of the session — a host
-    /// that hides its connecting placard on this callback would otherwise
-    /// re-run that transition sixty times a second.
     func testFirstFrameIsAnnouncedExactlyOnce() {
         let counts = Counts()
         let sink = makeSink(counts, Clock())
@@ -77,9 +68,8 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertEqual(counts.frames, 5, "the redraw poke fires for every frame")
     }
 
-    /// The sink outlives one viewing session on both hosts. Without the reset
-    /// the next session never re-announces video, leaving the connecting
-    /// placard up over a stream that is already running.
+    /// The sink outlives one viewing session; without reset the next session
+    /// never re-announces, leaving the connecting placard up.
     func testResetMakesTheNextSessionAnnounceAgain() {
         let counts = Counts()
         let sink = makeSink(counts, Clock())
@@ -89,8 +79,6 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertEqual(counts.firstFrames, 2)
     }
 
-    /// Stats ride the fps window, not the frame — which is what keeps the
-    /// common path a store plus a redraw request.
     func testStatsArePublishedOnlyWhenAWindowCloses() {
         let counts = Counts()
         let clock = Clock()
@@ -110,20 +98,13 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertGreaterThan(counts.stats[0].fps, 0)
     }
 
-    /// The colour encoding travels with the stats window, and it is the
-    /// CLOSING frame's — a host publishing this to its HUD would otherwise
-    /// print whatever the session started with, which is the wrong answer
-    /// exactly when it matters (a sharer that changed its colour settings
-    /// mid-share and respawned its encoder).
+    /// Colour info travels with the closing frame, not whatever the session
+    /// started with — matters when a sharer changes colour settings mid-share.
     func testStatsCarryTheColorInfoOfTheClosingFrame() throws {
         let counts = Counts()
         let clock = Clock()
         let sink = makeSink(counts, clock)
         let full = VideoColorInfo(range: .full, primaries: .displayP3, transfer: .bt709)
-        // The window OPENS on the first frame and closes on one at least a
-        // second later (`FrameRateCounter.record`), so the gap between these
-        // two is what makes a window close at all — not the elapsed time since
-        // the clock's zero.
         clock.nowNs &+= 500_000_000
         sink.present(frame(colorInfo: .unspecifiedLimited))
         clock.nowNs &+= 1_100_000_000
@@ -134,24 +115,20 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertEqual(published.color.shortLabel, "P3 · full")
     }
 
-    /// The fps window must survive a reset without carrying the idle gap
-    /// between two sessions into the first reading of the second.
     func testResetForgetsTheOpenFpsWindow() {
         let counts = Counts()
         let clock = Clock()
         let sink = makeSink(counts, clock)
         sink.present(frame())
         sink.resetForNewSession()
-        // An hour of idle between sessions; the next frame must open a fresh
-        // window rather than close the stale one against that gap.
+        // An hour idle; must open a fresh window, not close the stale one.
         clock.nowNs &+= 3_600_000_000_000
         sink.present(frame())
         XCTAssertTrue(counts.stats.isEmpty)
     }
 
-    /// A frame the CPU blit path cannot read is dropped whole: not stored, not
-    /// announced, not counted. Dropping shows as a stall; force-casting shows
-    /// as a crash.
+    /// Dropped whole rather than force-cast: dropping shows as a stall,
+    /// force-casting shows as a crash.
     func testAFrameOfAnotherShapeIsDroppedEntirely() {
         let counts = Counts()
         let store = FrameStore()
@@ -162,9 +139,8 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertEqual(counts.frames, 0)
     }
 
-    /// Every callback is optional, and a host that wires none of them still
-    /// gets its frames stored. The GTK sink passes no `onFrame` at all — its
-    /// repaint is requested inside `FrameStore.set`.
+    /// GTK passes no `onFrame` at all — its repaint is requested inside
+    /// `FrameStore.set`.
     func testCallbacksAreOptional() {
         let store = FrameStore()
         let sink = FrameStoreVideoSink(store: store)

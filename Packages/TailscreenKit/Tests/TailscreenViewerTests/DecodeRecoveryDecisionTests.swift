@@ -1,17 +1,12 @@
 import TailscreenViewer
 import XCTest
 
-/// Unit tests for the viewer's consecutive-decode-failure escalation ladder
-/// (`DecodeRecovery.action`). Pure function, no decoder, no tsnet — the live
-/// counters increment on each host's decode path (the mac `VideoDecoder`'s
-/// serial queue, or `ViewerSession` for the FFmpeg-backed hosts) and reset on
-/// the first successful frame. Rungs fire on `>=` thresholds with a
-/// per-episode fired-rung latch, so each rung fires once per failing episode
-/// even when the counting is imperfect and a threshold value gets skipped.
-/// Same pattern as `AdaptiveBitrateTests`. Moved here from the macOS app
-/// target when the ladder went portable; a plain (non-`@testable`) import on
-/// purpose — the decision surface is deliberately public, like the sharer
-/// tier's.
+/// Tests for the viewer's consecutive-decode-failure escalation ladder
+/// (`DecodeRecovery.action`). Pure function; live counters increment on each
+/// host's decode path and reset on the first successful frame. Rungs fire on
+/// `>=` thresholds with a per-episode fired-rung latch, so each rung fires
+/// once per failing episode even if a threshold value gets skipped. Plain
+/// (non-`@testable`) import — the decision surface is deliberately public.
 final class DecodeRecoveryDecisionTests: XCTestCase {
     private func action(
         _ failures: Int, fired: Set<DecodeRecoveryAction> = []
@@ -54,9 +49,8 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
     }
 
     func testDocumentedThresholdValues() {
-        // The ladder's timing story (PLI at ~5 frames, alert after ~5-10 s
-        // of dead video) depends on these exact values; changing them should
-        // be a conscious decision.
+        // Ladder timing (PLI ~5 frames, alert after ~5-10s dead video)
+        // depends on these exact values.
         XCTAssertEqual(DecodeRecovery.requestKeyframeFailureThreshold, 5)
         XCTAssertEqual(DecodeRecovery.recreateSessionFailureThreshold, 30)
         XCTAssertEqual(DecodeRecovery.signalDegradedFailureThreshold, 90)
@@ -70,8 +64,6 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
     }
 
     func testEachRungFiresOncePerEpisode() {
-        // A rung that already fired stays quiet while the count keeps
-        // climbing toward the next threshold.
         XCTAssertEqual(action(5), .requestKeyframe)
         XCTAssertNil(action(6, fired: [.requestKeyframe]))
         XCTAssertNil(action(29, fired: [.requestKeyframe]))
@@ -84,8 +76,7 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
     }
 
     func testThresholdsTolerateSkippedCounts() {
-        // `>=` matching: a counter that jumps past the exact threshold value
-        // (imperfect counting, +2 steps) still fires the rung.
+        // `>=` matching: a counter that jumps past the threshold still fires.
         XCTAssertEqual(action(6), .requestKeyframe)
         XCTAssertEqual(action(31, fired: [.requestKeyframe]), .recreateSession)
         XCTAssertEqual(action(92, fired: [.requestKeyframe, .recreateSession]), .signalDegraded)
@@ -95,8 +86,7 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
     }
 
     func testJumpFiresTheHighestMetRungAndSupersedesLowerOnes() {
-        // A big jump fires the highest rung whose threshold is met; the
-        // skipped lower rungs never fire late and out of order.
+        // Skipped lower rungs never fire late and out of order.
         XCTAssertEqual(action(100), .signalDegraded)
         XCTAssertNil(action(101, fired: [.signalDegraded]))
         XCTAssertEqual(action(300, fired: [.signalDegraded]), .surfaceError)
@@ -110,9 +100,8 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
     }
 
     func testPlusTwoSteppedEpisodeStillFiresEachRungOnceInOrder() {
-        // A counter that only ever lands on even values (e.g. a failure path
-        // that double-counts) misses every odd threshold — the `>=` + latch
-        // combination still walks all four rungs, in order, once each.
+        // A counter that only lands on even values (missing every odd
+        // threshold) still walks all four rungs once each via `>=` + latch.
         let expected: [DecodeRecoveryAction] = [
             .requestKeyframe, .recreateSession, .signalDegraded, .surfaceError
         ]
@@ -129,9 +118,7 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
     }
 
     func testResetEpisodeStartsTheLadderOver() {
-        // A successful frame resets the live counter to zero AND clears the
-        // fired-rung latches; the next failing run reaches the first rung
-        // again with an empty latch set.
+        // A successful frame resets the counter and clears fired-rung latches.
         XCTAssertNil(action(0))
         XCTAssertNil(action(1))
         XCTAssertEqual(action(DecodeRecovery.requestKeyframeFailureThreshold), .requestKeyframe)

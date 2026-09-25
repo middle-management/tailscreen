@@ -4,24 +4,20 @@ import TailscreenSharer
 import XCTest
 
 /// Pins the two pure decisions behind stream (reliable-transport, spec §2.2)
-/// viewers: the synthetic addr a stream viewer's whole roster life keys on
+/// viewers: the synthetic addr a stream viewer's roster keys on
 /// (`streamViewerAddr`), and the capability mask that keeps loss recovery off
 /// a transport that never loses packets (`streamHelloCaps`, TS-STM-005).
 ///
-/// The addr carries two invariants, and both fail silently when broken. It
-/// must reduce through `ipFromAddr` to the connection's peer IP — the
-/// admitted-viewer gates compare that reduction with `==`, so a stream
-/// viewer whose addr reduces to anything else has its annotations and
-/// control requests dropped as "non-admitted" while its video plays fine
-/// (the same shape as `PeerAddressParsingTests`' IPv6 bug). And its port
-/// position must never parse as a real `ip:port`, because `MediaSockets`
-/// checks the stream route FIRST: a synthetic addr that could equal a real
-/// UDP key would silently hijack that UDP viewer's media onto a stranger's
-/// TCP connection.
+/// Two invariants on the addr, both silent when broken: it must reduce
+/// through `ipFromAddr` to the connection's peer IP (else admitted-viewer
+/// gates drop the viewer's annotations/control as non-admitted while its
+/// video plays fine — same shape as `PeerAddressParsingTests`' IPv6 bug),
+/// and its port position must never parse as a real `ip:port` (else
+/// `MediaSockets`, which checks the stream route first, could hijack a
+/// UDP viewer's media onto a stranger's TCP connection).
 final class StreamViewerDecisionTests: XCTestCase {
-    // Fresh per run on purpose: every assertion is about relationships
-    // between derivations (round-trip, distinctness, stability), none about
-    // a literal addr string, so pinned UUIDs would only invite one.
+    // Fresh per run: assertions are about relationships between derivations,
+    // never a literal addr string.
     private let connA = UUID()
     private let connB = UUID()
 
@@ -37,9 +33,8 @@ final class StreamViewerDecisionTests: XCTestCase {
     }
 
     func testIPv6AddrReducesToThePeerIP() {
-        // `handleStreamDatagram` reduces the connection's peer address first,
-        // so the IP arrives BARE (brackets already stripped) — the guest
-        // tunnel's addressing, where stream guests actually live.
+        // The IP arrives bare (brackets stripped by `handleStreamDatagram`) —
+        // the guest tunnel's addressing, where stream guests actually live.
         let ip = "fd7a:115c:a1e0:ab12::1"
         let addr = TailscaleScreenShareServer.streamViewerAddr(peerIP: ip, connectionID: connA)
         XCTAssertEqual(
@@ -77,9 +72,8 @@ final class StreamViewerDecisionTests: XCTestCase {
     }
 
     func testNilPeerIPStillYieldsAUsableKey() {
-        // libtailscale can fail to report a remote address; the viewer still
-        // needs a unique roster key (its gates will fail closed on IP checks,
-        // which is the right degradation for an unidentifiable peer).
+        // libtailscale can fail to report a remote address; still needs a
+        // unique roster key (IP-based gates then fail closed, correctly).
         let addr = TailscaleScreenShareServer.streamViewerAddr(peerIP: nil, connectionID: connA)
         XCTAssertFalse(addr.isEmpty)
         let other = TailscaleScreenShareServer.streamViewerAddr(peerIP: nil, connectionID: connB)

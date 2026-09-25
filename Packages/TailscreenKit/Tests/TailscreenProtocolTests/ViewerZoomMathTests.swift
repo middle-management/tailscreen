@@ -2,10 +2,8 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Unit tests for the viewer's content zoom/pan geometry. Pure functions,
-/// no AppKit windows — the CI-able core extracted from
-/// `AspectFitHostView`'s gesture handling (pinch / ⌥-scroll / two-finger
-/// pan / smart-magnify) per CLAUDE.md's extract-the-decision pattern.
+/// Pure geometry extracted from `AspectFitHostView`'s gesture handling
+/// (pinch / ⌥-scroll / pan / smart-magnify), so it's testable without AppKit.
 final class ViewerZoomMathTests: XCTestCase {
     /// A left/right-letterboxed style fit rect: video centered inside a
     /// wider viewport, with a nonzero origin like `aspectFitRect()` returns.
@@ -118,10 +116,8 @@ final class ViewerZoomMathTests: XCTestCase {
     }
 
     func testZoomAfterFitShrinkKeepsAnchorStable() {
-        // A window resize between gestures left `offset` legal only for
-        // the old, larger fit. The displayed rect re-clamps it — and the
-        // next zoom must anchor against that displayed rect, not the
-        // stale offset, or the first gesture jumps discontinuously.
+        // A stale offset from a larger fit must anchor against the re-clamped
+        // displayed rect, not itself, or the first zoom jumps.
         let stale = ViewerZoomState(scale: 2, offset: CGPoint(x: 320, y: 180))
         let shrunken = CGRect(x: 0, y: 0, width: 320, height: 180)
         let displayed = ViewerZoomMath.videoRect(fit: shrunken, state: stale)

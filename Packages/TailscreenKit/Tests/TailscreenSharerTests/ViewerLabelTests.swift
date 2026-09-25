@@ -4,19 +4,13 @@ import XCTest
 
 @testable import TailscreenSharer
 
-/// The four labels a sharer sees a *person* under — the connected roster, the
-/// approval gate, a control request, and the live grant.
+/// The four labels a sharer sees a person under (roster, approval gate,
+/// control request, live grant) all derive from a netmap hostname and must
+/// strip the `tailscreen-` discovery marker, with a numeric-IP fallback while
+/// the StableNodeID/hostname lookup is outstanding (`resolveIdentitiesLoop`).
 ///
-/// One suite because they are one rule: every one of these names comes from a
-/// netmap hostname, every Tailscreen node registers under the `tailscreen-`
-/// discovery marker, and none of these surfaces should show it. They also
-/// share the fallback — a row must still name something actionable while the
-/// StableNodeID/hostname lookup is outstanding, which takes a beat after the
-/// connection lands (see `resolveIdentitiesLoop`).
-///
-/// `@testable` for `ViewerInfo`/`PendingViewerInfo`'s memberwise inits: the
-/// server constructs them, the app only ever receives them, so neither carries
-/// a public init.
+/// `@testable` since `ViewerInfo`/`PendingViewerInfo` have no public init —
+/// the server constructs them, the app only receives them.
 final class ViewerLabelTests: XCTestCase {
     func testConnectedViewerLabelDropsTheDiscoveryPrefix() {
         let viewer = ViewerInfo(
@@ -43,9 +37,6 @@ final class ViewerLabelTests: XCTestCase {
     }
 
     func testAnUnresolvedViewerIsStillNamedByItsIP() {
-        // The one thing worse than a prefixed name is no name: these strings
-        // sit in an approval prompt and a grant banner, where the answer is a
-        // decision about a machine you must be able to identify.
         let viewer = ViewerInfo(
             id: "100.64.0.7:49152", tailscaleIP: "100.64.0.7", hostname: nil, stableID: nil,
             connectedAt: Date())
@@ -62,8 +53,8 @@ final class ViewerLabelTests: XCTestCase {
     }
 
     func testAnEphemeralViewerNodeIsNamedByItsSuffixNotItsPrefix() {
-        // A viewer-only node registers under `clientHostnamePrefix`, which is
-        // built on the server prefix — the label must not read "client-…".
+        // Viewer-only nodes register under `clientHostnamePrefix`; label must
+        // not read "client-…".
         let viewer = ViewerInfo(
             id: "100.64.0.9:51000", tailscaleIP: "100.64.0.9",
             hostname: "tailscreen-client-1a2b3c4d", stableID: nil, connectedAt: Date())
