@@ -5,43 +5,28 @@ import TailscreenSharerLinux
 
 /// Shows the annotations viewers draw, on the Linux sharer's own screen.
 ///
-/// The Linux sibling of `WinOverlayKit.AnnotationOverlay`, deliberately down to
-/// the method names: both hold a `ReceivedAnnotations`, rasterize it with
-/// `AnnotationRasterizer`, and hand the premultiplied BGRA to the platform's
-/// compositor. Everything that could be got wrong in an interesting way —
-/// which strokes should be visible, and what they look like — lives in the
-/// portable tier where Linux CI already tests it. What is left here is buffer
-/// ownership and a scheduled tick.
+/// Sibling of `WinOverlayKit.AnnotationOverlay` (same method names): both hold
+/// a `ReceivedAnnotations`, rasterize it with `AnnotationRasterizer`, and hand
+/// premultiplied BGRA to the compositor. What decides which strokes show and
+/// how they look lives in the portable tier; this file only owns the buffer
+/// and a scheduled tick.
 ///
-/// **It is inside the capture region, and that is fine.** The Linux sharer
-/// captures the X11 root, so these strokes are captured along with everything
-/// else and viewers see them twice: once because their own client drew them,
-/// once because they came back in the video. Both copies are the same stroke
-/// at the same normalized position, so the result is redundant rather than
-/// wrong — the same thing macOS's `SharerOverlayWindow` does in display mode,
-/// where being captured is in fact the point (it is how a *sharer's* own
-/// strokes reach viewers at all).
+/// **It is inside the capture region, deliberately.** The Linux sharer
+/// captures the X11 root, so viewers see each stroke twice (their own draw,
+/// plus it coming back in the video) — redundant, not wrong, at the same
+/// normalized position. Same as macOS's `SharerOverlayWindow` in display mode,
+/// where that's how a sharer's own strokes reach viewers at all.
 ///
-/// Callable from any thread, including the server's control-channel thread
-/// where annotations actually arrive: the C layer marshals every GTK call onto
-/// the main thread.
+/// Callable from any thread, including the server's control-channel thread:
+/// the C layer marshals every GTK call onto the main thread.
 final class SharerAnnotationOverlay: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: UnsafeMutableRawPointer?
     private var store = ReceivedAnnotations()
-    /// Whether to paint the capture outline under the strokes.
-    ///
-    /// The recording indicator: a border around exactly the region being
-    /// captured, for the life of the share. It replaces the tray icon's only
-    /// defensible job and answers a sharper question — not "a share is running
-    /// somewhere" but "**this** is what they can see" — in the place the person
-    /// is already looking. After a mid-share source change it is the only thing
-    /// on screen that says the capture moved.
-    ///
-    /// It rides this overlay rather than a second window because the overlay is
-    /// already exactly the capture rectangle, already click-through, already
-    /// composited, and already has an upload path. A second override-redirect
-    /// window would be a second thing to get wrong in the same four ways.
+    /// Whether to paint the capture outline under the strokes — the recording
+    /// indicator, a border around exactly the captured region for the life of
+    /// the share. Rides this overlay rather than a second window since this
+    /// one is already the right rectangle, click-through, and composited.
     private var showsOutline = false
     /// Self-test override; nil uses `CaptureOutline.defaultThickness`.
     private var outlineThickness: Int?
@@ -49,30 +34,22 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
     private let width: Int
     private let height: Int
 
-    /// Whether this session can show an overlay at all.
-    ///
-    /// False without a compositing manager, because an uncomposited X11 window
-    /// has no per-pixel alpha and the "overlay" would be an opaque black
-    /// rectangle over the sharer's screen. A caller that gets false here must
-    /// withhold `ScreenShareCaps.annotations` rather than advertise a surface
-    /// it cannot draw — see `TailscaleScreenShareServer.init`'s
-    /// `rendersAnnotations`.
+    /// False without a compositing manager: an uncomposited X11 window has no
+    /// per-pixel alpha, so the "overlay" would be an opaque black rectangle. A
+    /// caller getting false must withhold `ScreenShareCaps.annotations` (see
+    /// `TailscaleScreenShareServer.init`'s `rendersAnnotations`).
     static var isSupported: Bool { ts_gtk_overlay_supported() == 1 }
 
     /// - Parameters:
-    ///   - width/height: the captured region's pixel size. Annotations arrive
-    ///     normalized against what the viewer sees, so the overlay has to be
-    ///     the same rectangle the capture is or every stroke lands offset.
+    ///   - width/height: the captured region's pixel size — annotations arrive
+    ///     normalized against it, so a mismatch offsets every stroke.
+    /// - Returns: nil if the platform has no overlay or window creation
+    ///   failed. A share without annotations beats a share that won't start.
     ///
-    /// - Returns: nil when the platform has no overlay, or the window could not
-    ///   be created. A share without annotations is a smaller loss than a share
-    ///   that refuses to start.
-    ///
-    /// GTK main thread only — it creates a window. (Every *other* entry point,
-    /// including `deinit`, is callable from anywhere; the C layer posts to the
-    /// main loop. That asymmetry is deliberate: creation is the one call whose
-    /// result the caller needs synchronously, in order to decide whether to
-    /// advertise `ScreenShareCaps.annotations` at all.)
+    /// GTK main thread only — it creates a window. Every other entry point,
+    /// including `deinit`, is callable from anywhere (the C layer posts to the
+    /// main loop); creation alone needs a synchronous result so the caller can
+    /// decide whether to advertise `ScreenShareCaps.annotations`.
     init?(width: Int, height: Int) {
         guard width > 0, height > 0, Self.isSupported else { return nil }
         self.width = width
@@ -102,13 +79,11 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
     /// Arm or disarm sharer drawing.
     ///
     /// - Returns: whether the overlay reached the requested state. **A false
-    ///   here must not be ignored:** arming makes this fullscreen
-    ///   override-redirect window swallow every click on the sharer's desktop,
-    ///   and the only way back out is the Escape key, which needs keyboard
-    ///   focus the window manager will never grant an override-redirect window.
-    ///   If focus could not be taken, the C layer leaves the overlay
-    ///   click-through and answers false rather than trapping the sharer
-    ///   behind a window they cannot dismiss.
+    ///   here must not be ignored:** arming makes this override-redirect
+    ///   window swallow every click, and the only way out (Escape) needs
+    ///   keyboard focus a WM never grants such a window. If focus couldn't be
+    ///   taken, the C layer stays click-through and returns false rather than
+    ///   trap the sharer behind it.
     ///
     /// GTK main thread only.
     func setInteractive(_ on: Bool) -> Bool {
@@ -132,33 +107,26 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
         }
         let reached = ts_gtk_overlay_set_interactive(handle, on ? 1 : 0) == 1
         if !on || !reached {
-            // Drop the callbacks with the arm, so a stray event on the way
-            // down cannot reach a host that believes drawing is off.
+            // Drop callbacks with the arm so a stray event can't reach a host
+            // that believes drawing is off.
             ts_gtk_overlay_set_input_callbacks(handle, nil, nil, nil)
         }
         return reached
     }
 
-    /// Apply one op — from a viewer, or from the sharer's own drawing — and
-    /// redraw if anything changed.
-    ///
-    /// One store for both, and therefore one render pass: a sharer's stroke and
-    /// a viewer's are the same kind of thing, and keeping two would mean two
-    /// rasterizations and two chances for them to disagree about z-order.
-    ///
-    /// Cheap when nothing changed, which matters: a viewer dragging a pen
-    /// re-sends the same stroke every few milliseconds.
+    /// Apply one op — from a viewer, or the sharer's own drawing — and redraw
+    /// if anything changed. One store for both, so there's one rasterization
+    /// and one z-order. Cheap when nothing changed: a dragging pen re-sends
+    /// the same stroke every few milliseconds.
     func apply(_ op: AnnotationOp, nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
         let (changed, expiry) = lock.withLock {
             (store.apply(op, nowNs: nowNs), store.nextExpiryNs)
         }
         guard changed else { return }
         redraw()
-        // A click marker has to vanish on its own, so something has to come
-        // back for it. Scheduled off the op that created it rather than by
-        // owning a repeating timer: this fires once per gesture and costs
-        // nothing the rest of the time, and a share spends almost all of its
-        // life with nobody drawing. Same shape as the Windows overlay.
+        // A click marker vanishes on its own; scheduled off the op that
+        // created it rather than a repeating timer, so it costs nothing while
+        // nobody is drawing. Same shape as the Windows overlay.
         if let expiry, expiry > nowNs {
             let delay = Double(expiry - nowNs) / 1_000_000_000
             DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -180,12 +148,10 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
         redraw()
     }
 
-    /// Self-test seam: the outline plus an overridable thickness.
-    ///
-    /// The thickness is overridable for one reason — chroma is half resolution
-    /// in both axes, so the shipping 4 px border is two chroma columns and a
-    /// screenshot assertion on it would be measuring the sampler rather than
-    /// the outline. Thickness itself is pinned by `CaptureOutlineTests`.
+    /// Self-test seam: the outline plus an overridable thickness (the shipping
+    /// 4px border is two chroma columns at half resolution — too thin to
+    /// screenshot-assert reliably). Thickness itself is pinned by
+    /// `CaptureOutlineTests`.
     func setShowsOutlineForTesting(_ on: Bool, thickness: Int?) {
         lock.withLock { outlineThickness = thickness }
         setShowsOutline(on)
@@ -208,9 +174,8 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
             (store.annotations, showsOutline, outlineThickness)
         }
 
-        // Hidden only when there is nothing at all to show. The outline counts:
-        // an indicator that disappears whenever nobody happens to be drawing
-        // would be an indicator that is absent almost all the time.
+        // Hidden only when there's nothing at all to show — the outline
+        // counts, or it would vanish whenever nobody's drawing.
         guard !annotations.isEmpty || outline else {
             ts_gtk_overlay_hide(handle)
             return
@@ -226,9 +191,8 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
                     stride: width * AnnotationRasterizer.bytesPerPixel,
                     width: width,
                     height: height)
-                // Clear once, here, so the two layers composite in order:
-                // outline first, strokes over it. `render` would clear again
-                // and take the outline with it, which is why this is `draw`.
+                // Clear once here so outline and strokes composite in order;
+                // `render` would clear again and take the outline with it.
                 AnnotationRasterizer.render([], into: surface)
                 if outline {
                     CaptureOutline.draw(
@@ -244,11 +208,9 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
     }
 }
 
-/// The engine's seam, satisfied by the real GTK overlay.
-///
-/// The only shim is `apply(_:)` — a protocol requirement cannot be witnessed
-/// by a method with a defaulted extra parameter, so the one-argument form
-/// forwards with the clock the default would have supplied.
+/// The engine's seam, satisfied by the real GTK overlay. `apply(_:)` forwards
+/// with the default clock, since a protocol requirement can't be witnessed by
+/// a method with a defaulted extra parameter.
 extension SharerAnnotationOverlay: SharerOverlaySurface {
     func apply(_ op: AnnotationOp) {
         apply(op, nowNs: DispatchTime.now().uptimeNanoseconds)

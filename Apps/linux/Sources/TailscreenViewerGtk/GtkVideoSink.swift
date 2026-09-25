@@ -1,17 +1,8 @@
 import Foundation
 import TailscreenViewer
 
-/// The GTK viewer's `VideoSink`: the portable `FrameStoreVideoSink` wired to
-/// this app's `ViewerUIState`.
-///
-/// Everything that used to be here — the `DecodedVideoFrame` guard, the
-/// first-frame latch, the ~1 s fps window — moved to the portable sink when
-/// the Windows viewer turned out to need the identical thing. What is left is
-/// the part that is genuinely GTK's: which UI state the two callbacks poke.
-///
-/// The type survives rather than the call site constructing the portable sink
-/// directly because `resetForNewSession` and the `uiState:` initializer are
-/// what the app's session loop reads as.
+/// The GTK viewer's `VideoSink`: wraps the portable `FrameStoreVideoSink`,
+/// wiring its callbacks to this app's `ViewerUIState`.
 public final class GtkVideoSink: VideoSink, @unchecked Sendable {
     private let sink: FrameStoreVideoSink
 

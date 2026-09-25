@@ -6,19 +6,16 @@ import Foundation
 /// borderless panel) and the viewer overlay (subview of the viewer window).
 /// Holds committed shapes and the in-progress shape being dragged.
 ///
-/// Coordinates on every ``Annotation`` are normalized to [0, 1] with origin at
-/// the top-left, so the same shape renders identically on both ends regardless
-/// of canvas size. Callers convert pointer locations into normalized space
-/// before invoking ``pointerDown(at:)`` / ``pointerMoved(to:)``.
+/// Coordinates on every ``Annotation`` are normalized to [0, 1], top-left
+/// origin, so the same shape renders identically regardless of canvas size.
 ///
-/// Networking flow: every locally produced op is forwarded via ``onOp`` so the
-/// host can ship it over the wire; remote ops arrive via ``apply(remoteOp:)``
-/// which only mutates state and never re-fires ``onOp``.
+/// Every locally produced op is forwarded via ``onOp`` for the wire; remote
+/// ops arrive via ``apply(remoteOp:)``, which mutates state only and never
+/// re-fires ``onOp``.
 ///
-/// Lifetime: most tools produce permanent annotations. Clicks are ephemeral —
-/// committed into ``annotations`` like everything else but auto-removed after
-/// ``ephemeralLifetime(for:)``. The renderer is responsible for the visible
-/// animation; the model only owns the storage and the removal timer.
+/// Clicks are ephemeral — committed like everything else but auto-removed
+/// after ``ephemeralLifetime(for:)``; the renderer owns the visible animation,
+/// this model only the storage and removal timer.
 @MainActor
 final class AnnotationCanvasModel: ObservableObject {
     /// Shapes committed locally or received from a peer. Includes ephemeral
@@ -43,11 +40,11 @@ final class AnnotationCanvasModel: ObservableObject {
     /// Total lifetime of a click ripple, start to fully gone.
     static let clickAnimationDuration: CFTimeInterval = 0.8
 
-    /// Ids of *permanent* shapes this canvas created locally, in creation
-    /// order. Ephemeral shapes (clicks) are deliberately excluded so Cmd-Z
-    /// never fights an animation that's already removing them.
+    /// Ids of *permanent* shapes this canvas created locally. Ephemeral
+    /// shapes are excluded so Cmd-Z never fights an animation already
+    /// removing them.
     private var localIDs: [UUID] = []
-    /// mach-uptime ns of the last in-progress op we transmitted, for the
+    /// mach-uptime ns of the last in-progress op transmitted, for the
     /// drag-time throttle.
     private var lastDragEmitNs: UInt64 = 0
     /// Minimum gap between in-progress `.add` ops sent during a drag (~30 Hz).
@@ -102,9 +99,8 @@ final class AnnotationCanvasModel: ObservableObject {
         }
         inProgress = ip
 
-        // Ephemeral tools animate on their own timeline on commit; emitting
-        // mid-drag would start the animation early on the remote, so wait
-        // for pointerUp.
+        // Ephemeral tools animate on commit; emitting mid-drag would start
+        // the animation early on the remote, so wait for pointerUp.
         if Self.ephemeralLifetime(for: ip.tool) == nil {
             let nowNs = DispatchTime.now().uptimeNanoseconds
             if nowNs &- lastDragEmitNs >= Self.dragEmitMinIntervalNs {
@@ -176,12 +172,10 @@ final class AnnotationCanvasModel: ObservableObject {
         onOp?(.clearAll)
     }
 
-    /// Cancel the in-progress drag without committing it (the Esc
-    /// behaviour the cheat-sheet documents). Permanent tools have already
-    /// streamed throttled `.add` ops mid-drag, so peers hold a partial
-    /// shape under this id — broadcast an undo to erase it there too.
-    /// Harmless when nothing was emitted: undoing an unknown id is a no-op
-    /// on every canvas.
+    /// Cancel the in-progress drag without committing it (Esc). Permanent
+    /// tools have already streamed throttled `.add` ops mid-drag, so peers
+    /// hold a partial shape under this id — broadcast an undo to erase it
+    /// there too (a no-op if nothing was emitted).
     func cancelDrag() {
         guard let ip = inProgress else { return }
         inProgress = nil

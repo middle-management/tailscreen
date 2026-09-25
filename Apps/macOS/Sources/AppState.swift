@@ -14,25 +14,16 @@ import SwiftUI
 import TailscaleKit
 import TailscreenViewer
 
-/// Sharing-side lifecycle. `idle` → `starting` (user clicked a
-/// display, SCStream coming up, retry loop running) → `active`
-/// (first preview frame landed, viewers can join) → `idle`. Replaces
-/// the older `isSharing` / `isStartingShare` bool pair so we can't
-/// end up in inconsistent in-between states.
-/// The shared sharer lifecycle (`ShareBringUpPhase`, TailscreenProtocol).
-///
-/// This app's own enum was `idle / starting / active` with no failure case —
-/// a start that threw was an alert and nothing else, so the card went back to
-/// offering the button with no trace of why the last attempt had not worked.
-/// `active` was also the outlier NAME: the other two hosts say `sharing`, and
-/// so does every status line here.
+/// Sharing-side lifecycle: `idle` → `starting` (SCStream coming up) →
+/// `active` (first preview frame landed, viewers can join) → `idle`. The
+/// shared `ShareBringUpPhase` (TailscreenProtocol) — unlike this app's old
+/// `idle/starting/active`, it has a `.failed` case that survives to explain
+/// the button, and `active` is renamed `sharing` to match the other hosts.
 typealias SharingState = ShareBringUpPhase
 
-/// Viewer-side lifecycle. `idle` → `connecting` (user clicked a
-/// peer, tsnet dial + HELLO in flight) → `viewing` (decoder up,
-/// frames rendering) → `idle`. Mirror of `SharingState` so the
-/// popover can show "Connecting…" instead of silently sitting on
-/// the device picker while the network handshake completes.
+/// Viewer-side lifecycle: `idle` → `connecting` (dial + HELLO in flight) →
+/// `viewing` → `idle`. Mirrors `SharingState` so the popover shows
+/// "Connecting…" instead of sitting on the device picker silently.
 enum ConnectionState: Equatable {
     case idle
     case connecting
@@ -40,55 +31,44 @@ enum ConnectionState: Equatable {
 }
 
 /// Why the last viewer session ended, presented in-window (reason text +
-/// Reconnect/Close over the last frame) instead of the window silently
-/// vanishing. The first three arrive on `.tailscreenViewerPeerClosed`
-/// (the shared `ViewerCloseReason`); the deny-flavored two come from
-/// `onDeniedBySharer`, which keeps its explicit alert but now also lands
-/// the window in this state.
-///
-/// The shared `ViewerSessionEndReason` (TailscreenProtocol), which is where
-/// this list moved once the GTK app's `ViewerUIState`, the hub chrome's
-/// `HubSessionEndReason` and this enum turned out to be three hand-kept copies
-/// of the same five endings. The name stays because every call site in this
-/// app reads as `ViewerSessionEnding`.
+/// Reconnect/Close over the last frame) rather than the window vanishing.
+/// The shared `ViewerSessionEndReason` (TailscreenProtocol), also used by the
+/// GTK/WinUI hub chrome; the local name stays because call sites here read as
+/// `ViewerSessionEnding`.
 typealias ViewerSessionEnding = ViewerSessionEndReason
 
 @MainActor
 class AppState: ObservableObject {
     @Published var sharingState: SharingState = .idle
     @Published var connectionState: ConnectionState = .idle
-    /// True while a mid-share "Change Source…" flow is in flight (picker
-    /// up, or the retargeted helper respawning). The SharingCard disables
-    /// its Change Source button on this so a second picker can't be
-    /// spawned while the first is still on screen.
+    /// True while a mid-share "Change Source…" flow is in flight. Disables
+    /// the SharingCard's button so a second picker can't spawn on top.
     @Published var isChangingSource = false
     @Published var connectedHostname: String?
     @Published var statusMessage = ""
-    /// Whether the sharer's drawing overlay panel is currently visible and
-    /// accepting input. The panel itself is only created while sharing.
+    /// Whether the sharer's drawing overlay panel is visible and accepting
+    /// input. Only created while sharing.
     @Published var isSharerOverlayVisible = false
     @Published var isMicOn = false
 
     /// Whether the current share is sending system/computer audio to viewers.
-    /// Live latch, flipped by `toggleSystemAudio()`; reset on `stopSharing`.
+    /// Flipped by `toggleSystemAudio()`; reset on `stopSharing`.
     @Published var isSystemAudioOn = false
 
-    /// User preference: turn system audio on automatically when a share
-    /// starts. Persisted under `shareSystemAudio` (defaults off). SwiftUI binds
-    /// the Settings toggle to this; the setter persists on every change.
+    /// Turn system audio on automatically when a share starts. Persisted
+    /// under `shareSystemAudio` (defaults off).
     @Published var shareSystemAudioByDefault: Bool = SystemAudioDefaults.load() {
         didSet { SystemAudioDefaults.save(shareSystemAudioByDefault) }
     }
 
-    /// Audio devices available on the system. Refreshed every time
-    /// the popover opens (and before any picker rendering) — calling
-    /// `AudioDevices.all()` is cheap.
+    /// Refreshed every time the popover opens — `AudioDevices.all()` is
+    /// cheap.
     @Published var availableInputDevices: [AudioDevice] = []
     @Published var availableOutputDevices: [AudioDevice] = []
 
-    /// User-selected device IDs. `nil` = follow system default. Set
-    /// via `selectInputDevice(_:)` / `selectOutputDevice(_:)`, which
-    /// also push the change down into the live `MicCapture` engine.
+    /// User-selected device IDs. `nil` = follow system default. Set via
+    /// `selectInputDevice(_:)`/`selectOutputDevice(_:)`, which also push the
+    /// change into the live `MicCapture` engine.
     @Published var selectedInputDeviceID: AudioDeviceID?
     @Published var selectedOutputDeviceID: AudioDeviceID?
 
@@ -96,57 +76,45 @@ class AppState: ObservableObject {
     private var micCapture: MicCapture?
     private var micHotkey: GlobalHotkey?
 
-    /// Cross-instance advisory lock. Held while we're actively
-    /// sharing so other Tailscreen instances on this Mac can grey
-    /// out their Share button rather than try and fail.
+    /// Cross-instance advisory lock, held while sharing, so other Tailscreen
+    /// instances on this Mac can grey out their Share button.
     private let shareLock = ShareLock()
 
-    /// Mirrors `ShareLock.isHeldByAnyone()` minus our own hold.
-    /// Polled on a 2 s timer; SwiftUI binds the Share button's
-    /// disabled state to it.
+    /// Mirrors `ShareLock.isHeldByAnyone()` minus our own hold. Polled every
+    /// 2s; the Share button's disabled state binds to it.
     @Published var anotherInstanceSharing: Bool = false
     private var shareLockProbeTimer: Timer?
 
-    /// Snapshot of viewers currently connected to our screen-share server.
-    /// Empty when not sharing or when nobody has joined yet. Populated from
-    /// `TailscaleScreenShareServer.onViewersChanged`; the SharingCard reads
-    /// this to render "N watching: …" with friendly hostnames.
+    /// Viewers connected to our server. Populated from
+    /// `TailscaleScreenShareServer.onViewersChanged`.
     @Published var currentViewers: [ViewerInfo] = []
 
-    /// Snapshot of viewers waiting for the sharer's Accept / Deny decision.
-    /// Only populated when `requireViewerApproval` is on; the SharingCard
-    /// renders Accept / Deny rows directly from this. Mirrors the server's
-    /// `onPendingViewersChanged` callback. Cleared on `stopSharing`.
+    /// Viewers waiting for Accept/Deny, when `requireViewerApproval` is on.
+    /// Mirrors `onPendingViewersChanged`. Cleared on `stopSharing`.
     @Published var pendingViewers: [PendingViewerInfo] = []
 
-    /// Viewers (sharer side) asking for remote control, awaiting Grant / Deny.
-    /// Mirrors the server's `onControlRequestsChanged`. Cleared on stopSharing.
+    /// Viewers asking for remote control. Mirrors `onControlRequestsChanged`.
+    /// Cleared on stopSharing.
     @Published var controlRequests: [ControlRequestInfo] = []
 
-    /// The viewer (sharer side) that currently holds remote control, or nil.
-    /// Mirrors the server's `onControlGrantChanged`; drives the "X is
-    /// controlling your Mac" banner + Stop button. Cleared on stopSharing.
+    /// The viewer that currently holds remote control, or nil. Mirrors
+    /// `onControlGrantChanged`; drives the "X is controlling your Mac"
+    /// banner. Cleared on stopSharing.
     @Published var controlGrantee: ControlGrantInfo?
 
-    /// Viewer-side remote-control mode. `.requested` between clicking Request
-    /// Control and the sharer's answer; `.controlling` once granted (input
-    /// capture live). Reset on disconnect.
+    /// Viewer-side remote-control mode. `.requested` until the sharer
+    /// answers, `.controlling` once granted. Reset on disconnect.
     @Published var viewerControlState: ViewerControlState = .none
 
-    /// Whether the *current* sharer advertised remote-control support
-    /// (`ScreenShareCaps.remoteControl` in its HELLO_ACK). The viewer's
-    /// "Request Control" affordance is hidden when false, so the user never
-    /// clicks a button against a sharer that can't inject input. False until
-    /// the HELLO_ACK arrives and on disconnect.
+    /// Whether the current sharer advertised `ScreenShareCaps.remoteControl`
+    /// in HELLO_ACK — hides "Request Control" until then. False on
+    /// disconnect.
     @Published var sharerSupportsRemoteControl = false
 
-    /// Whether the current sharer advertised annotation support
-    /// (`ScreenShareCaps.annotations`). The viewer's annotation toolbar is
-    /// disabled when false so it doesn't draw local-only strokes at a sharer
-    /// that can't render/relay them. Defaults *true* (unlike remote control)
-    /// so the mac→mac common case shows tools immediately with no
-    /// disable-flash; a non-supporting sharer's HELLO_ACK corrects it. Reset
-    /// to true on disconnect.
+    /// Whether the current sharer advertised `ScreenShareCaps.annotations`.
+    /// Defaults *true* (unlike remote control) so mac→mac shows tools
+    /// immediately with no disable-flash; a non-supporting HELLO_ACK
+    /// corrects it. Reset to true on disconnect.
     @Published var sharerSupportsAnnotations = true {
         didSet {
             guard oldValue != sharerSupportsAnnotations else { return }
@@ -155,16 +123,13 @@ class AppState: ObservableObject {
     }
 
     /// Second global hotkey (⌃⌥. by default) — a panic revoke of the live
-    /// remote-control grant. Grant-scoped: created when a grant appears and
-    /// destroyed when it clears (see `syncRevokeControlHotkey`), so idle
-    /// sessions and pure viewers don't swallow ⌃⌥. system-wide. Keeps hotkey
-    /// `id: 2` so it coexists with the mic toggle (see `GlobalHotkey`).
+    /// remote-control grant. Grant-scoped (see `syncRevokeControlHotkey`) so
+    /// idle sessions and pure viewers don't swallow ⌃⌥. system-wide.
     private var revokeControlHotkey: GlobalHotkey?
 
-    /// User preference: whether viewers may ask for remote control at all.
-    /// Persisted via `RemoteControlDefaults` (defaults on); synced to the
-    /// live server so the toggle takes effect mid-share — when off, the
-    /// server declines `.controlRequest`s immediately with `.controlRevoked`.
+    /// Whether viewers may ask for remote control at all. Persisted via
+    /// `RemoteControlDefaults`; synced to the live server so it takes effect
+    /// mid-share (off declines pending `.controlRequest`s immediately).
     @Published var allowControlRequests: Bool = RemoteControlDefaults.load() {
         didSet {
             RemoteControlDefaults.save(allowControlRequests)
@@ -172,54 +137,37 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Viewer IPs whose *currently pending* control request already fired an
-    /// OS notification. Keyed by IP (not TCP connectionID) so parallel
-    /// connections and refreshes of a still-pending request collapse to one
-    /// notification — the source IP is the same non-spoofable anchor the
-    /// admission gate trusts. IPs are pruned when their request leaves the
-    /// pending snapshot (deny/grant/release/disconnect), so a genuine
-    /// re-request notifies again; the prune itself lives in
-    /// `SharerNoticeDecision.noticesToPost`, and the key choice is documented
-    /// on `noticeCandidates(_: [ControlRequestInfo])`. Cleared on
-    /// `stopSharing`.
+    /// Viewer IPs whose *currently pending* control request already fired a
+    /// notification. Keyed by IP so parallel connections collapse to one
+    /// notification; pruned when the request leaves the pending snapshot, so
+    /// a genuine re-request notifies again. Cleared on `stopSharing`.
     private var notifiedControlRequestIPs: Set<String> = []
 
-    /// Highest grant-change generation applied so far (see the server's
-    /// `onControlGrantChanged` doc). Reset when a new server is wired up and
-    /// on `stopSharing`.
+    /// Highest grant-change generation applied so far. Reset when a new
+    /// server is wired up and on `stopSharing`.
     private var lastControlGrantGeneration: UInt64 = 0
 
-    /// True when a grant-change notification carries a generation older than
-    /// one already applied — the MainActor hop can reorder deliveries, and a
-    /// stale nil snapshot applied last would unregister the ⌃⌥. panic hotkey
-    /// while a grant is live. Equal generations are NOT stale: two racing
-    /// notifies can legitimately observe the same (generation, snapshot)
-    /// pair, and re-applying it is idempotent. Pure, for
-    /// `RemoteControlPolicyTests`.
+    /// True when a grant-change notification's generation is older than one
+    /// already applied — the MainActor hop can reorder deliveries, and a
+    /// stale nil snapshot applied last would unregister the panic hotkey
+    /// while a grant is live. Equal generations are NOT stale (idempotent
+    /// re-apply). Pure, for `RemoteControlPolicyTests`.
     nonisolated static func isStaleGrantNotification(generation: UInt64, lastApplied: UInt64) -> Bool {
         generation < lastApplied
     }
 
-    /// True only when we *know* macOS will not display our notifications —
-    /// the user explicitly denied them. Never true for "not asked yet", which
-    /// would be crying wolf.
+    /// True only when we *know* macOS won't display our notifications (user
+    /// explicitly denied). Never true for "not asked yet".
     ///
-    /// Deliberately one-directional: `false` does **not** mean notifications
-    /// will arrive. A Focus can filter us, Time Sensitive can be revoked, and
-    /// the alert style can be None, none of which is visible to the app. So the
-    /// UI built on this only ever renders a warning, and never reassures.
+    /// One-directional: `false` does NOT mean notifications will arrive (a
+    /// Focus filter, revoked Time Sensitive, or alert style None are all
+    /// invisible to the app) — so the UI only ever warns, never reassures.
     @Published private(set) var notificationsDenied = false
 
-    /// User preference: park new viewers in a pending state and require
-    /// explicit Accept/Deny before they see video. Persisted to
-    /// UserDefaults under `requireViewerApproval`. Defaults **on** for
-    /// installs that never touched the toggle (tri-state migration in
-    /// `ViewerApprovalPreference.load`, the portable preference all three
-    /// apps share); an explicit opt-out sticks, and
-    /// `TAILSCREEN_OPEN_DOOR=1` forces it off for the scripted harnesses.
-    /// SwiftUI views bind to this via `appState.requireViewerApproval`;
-    /// the setter syncs the live server too so the toggle takes effect
-    /// mid-share.
+    /// Park new viewers pending explicit Accept/Deny. Persisted under
+    /// `requireViewerApproval`, defaults **on** (tri-state migration in
+    /// `ViewerApprovalPreference.load`); `TAILSCREEN_OPEN_DOOR=1` forces it
+    /// off for scripted harnesses. Setter syncs the live server too.
     @Published var requireViewerApproval: Bool = ViewerApprovalPreference.load() {
         didSet {
             ViewerApprovalPreference.save(requireViewerApproval)
@@ -229,18 +177,14 @@ class AppState: ObservableObject {
 
     // MARK: - Diagnostics
 
-    /// Whether session diagnostics are being recorded.
+    /// Whether session diagnostics are being recorded. Resolved by
+    /// `DiagnosticsPreference` against the build's release channel: on by
+    /// default in a release candidate, off in a shipped release, on locally.
+    /// An explicit choice outranks the channel and survives into the next
+    /// candidate.
     ///
-    /// Read from `DiagnosticsPreference`, which resolves an explicit choice
-    /// against the build's release channel: **on by default in a release
-    /// candidate**, off in a shipped release, on in a local build. An explicit
-    /// choice outranks the channel in both directions and survives into the
-    /// next candidate.
-    ///
-    /// Not a `didSet`, unlike `requireViewerApproval` above: flipping this has
-    /// to persist the choice AND move the live recorder AND attach or detach
-    /// the log tee, in that order, and a `didSet` that a stored-property
-    /// initialiser can also trigger is the wrong place for three effects.
+    /// Not a `didSet` (unlike `requireViewerApproval`): flipping this has to
+    /// persist, move the recorder, AND attach/detach the log tee in order —
     /// `setRecordDiagnostics(_:)` is the one way in.
     @Published private(set) var recordDiagnostics: Bool =
         DiagnosticsPreference.load(channel: BuildInfo.releaseChannel)
@@ -249,43 +193,24 @@ class AppState: ObservableObject {
     func setRecordDiagnostics(_ enabled: Bool) {
         guard enabled != recordDiagnostics else { return }
         AppDiagnostics.setRecording(enabled)
-        // Read back what the recorder actually did rather than assuming the
-        // request took. `TAILSCREEN_DIAGNOSTICS` pins the live value for the
-        // whole run, so under `=0` a toggle-on leaves recording off — and a
-        // switch that displays "on" while nothing is being recorded (or worse,
-        // "off" while it is) is the one lie a privacy-facing control must not
-        // tell.
+        // Read back what the recorder actually did rather than assume it:
+        // `TAILSCREEN_DIAGNOSTICS` pins the live value, so under `=0` a
+        // toggle-on must not claim to be recording.
         recordDiagnostics = AppDiagnostics.recorder?.isRecording ?? enabled
         if enabled {
-            // Forget the cached device snapshot so the next enumeration writes
-            // a fresh baseline.
-            //
-            // Without this the bundle silently loses its device inventory in
-            // the commonest flow there is: Settings opens (which enumerates and
-            // caches) while recording is off, so the event is dropped but the
-            // cache is warm; the user then turns recording on right there, and
-            // every later enumeration compares equal and records nothing. The
-            // one thing they turned it on to capture would be missing.
+            // Re-baseline the device snapshot: Settings may have enumerated
+            // (and cached) while recording was off, and without this every
+            // later enumeration compares equal and records nothing.
             lastRecordedAudioDevices = nil
             recordAudioDevicesIfChanged()
-            // Same shape of problem, one surface over: whatever is on screen
-            // when the switch moves reported itself through `onAppear` while
-            // recording was off, and nothing calls `onAppear` again just
-            // because a switch moved. Without this the record's first word
-            // about Settings — the very pane the user is standing in — is a
-            // `view.hidden` with no `view.shown` to match.
+            // Same problem for surfaces: nothing re-fires `onAppear` just
+            // because the switch moved, so replay what's currently visible.
             DiagnosticSurfaceTracker.shared.replayVisible()
         }
     }
 
-    /// Write the current recording out and show the user where it went.
-    ///
-    /// Reveals the file in Finder rather than only naming its path: the next
-    /// thing the user does is attach it to a message, and a path in an alert
-    /// is something they then have to go and find. A failure here goes through
-    /// `presentError` like everything else — an export that silently does
-    /// nothing would be a particularly cruel bug in a feature whose whole
-    /// purpose is explaining failures.
+    /// Write the current recording out and show the user where it went in
+    /// Finder, rather than only naming a path they'd have to go find.
     func exportDiagnostics() {
         do {
             let url = try AppDiagnostics.export()
@@ -301,23 +226,14 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Pick bundles somebody sent and merge them with this Mac's recording.
+    /// Pick bundles somebody sent and merge them with this Mac's recording —
+    /// `tailscreen-diagnostics-merge` does the same thing but needs a
+    /// checkout and toolchain the person who hit the bug doesn't have.
+    /// Multiple selection: a sharer with two viewers is three bundles.
     ///
-    /// The pair is the point of recording two sides — one file says what this
-    /// machine did, the pair says what happened — and until now nothing in the
-    /// app could read two. `tailscreen-diagnostics-merge` can, but it needs a
-    /// checkout and a toolchain, which the person who hit the bug does not
-    /// have.
-    ///
-    /// Multiple selection because a session can have more than two ends: a
-    /// sharer with two viewers is three bundles, and merging them pairwise
-    /// would mean three passes and three files to read.
-    ///
-    /// The panel does not filter to a content type. `jsonl` has no registered
-    /// UTI, so deriving one leaves a picker that greys out the very files it
-    /// exists to open on any Mac that has not been taught the extension —
-    /// which is all of them. An unreadable pick is caught below and names
-    /// itself, which is the better place to be strict.
+    /// No content-type filter: `jsonl` has no registered UTI, so deriving one
+    /// would grey out the files on any Mac that hasn't been taught the
+    /// extension (i.e. all of them).
     func mergeDiagnostics() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -325,8 +241,7 @@ class AppState: ObservableObject {
         panel.canChooseFiles = true
         panel.message = L("Choose the diagnostics files you were sent.")
         panel.prompt = L("Merge")
-        // Open where this app's own exports land — usually where the file they
-        // were sent has just been saved alongside.
+        // Open where this app's own exports land.
         panel.directoryURL = AppDiagnostics.exportDirectory
 
         NSApp.activate(ignoringOtherApps: true)
@@ -348,55 +263,40 @@ class AppState: ObservableObject {
 
     // MARK: - Link sharing (share-by-token guests)
 
-    /// Settings feature gate for sharing via link. Default on but inert —
-    /// nothing runs until a share flips "Share via Link" on. Off hides the
-    /// menubar section entirely.
+    /// Settings feature gate for sharing via link. Default on but inert until
+    /// a share flips "Share via Link" on. Off hides the menubar section.
     @Published var linkSharingEnabled: Bool = LinkSharingDefaults.loadEnabled() {
         didSet { LinkSharingDefaults.saveEnabled(linkSharingEnabled) }
     }
 
-    /// Settings override for the DERP relay map URL guests bootstrap
-    /// through (self-hosted derper). Empty string = Tailscale's public map.
-    /// Snapshotted when a link is created; changing it mid-link applies on
-    /// the next New Link.
+    /// DERP relay map URL guests bootstrap through (self-hosted derper).
+    /// Empty = Tailscale's public map. Snapshotted at link creation.
     @Published var linkShareRelayURL: String = LinkSharingDefaults.loadRelayURL() {
         didSet { LinkSharingDefaults.saveRelayURL(linkShareRelayURL) }
     }
 
     /// The live share link's token — non-nil exactly while the guest node is
-    /// up, which is what the menubar toggle reflects. Dies with the share
-    /// (or the toggle, or a New Link rotation).
+    /// up. Dies with the share, the toggle, or a New Link rotation.
     @Published private(set) var shareLinkToken: String?
 
-    /// True while the current share is guest-only: started signed out, the
-    /// link is the only way in and the guest listener is the server's only
-    /// socket. The link section renders without its off-toggle then (turning
-    /// the link off would strand a share nobody can reach — Stop Sharing is
-    /// the way out), and the approval toggle hides (it governs tailnet
-    /// viewers, of which there are none).
+    /// True while the current share is guest-only (started signed out): the
+    /// link section renders without its off-toggle (turning it off would
+    /// strand the only way in) and the approval toggle hides (no tailnet
+    /// viewers to approve).
     @Published private(set) var isGuestOnlyShare = false
 
-    /// True while a link is being created or rotated (the guest node's DERP
-    /// bootstrap blocks for the network). Drives the section's spinner and
-    /// disables the toggle against double-fires.
+    /// True while a link is being created or rotated (DERP bootstrap blocks).
+    /// Drives the section's spinner and disables the toggle.
     @Published private(set) var shareLinkBusy = false
 
     /// User-facing reason the last link creation failed, cleared on the next
-    /// attempt (and with the share). Rendered under the toggle.
+    /// attempt or with the share.
     @Published private(set) var shareLinkError: String?
 
-    /// What the welcome pane's share-link card offers for the *sharing*
-    /// half of the link feature — the pinned `WelcomePaneDecision` all three
-    /// hubs read, not a fourth copy of the branch. (Its *joining* half is
-    /// never gated: pasting a token is exactly the path that needs no
-    /// account and no settings.)
-    ///
-    /// This hub's own gate is the Settings link-sharing switch, which is
-    /// what `canShare` means here — the swift-cross-ui hubs pass their
-    /// capture answer into the same parameter, and the branch does not care
-    /// which reason a host has for being unable to offer the button.
-    /// `.sharingViaLink` is the one that must survive the gate closing
-    /// underneath a live share; the decision's own note explains why.
+    /// The pinned `WelcomePaneDecision` all three hubs read for the *sharing*
+    /// half of the link feature (joining is never gated). This hub's `canShare`
+    /// is the Settings link-sharing switch; `.sharingViaLink` must survive the
+    /// gate closing underneath a live share.
     var welcomeLinkShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: linkSharingEnabled,
@@ -492,13 +392,10 @@ class AppState: ObservableObject {
     /// like everything else on AppState.
     private var qualitySettingsSyncTask: Task<Void, Never>?
 
-    /// User preference: opt the capture helper into 10-bit HEVC capture.
-    /// A spawn-time env knob (`TAILSCREEN_ENABLE_10BIT`) exactly like the
-    /// quality settings: pushed into `HelperScreenCapture.colorEnvironment`
-    /// so every helper spawn — share start, crash restart, Change Source —
-    /// picks it up, which means a mid-share flip applies on the next spawn
-    /// rather than instantly. The Settings caption says so; no new restart
-    /// machinery for a toggle this rare.
+    /// Opt the capture helper into 10-bit HEVC. A spawn-time env knob
+    /// (`TAILSCREEN_ENABLE_10BIT`) pushed into
+    /// `HelperScreenCapture.colorEnvironment`, so a mid-share flip applies on
+    /// the next helper spawn, not instantly.
     @Published var enable10BitCapture: Bool = ColorCaptureDefaults.load10Bit() {
         didSet {
             guard enable10BitCapture != oldValue else { return }
@@ -507,10 +404,9 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Same knob for HDR (`TAILSCREEN_ENABLE_HDR`, BT.2020 PQ — implies
-    /// 10-bit in the helper). The helper additionally gates it on the
-    /// captured display actually having EDR headroom, so the toggle is an
-    /// opt-in, not a promise.
+    /// Same knob for HDR (`TAILSCREEN_ENABLE_HDR`, implies 10-bit). The
+    /// helper additionally gates it on the display having EDR headroom, so
+    /// this is a request, not a promise.
     @Published var enableHDRCapture: Bool = ColorCaptureDefaults.loadHDR() {
         didSet {
             guard enableHDRCapture != oldValue else { return }
@@ -520,10 +416,8 @@ class AppState: ObservableObject {
     }
 
     /// Project the two color toggles into the helper-spawn environment
-    /// overlay. Explicit "0"s (not removal) so the Settings choice also
-    /// overrides a launch-time `TAILSCREEN_ENABLE_10BIT=1` once the user
-    /// has expressed one — the same value `ColorCaptureDefaults.load*`
-    /// seeded from in the first place.
+    /// overlay. Explicit "0"s (not removal) so a Settings choice also
+    /// overrides a launch-time env var.
     private func pushColorCaptureEnvironment() {
         // Snapshot on the MainActor first — `withLock`'s closure is
         // @Sendable, so it may not read actor-isolated properties.
@@ -532,51 +426,42 @@ class AppState: ObservableObject {
             ColorCaptureDefaults.hdrEnvKey: enableHDRCapture ? "1" : "0"
         ]
         HelperScreenCapture.colorEnvironment.withLock { $0 = overlay }
-        // The server polices the viewer-side `.tenBit` capability off the same
-        // choice: without this it would keep enforcing (or keep ignoring) the
-        // depth the share had when it started. Live rather than spawn-time
-        // because turning 10-bit ON while an incapable viewer watches must
-        // latch the share to 8-bit before the next spawn reads the env above.
+        // Live, not spawn-time: turning 10-bit ON while an incapable viewer
+        // watches must latch the share to 8-bit before the next spawn.
         server?.setTenBitCaptureRequested(wantsTenBitCapture)
     }
 
-    /// Whether the capture path is configured to produce 10-bit video: either
-    /// color toggle does it, since HDR (BT.2020 PQ) implies Main 10 in the
-    /// helper. Both are still gated there on the display actually being
-    /// capable — this is the request, not the outcome.
+    /// Either color toggle implies 10-bit (HDR is BT.2020 PQ, Main 10 in the
+    /// helper); both are still gated there on display capability — this is
+    /// the request, not the outcome.
     private var wantsTenBitCapture: Bool { enable10BitCapture || enableHDRCapture }
 
     // MARK: - Global hotkey chords
 
     /// User-configurable chord for the global mic toggle (⌃⌥M unless
-    /// remapped). Persisted via `HotkeyChordStore`; the setter re-creates
-    /// the live Carbon registration and reinstalls the menu bar so the
-    /// File → Microphone key equivalent tracks the change.
+    /// remapped). Persisted via `HotkeyChordStore`.
     @Published var micHotkeyChord: HotkeyChord = HotkeyChordStore.loadMic() {
         didSet {
             guard micHotkeyChord != oldValue else { return }
             HotkeyChordStore.saveMic(micHotkeyChord)
             registerMicHotkey()
-            // The File-menu key equivalent updates by itself: the menu is
-            // SwiftUI Commands reading this @Published chord.
             syncShortcutChordDisplays()
             viewerToolbar?.refreshMicChordDisplay()
         }
     }
 
     /// User-configurable chord for the panic revoke (⌃⌥. unless remapped).
-    /// The real registration is grant-scoped (`syncRevokeControlHotkey`),
-    /// so outside a grant the setter only *probes* the chord — a transient
-    /// register-and-release — to keep `revokeHotkeyRegistered` honest.
+    /// The real registration is grant-scoped (`syncRevokeControlHotkey`), so
+    /// outside a grant the setter only *probes* it to keep
+    /// `revokeHotkeyRegistered` honest.
     @Published var revokeHotkeyChord: HotkeyChord = HotkeyChordStore.loadRevoke() {
         didSet {
             guard revokeHotkeyChord != oldValue else { return }
             HotkeyChordStore.saveRevoke(revokeHotkeyChord)
             if revokeControlHotkey != nil {
-                // A grant is live: swap the registration in place. Tear the
-                // old instance down first — its deinit unregisters — so the
-                // (signature, id: 2) pair is free before the replacement
-                // claims it.
+                // A grant is live: tear the old registration down first (its
+                // deinit unregisters) so (signature, id: 2) is free for the
+                // replacement.
                 revokeControlHotkey = nil
                 syncRevokeControlHotkey(grantActive: true)
             } else {
@@ -584,35 +469,27 @@ class AppState: ObservableObject {
                     keyCode: revokeHotkeyChord.keyCode,
                     modifiers: revokeHotkeyChord.modifiers)
             }
-            // The viewer-side twins of the chord: the capture layer's
-            // intercept and the cheat sheet's printed rows. (The two
-            // File-menu key equivalents update by themselves — SwiftUI
-            // Commands read this @Published chord.)
+            // The viewer-side twins: capture-layer intercept + cheat sheet.
             viewerControlInput?.releaseChord = revokeHotkeyChord
             syncShortcutChordDisplays()
         }
     }
 
-    /// Whether the last (re)registration of each global hotkey actually
-    /// took. `RegisterEventHotKey` refuses a chord another app already owns
-    /// and the refusal is only a return code — the user would otherwise
-    /// press the key forever while nothing happens. Settings → Keyboard
-    /// Shortcuts shows an inline warning while one of these is false. The
-    /// revoke flag is updated both by the availability probe (chord change,
-    /// launch) and by the real grant-scoped registration.
+    /// Whether the last (re)registration of each global hotkey actually took.
+    /// `RegisterEventHotKey` refuses a chord another app already owns via a
+    /// silent return code, so Settings → Keyboard Shortcuts shows a warning
+    /// when either is false.
     @Published private(set) var micHotkeyRegistered = true
     @Published private(set) var revokeHotkeyRegistered = true
 
-    /// "⌃⌥M"-style display strings for the two chords, nil when the stored
-    /// chord names a key outside the display vocabulary — consumers (menu
-    /// bar, tooltips, cheat sheet) hide the chord rather than misprint it.
+    /// "⌃⌥M"-style display strings, nil when the stored chord names a key
+    /// outside the display vocabulary (consumers hide it rather than misprint).
     var micShortcutDisplay: String? { micHotkeyChord.displayString }
     var revokeShortcutDisplay: String? { revokeHotkeyChord.displayString }
 
-    /// (Re)register the global mic-toggle hotkey from `micHotkeyChord`.
-    /// Tears any prior registration down first — `GlobalHotkey.deinit`
-    /// unregisters, and the (signature, id: 1) pair must be free before a
-    /// replacement instance can claim it.
+    /// (Re)register the global mic-toggle hotkey. Tears any prior
+    /// registration down first so (signature, id: 1) is free for the
+    /// replacement.
     private func registerMicHotkey() {
         micHotkey = nil
         micHotkey = GlobalHotkey(
@@ -627,47 +504,31 @@ class AppState: ObservableObject {
     }
 
     /// Debounce task + force latch for the Cloaked Apps live re-push (see
-    /// `scheduleCloakRepush`). MainActor, like everything else on AppState.
+    /// `scheduleCloakRepush`).
     private var cloakSyncTask: Task<Void, Never>?
     private var cloakRepushForce = false
 
-    /// Viewer IDs we've already fired a "joined" notification for this
-    /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
-    /// who briefly drops and rejoins (different ephemeral port) gets a
-    /// fresh ping, but hostname-resolution updates to the same viewer
-    /// don't double-fire. Cleared on `stopSharing`.
-    ///
-    /// One of four notified-sets, all now carried through the same
-    /// `SharerNoticeDecision.noticesToPost` rather than through four
-    /// hand-written diffs. Only the *key* differs per set, and each choice is
-    /// documented where the projection is made (`noticeCandidates`).
+    /// Viewer IDs already sent a "joined" notification this session. Keyed
+    /// by `"ip:port"` so a dropped-and-rejoined viewer gets a fresh ping but
+    /// a hostname-resolution update doesn't double-fire. Cleared on
+    /// `stopSharing`.
     private var notifiedViewerIDs: Set<String> = []
 
-    /// Pending-viewer IDs already announced, same `"ip:port"` key and same
-    /// forget-on-leave rule as `notifiedViewerIDs`. Previously this path
-    /// diffed the incoming snapshot against the published `pendingViewers`
-    /// array instead of keeping a set — which happened to behave the same and
-    /// was the third hand-rolled copy of one decision. Cleared on
-    /// `stopSharing`.
+    /// Pending-viewer IDs already announced, same key and forget-on-leave
+    /// rule as `notifiedViewerIDs`. Cleared on `stopSharing`.
     private var notifiedPendingViewerIDs: Set<String> = []
 
-    /// Request-to-share source keys already announced. Keyed by the same
-    /// spoof-resistant `PendingShareRequest.sourceKey` the banner list
-    /// coalesces on, so a peer retrying while its first ask is still on screen
-    /// replaces one row and mints no second banner. Not cleared on
-    /// `stopSharing`: these arrive while the machine is *idle* and have
-    /// nothing to do with a share's lifetime — they prune themselves when the
-    /// request is answered.
+    /// Request-to-share source keys already announced, keyed by
+    /// `PendingShareRequest.sourceKey` so a retry while the first ask is
+    /// still on screen replaces one row. Not cleared on `stopSharing`: these
+    /// arrive while idle and prune themselves when answered.
     private var notifiedShareRequestKeys: Set<String> = []
 
-    /// The whole ask-to-share flow — the long-lived idempotent-per-node
-    /// control listener, the coalesced/bounded inbox, and the answer
-    /// sequencing (reply on the arrival connection; accept ⇒ pre-approve,
-    /// then start) — written once in `TailscreenSharer` and shared with the
-    /// GTK engine and the Windows app. Wired in `init`; what stays here is
-    /// this host's: the `@Published` mirror, the notification reconcile, the
-    /// metadata handler riding the same listener, and the picker flow accept
-    /// drops into.
+    /// The whole ask-to-share flow (idempotent-per-node control listener,
+    /// bounded inbox, answer sequencing) is `TailscreenSharer`'s
+    /// `SharerAskToShareCoordinator`, shared with GTK/Windows. What stays
+    /// here: the `@Published` mirror, notification reconcile, and the
+    /// metadata handler riding the same listener.
     private let askToShare = SharerAskToShareCoordinator()
 
     /// The coordinator's inbox, mirrored for the banner rows, the Dock badge
@@ -680,19 +541,12 @@ class AppState: ObservableObject {
     private var pendingPreApprovedIPs: Set<String> = []
 
     /// "Always Allow" / "Deny & Block" intents recorded before the peer's
-    /// StableNodeID resolved, keyed by the roster row's `ip:port` id.
-    /// Applied (persisted under the resolved StableNodeID) the moment a
-    /// roster snapshot carries that id's stableID — so the user's decision
-    /// sticks instead of silently degrading to one-time.
-    ///
-    /// The **shared** queue (`ViewerRosterDecision.PendingIntents`, the same
-    /// one `SharerAccessCoordinator` holds for the GTK and WinUI hosts) rather
-    /// than the dictionary this used to be. Two behaviours came with it, and
-    /// the second is the reason for the swap: last-write-wins, so a Deny &
-    /// Block after an Always Allow means the second one; and `prune`, which
-    /// forgets an intent whose row has gone — without it a Deny & Block on a
-    /// peer that disconnects before resolving lands on *the next connection
-    /// from that address*, which behind one NAT is a different machine.
+    /// StableNodeID resolved, keyed by the roster row's `ip:port` id, applied
+    /// once a roster snapshot carries that id's stableID. The shared
+    /// `ViewerRosterDecision.PendingIntents` (also used by GTK/WinUI): last-
+    /// write-wins, and `prune` forgets an intent whose row is gone, so a
+    /// disconnect-before-resolve can't land a block on the next machine to
+    /// reuse that address behind one NAT.
     private var policyIntents = ViewerRosterDecision.PendingIntents()
 
     /// Set while a roster note is queued behind the current main-actor turn.
@@ -702,57 +556,42 @@ class AppState: ObservableObject {
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
-    /// Where `node`'s bring-up got to, tracked so `getOrCreateNode` can tell
-    /// a node whose `up()` is still blocking (a concurrent caller during the
-    /// interactive browser login — hand it back) from one whose `up()` threw
-    /// after the node was stored (dead — rebuild) and from one that reached
-    /// Running and may have died since (ask the backend).
+    /// Where `node`'s bring-up got to, so `getOrCreateNode` can tell a node
+    /// whose `up()` is still blocking (interactive login, hand it back) from
+    /// one whose `up()` threw (dead, rebuild) from one that reached Running
+    /// and may have died since (ask the backend).
     private enum NodeBringUpState { case notUp, upInFlight, up }
     private var nodeBringUpState: NodeBringUpState = .notUp
     private var sharerOverlay: SharerOverlayWindow?
-    /// Border drawn around the captured region for the whole share. Unlike
-    /// `sharerOverlay` this is NOT lazy — its entire job is to be present
-    /// whenever a capture is running, including the ordinary share where
-    /// nobody ever draws anything.
+    /// Border around the captured region for the whole share. Unlike
+    /// `sharerOverlay` this is NOT lazy — it must be present whenever a
+    /// capture is running, even if nobody draws anything.
     private var captureOutline: CaptureOutlineWindow?
-    /// Decoded picker selection backing the current share. Captured in
-    /// `startSharing(filterData:)` and consumed by `ensureSharerOverlay`
-    /// so the overlay panel can scope itself to the shared window/app
-    /// (rather than always covering the full display, which scaled
-    /// viewer-drawn annotations into the wrong space when the user
-    /// picked one window / one app in the native picker).
+    /// Decoded picker selection backing the current share, captured in
+    /// `startSharing(filterData:)` so `ensureSharerOverlay` can scope itself
+    /// to the shared window/app rather than always covering the full
+    /// display.
     private var currentSelection: PickerSelection?
 
-    // Persistent viewer window + renderer. Owned for the process lifetime so
-    // disconnect never closes/releases an NSWindow + CAMetalLayer chain (the
-    // dealloc of those types autoreleases pooled IOSurfaces into the same
-    // main-queue pool a Swift Task is about to pop, producing a SIGSEGV in
-    // objc_release on every disconnect variant we tried). On disconnect we
-    // orderOut the window and clear the renderer's pending frame; on connect
-    // we reuse the existing instances.
+    // Persistent viewer window + renderer. Owned for the process lifetime:
+    // closing/releasing the NSWindow + CAMetalLayer chain autoreleases pooled
+    // IOSurfaces into a pool a Swift Task is about to pop, producing a
+    // SIGSEGV on disconnect. Disconnect orderOuts the window and clears the
+    // renderer's pending frame; connect reuses the existing instances.
     @Published var viewerWindow: NSWindow?
 
-    /// The viewer window's name in the diagnostics surface trail.
-    ///
-    /// Reported at the real `orderFront` / `orderOut` transitions rather than
-    /// at construction. The window is owned for the process lifetime and REUSED
-    /// (see the comment above), so a marker at construction fired once ever:
-    /// the first disconnect recorded a hide, and every later session recorded
-    /// no show at all. Reported through the tracker's IDEMPOTENT presence path
-    /// rather than its reference count: `orderFrontRegardless` runs on every
-    /// connect and again on every re-focus, while `orderOut` runs once, so a
-    /// count would climb and never come back to zero.
+    /// The viewer window's name in the diagnostics surface trail. Reported
+    /// at real `orderFront`/`orderOut` transitions, through the tracker's
+    /// idempotent presence path (not a reference count, since
+    /// `orderFrontRegardless` runs on every connect/refocus but `orderOut`
+    /// runs once).
     static let viewerWindowSurface = "ViewerWindow"
-    /// Preferences window, lazily created on first ⌘, and kept for the
-    /// process lifetime so reopening is instant and edits stay put.
+    /// Preferences window, lazily created, kept for the process lifetime so
+    /// reopening is instant and edits stay put.
     private var settingsWindow: NSWindow?
     /// Opens (or re-focuses) the docked main window scene. Stashed by the
-    /// SwiftUI layer (`MainWindowView` / `MenuBarView` onAppear) because
-    /// the `openWindow` environment action is only reachable from view
-    /// context, while the callers here are AppKit menu items and popover
-    /// rows. `@MainActor` on the function type because the stashed closure
-    /// calls SwiftUI's MainActor-isolated `OpenWindowAction`. See
-    /// `presentMainWindow()`.
+    /// SwiftUI layer since `openWindow` is only reachable from view context,
+    /// while callers here are AppKit menu items and popover rows.
     var openMainWindowAction: (@MainActor () -> Void)?
     private var viewerRenderer: MetalViewerRenderer?
     private var viewerOverlay: AnnotationOverlayHostView?
@@ -761,34 +600,26 @@ class AppState: ObservableObject {
     /// `AspectFitHostView.layout`.
     private var viewerControlInput: RemoteControlInputView?
     /// Serialize captured input and locally drawn annotation ops onto the
-    /// back-channel so the sharer sees them in the order they were produced.
-    /// Built with the viewer window's overlay stack and kept for its
-    /// (process) lifetime, like the layers themselves. Two outboxes rather
-    /// than one because drawing and controlling are mutually exclusive in the
-    /// UI, so the two streams never need ordering against each other.
+    /// back-channel in production order. Two outboxes, not one: drawing and
+    /// controlling are mutually exclusive in the UI, so the two streams
+    /// never need ordering against each other.
     private var viewerInputOutbox: OrderedOutbox<InputEvent>?
     private var viewerAnnotationOutbox: OrderedOutbox<AnnotationOp>?
-    /// The viewer window's aspect-fit host — the view that owns the
-    /// continuous content zoom/pan state. Weak: the window's contentView
-    /// holds it for the process lifetime. Used to reset the zoom on
-    /// preset selection / video-size change / disconnect, and to route
-    /// the View-menu Zoom In / Zoom Out steps.
+    /// The viewer window's aspect-fit host, owning the continuous zoom/pan
+    /// state. Weak: the window's contentView holds it. Used to reset zoom on
+    /// preset/video-size change/disconnect, and to route View-menu zoom.
     private weak var viewerHost: AspectFitHostView?
-    /// Hosts the stats overlay subview pinned to the top-left of the
-    /// viewer's content view. Held strongly so the visibility-toggle
-    /// Combine subscription it owns lives for the lifetime of the
-    /// viewer window.
+    /// Hosts the stats overlay subview pinned top-left. Held strongly so its
+    /// visibility-toggle Combine subscription lives for the window's life.
     private var viewerStatsHost: ViewerStatsOverlayHost?
     /// Hosts the keyboard-shortcut cheat-sheet overlay. Toggled by the
     /// toolbar's "?" button and Help → Keyboard Shortcuts (⇧⌘/).
     private var viewerShortcutsHost: ViewerShortcutsOverlayHost?
-    /// "Waiting for sharer to accept your connection" placard shown in the
-    /// viewer window between HELLO_PENDING and the first decoded frame.
-    /// Hidden by default; toggled by `viewerAwaitingApproval`.
+    /// "Waiting for sharer to accept your connection" placard, shown between
+    /// HELLO_PENDING and the first decoded frame.
     private var viewerWaitingPlacard: NSView?
-    /// The placard's text field, so the one placard can say both of the
-    /// phases it now covers. Weak: the placard view owns it, and this app
-    /// holds the placard.
+    /// The placard's text field, so one placard can say either phase. Weak:
+    /// the placard view owns it.
     private weak var viewerPlacardLabel: NSTextField?
 
     /// Set by `onDeniedBySharer` when a HELLO_DENY arrives — including while
@@ -807,13 +638,11 @@ class AppState: ObservableObject {
         viewerPresentation.awaitingApproval
     }
 
-    /// True from `connect()` until the sharer's HELLO_ACK admits us (the
-    /// SSRC assignment is the admission signal; the first decoded frame
-    /// clears it too, belt-and-braces). `connect()` returns after HELLO —
-    /// *before* admission — so `.viewing` alone would let the window title
-    /// claim "Viewing" while the sharer hasn't let us in yet. Drives the
-    /// "Connecting to <host>…" title; the approval placard stays on the
-    /// separate HELLO_PENDING signal (`viewerAwaitingApproval`).
+    /// True from `connect()` until the sharer's HELLO_ACK admits us (SSRC
+    /// assignment; the first decoded frame clears it too, belt-and-braces).
+    /// `connect()` returns after HELLO but before admission, so `.viewing`
+    /// alone would claim "Viewing" too early. Drives the "Connecting to
+    /// <host>…" title.
     var isAwaitingAdmission: Bool {
         get { viewerPresentation.awaitingAdmission }
         set {
@@ -823,28 +652,21 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Lifecycle projection for the in-window "session ended" state. A
-    /// transport failure maps deterministically to connection-lost copy;
-    /// reconnect / dismiss / a fresh `connect()` clears it by transitioning
-    /// the lifecycle, never by mutating a parallel slot.
+    /// Lifecycle projection for the in-window "session ended" state.
+    /// Reconnect/dismiss/a fresh `connect()` clears it by transitioning the
+    /// lifecycle, never by mutating a parallel slot.
     var viewerSessionEnding: ViewerSessionEnding? {
         viewerPresentation.ending
     }
 
-    /// A terminal pane is on screen — ended OR failed. What the callers that
-    /// used to test `viewerSessionEnding != nil` meant before `failed` became
-    /// a state of its own rather than being reported as connection-lost.
+    /// A terminal pane is on screen — ended OR failed. Use this, never
+    /// `viewerSessionEnding != nil`, since `failed` is its own state now.
     var viewerSessionIsOver: Bool {
         viewerPresentation.isOver
     }
 
-    /// What the in-window placard says right now, or nil to hide it.
-    ///
-    /// Two phases, one placard. `connecting` is new here: it is the phase
-    /// every session passes through, and this app showed nothing for it —
-    /// the window title carried "Connecting to X…" over an empty window,
-    /// which is the one platform where that moment was invisible on the
-    /// surface being looked at.
+    /// What the in-window placard says right now, or nil to hide it. Two
+    /// phases, one placard.
     private var viewerPlacardText: String? {
         switch viewerPresentation.placardPhase {
         case .connecting:
@@ -862,9 +684,7 @@ class AppState: ObservableObject {
     private func viewerTerminalPresentation() -> ViewerSessionEndedModel.EndedState? {
         if let reason = viewerSessionEnding { return sessionEndedPresentation(reason) }
         guard let message = viewerPresentation.failureMessage else { return nil }
-        // Its own title rather than "Session Ended": nothing ended, the
-        // session never opened. The alert still fires for the same failure —
-        // this is what stays on the window behind it.
+        // Its own title rather than "Session Ended": the session never opened.
         return .init(title: L("Connection Failed"), message: message)
     }
 
@@ -949,77 +769,58 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Fetched share status per peer (`TailscreenPeer.id` →
-    /// `.metadataResponse` payload). Peers with no entry are
-    /// status-unknown: never fetched, offline, no answer, or a legacy
-    /// build. Refreshed by `refreshPeerShareStatus()`; entries for peers
-    /// that answered nothing are removed rather than left stale.
+    /// Fetched share status per peer. No entry means status-unknown (never
+    /// fetched, offline, no answer, legacy build). Entries for peers that
+    /// answered nothing are removed rather than left stale.
     @Published private(set) var peerShareInfo: [String: TailscreenMetadata] = [:]
-    /// Rough per-peer round-trip estimate in milliseconds, measured over
-    /// the metadata TCP fetch (dial + request + response on the live
-    /// Tailscale path — direct or DERP alike). An estimate, not a ping:
-    /// includes TCP setup and service time, so read it as a quality
-    /// indicator. Same lifecycle as `peerShareInfo`: recorded on answers,
-    /// removed on no-answer, pruned with the roster.
+    /// Rough per-peer round-trip estimate over the metadata TCP fetch —
+    /// includes TCP setup, so read as a quality indicator, not a ping. Same
+    /// lifecycle as `peerShareInfo`.
     @Published private(set) var peerLatencyMs: [String: Int] = [:]
     private var shareStatusRefreshInFlight = false
 
-    /// The peers the main window's Screens list renders: the raw
-    /// list projected through `peerFilter` (pure decision, covered by
-    /// `PeerListFilterTests` in the protocol package).
+    /// The peers the main window's Screens list renders: `availablePeers`
+    /// projected through `peerFilter` (pinned by `PeerListFilterTests`).
     var filteredPeers: [TailscreenPeer] {
         peerFilter.narrow(availablePeers, shareInfo: peerShareInfo)
     }
 
-    /// Tags offered by the filter menu: the union of every discovered
-    /// peer's tags plus any currently-selected tags — a selected tag whose
-    /// peers left the tailnet must stay listed so it can be unselected.
-    /// Shared with both other hubs, which did not have that second half.
+    /// Tags offered by the filter menu: every discovered peer's tags plus
+    /// any currently-selected ones, so a tag whose peers left the tailnet
+    /// stays listed long enough to be unselected.
     var knownPeerTags: [String] {
         peerFilter.knownTags(in: availablePeers)
     }
-    /// True once any discovery pass has finished (successfully or not).
-    /// The menubar devices section shows its loading skeleton until this
-    /// flips — an empty `availablePeers` before the first pass means "no
-    /// answer yet", not "no devices". Reset on sign-out with the rest of
-    /// the discovery state.
+    /// True once any discovery pass has finished. The menubar devices
+    /// section shows its loading skeleton until this flips, so an empty
+    /// `availablePeers` before the first pass reads as "no answer yet", not
+    /// "no devices". Reset on sign-out.
     @Published var hasCompletedInitialDiscovery = false
-    /// Why the last node bring-up failed, as the person is told it — the
-    /// payload of `NodeBringUpPhase.failed`.
+    /// Why the last node bring-up failed — the payload of
+    /// `NodeBringUpPhase.failed`. The alert fires once, at the moment of
+    /// failure; this is the state that outlives it on the welcome card whose
+    /// button retries.
     ///
-    /// New here: this app reported a failed sign-in only as an alert, which
-    /// is dismissed and gone, so coming back to the welcome pane afterwards
-    /// showed the first-run wording for a tailnet that had just refused to
-    /// come up. Both other hubs put the reason on the card whose button
-    /// retries it, and now so does this one. The alert stays — it fires once,
-    /// at the moment of failure, and carries the `TS-AUTH-001` code; this is
-    /// the state that outlives it.
-    ///
-    /// Cleared when a fresh attempt starts and by every teardown, so a reason
-    /// can never outlive the attempt it describes or follow an account switch
-    /// into the next profile.
+    /// Cleared when a fresh attempt starts and by every teardown, so a
+    /// reason can't outlive the attempt or follow an account switch.
     @Published private(set) var nodeFailure: String?
     private var peerDiscovery: TailscalePeerDiscovery?
-    /// The node the current `peerDiscovery` (and its IPN watcher) is bound
-    /// to. There's one tsnet node per process, but sign-out replaces it —
-    /// identity mismatch tells `discoverPeers` to rebuild the watcher
-    /// instead of reusing one bound to a closed node.
+    /// The node the current `peerDiscovery` is bound to. Sign-out replaces
+    /// the node; an identity mismatch tells `discoverPeers` to rebuild the
+    /// watcher instead of reusing one bound to a closed node.
     private weak var peerDiscoveryNode: TailscaleNode?
 
-    // IPN-bus watcher dedicated to surfacing the interactive-login URL.
-    // tsnet's `node.up()` blocks until login completes, so the only way to
-    // unblock it on a fresh device is to listen on the IPN bus and open
-    // the BrowseToURL it emits in the user's browser.
+    // IPN-bus watcher for the interactive-login URL: tsnet's `node.up()`
+    // blocks until login completes, so this listens for the BrowseToURL it
+    // emits and opens it in the user's browser.
     private var authIPNWatcher: TailscaleIPNWatcher?
 
     // Live thumbnail of the shared screen for the menu preview
     @Published var previewImage: NSImage?
 
     // One-shot continuation used by `startSharing` to hold the `isSharing`
-    // flip until the first preview frame has landed, so SharingCard never
-    // renders its black "Capturing…" placeholder. Resumed from
-    // `srv.onPreviewImage`, by `waitForFirstPreview`'s timeout, or by
-    // `stopSharing` if the user bails out mid-wait.
+    // flip until the first preview frame lands, so SharingCard never renders
+    // its black "Capturing…" placeholder.
     private var pendingFirstPreview: CheckedContinuation<Void, Never>?
 
     // Authentication
@@ -1029,65 +830,44 @@ class AppState: ObservableObject {
     @Published var metadataService = TailscreenMetadataService()
 
     /// Re-entrancy guard for `login()`, and half of `nodePhase`'s in-flight
-    /// signal — which is why it is `@Published` rather than a plain flag.
-    ///
-    /// `login()` sets `nodeFailure` in its `catch` and clears this in its
-    /// `defer`, in that order. The failure publishes, but at that moment this
-    /// is still true and a running sign-in outranks a failure, so the
-    /// projection answers `.startingNode` — and the clear that would change
-    /// the answer arrives with no notification behind it. The welcome card
-    /// stayed on its "Signing in…" spinner over a sign-in that had already
-    /// failed, until some unrelated update happened to re-render it.
+    /// signal — `@Published` so the welcome card doesn't stay on "Signing
+    /// in…" over a sign-in that already failed (this stays true when
+    /// `nodeFailure` publishes in the `catch`, cleared only in the `defer`).
     @Published private var isLoggingIn = false
 
-    // Gates whether the IPN-bus BrowseToURL handler actually opens a
-    // browser tab. False during silent session restore at launch (so a
-    // stale state file can't pop an unsolicited sign-in tab); flipped to
-    // true when the user explicitly initiates `login()`.
+    // Gates whether the IPN-bus BrowseToURL handler opens a browser tab.
+    // False during silent session restore at launch (a stale state file
+    // can't pop an unsolicited sign-in tab); true once `login()` runs.
     private var interactiveLoginRequested = false
 
-    // `[AppState]`-prefixed log sink. Same per-file `TSLogger` pattern
-    // used by the screen-share + tsnet wrappers — keeps log lines in a
-    // single channel we can later route to a file or os.Logger.
+    // `[AppState]`-prefixed log sink, same per-file `TSLogger` pattern as the
+    // screen-share + tsnet wrappers.
     private let logger = AppLogger()
 
-    // NotificationCenter observer tokens added in `init`. Kept so
-    // `deinit` can remove them — otherwise the closures (and the `self`
-    // they retain weakly) outlive the AppState and keep firing on a
-    // dead instance. AppState is process-lifetime today, but the leak
-    // would surface immediately if anything ever re-creates one.
-    // `nonisolated(unsafe)` because `deinit` of an `@MainActor` class
-    // is itself `nonisolated`; only `init` and `deinit` ever mutate
-    // this, both with exclusive access to the instance.
+    // NotificationCenter observer tokens added in `init`, removed in `deinit`
+    // (else the weakly-retained closures keep firing on a dead instance).
+    // `nonisolated(unsafe)`: `deinit` of a `@MainActor` class is itself
+    // nonisolated, and only `init`/`deinit` mutate this.
     nonisolated(unsafe) private var notificationObservers: [NSObjectProtocol] = []
 
-    // NSWorkspace's notification center + the launch-observer token
-    // registered on it (the Cloaked Apps "cloaked app launched mid-share"
-    // trigger). Kept separate from `notificationObservers` because those
-    // tokens belong to `NotificationCenter.default` — removing a token
-    // from the wrong center silently leaks it. Same `nonisolated(unsafe)`
-    // rationale as above: only `init`/`deinit` mutate these, and `deinit`
-    // must reach the center without touching `NSWorkspace.shared` off the
-    // main actor.
+    // NSWorkspace's notification center + its launch-observer token (the
+    // Cloaked Apps "cloaked app launched mid-share" trigger). Kept separate
+    // from `notificationObservers` since those tokens belong to a different
+    // center — removing from the wrong one silently leaks it.
     nonisolated(unsafe) private var workspaceNotificationCenter: NotificationCenter = .default
     nonisolated(unsafe) private var workspaceObservers: [NSObjectProtocol] = []
 
-    /// True once the user has manually resized the viewer window
-    /// (windowDidResize fired while `suppressViewerResizeTracking` was
-    /// false). When set, auto-snap on incoming video-size changes is
-    /// skipped so the sharer's live resize drag doesn't tug the window
-    /// out from under the user. Reset on disconnect and on any
-    /// `setViewerZoom` call.
+    /// True once the user has manually resized the viewer window. Skips
+    /// auto-snap on incoming video-size changes so the sharer's live resize
+    /// drag doesn't tug the window out from under the user. Reset on
+    /// disconnect and any `setViewerZoom` call.
     private var userResizedViewer: Bool = false
     /// Set around programmatic `setContentSize` calls so the synchronous
-    /// `windowDidResize` callback they trigger doesn't get mistaken for
-    /// a user resize.
+    /// `windowDidResize` callback isn't mistaken for a user resize.
     private var suppressViewerResizeTracking: Bool = false
 
-    /// One-shot guard so the `E2E_MARKER firstFrame ...` log line emitted
-    /// from `onVideoSizeChanged` only fires once per viewer session. The
-    /// scripted harness greps for this marker; firing on every size change
-    /// would still work, but the single-shot keeps the log clean.
+    /// One-shot guard so the `E2E_MARKER firstFrame ...` log line fires once
+    /// per viewer session, for the scripted harness's grep.
     private var didLogFirstViewerFrame: Bool = false
 
     init() {
@@ -1096,52 +876,43 @@ class AppState: ObservableObject {
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
-        // Same forwarding for the profile registry, so the header's
-        // account menu re-renders on add/switch/remove/identity updates.
+        // Same forwarding for the profile registry, so the account menu
+        // re-renders on add/switch/remove/identity updates.
         profileStore.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
-        // Preserve AppState's existing observation surface while viewer
-        // presentation state moves behind its own feature boundary. Views can
-        // migrate to observing `viewerPresentation` directly without a flag day.
         viewerPresentation.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
-        // Browser-opening is host-app policy: TailscaleAuth is portable
-        // (TailscreenTransport) and never touches NSWorkspace itself.
+        // Browser-opening is host-app policy: TailscaleAuth is portable and
+        // never touches NSWorkspace itself.
         tailscaleAuth.onOpenAuthURL = { NSWorkspace.shared.open($0) }
 
         // `@Published var metadataService` only fires when the *reference*
-        // changes, not when its inner `@Published` properties (notably
-        // `currentMetadata`) mutate. Mirror its `objectWillChange` through
-        // ours so anything reading the live metadata repaints with it.
+        // changes, not its inner `@Published` properties — mirror its
+        // `objectWillChange` too.
         metadataService.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
-        // The ask-to-share flow: the listener lifecycle, the inbox and the
-        // answer sequencing are the shared coordinator's; these closures are
-        // the parts that are this host's.
+        // The listener lifecycle, inbox and answer sequencing are the shared
+        // coordinator's; these closures are the parts that are this host's.
         askToShare.onRequestReceived = { [weak self] hostname in
             self?.logger.log("Incoming request-to-share from \(hostname)")
         }
         askToShare.onRequestsChanged = { [weak self] requests in
             guard let self else { return }
             self.pendingShareRequests = requests
-            // On every change — arrival AND answer — because both edit the
-            // list, and the notice for a request answered in the app has to
-            // come down with it.
+            // On every change (arrival AND answer): the notice for a request
+            // answered in the app has to come down with it.
             self.refreshShareRequestNotices()
         }
         askToShare.onPreApproveViewer = { [weak self] sourceKey in
             guard let self else { return }
-            // The sharer just consented to this named peer, so pre-approve
-            // its imminent HELLO — otherwise it would park behind the
-            // approval gate for a second, redundant consent. Apply to a live
-            // server now and remember it for the server the picker is about
-            // to spin up.
+            // The sharer just consented to this peer, so pre-approve its
+            // imminent HELLO rather than park it behind a redundant consent.
             self.pendingPreApprovedIPs.insert(sourceKey)
             self.server?.preApproveViewer(ip: sourceKey)
         }
@@ -1149,10 +920,8 @@ class AppState: ObservableObject {
             Task { await self?.presentNativePicker() }
         }
         askToShare.configureListener = { [weak self] listener in
-            // Answer peer metadata queries (the sharing-status filter's fetch
-            // half) on the same connection they arrived on. Exposes nothing
-            // the tailnet can't already see (hostname is in the netmap) plus
-            // the share state any admitted viewer would learn by connecting.
+            // Answer peer metadata queries on the same connection they
+            // arrived on. Exposes nothing the tailnet can't already see.
             listener.onMetadataRequest = { [weak self, weak listener] connectionID in
                 Task { @MainActor [weak self, weak listener] in
                     guard let self, let listener else { return }
@@ -1168,13 +937,10 @@ class AppState: ObservableObject {
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
-        // Push a fresh policy snapshot to the live server so "Always allow" /
-        // "Deny & block" / removal take effect mid-share — but ONLY when the
-        // policy-by-StableNodeID projection actually changes. A cosmetic
-        // display-name refresh (fired on every viewer sighting) must not
-        // trigger a full setAccessPolicies + pending/connected re-sweep.
-        // `$entries` delivers the *new* array before the property write, so
-        // the projection is computed from the payload, not the store.
+        // Push a fresh policy snapshot to the live server so Always Allow /
+        // Deny & Block take effect mid-share — but ONLY when the
+        // policy-by-StableNodeID projection changes, not on a cosmetic
+        // display-name refresh.
         viewerAccessPolicies.$entries
             .map { ViewerAccessPolicyStore.policiesByStableID($0) }
             .removeDuplicates()
@@ -1183,10 +949,7 @@ class AppState: ObservableObject {
             }.store(in: &cancellables)
 
         // Mirror the Cloaked Apps store to the UI, and re-cloak a live share
-        // when the list or the main toggle changes. The debounced
-        // re-push reads the store at fire time — after the property write
-        // has landed — so `$entries`'s deliver-before-write timing (which
-        // the policy snapshot above has to dance around) doesn't matter.
+        // when the list or the main toggle changes.
         appCloak.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
@@ -1203,11 +966,9 @@ class AppState: ObservableObject {
             .store(in: &cancellables)
 
         // A cloaked app *launching* mid-share can't be hidden by the running
-        // helper: its SCContentFilter resolved applications at build time,
-        // and an app that wasn't running never resolved into the exclusion
-        // list. Watch for launches and force a re-push (helper respawn) so
-        // the fresh filter picks it up. NSWorkspace notifications arrive on
-        // its own center, not `NotificationCenter.default`.
+        // helper: its SCContentFilter resolved applications at build time, so
+        // an app not yet running never made the exclusion list. Watch for
+        // launches and force a re-push (helper respawn).
         workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(
             workspaceNotificationCenter.addObserver(
@@ -1229,16 +990,10 @@ class AppState: ObservableObject {
             }
         )
 
-        // Try to restore a previous session silently. If on-disk Tailscale
-        // state is valid, `up()` returns quickly and the user is signed in
-        // without clicking anything. If the state is stale or missing, the
-        // BrowseToURL the IPN bus emits is suppressed (see
-        // `interactiveLoginRequested`) so no browser tab pops unsolicited —
-        // the user still sees the "Sign in with Tailscale" CTA.
-        //
-        // Not in UI-preview mode: the restore brings a real node up and its
-        // auth check would overwrite the seeded signed-in state, flipping
-        // the hub back to the Welcome pane mid-screenshot.
+        // Try to restore a previous session silently; a stale/missing state
+        // suppresses the BrowseToURL tab (`interactiveLoginRequested`) rather
+        // than popping one unsolicited. Skipped in UI-preview mode: the
+        // restore would overwrite the seeded signed-in state mid-screenshot.
         if Self.isUIPreview {
             seedUIPreview()
         } else {
@@ -1247,10 +1002,8 @@ class AppState: ObservableObject {
             }
         }
 
-        // Scripted local E2E harness affordances. Both env vars are read
-        // here (and only here) — production launches with neither set go
-        // through the normal UI-driven flow unchanged. See CLAUDE.md
-        // ("Local screen-share E2E") for the harness that uses these.
+        // Scripted local E2E harness affordances; see CLAUDE.md ("Local
+        // screen-share E2E").
         if ProcessInfo.processInfo.environment["TAILSCREEN_AUTOSTART_SHARE"] == "1" {
             Task { @MainActor [weak self] in
                 await self?.runAutoStartShare()
@@ -1264,10 +1017,8 @@ class AppState: ObservableObject {
         }
 
         // The session is over without the user asking — sharer stop, idle
-        // timeout, or a socket-error storm, told apart by the reason in
-        // userInfo. Instead of the window silently vanishing, end in the
-        // in-window "session ended" state (reason + Reconnect/Close over
-        // the last frame).
+        // timeout, or a socket-error storm. End in the in-window "session
+        // ended" state rather than the window silently vanishing.
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .tailscreenViewerPeerClosed,
@@ -1292,10 +1043,9 @@ class AppState: ObservableObject {
             }
         )
 
-        // Viewer's decoder couldn't build a session for the stream's codec.
-        // The client has already asked the sharer to fall back to H.264 and
-        // recovery is imminent — a transient in-window banner, not a modal
-        // alert parked over a stream that's about to fix itself.
+        // Viewer's decoder couldn't build a session for the stream's codec;
+        // recovery (fallback to H.264) is imminent, so a transient banner,
+        // not a modal alert.
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .tailscreenViewerDecodeFailed,
@@ -1320,11 +1070,9 @@ class AppState: ObservableObject {
             }
         )
 
-        // The decode-failure escalation ladder's last rung: frames are
-        // arriving but decoding has been failing for several seconds despite
-        // a keyframe request and a decoder-session rebuild. Persistent
-        // banner with the recovery action attached, replacing the alert
-        // that told the user to disconnect and reconnect by hand.
+        // The decode-failure escalation ladder's last rung: a persistent
+        // banner, replacing the alert that told the user to reconnect by
+        // hand.
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .tailscreenViewerVideoStalled,
@@ -1403,14 +1151,10 @@ class AppState: ObservableObject {
         // popover isn't visible.
         registerMicHotkey()
 
-        // NOTE: the ⌃⌥. panic-revoke hotkey is deliberately NOT registered
-        // here. It's grant-scoped — created when a remote-control grant
-        // appears and destroyed when it clears (`syncRevokeControlHotkey`,
-        // driven by `onControlGrantChanged`) — so an idle menubar session or
-        // a pure viewer doesn't swallow ⌃⌥. system-wide for a handler that
-        // would just no-op. Probe its chord once anyway so the Settings
-        // pane can warn about a combo another app owns without waiting for
-        // a grant to find out.
+        // The ⌃⌥. panic-revoke hotkey is grant-scoped
+        // (`syncRevokeControlHotkey`), not registered here, so idle sessions
+        // don't swallow it system-wide. Probe the chord once anyway so
+        // Settings can warn about a combo another app owns.
         revokeHotkeyRegistered = GlobalHotkey.probeAvailability(
             keyCode: revokeHotkeyChord.keyCode,
             modifiers: revokeHotkeyChord.modifiers)
@@ -1421,9 +1165,8 @@ class AppState: ObservableObject {
 
         ViewerCommands.shared.appState = self
 
-        // 2 s polling probe: any other Tailscreen instance on this
-        // Mac currently holding the share lock? Drives the Share
-        // button's disabled state in the popover.
+        // Poll every 2s: any other Tailscreen instance on this Mac holding
+        // the share lock? Drives the Share button's disabled state.
         let probe = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -1436,15 +1179,10 @@ class AppState: ObservableObject {
         RunLoop.main.add(probe, forMode: .common)
         shareLockProbeTimer = probe
 
-        // SIGTERM / SIGINT trap (installed by `TailscreenEntry`) posts
-        // this just before calling `NSApplication.terminate`. We can't
-        // rely on `applicationWillTerminate` alone because it fires
-        // asynchronously via the run loop; on a fast SIGTERM →
-        // SIGKILL chain the helper child can still be running when
-        // the main process vanishes, leaving replayd's per-PID
-        // SCStream session orphaned and the green recording badge
-        // stuck in Control Center. Sync-kill the helper here so it
-        // dies *before* main does.
+        // Posted by the SIGTERM/SIGINT trap just before terminate.
+        // `applicationWillTerminate` alone fires too late via the run loop:
+        // on a fast SIGTERM→SIGKILL chain the helper could still be running
+        // when the main process vanishes, orphaning the SCStream session.
         NotificationCenter.default.addObserver(
             forName: .tailscreenWillTerminateBySignal,
             object: nil,
@@ -1454,14 +1192,12 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Synchronous best-effort kill of any active capture-helper
-    /// child. Called from the signal trap path before
-    /// `NSApplication.terminate` so the helper gets `SIGTERM` from
-    /// us deterministically; replayd then sees the helper die and
-    /// releases the SCStream slot. Safe if no helper is active.
+    /// Synchronous best-effort kill of any active capture-helper child,
+    /// called before `NSApplication.terminate` so replayd sees it die and
+    /// releases the SCStream slot deterministically. Safe if none is active.
     nonisolated func synchronouslyTerminateHelpers() {
-        // Run on a background queue with a short timeout — we're in
-        // the signal-handler tail, can't block forever.
+        // Background queue with a short timeout — can't block forever in
+        // the signal-handler tail.
         let group = DispatchGroup()
         group.enter()
         DispatchQueue.global().async {
@@ -1474,10 +1210,8 @@ class AppState: ObservableObject {
     }
 
     deinit {
-        // Remove every NotificationCenter observer we registered in
-        // `init`. `removeObserver` is thread-safe, so it's safe to call
-        // from deinit on any actor — no Task hop required (which would
-        // be unsafe here per CLAUDE.md's "no Task { self } in deinit").
+        // `removeObserver` is thread-safe, so no Task hop needed here (which
+        // would be unsafe per CLAUDE.md's "no Task { self } in deinit").
         let center = NotificationCenter.default
         for token in notificationObservers {
             center.removeObserver(token)
@@ -1490,24 +1224,20 @@ class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     /// Spawn the `--picker-helper` subprocess to present the native
-    /// `SCContentSharingPicker`. Once the user picks something, kicks
-    /// off `startSharing(filterData:)`. User cancellation is silent —
-    /// the menubar returns to idle without an alert. macOS drives the
-    /// Screen Recording TCC prompt inside the picker-helper on first
-    /// use; the parent process never preflights or requests permission.
+    /// `SCContentSharingPicker`. User cancellation is silent. macOS drives
+    /// the Screen Recording TCC prompt inside the helper; the parent process
+    /// never preflights it.
     func presentNativePicker() async {
         guard let filterData = await runPickerOrAlert() else {
-            // User cancelled (or the picker failed and was already alerted).
             return
         }
         await startSharing(filterData: filterData)
     }
 
     /// Spawn the `--picker-helper` subprocess and return the JSON
-    /// `PickerSelection` bytes it produced. Returns nil on user cancel — and
-    /// on spawn failure, after surfacing the localized alert — so the two
-    /// picker entry points (`presentNativePicker()`, `changeShareSource()`)
-    /// share one error surface and can't drift apart.
+    /// `PickerSelection` bytes. Returns nil on user cancel, or on spawn
+    /// failure after surfacing the alert — one error surface shared by
+    /// `presentNativePicker()` and `changeShareSource()`.
     private func runPickerOrAlert() async -> Data? {
         do {
             return try await PickerHelperClient.run()
@@ -1520,20 +1250,12 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Bake sharer-side settings into the picker's selection bytes before
-    /// they're cached on the server / handed to the capture-helper:
-    ///
-    ///   * `captureAudio = true` so the helper configures its `.audio`
-    ///     SCStream output (emission stays gated by the `setAudioEnabled`
-    ///     latch, so this only makes the output exist);
-    ///   * the Cloaked Apps exclusion list (`AppCloakStore`) so a display share
-    ///     hides the cloaked apps' windows from viewers.
-    ///
-    /// Shared by `startSharing` and `changeShareSource` so the two share
-    /// bring-up paths can't drift (Change Source used to ship the raw
-    /// picker bytes, which silently dropped the audio output on retarget).
-    /// Updates `currentSelection` on success; a decode/encode failure
-    /// falls back to the original bytes untouched.
+    /// Bake sharer-side settings into the picker's selection bytes:
+    /// `captureAudio = true` (so the helper's `.audio` output exists;
+    /// emission stays gated by the `setAudioEnabled` latch) and the Cloaked
+    /// Apps exclusion list. Shared by `startSharing` and `changeShareSource`
+    /// so the two bring-up paths can't drift. Updates `currentSelection` on
+    /// success; a decode/encode failure falls back to the original bytes.
     private func applyingShareTransforms(to filterData: Data) -> Data {
         guard let selection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
         else { return filterData }
@@ -1546,13 +1268,10 @@ class AppState: ObservableObject {
         return reencoded
     }
 
-    /// Coalesce Cloaked Apps edits into one helper respawn (~500 ms cancel-and-
-    /// replace, like the quality-ceiling debounce): every re-push restarts
-    /// the capture-helper, so an un-debounced multi-add in Settings would
-    /// burst restarts. `force` skips the no-change guard — used when a
-    /// cloaked app *launches* mid-share: the exclusion list is byte-identical
-    /// but the live filter was built before the app existed, so only a
-    /// respawn actually cloaks it.
+    /// Coalesce Cloaked Apps edits into one helper respawn (~500ms
+    /// cancel-and-replace). `force` skips the no-change guard — used when a
+    /// cloaked app *launches* mid-share: the exclusion list is
+    /// byte-identical, but the live filter was built before the app existed.
     private func scheduleCloakRepush(force: Bool = false) {
         cloakRepushForce = cloakRepushForce || force
         cloakSyncTask?.cancel()
@@ -1567,11 +1286,9 @@ class AppState: ObservableObject {
 
     /// Re-bake the Cloaked Apps exclusions into the cached selection and
     /// retarget the live capture-helper. No-op unless a share is active and
-    /// the exclusion set actually changed (or `force`). Rides the same
-    /// `server.changeSource` tracked-restart path as "Change Source…", so
-    /// viewers recover via the fresh helper's in-band parameter sets; the
-    /// sharer overlay and annotations are untouched because the shared
-    /// surface itself is unchanged.
+    /// the exclusion set changed (or `force`). Rides the same
+    /// `server.changeSource` restart path as "Change Source…"; the overlay
+    /// and annotations are untouched since the shared surface is unchanged.
     private func applyCloakToActiveShare(force: Bool) async {
         guard sharingState == .sharing, let server, let selection = currentSelection else { return }
         let exclusions = appCloak.effectiveExclusions(for: selection.kind)
@@ -1586,9 +1303,6 @@ class AppState: ObservableObject {
             // Share stopped while the re-push was in flight — the stop path
             // owns teardown.
         } catch {
-            // The old helper is already gone by the time changeSource
-            // throws; mirror changeShareSource's failure handling so the
-            // share doesn't linger frozen.
             logger.log("appCloak: live re-push failed (\(error)); tearing sharing down")
             await stopSharing(reason: "appCloak repush failed: \(error)")
             presentError(.sharingGeneric(error))
@@ -1596,33 +1310,25 @@ class AppState: ObservableObject {
     }
 
     /// Tailnet-visible hostname for this instance. Shared by `startSharing`
-    /// (server bring-up + metadata) and `changeShareSource` (metadata
-    /// refresh) so the strings can't drift apart.
+    /// and `changeShareSource` so the strings can't drift apart.
     private static func localHostname() -> String {
         "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
     }
 
-    /// Share name published to peers via the metadata service. Deliberately
-    /// not localized — it travels over the wire to viewers whose locale we
-    /// don't know, matching `TailscreenMetadataService.updateMetadata`'s own
-    /// default.
+    /// Share name published to peers. Deliberately not localized — it
+    /// travels to viewers of unknown locale.
     private static func localShareName() -> String {
         "\(localHostname())'s Screen"
     }
 
-    /// Mid-share "Change Source…": re-run the picker-helper and retarget
-    /// the live server at the new selection *without* disconnecting
-    /// viewers, dropping the tsnet listeners, or releasing the share lock
-    /// (we already hold it — re-acquiring would trip the guard). Picker
-    /// cancel or picker error leaves the current share untouched; a failed
-    /// retarget tears the share down (the old helper is already gone by
-    /// then, so there is nothing to keep sharing). A Stop Sharing that
-    /// races the retarget is a quiet no-op here — the stop path owns
-    /// teardown, and every success side effect is gated on a post-await
-    /// re-validation of the share.
+    /// Mid-share "Change Source…": re-run the picker-helper and retarget the
+    /// live server *without* disconnecting viewers or releasing the share
+    /// lock. Picker cancel/error leaves the share untouched; a failed
+    /// retarget tears it down (the old helper is already gone by then). A
+    /// racing Stop Sharing is a quiet no-op — every success effect below is
+    /// gated on a post-await re-validation.
     ///
-    /// Deliberately separate from `presentNativePicker()` — that path is
-    /// the share *entry point* (takes the lock, builds the server); this
+    /// Separate from `presentNativePicker()`, the share *entry point*: this
     /// one requires an already-active share.
     func changeShareSource() async {
         guard sharingState == .sharing, let server, !isChangingSource else { return }
@@ -1630,14 +1336,12 @@ class AppState: ObservableObject {
         defer { isChangingSource = false }
 
         guard let filterData = await runPickerOrAlert() else {
-            // User cancelled (or the picker failed and was already
-            // alerted) — keep the current share running unchanged.
             return
         }
         // The user may have clicked Stop Sharing (or the helper may have
-        // died past its crash budget and torn the share down) while the
-        // picker was up. Identity-check the server so a stale selection
-        // can't retarget a share that already ended or restarted.
+        // died past its crash budget) while the picker was up. Identity-check
+        // the server so a stale selection can't retarget an ended/restarted
+        // share.
         guard sharingState == .sharing, self.server === server else { return }
 
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
@@ -1646,10 +1350,8 @@ class AppState: ObservableObject {
         do {
             didRetarget = try await server.changeSource(filterData: effectiveFilterData)
         } catch is CancellationError {
-            // The restart task throws CancellationError when the share was
-            // stopped while the retarget was in flight — a deliberate stop,
-            // not a retarget failure. The stop path owns teardown; a second
-            // stopSharing or an error alert here would fight it.
+            // A deliberate stop mid-retarget, not a retarget failure — the
+            // stop path owns teardown.
             logger.log("changeShareSource: share stopped mid-retarget — leaving teardown to the stop path")
             return
         } catch {
@@ -1659,61 +1361,48 @@ class AppState: ObservableObject {
             return
         }
 
-        // Re-validate after the awaits: `changeSource` returns false when
-        // the server was already stopping, and the share may have been torn
-        // down (or even restarted with a fresh server) while the retarget
-        // was in flight. Running the success side effects below against a
-        // stopped share would re-advertise it via metadata and resurrect
-        // overlay state the stop path just tore down — the phantom-share
-        // bug. On a failed re-check the stop path owns teardown; just leave.
+        // Re-validate after the awaits: the share may have been torn down
+        // (or restarted with a fresh server) while the retarget was in
+        // flight. Running the success effects below against a stopped share
+        // would resurrect overlay state the stop path just tore down.
         guard didRetarget, sharingState == .sharing, self.server === server else {
             logger.log("changeShareSource: share ended mid-retarget — skipping success side effects")
             return
         }
 
-        // Annotations were scoped to the old surface — a window-relative
-        // stroke floating over an unrelated display share is noise. Clear
-        // every viewer's canvas; the sharer's own canvas is cleared by the
-        // overlay rebuild below. Queued rather than sent inline so it lands
-        // AFTER whatever strokes are still in the outbox — a clear that
-        // overtakes them clears a canvas they then repaint.
+        // Annotations were scoped to the old surface, so clear every
+        // viewer's canvas (the sharer's is cleared by the overlay rebuild
+        // below). Queued so it lands AFTER strokes still in the outbox.
         server.enqueueAnnotationBroadcast(.clearAll)
 
-        // The overlay's mode is immutable, so it can't be retargeted —
-        // rebuild it for the new selection, preserving the sharer's draw
-        // toggle. When drawing is off, leave it nil: `ensureSharerOverlay`
-        // lazily rebuilds on the next viewer op or Draw toggle.
+        // The overlay's mode is immutable — rebuild for the new selection,
+        // preserving the draw toggle. Leave nil when off:
+        // `ensureSharerOverlay` lazily rebuilds on the next op or toggle.
         let wasDrawing = isSharerOverlayVisible
         sharerOverlay?.hide()
         sharerOverlay = nil
         if wasDrawing {
             ensureSharerOverlay().setInputEnabled(true)
         }
-        // Same reason, same immutability: the outline's mode is fixed at
-        // construction, so a mid-share source change has to rebuild it or it
-        // would keep framing the region that is no longer being shared.
+        // Same reason: the outline's mode is fixed at construction, so it
+        // must be rebuilt or it keeps framing the wrong region.
         showCaptureOutline()
 
-        // Refresh the metadata served to peers (share name / resolution)
-        // and drop the stale thumbnail — the fresh helper repopulates it
-        // with its first preview frame. Viewers need no signaling: the new
-        // helper's first AU is an IDR with in-band parameter sets, which
-        // rides the existing decoder-reconfigure → onVideoSizeChanged path.
+        // Refresh metadata and drop the stale thumbnail — the fresh helper
+        // repopulates it. Viewers need no signaling: the new helper's first
+        // AU is an IDR with in-band parameter sets.
         metadataService.updateMetadata(isSharing: true, shareName: Self.localShareName())
         previewImage = nil
         logger.log("changeShareSource: retargeted capture (filter=\(filterData.count)B)")
     }
 
-    /// Start a share against the `PickerSelection` produced by the
-    /// picker subprocess. The JSON-encoded selection is cached on
-    /// the server so a mid-stream helper crash can rebuild the same
-    /// SCStream without re-presenting the picker.
+    /// Start a share against the `PickerSelection` produced by the picker
+    /// subprocess. The JSON-encoded selection is cached on the server so a
+    /// mid-stream helper crash can rebuild the same SCStream without
+    /// re-presenting the picker.
     func startSharing(filterData: Data) async {
-        // Take the cross-instance share lock first. If another local
-        // Tailscreen instance is already capturing, replayd will
-        // refuse our SCStream with -3805 anyway — bail with a clear
-        // alert instead of letting the user watch the bring-up
-        // dance through and fail.
+        // Take the cross-instance share lock first: another local instance
+        // already capturing would make replayd refuse our SCStream anyway.
         // A new session gets its own protected prologue, so this share's
         // handshake cannot be evicted by an earlier one's traffic.
         AppDiagnostics.recorder?.beginSession()
@@ -1727,61 +1416,43 @@ class AppState: ObservableObject {
             )
             return
         }
-        // Re-read notification authorization at every share start. The one-shot
-        // prompt is answered once, but the user can revoke it in System
-        // Settings at any time afterwards — and with approval defaulting on,
-        // a sharer whose approval banners will never appear is a sharer who
-        // strands viewers without ever learning why. The answer arrives
-        // asynchronously and lands on `notificationsDenied`, which the sharing
-        // card watches.
+        // Re-read notification authorization at every share start — the
+        // one-shot prompt is answered once, but the user can revoke it later,
+        // and with approval defaulting on, a sharer without banners strands
+        // viewers silently. Lands on `notificationsDenied`.
         SharerNoticeCenter.shared.onAuthorizationChanged = { [weak self] state in
             self?.notificationsDenied = (state == .denied)
         }
         SharerNoticeCenter.shared.refreshAuthorization()
-        // Decode the picker selection so the sharer overlay (built lazily
-        // when the first annotation arrives or "Draw on Screen" is toggled)
-        // can scope its panel to the shared window/app instead of the
-        // whole display. A decode failure isn't fatal — we just fall
-        // back to the legacy full-display overlay.
+        // Decode so the sharer overlay (built lazily) can scope its panel to
+        // the shared window/app. A decode failure falls back to the legacy
+        // full-display overlay.
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
-        // Bake the sharer-side settings (system-audio output, Cloaked Apps
-        // exclusions) into the selection bytes the server caches.
+        // Bake system-audio output + Cloaked Apps exclusions into the bytes
+        // the server caches.
         let effectiveFilterData = applyingShareTransforms(to: filterData)
         // A share started while signed out can only be reached by link: run
-        // it guest-only — the guest node is the whole transport, no tsnet
-        // node anywhere. Decided here rather than passed in, because nothing
-        // signed out can start a share any other way (the welcome pane's
-        // Share-via-Link button and the picker both land here).
+        // it guest-only (the guest node is the whole transport).
         let guestOnly = !tailscaleAuth.isAuthenticated
         let generation = shareCore.beginShare()
         sharingState = .starting
-        // Why this attempt failed, if it did. Read by the `defer` below
-        // rather than assigned at each failure site, because every exit from
-        // this function has to go through that one cleanup block — a failure
-        // path that set the state itself would slip past its `== .starting`
-        // guard and leak the share lock and the capture outline with it.
+        // Why this attempt failed, if it did — read by the `defer` below
+        // rather than assigned per failure site, so every exit funnels
+        // through one cleanup block.
         var startFailure: String?
-        // Cleanup contract: any path out of this function (success,
-        // failure, cancellation) leaves `sharingState` consistent.
-        // Success sets `.sharing` below. Every failure / catch sets
-        // `.idle` explicitly via `await stopSharing` or
-        // `sharingState = .idle`. Defer here is the safety net for
-        // any path we forgot.
+        // Cleanup contract: any exit (success/failure/cancellation) leaves
+        // `sharingState` consistent. Success sets `.sharing` below; this
+        // defer is the safety net for anything else.
         defer {
             // Only for the share this attempt is: a stop that let a
-            // REPLACEMENT start means the `.starting` on screen is theirs,
-            // and resetting it to `.idle` here would drop their state and
-            // release the share lock out from under a bring-up that is
-            // still running.
+            // REPLACEMENT start means the `.starting` on screen is theirs.
             if shareCore.isCurrentShare(generation), sharingState == .starting {
-                // A reason if one was recorded, idle otherwise — a user
-                // cancellation takes the second path, since stopping on
-                // purpose is not a failure to report back.
+                // A reason if recorded, idle otherwise — user cancellation
+                // isn't a failure to report.
                 sharingState = startFailure.map { .failed($0) } ?? .idle
                 shareLock.release()
-                // Honour the same contract for the outline: a share that
-                // never reached `.sharing` must not leave a border on screen
-                // claiming one is running.
+                // A share that never reached `.sharing` must not leave a
+                // border on screen claiming one is running.
                 captureOutline?.hide()
                 captureOutline = nil
             }
@@ -1789,8 +1460,7 @@ class AppState: ObservableObject {
         if guestOnly && !linkSharingEnabled {
             // The welcome pane hides its Share-via-Link button behind the
             // same gate, so reaching here means Settings changed underneath
-            // an open picker — say why rather than failing generically.
-            // (The defer above resets `.starting` and releases the lock.)
+            // an open picker.
             let failure = AppError.linkSharingDisabled()
             startFailure = failure.message
             presentError(failure)
@@ -1882,9 +1552,8 @@ class AppState: ObservableObject {
                     }
                 }
                 srv.onPreviewImage = { [weak self] jpeg in
-                    // The portable server hands up the capture backend's
-                    // encoded bytes; decoding to an `NSImage` is this host's
-                    // job and happens here, at the point of display.
+                    // The portable server hands up encoded bytes; decoding
+                    // to `NSImage` is this host's job.
                     guard let image = NSImage(data: jpeg) else { return }
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -1896,14 +1565,11 @@ class AppState: ObservableObject {
                     }
                 }
 
-                // Viewer-originated annotations land directly on the sharer's
-                // overlay panel. In display mode SCStream captures the panel
-                // along with the rest of the display, so the drawings flow
-                // out to every other viewer via the H.264 stream for free.
-                // In window / application modes the panel sits above (not
-                // inside) the captured surface, so for now those modes only
-                // mirror viewer strokes back to the sharer — a server-side
-                // annotation fan-out is needed to reach other viewers.
+                // Viewer-originated annotations land on the sharer's overlay
+                // panel. In display mode SCStream captures the panel too, so
+                // drawings reach every viewer via the H.264 stream for free;
+                // in window/app modes the panel isn't captured, so those
+                // modes only mirror strokes back to the sharer.
                 srv.onAnnotationReceived = { [weak self] op in
                     Task { @MainActor [weak self] in
                         self?.ensureSharerOverlay().apply(remoteOp: op)
@@ -1932,9 +1598,7 @@ class AppState: ObservableObject {
                 srv.onControlGrantChanged = { [weak self] generation, grant in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        // The Task hop can reorder deliveries; a stale nil
-                        // snapshot landing after a fresh grant would strand
-                        // the panic hotkey unregistered. Apply only
+                        // The Task hop can reorder deliveries; apply only
                         // monotonically newer generations.
                         guard
                             !Self.isStaleGrantNotification(
@@ -1943,10 +1607,8 @@ class AppState: ObservableObject {
                         else { return }
                         self.lastControlGrantGeneration = generation
                         self.controlGrantee = grant
-                        // Grant-scoped ⌃⌥. panic hotkey: register while a
-                        // grant is live, unregister the moment it clears.
-                        // Revoke/stop/disconnect all funnel through this
-                        // callback, so no extra unregister sites are needed.
+                        // Grant-scoped panic hotkey: revoke/stop/disconnect
+                        // all funnel through this callback.
                         self.syncRevokeControlHotkey(grantActive: grant != nil)
                     }
                 }
@@ -1957,44 +1619,31 @@ class AppState: ObservableObject {
                     }
                 }
 
-                // Sync the toggle state to the server before `start()` so a
-                // viewer racing to HELLO during bring-up is caught. Same
-                // for the remembered allow/deny snapshot.
+                // Sync toggle state to the server before `start()` so a
+                // viewer racing to HELLO during bring-up is caught.
                 srv.setRequireApproval(requireViewerApproval)
                 srv.setAccessPolicies(viewerAccessPolicies.policiesByStableID)
-                // Same pattern for the control-request gate: latch before
-                // start so a viewer racing to request control is caught.
                 srv.setAllowControlRequests(allowControlRequests)
-                // System audio: apply the persisted default before the helper
-                // (re)spawns so the latch is in place when it comes up.
+                // Apply the persisted default before the helper (re)spawns so
+                // the latch is in place when it comes up.
                 isSystemAudioOn = shareSystemAudioByDefault
                 srv.setShareSystemAudio(shareSystemAudioByDefault)
-                // Settings → Color, the other half of the color opt-in: the
-                // env overlay tells the HELPER what to capture, this tells the
-                // SERVER whether to police viewers' `.tenBit` capability.
-                // Before `start()` for the same reason as the gates above — a
-                // viewer that can't decode 10-bit may HELLO during bring-up.
+                // The env overlay tells the HELPER what to capture; this
+                // tells the SERVER whether to police viewers' `.tenBit`.
                 srv.setTenBitCaptureRequested(wantsTenBitCapture)
-                // Carry over any request-to-share pre-approvals so an
-                // accepted requester's HELLO auto-admits on this fresh server.
-                //
-                // CLEARED as they are replayed, which is what the GTK and WinUI
-                // engines do. A pre-approval is a single-use invitation — the
-                // server consumes the IP on the matching HELLO — so holding it
-                // here past the handover means a later server built for the
-                // same share (a re-target, a rebuild) re-invites a peer who has
-                // already been through the gate once, letting them skip it
-                // again on a share they were never asked about.
+                // Carry over request-to-share pre-approvals so an accepted
+                // requester's HELLO auto-admits on this fresh server. Cleared
+                // as replayed: holding one past the handover would re-invite
+                // a peer on a later rebuild of the same share.
                 for ip in pendingPreApprovedIPs {
                     srv.preApproveViewer(ip: ip)
                 }
                 pendingPreApprovedIPs.removeAll()
 
                 // Sharer's audio SSRC is fixed at 0. Build the channel up
-                // front so HELLO_ACK assignment for viewers can route
-                // through, and inbound viewer audio can be decoded.
-                // Start playback engine immediately so the sharer can hear
-                // viewers without first toggling their own mic on.
+                // front so inbound viewer audio can decode, and start
+                // playback immediately so the sharer can hear viewers
+                // without toggling their own mic on first.
                 do {
                     let voice = try VoiceChannel(localSSRC: RTPHeader.sharerVoiceSSRC) { [weak srv] packet in
                         srv?.sendAudioRTP(packet)
@@ -2012,18 +1661,15 @@ class AppState: ObservableObject {
                 }
 
                 // Non-nil once the link-only path has minted, so the paths
-                // below can unwind exactly what this attempt created rather
-                // than whatever link happens to be live.
+                // below unwind exactly what this attempt created.
                 var mintedLink: String?
                 do {
                     if guestOnly {
-                        // Link-only share: the guest node comes up first (it
-                        // is the whole transport) and its listeners are the
-                        // server's only sockets, so the token exists the
-                        // moment the share does. `startLinkOnly` owns that
-                        // ordering and unwinds its own node if any step
-                        // throws; eviction is wired before it, because a
-                        // guest can arrive as soon as the server is up.
+                        // The guest node comes up first (it is the whole
+                        // transport); `startLinkOnly` owns that ordering and
+                        // unwinds its own node if any step throws. Eviction
+                        // is wired before it, since a guest can arrive as
+                        // soon as the server is up.
                         wireGuestEviction(on: srv)
                         let minted = try await link.startLinkOnly(
                             on: srv,
@@ -2031,13 +1677,9 @@ class AppState: ObservableObject {
                             quality: qualitySettings,
                             relayMapURL: linkRelayMapURL)
                         mintedLink = minted
-                        // Stop Sharing can land inside that await — it is
-                        // seconds of relay handshake — and it clears `server`
-                        // while this attempt is suspended. Publishing a token
-                        // and then `.active` here would report a share the
-                        // person ended, over a guest node nothing references.
-                        // The mint is scoped to itself, so a replacement
-                        // share's link is not what gets closed.
+                        // Stop Sharing can land inside that await; the mint
+                        // is scoped to itself so a replacement share's link
+                        // isn't what gets closed.
                         guard shareCore.isCurrentShare(generation) else {
                             await link.teardown(mintedToken: minted)
                             throw CancellationError()
@@ -2045,9 +1687,8 @@ class AppState: ObservableObject {
                         shareLinkToken = minted
                         isGuestOnlyShare = true
                     } else {
-                        // Reuse the AppState-owned tsnet node so the screen
-                        // share doesn't spin up a second machine that needs
-                        // its own browser sign-in.
+                        // Reuse the AppState-owned tsnet node rather than
+                        // spinning up a second machine with its own login.
                         let sharedNode = try await getOrCreateNode()
                         try await srv.start(
                             hostname: hostname,
@@ -2058,28 +1699,19 @@ class AppState: ObservableObject {
                         )
                     }
                 } catch {
-                    // Tear down anything `start` brought up before throwing —
-                    // listeners, encoder, capture pipeline — so a future
-                    // Start Sharing rebuilds from scratch. The guest node too:
-                    // a half-started link-only share must not leave a live
-                    // token behind a share that never happened.
+                    // Tear down anything `start` brought up so a future Start
+                    // Sharing rebuilds from scratch, guest node included.
                     await srv.stop()
-                    // Everything below is shared state, and a stop that let a
-                    // REPLACEMENT share start owns all of it now: blanking
-                    // `server` would strand a share that is genuinely
-                    // running, and blanking the token would erase its link.
-                    // The unwind of what THIS attempt built is not
-                    // conditional — the server is stopped above, and the
-                    // link teardown is scoped to this attempt's own mint.
+                    // A REPLACEMENT share may already own `server`/the token
+                    // by now; the unwind below is scoped to this attempt.
                     let isCurrent = shareCore.isCurrentShare(generation)
                     if let mintedLink { await link.teardown(mintedToken: mintedLink) }
                     guard isCurrent else { return }
                     server = nil
                     shareLinkToken = nil
                     isGuestOnlyShare = false
-                    // `CancellationError` here means the user clicked Stop
-                    // Sharing while we were mid-bring-up; suppress the
-                    // failure alert because the cancellation was intentional.
+                    // A CancellationError means the user clicked Stop Sharing
+                    // mid-bring-up — no alert for an intentional cancel.
                     if error is CancellationError {
                         return
                     }
@@ -2091,14 +1723,13 @@ class AppState: ObservableObject {
                     } else if case ScreenCaptureError.noFramesDelivered = error {
                         failure = .screenCaptureNoFrames()
                     } else if guestOnly {
-                        // The failure was most likely the relay bootstrap or
-                        // the guest node, not screen capture — say so.
+                        // Most likely the relay bootstrap or guest node, not
+                        // screen capture.
                         failure = .linkShareStartFailed(error)
                     } else {
                         failure = .screenCaptureGeneric(error)
                     }
-                    // Both: the alert fires once, and the card keeps the
-                    // reason after it is dismissed. Same split as `nodeFailure`.
+                    // Both: the alert fires once, the card keeps the reason.
                     startFailure = failure.message
                     presentError(failure)
                     return
@@ -2110,21 +1741,17 @@ class AppState: ObservableObject {
 
             // Hold the UI on the picker until the first preview frame
             // arrives, so SharingCard skips its black "Capturing…"
-            // placeholder and lands with the live thumbnail visible.
+            // placeholder.
             await waitForFirstPreview(timeout: .milliseconds(500))
 
-            // Raise the capture outline once capture is genuinely running.
-            // Earlier would draw a boundary around a share that may still
-            // fail to start, which is the same lie as an outline that lags.
+            // Raise the outline once capture is genuinely running — earlier
+            // would frame a share that may still fail to start.
             showCaptureOutline()
 
             sharingState = .sharing
 
-            // Automation affordance (test-local.sh / e2e scripts): mint the
-            // link as soon as the share is up and print it as a greppable
-            // marker, so a second instance can join by token with no UI. A
-            // guest-only share already has its token; a tailnet share
-            // enables the link the way the toggle would.
+            // Automation affordance (e2e scripts): mint the link and print a
+            // greppable marker so a second instance can join by token.
             if ProcessInfo.processInfo.environment["TAILSCREEN_AUTOSHARE_LINK"] == "1" {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -2137,24 +1764,18 @@ class AppState: ObservableObject {
                 }
             }
         } catch {
-            // Record it for the `defer`, which is what publishes the phase.
-            // Without this the card fell back to `.idle` and the reason
-            // survived only as long as the alert — the one failure path in
-            // this function that did not satisfy the contract the rest of it
-            // states. Nothing inside the inner `do` arrives here (its own
-            // catch returns), so this covers the paths before it and
-            // whatever gets added after.
+            // Record it for the `defer`, which publishes the phase. The
+            // inner `do`'s own catch returns before reaching here, so this
+            // covers the paths before it and anything added after.
             let failure = AppError.sharingGeneric(error)
             startFailure = failure.message
             presentError(failure)
         }
     }
 
-    /// Reentrancy guard for `stopSharing`. The give-up paths (receive-loop
-    /// death, exhausted helper crash budget) can fire `onCaptureStopped`
-    /// concurrently with a user-initiated Stop Sharing; both land on the
-    /// MainActor but interleave across `stopSharing`'s await points, which
-    /// double-ran `server.stop()` and `shareLock.release()`.
+    /// Reentrancy guard for `stopSharing`: the give-up paths can fire
+    /// `onCaptureStopped` concurrently with a user-initiated Stop Sharing,
+    /// interleaving across await points and double-running `server.stop()`.
     private var isStoppingShare = false
 
     func stopSharing(reason: String = "<unknown>", caller: String = #function) async {
@@ -2165,15 +1786,10 @@ class AppState: ObservableObject {
         isStoppingShare = true
         defer { isStoppingShare = false }
         logger.log("stopSharing: called by \(caller) (reason=\(reason))")
-        // A lifecycle event, NOT `action.share.stop`. This function is the
-        // teardown funnel for capture failure, a dead receive loop, an
-        // unrecoverable helper, the shared window closing, a failed restart,
-        // sign-out and quit — eleven call sites, of which two are the Stop
-        // button. Recording every one as a user action made the `action.`
-        // stream claim the person stopped the share when the app had actually
-        // fallen over, which is the single most misleading thing that stream
-        // could say. The two real Stop affordances record the action
-        // themselves; `caller` and `reason` say which of the others this was.
+        // A lifecycle event, NOT `action.share.stop`: this is the teardown
+        // funnel for capture failure, a dead receive loop, sign-out, quit,
+        // etc, not just the Stop button. Recording every one as a user
+        // action would falsely claim the person stopped the share.
         AppDiagnostics.recorder?.record(
             .sharePhaseChanged,
             fields: [
@@ -2181,28 +1797,24 @@ class AppState: ObservableObject {
                 "reason": .string(reason),
                 "caller": .string(caller)
             ])
-        // Unblock any startSharing still waiting on the first preview, so
-        // a fast start→stop doesn't strand its continuation.
+        // Unblock any startSharing still waiting on the first preview, so a
+        // fast start→stop doesn't strand its continuation.
         if let cont = pendingFirstPreview {
             pendingFirstPreview = nil
             cont.resume()
         }
 
         // Ends the generation first, so a bring-up suspended inside
-        // `startSharing` learns it was superseded the moment it resumes —
-        // before it can publish a token, arm an outline, or reset the state
-        // this stop is in the middle of clearing.
+        // `startSharing` learns it was superseded before it can publish a
+        // token or arm an outline this stop is clearing.
         shareCore.endShare()
         let stopping = server
         await server?.stop()
         server = nil
-        // The token dies with the share: the server's stop() already closed
-        // the guest listener and sent everyone SERVER_BYE, so only the guest
-        // node itself is left to tear down. The server is passed rather than
-        // the token because a link toggled on mid-share may still be
-        // bootstrapping — no token yet, and only its own server can invalidate
-        // the claim it holds. This is the current share by construction, so
-        // there is no replacement to protect it from.
+        // The token dies with the share; server.stop() already sent everyone
+        // SERVER_BYE, so only the guest node is left to tear down. Passed by
+        // server, not token, since a mid-bootstrap link toggle has no token
+        // yet and only its own server can invalidate the claim.
         await link.teardown(for: stopping)
         shareLinkToken = nil
         shareLinkError = nil
@@ -2220,12 +1832,9 @@ class AppState: ObservableObject {
         controlGrantee = nil
         revokeControlHotkey = nil
         lastControlGrantGeneration = 0
-        // Take the actionable banners down with the share. Both asks are
-        // answerable only by a running server, so once it is gone their
-        // buttons can do nothing — and an Accept still sitting in Notification
-        // Center after the sharer pressed Stop is the surface contradicting the
-        // app. Withdrawn before the sets are cleared, since the sets are the
-        // record of what was posted.
+        // Take the actionable banners down with the share — their buttons
+        // can do nothing once the server is gone. Withdrawn before the sets
+        // are cleared, since the sets are the record of what was posted.
         SharerNoticeCenter.shared.withdraw(
             kind: .viewerPending, identities: Array(notifiedPendingViewerIDs))
         SharerNoticeCenter.shared.withdraw(
@@ -2234,9 +1843,8 @@ class AppState: ObservableObject {
         notifiedViewerIDs.removeAll()
         notifiedPendingViewerIDs.removeAll()
         pendingPreApprovedIPs.removeAll()
-        // The rows are gone, and an intent that outlived the share it was made
-        // during would apply to whoever connects to the NEXT one from the same
-        // address — `SharerAccessCoordinator.reset()`'s reasoning, same queue.
+        // The rows are gone, and an intent that outlived the share would
+        // apply to whoever connects to the NEXT one from the same address.
         policyIntents = ViewerRosterDecision.PendingIntents()
 
         // Update metadata
@@ -2336,30 +1944,24 @@ class AppState: ObservableObject {
         }
     }
 
-    /// True when the SCStream stopped because the user clicked the
-    /// macOS Control Center "Stop" button. SCStream surfaces this as
-    /// `SCStreamError.Code.userStopped`. Anything else (replayd XPC
-    /// drop, transient SCK failures, nil) is treated as recoverable
-    /// and triggers `restartCapture()`. Pulled out as a static so the
-    /// decision logic is unit-testable without standing up a stream.
+    /// True when the SCStream stopped because the user clicked Control
+    /// Center's "Stop" button. Anything else is treated as recoverable and
+    /// triggers `restartCapture()`. Static so it's unit-testable without a
+    /// live stream.
     nonisolated static func isUserInitiatedCaptureStop(_ error: Error?) -> Bool {
         guard let nsErr = error as NSError? else { return false }
-        // The portable server raises its own domain (it can't depend on
-        // ScreenCaptureKit); a real `SCStreamError` can still reach us from
-        // elsewhere in the mac capture stack, so both count.
+        // The portable server raises its own domain; a real `SCStreamError`
+        // can also reach us from elsewhere in the mac capture stack.
         if nsErr.domain == TailscaleScreenShareServer.userStoppedErrorDomain { return true }
         return nsErr.domain == SCStreamError.errorDomain
             && nsErr.code == SCStreamError.Code.userStopped.rawValue
     }
 
     /// What `onCaptureStopped` should do about a capture failure. The server
-    /// runs its own crash-budget restarts internally, so every error it hands
-    /// up is a give-up signal — but only *some* of them are recoverable with a
-    /// fresh-budget retry. The terminal domains (dead receive loop; a helper
-    /// exit the server classified non-retryable, e.g. the shared window
-    /// closed) must tear the share down: retrying loops forever against a
-    /// source that will never come back. Pure so the routing is unit-testable
-    /// without a live stream.
+    /// already ran its own crash-budget restarts, so every error handed up
+    /// is a give-up — but only some are recoverable with a fresh-budget
+    /// retry; the terminal domains must tear the share down rather than loop
+    /// forever against a source that will never come back.
     enum CaptureStopAction: Equatable {
         /// User clicked Control Center "Stop" — quiet teardown.
         case userInitiated
@@ -2401,18 +2003,13 @@ class AppState: ObservableObject {
         overlay.setInputEnabled(isSharerOverlayVisible)
     }
 
-    /// Toggle outbound microphone capture. The playback engine is started
-    /// at session-start time, so listening always works; toggleMic only
-    /// flips capture on/off (and lazily requests mic permission on first
-    /// enable).
-    /// Refresh `availableInputDevices` / `availableOutputDevices`.
-    /// Call before any device-picker UI renders (e.g. when the
-    /// popover opens). Cheap — a few HAL property reads.
+    /// Refresh `availableInputDevices`/`availableOutputDevices`. Call before
+    /// any device-picker UI renders. Cheap — a few HAL property reads.
     func refreshAudioDevices() {
         availableInputDevices = AudioDevices.inputs()
         availableOutputDevices = AudioDevices.outputs()
-        // If the user's previous pick was unplugged, fall back to
-        // the system default so the picker doesn't sit on a stale ID.
+        // If the user's previous pick was unplugged, fall back to the system
+        // default so the picker doesn't sit on a stale ID.
         if let id = selectedInputDeviceID, !availableInputDevices.contains(where: { $0.id == id }) {
             selectedInputDeviceID = nil
         }
@@ -2422,19 +2019,13 @@ class AppState: ObservableObject {
         recordAudioDevicesIfChanged()
     }
 
-    /// Last device lists recorded, so the diagnostics event fires on a change
-    /// rather than on every enumeration. This runs whenever a picker is about
-    /// to render, which is many times a session and almost always the same
-    /// answer — see `AudioDeviceDiagnostics` for why change beats poll here.
+    /// Last device lists recorded, so the diagnostics event fires only on
+    /// change (a picker render is frequent and usually the same answer).
     private var lastRecordedAudioDevices: AudioDeviceDiagnostics.Snapshot?
 
     /// Record which audio devices exist and which are selected, when that
-    /// changed.
-    ///
-    /// The **available** list is the half that is easy to leave out and is the
-    /// one people get stuck on: a headset that was never enumerated could
-    /// never have been picked, and that is a different problem from picking
-    /// the wrong one. Recording only the selection is silent about it.
+    /// changed. The **available** list matters as much as the selection: a
+    /// headset that was never enumerated could never have been picked.
     private func recordAudioDevicesIfChanged() {
         let current = AudioDeviceDiagnostics.Snapshot(
             inputs: availableInputDevices.map(\.name),
@@ -2453,17 +2044,16 @@ class AppState: ObservableObject {
         publishOutputDeviceToVoice()
     }
 
-    /// Tell the voice path which output every `audio.summary` row it records
-    /// was measured through. Pushed on each device change and on attach,
-    /// since a `VoiceChannel` built after the last change would otherwise
-    /// record rows naming no device at all.
+    /// Tell the voice path which output every `audio.summary` row was
+    /// measured through. Pushed on each device change and on attach, since a
+    /// `VoiceChannel` built after the last change would otherwise record
+    /// rows naming no device.
     private func publishOutputDeviceToVoice() {
         voiceChannel?.setOutputDeviceName(selectedOutputDeviceName ?? systemDefaultOutputName)
     }
 
-    /// Name of the selected input, or nil for "system default" — which is a
-    /// real state, not a missing answer, and is a common explanation for a
-    /// share recording from the built-in mic.
+    /// Name of the selected input, or nil for "system default" — a real
+    /// state, not a missing answer.
     private var selectedInputDeviceName: String? {
         guard let id = selectedInputDeviceID else { return nil }
         return availableInputDevices.first { $0.id == id }?.name
@@ -2475,20 +2065,9 @@ class AppState: ObservableObject {
     }
 
     /// What the system default input currently resolves to, by name.
-    ///
-    /// Recorded because "system default" names the user's *choice* and not the
-    /// *device*. Someone who never opened the picker is on whatever macOS has
-    /// decided is default at that moment — and macOS moves it on its own when
-    /// a headset is plugged in or pulled out. Without this, a bundle says
-    /// "system default" for a session that started on a headset and finished
-    /// on the built-in mic, and the thing that actually changed is invisible.
-    ///
-    /// Resolved through the cached list, then the HAL. The list is only
-    /// filled by the pickers' `onAppear`, and someone who never opened the
-    /// picker — the same person this field exists for — is exactly who has
-    /// an empty one. Stopping at the list recorded `device=unknown` on a
-    /// viewer's `mic.attached` while the sharer, same session, named the
-    /// AirPods.
+    /// "System default" names the user's *choice*, not the *device*, and
+    /// macOS moves the default on its own (headset plug/unplug) — without
+    /// this a bundle can't show what actually changed.
     private var systemDefaultInputName: String? {
         AudioDevices.name(of: AudioDevices.defaultInputID(), in: availableInputDevices)
     }
@@ -2505,10 +2084,8 @@ class AppState: ObservableObject {
 
     func selectInputDevice(_ deviceID: AudioDeviceID?) {
         selectedInputDeviceID = deviceID
-        // By name, not by `AudioDeviceID`: the ID is a machine-local CoreAudio
-        // handle that changes across reboots and means nothing to a reader,
-        // while the name is what the person saw in the picker and what they
-        // will say when describing the problem.
+        // By name, not `AudioDeviceID`: the ID is a machine-local handle
+        // that changes across reboots and means nothing to a reader.
         AppDiagnostics.action(
             .actionAudioDeviceSelected,
             [
@@ -2545,34 +2122,23 @@ class AppState: ObservableObject {
             return
         }
         AppDiagnostics.action(.actionMicToggle, ["on": .bool(true)])
-        // Enumerate before recording anything about the device. The lists are
-        // otherwise filled only by the pickers' `onAppear`, so a viewer who
-        // toggles the mic without ever opening Settings or the sharer tool has
-        // an empty list — and a bundle with no `audio.devices.changed` at all,
-        // which is the inventory the `mic.attached` line below is read
-        // against. The change guard inside keeps a repeat toggle from
-        // re-recording an unchanged list.
+        // Enumerate first: the lists are otherwise only filled by pickers'
+        // `onAppear`, so a viewer who never opened Settings has an empty
+        // list and no `audio.devices.changed` for `mic.attached` to key off.
         refreshAudioDevices()
         do {
             try await cap.enableCapture()
             voice.isMuted = false
             isMicOn = true
-            // Which device actually went live. The pair — the attempt above and
-            // this — is what distinguishes "they never turned the mic on" from
-            // "they turned it on and it came up on the wrong device".
             AppDiagnostics.recorder?.record(
                 .micAttached,
                 fields: [
-                    // The device that actually went live, resolved through the
-                    // system default when nothing was picked — "system default"
-                    // alone would name the choice and not the microphone.
                     "device": .string(effectiveInputDeviceName),
                     "selection": .string(selectedInputDeviceName ?? "system default")
                 ])
         } catch {
-            // Recorded as well as surfaced. `presentError` records the fault
-            // with its `TS-…` code, but not which device failed — and the
-            // device is the answer here far more often than the error is.
+            // Recorded as well as surfaced: `presentError` records the
+            // `TS-…` code but not which device failed.
             AppDiagnostics.recorder?.record(
                 .micFailed,
                 fields: [
@@ -2585,10 +2151,9 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Flip whether the current share sends system audio to viewers. Instant —
-    /// the helper always has the audio output configured, so this just toggles
-    /// the emission latch. No permission dance: Screen Recording TCC already
-    /// covers SCK audio. No-op when not sharing.
+    /// Flip whether the current share sends system audio. Instant — the
+    /// helper always has the audio output configured, this just toggles the
+    /// emission latch. No-op when not sharing.
     func toggleSystemAudio() {
         isSystemAudioOn.toggle()
         AppDiagnostics.action(.actionSystemAudioToggle, ["on": .bool(isSystemAudioOn)])
@@ -2604,9 +2169,8 @@ class AppState: ObservableObject {
     func setShareLinkActive(_ on: Bool) {
         guard !shareLinkBusy else { return }
         AppDiagnostics.action(.actionLinkToggle, ["on": .bool(on)])
-        // A guest-only share IS its link: the UI hides the off-toggle there,
-        // and this guard is the belt to that suspender — turning the link off
-        // would leave a share running that nobody can reach.
+        // A guest-only share IS its link (the UI hides the off-toggle
+        // there); turning it off here would strand a share nobody can reach.
         if !on, isGuestOnlyShare { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -2618,15 +2182,10 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Kill the current link and mint a fresh one — new node key, new
-    /// token; the old link is dead the moment this starts, and every
-    /// current guest is dropped with it.
-    ///
-    /// Composed from the two mirrored halves rather than calling
-    /// `SharerLinkSession.rotate`, which is the same pair inside the actor:
-    /// going through them is what keeps `shareLinkBusy`, `shareLinkError`
-    /// and the token mirror moving in step with the actor's state, and the
-    /// rules being reused are the halves', not the wrapper's.
+    /// Kill the current link and mint a fresh one — new node key, new token;
+    /// every current guest is dropped. Composed from the two mirrored
+    /// halves rather than `SharerLinkSession.rotate` directly, so
+    /// `shareLinkBusy`/`shareLinkError`/the token mirror stay in step.
     func rotateShareLink() {
         guard !shareLinkBusy, shareLinkToken != nil else { return }
         Task { @MainActor [weak self] in
@@ -2647,13 +2206,10 @@ class AppState: ObservableObject {
         do {
             shareLinkToken = try await link.enable(on: server, relayMapURL: linkRelayMapURL)
         } catch SharerLinkError.attachRefused, SharerLinkError.superseded {
-            // The share raced to a stop while the node was coming up: the
-            // session closed the socket and the node, and there is no share
-            // left to put a link on. `.superseded` is the same story one
-            // step later — the stop landed after the listener was attached.
-            // Deliberately silent in both — an error banner about a link
-            // would be the second surprising thing on a window whose share
-            // just ended.
+            // The share raced to a stop while the node was coming up; no
+            // share is left to put a link on. Deliberately silent — an error
+            // banner would be a second surprise on a window whose share just
+            // ended.
         } catch {
             logger.log("Share link failed to start: \(error)")
             shareLinkError = L("Couldn't create the link. Check the network and try again.")
@@ -2662,21 +2218,18 @@ class AppState: ObservableObject {
 
     private func disableShareLink() async {
         guard shareLinkToken != nil else { return }
-        // The order that makes a guest's window say "disconnected" rather
-        // than time out — detach before close — is the session's, not
-        // this caller's.
+        // Detach-before-close (so a guest's window says "disconnected"
+        // rather than timing out) is the session's ordering, not this
+        // caller's.
         await link.disable(on: server)
         shareLinkToken = nil
         guestPeersByIP = [:]
     }
 
-    /// Tunnel-level eviction: a Deny (or a remembered-deny expel) on a guest
-    /// also closes their tunnel and denylists their node key for this link's
-    /// life, so a denied guest cannot keep knocking.
-    ///
-    /// Wired per share rather than once, because it closes over the server
-    /// instance — and wired BEFORE the share starts on the link-only path,
-    /// where a guest can arrive as soon as `startGuestOnly` returns.
+    /// Tunnel-level eviction: a Deny also closes the guest's tunnel and
+    /// denylists their node key for this link's life. Wired per share
+    /// (closes over the server instance), and BEFORE the share starts on the
+    /// link-only path, where a guest can arrive as soon as it returns.
     private func wireGuestEviction(on server: TailscaleScreenShareServer) {
         server.onGuestViewerDenied = { [weak self] ip in
             Task { @MainActor [weak self] in
@@ -2686,8 +2239,7 @@ class AppState: ObservableObject {
     }
 
     /// The Settings relay override for the guest tunnel's bootstrap, or nil
-    /// for the default DERP map. Both mint paths read it from here so a
-    /// self-hosted relay cannot end up applying to one of them only.
+    /// for the default DERP map. Both mint paths read it from here.
     private var linkRelayMapURL: String? {
         let trimmed = linkShareRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -2702,9 +2254,7 @@ class AppState: ObservableObject {
     }
 
     /// Mirror the tunnel-IP → guest-peer map from `link`. Called whenever
-    /// the roster changes while a link is live (fingerprints for the rows)
-    /// and after an eviction. Clears itself when there is no link, which is
-    /// the session's answer too.
+    /// the roster changes while a link is live, and after an eviction.
     func refreshGuestPeers() async {
         await link.refreshPeers()
         let peers = await link.peersByIP
@@ -2797,19 +2347,15 @@ class AppState: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self, self.viewerPresentation.isActive(sessionID) else { return }
                     // Accept the deny in `.connecting` too: a synchronous
-                    // HELLO_DENY (cached StableNodeID) can land while
-                    // `connect()` is still mid-flight, and dropping it would
-                    // strand a zombie session — the receive loop has already
-                    // returned. The `viewerWasDenied` flag keeps `connect()`
-                    // from re-promoting to `.viewing` after this teardown.
+                    // HELLO_DENY can land while `connect()` is mid-flight.
+                    // `viewerWasDenied` keeps `connect()` from re-promoting
+                    // to `.viewing` after this teardown.
                     let state = self.connectionState
                     guard state == .viewing || state == .connecting else { return }
-                    // Same wire byte covers two situations, told apart by
-                    // where we were when it landed: still waiting on the
-                    // approval placard means our request was declined;
-                    // already watching (placard long gone) means the
-                    // sharer kicked us mid-session. Snapshot before
-                    // teardown resets `viewerAwaitingApproval`.
+                    // Same wire byte, told apart by where we were: still on
+                    // the approval placard means declined; already watching
+                    // means kicked mid-session. Snapshot before teardown
+                    // resets `viewerAwaitingApproval`.
                     let wasWatching = state == .viewing && !self.viewerAwaitingApproval
                     self.viewerWasDenied = true
                     // When the window is already on screen, land it in the
@@ -2837,11 +2383,8 @@ class AppState: ObservableObject {
                 }
             }
 
-            // Server fans out sharer-painted strokes (and other viewers'
-            // strokes) over the annotation back-channel. Apply them to the
-            // local overlay's model so window / application share modes
-            // render annotations the same way display mode used to via
-            // SCStream picking up the overlay panel.
+            // Server fans out sharer-painted (and other viewers') strokes
+            // over the back-channel; apply to the local overlay's model.
             c.onAnnotationReceived = { [weak self] op in
                 Task { @MainActor [weak self] in
                     guard let self, self.viewerPresentation.isActive(sessionID) else { return }
@@ -2870,10 +2413,9 @@ class AppState: ObservableObject {
                         self.viewerPresentation.isActive(sessionID),
                         self.connectionState == .viewing
                     else { return }
-                    // Only enter control if we're still actually asking for it.
-                    // A viewer that clicked Request then Stop before the answer
-                    // shouldn't be silently forced into capturing by a late
-                    // grant — tell the sharer to release it instead.
+                    // Only enter control if we're still actually asking for
+                    // it — a late grant after Request-then-Stop should
+                    // release, not silently start capturing.
                     guard self.viewerControlState == .requested else {
                         Task { [weak self] in await self?.client?.releaseControl() }
                         return
@@ -2897,20 +2439,16 @@ class AppState: ObservableObject {
                 }
             }
 
-            // Install the audio callback BEFORE connecting. HELLO_ACK can
-            // arrive on the receive loop the moment connect() returns (or
-            // even slightly before, if the loop is scheduled fast); a
-            // callback installed afterwards races and may miss the only
-            // assignment the client ever surfaces.
+            // Install BEFORE connecting: HELLO_ACK can arrive on the receive
+            // loop the moment connect() returns (or slightly before), and a
+            // callback installed afterwards may miss the only assignment.
             c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
                 Task { @MainActor [weak self, weak c] in
                     guard
                         let self, let c,
                         self.viewerPresentation.isActive(sessionID)
                     else { return }
-                    // The SSRC assignment IS the admission signal — the
-                    // pre-admission "Connecting to…" title and approval
-                    // placard end here, not merely when the dial returns.
+                    // The SSRC assignment IS the admission signal.
                     guard self.viewerPresentation.markViewing(for: sessionID) else { return }
                     self.connectionState = .viewing
                     self.isAwaitingAdmission = false
@@ -2946,13 +2484,11 @@ class AppState: ObservableObject {
             }
 
             if let guestToken {
-                // Share-by-token: the token names the relay and the sharer,
-                // so no node, no sign-in, no discovery. The dial blocks for
-                // the tunnel bring-up.
+                // The token names the relay and sharer: no node, no sign-in.
                 try await c.connectGuest(token: guestToken)
             } else {
-                // Reuse the AppState-owned tsnet node so connecting doesn't
-                // spin up a third machine + browser sign-in flow.
+                // Reuse the AppState-owned tsnet node rather than spinning up
+                // a third machine with its own login.
                 let sharedNode = try await getOrCreateNode()
                 try await c.connect(
                     to: host, port: NetworkConfig.tailscreenPort, existingNode: sharedNode)
@@ -2976,12 +2512,8 @@ class AppState: ObservableObject {
             AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
         } catch {
             await c.disconnect()
-            // Build the AppError FIRST and carry its message into the
-            // lifecycle. `String(describing:)` is an implementation detail —
-            // it was never on screen while a failure was projected to
-            // "connection lost", and making the failure its own visible
-            // state put the raw transport error in front of people, beside
-            // an alert wording the same failure properly.
+            // Build the AppError first and carry its message into the
+            // lifecycle, rather than a raw `String(describing:)`.
             let failure = AppError.connectionFailed(host: host, underlying: error)
             guard viewerPresentation.fail(failure.message, for: sessionID) else { return }
             if client === c {
@@ -2990,13 +2522,10 @@ class AppState: ObservableObject {
             connectionState = .idle
             isAwaitingAdmission = false
             syncViewerPresentationEffects()
-            // Show the window the pane was just written into. Only the
-            // SUCCESS path ordered it front, so on a FIRST attempt — the
-            // common case for a refused dial — `ensureViewer()` had built the
-            // window and nothing had ever revealed it: "Connection Failed"
-            // rendered into a window nobody could see, and dismissing the
-            // alert left the person with no explanation at all. A reconnect
-            // was fine only because the window was already up.
+            // Only the SUCCESS path ordered the window front, so on a FIRST
+            // attempt (a refused dial) nothing ever revealed it — the
+            // "Connection Failed" placard would render into an invisible
+            // window.
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
             AppDiagnostics.viewVisible(Self.viewerWindowSurface, true)
@@ -3005,10 +2534,8 @@ class AppState: ObservableObject {
     }
 
     /// Join a share from whatever the user pasted — a bare token or a
-    /// `tailscreen:` link — from either the sheet or the welcome pane's
-    /// inline field. Returns false (the caller shows its inline error and
-    /// stays put) when the input holds no plausible token; true dismisses
-    /// the sheet and starts the guest connect.
+    /// `tailscreen:` link. Returns false (caller shows its inline error) for
+    /// no plausible token; true dismisses the sheet and starts the connect.
     func joinShare(input: String) -> Bool {
         guard let token = ShareLinkFormat.token(fromUserInput: input) else { return false }
         joinSheetPresented = false
@@ -3019,10 +2546,9 @@ class AppState: ObservableObject {
         return true
     }
 
-    /// A `tailscreen:` URL landed (Finder, browser, another app). Open the
-    /// join sheet with the token pre-filled rather than connecting
-    /// outright — a clicked link is a request to *look at* joining, and the
-    /// sheet's copy is where "the sharer must approve you" gets said.
+    /// A `tailscreen:` URL landed. Open the join sheet with the token
+    /// pre-filled rather than connecting outright — a clicked link is a
+    /// request to *look at* joining.
     func handleOpenURL(_ url: URL) {
         guard let token = ShareLinkFormat.token(fromUserInput: url.absoluteString) else {
             logger.log("Ignoring un-parseable \(ShareLinkFormat.scheme): URL")
@@ -3039,16 +2565,15 @@ class AppState: ObservableObject {
     /// persistent NSWindow.
     private var viewerWindowDelegate: ViewerWindowDelegate?
 
-    /// Strong ref to the viewer toolbar's NSToolbarDelegate. NSWindow.toolbar
-    /// holds the toolbar itself but the delegate is weak; without this it
-    /// would dealloc and the toolbar would stop building items.
+    /// Strong ref to the viewer toolbar's NSToolbarDelegate — NSWindow.toolbar
+    /// holds the toolbar but the delegate is weak, so without this it would
+    /// dealloc and the toolbar would stop building items.
     private var viewerToolbar: ViewerToolbar?
 
     /// Build (once) and return the shared viewer renderer. The window's
-    /// close button maps to AppState.disconnect via a delegate that
-    /// returns false from windowShouldClose so AppKit never tears the
-    /// NSWindow + CAMetalLayer graph down (that release cascade was the
-    /// SIGSEGV source we bisected at length).
+    /// close button maps to AppState.disconnect via a delegate returning
+    /// false from windowShouldClose, so AppKit never tears the NSWindow +
+    /// CAMetalLayer graph down (that release cascade was the SIGSEGV source).
     func ensureViewer() -> MetalViewerRenderer {
         if let r = viewerRenderer { return r }
 
@@ -3059,30 +2584,24 @@ class AppState: ObservableObject {
             backing: .buffered,
             defer: false
         )
-        // Reflect the peer in the title bar (native apps put the context
-        // there); falls back to the app name before the first connect.
-        // `refreshViewerWindowTitle` owns it from here on.
+        // Reflect the peer in the title bar; falls back to the app name
+        // before the first connect. `refreshViewerWindowTitle` owns it from
+        // here on.
         win.title = connectedHostname.map { L("Viewing \($0)") } ?? "Tailscreen"
         win.backgroundColor = .black
         win.isReleasedWhenClosed = false
         // Full-screen capable (⌃⌘F / the zoom button's Enter Full Screen).
         win.collectionBehavior.insert(.fullScreenPrimary)
-        // Standard frame persistence. A frame restored from a previous run
-        // must win over the first-frame auto-snap — the user put the
-        // window there — so remember whether one existed; the View-menu
-        // size presets clear the latch, being an explicit "snap me" ask.
+        // A restored frame must win over the first-frame auto-snap; the
+        // View-menu size presets clear this latch as an explicit "snap me".
         viewerRestoredSavedFrame = win.setFrameUsingName(Self.viewerFrameAutosaveName)
         _ = win.setFrameAutosaveName(Self.viewerFrameAutosaveName)
 
-        // Drawing toolbar: pen / line / arrow / rectangle / oval +
-        // undo + clear. Items target ViewerCommands.shared, same wiring
-        // the menubar's Tools/Edit menus use.
         let toolbar = ViewerToolbar(appState: self)
         win.toolbar = toolbar.toolbar
         win.toolbarStyle = .unified
         self.viewerToolbar = toolbar
-        // Sync the toolbar to the sharer's annotation capability, in case the
-        // HELLO_ACK already resolved it before the window (and toolbar) came up.
+        // In case HELLO_ACK already resolved this before the window came up.
         toolbar.setAnnotationsEnabled(sharerSupportsAnnotations)
 
         let delegate = ViewerWindowDelegate(
@@ -3092,10 +2611,9 @@ class AppState: ObservableObject {
                     if self.connectionState != .idle {
                         await self.disconnect()
                     } else {
-                        // Ended state or a stray close: act like a plain
-                        // close. The NSWindow itself stays alive
-                        // (process-lifetime), so this orders out rather than
-                        // letting AppKit run the release cascade.
+                        // Ended state or stray close: orders out rather than
+                        // letting AppKit run the release cascade, since the
+                        // NSWindow itself stays alive (process-lifetime).
                         self.dismissViewerWindow()
                     }
                 }
@@ -3109,16 +2627,10 @@ class AppState: ObservableObject {
         win.delegate = delegate
         self.viewerWindowDelegate = delegate
 
-        // The host view explicitly aspect-fits both the metal layer and
-        // the annotation overlay to the video's pixel size. Without this
-        // the overlay covered the full window while `.resizeAspect`
-        // letterboxed the video — a click 50% across a 16:9 window
-        // streamed to a 16:10 sharer landed at ~46% of the captured
-        // screen, off by a noticeable amount.
-        // NSWindow autocreates a contentView at init; the guard is
-        // defence-in-depth in case AppKit ever returns nil on a future
-        // OS. Falling back to the window's frame keeps the host sized
-        // sensibly so the user still sees video instead of a crash.
+        // The host view explicitly aspect-fits both the metal layer and the
+        // annotation overlay to the video's pixel size — without this a
+        // click at 50% across a letterboxed window lands off by a
+        // noticeable amount. `contentView` guard is defence-in-depth.
         let hostFrame: NSRect
         if let cv = win.contentView {
             hostFrame = cv.bounds
@@ -3137,22 +2649,17 @@ class AppState: ObservableObject {
         host.layer?.addSublayer(r.metalLayer)
         self.viewerHost = host
 
-        // Accessibility stand-in for the video surface: decoded frames
-        // render into a CAMetalLayer, which is not a view — without this
-        // the window reads as empty to VoiceOver. Framed to the same fit
-        // rect as the Metal layer; never participates in hit-testing.
+        // Accessibility stand-in: decoded frames render into a CAMetalLayer,
+        // which is not a view, so without this the window reads as empty to
+        // VoiceOver. Never participates in hit-testing.
         let videoA11y = ViewerVideoAccessibilityView(frame: hostFrame)
         host.addSubview(videoA11y)
         host.accessibilitySubview = videoA11y
         self.viewerVideoAccessibilityView = videoA11y
         refreshViewerVideoAccessibilityLabel()
-        // Mirror any video-size changes onto the host so it relays out the
-        // overlay to the new aspect rect, and (unless the user has
-        // dragged the viewer to a custom size) snap the window to the
-        // captured content's pixel dims so video renders 1:1 — no
-        // upscale blur, no black letterbox bars. The auto-snap is
-        // skipped once the user has manually resized; the View menu's
-        // Actual Size / 50% / 200% items reset that opt-out.
+        // Mirror video-size changes onto the host, and (unless the user has
+        // resized manually) snap the window to the content's pixel dims for
+        // 1:1 rendering. The View menu's presets reset that opt-out.
         r.onVideoSizeChanged = { [weak self, weak host, weak win] size in
             // A resolution change also resets the content zoom — that
             // lives in `AspectFitHostView.videoSize.didSet` so it holds
@@ -3160,13 +2667,10 @@ class AppState: ObservableObject {
             host?.videoSize = size
             guard let self, let win else { return }
             MainActor.assumeIsolated {
-                // HELLO_ACK normally cleared the pre-admission title before
-                // media arrived. The first frame is a belt-and-braces fallback
-                // for the macOS-only title flag, not a second lifecycle state.
+                // Belt-and-braces fallback: HELLO_ACK normally cleared the
+                // pre-admission title before media arrived.
                 self.isAwaitingAdmission = false
-                // Scripted local E2E harness greps for this marker to know
-                // the viewer end-to-end pipeline is working. Cheap; only
-                // fires once per session.
+                // Scripted E2E harness greps for this marker; fires once.
                 if !self.didLogFirstViewerFrame, size.width > 0, size.height > 0 {
                     self.didLogFirstViewerFrame = true
                     self.logger.log(
@@ -3232,13 +2736,10 @@ class AppState: ObservableObject {
         self.viewerOverlay = overlay
 
         // Remote-control input-capture layer, above the annotation overlay.
-        // Hidden until this viewer holds a grant; while active it intercepts
-        // pointer/keyboard events and ships them as normalized InputEvents.
+        // Hidden until this viewer holds a grant.
         let controlInput = RemoteControlInputView(frame: host.bounds)
         // Through the outbox, never a Task per event: a `mouseUp` that
-        // overtakes its `mouseDown` strands a button held on the sharer's Mac.
-        // The closure resolves `client` per send, so the wiring survives a
-        // back-channel reconnect exactly as the annotation path's does.
+        // overtakes its `mouseDown` strands a button on the sharer's Mac.
         let inputOutbox = OrderedOutbox<InputEvent> { [weak self] event in
             await self?.client?.sendInputEvent(event)
         }
@@ -3246,9 +2747,8 @@ class AppState: ObservableObject {
         controlInput.onEvent = { event in
             inputOutbox.submit(event)
         }
-        // The release chord (⌃⌥. unless remapped) while capturing releases
-        // control instead of being forwarded to the sharer — the defensive
-        // twin of the File-menu item. Seeded here, re-pushed on remap.
+        // The release chord releases control instead of forwarding to the
+        // sharer, mirroring the File-menu item. Seeded here, re-pushed on remap.
         controlInput.releaseChord = revokeHotkeyChord
         controlInput.onReleaseChord = { [weak self] in
             self?.stopViewerControl()
@@ -3262,11 +2762,8 @@ class AppState: ObservableObject {
         // toolbar instead of only updating it on click.
         toolbar.bind(canvasModel: overlayModel)
 
-        // Diagnostics overlay (toggled by the toolbar's chart button).
-        // Sits above the annotation layer so its readout doesn't get
-        // obscured by mid-stream strokes. Hidden by default; the toolbar
-        // / menu flips `model.isVisible` and posts the visibility
-        // notification the host view listens for.
+        // Diagnostics overlay, above the annotation layer so its readout
+        // isn't obscured by mid-stream strokes. Hidden by default.
         let statsHost = ViewerStatsOverlayHost(model: r.statsModel)
         host.addSubview(statsHost.view)
         statsHost.layout(in: host)
@@ -3294,10 +2791,8 @@ class AppState: ObservableObject {
         endedHost.layout(in: host)
         self.viewerSessionEndedHost = endedHost
 
-        // Shortcut cheat-sheet overlay (toggled by toolbar "?" /
-        // Help → Keyboard Shortcuts / ⇧⌘/). Added late so it draws
-        // above the stats overlay and the annotation canvas,
-        // and so its tap-to-dismiss backdrop wins on hit-test.
+        // Shortcut cheat-sheet overlay. Added late so it draws above the
+        // stats overlay and its tap-to-dismiss backdrop wins on hit-test.
         let shortcutsHost = ViewerShortcutsOverlayHost()
         host.addSubview(shortcutsHost.view)
         shortcutsHost.layout(in: host)
@@ -3305,13 +2800,9 @@ class AppState: ObservableObject {
         syncShortcutChordDisplays()
 
         // "Waiting for sharer to accept" placard. Constraint-centered so
-        // long translations grow it instead of truncating (the old fixed
-        // 360×80 frame clipped anything wider); hidden by default,
-        // visibility flipped from `viewerAwaitingApproval`. Added last so
-        // HELLO_PENDING during a shortcuts-overlay-up moment still draws
-        // above strokes/stats and sits beneath the shortcuts cheat-sheet
-        // (acceptable — the cheat-sheet is user-initiated and
-        // dismissible).
+        // long translations grow it instead of truncating. Added last so
+        // it draws above strokes/stats but beneath the (dismissible)
+        // shortcuts cheat-sheet.
         let placard = makeWaitingPlacard()
         placard.isHidden = !viewerAwaitingApproval
         host.addSubview(placard)
@@ -3326,10 +2817,8 @@ class AppState: ObservableObject {
         win.contentView = host
         win.makeFirstResponder(overlay)
 
-        // Center on the screen the user is working on — the hub window's
-        // screen when it's up, else the one holding the mouse — so the
-        // first connect doesn't land the viewer on an arbitrary display. A
-        // frame restored from a previous run keeps its own position.
+        // Center on the hub window's screen, else the one holding the
+        // mouse. A restored frame keeps its own position.
         if !viewerRestoredSavedFrame {
             let hubScreen = NSApp.windows.first {
                 $0.isVisible && $0.identifier?.rawValue.hasPrefix(TailscreenApp.mainWindowID) == true
@@ -3375,12 +2864,9 @@ class AppState: ObservableObject {
         programmaticSnap(win, toVideoPixelSize: target)
     }
 
-    /// View → Zoom In / Zoom Out (⌥⌘+ / ⌥⌘-). Steps the continuous
-    /// content zoom by a multiplicative `delta`, anchored at the viewport
-    /// center — unlike the window-sizing presets above, this magnifies a
-    /// region of the received video inside the current window. Pinch and
-    /// ⌥-scroll on the viewer do the same anchored at the cursor (see
-    /// `AspectFitHostView`).
+    /// View → Zoom In / Zoom Out (⌥⌘+/⌥⌘-). Steps the continuous content
+    /// zoom, anchored at the viewport center — unlike the window-sizing
+    /// presets, this magnifies a region of the video within the window.
     @MainActor
     func zoomViewerContent(by delta: CGFloat) {
         viewerHost?.zoomContent(by: delta)
@@ -3396,22 +2882,17 @@ class AppState: ObservableObject {
         suppressViewerResizeTracking = false
     }
 
-    /// Resize the viewer window so the captured video lands 1:1 on the
-    /// user's screen — eliminates upscale fuzziness on small shared
-    /// windows and removes the letterbox bars without changing aspect.
-    /// Sizes the content view to (video-pixels ÷ backingScale) plus the
-    /// toolbar/titlebar inset reported by `contentLayoutRect`, then
-    /// clamps to the current screen's `visibleFrame` so the window
-    /// never grows off-screen on a tiny display.
+    /// Resize the viewer window so the captured video lands 1:1 — sizes to
+    /// (video-pixels ÷ backingScale) plus the toolbar inset, clamped to the
+    /// screen's `visibleFrame`.
     @MainActor
     private static func snapViewerWindow(_ win: NSWindow, toVideoPixelSize px: CGSize) {
         guard px.width > 0, px.height > 0 else { return }
         guard let cv = win.contentView else { return }
         let scale = win.backingScaleFactor > 0 ? win.backingScaleFactor : 2.0
 
-        // Toolbar/titlebar inset = how much taller the contentView is
-        // than its usable layout rect. Zero with no toolbar; positive
-        // with `.unified` toolbar style.
+        // Toolbar/titlebar inset: how much taller the contentView is than
+        // its usable layout rect. Zero with no toolbar.
         let usable = win.contentLayoutRect
         let toolbarInset = max(0, cv.bounds.height - usable.height)
 
@@ -3420,9 +2901,8 @@ class AppState: ObservableObject {
             width: desiredVideoPt.width,
             height: desiredVideoPt.height + toolbarInset)
 
-        // Clamp to `visibleFrame` so we don't grow under the menu bar or
-        // off the right edge. Preserve aspect by picking the smaller
-        // scale factor on each axis.
+        // Clamp to `visibleFrame`; preserve aspect via the smaller scale
+        // factor on each axis.
         let screen = win.screen ?? NSScreen.main
         let visible = screen?.visibleFrame.size ?? desiredContent
         let widthScale = min(1.0, visible.width / desiredContent.width)
@@ -3432,9 +2912,8 @@ class AppState: ObservableObject {
             width: max(160, desiredContent.width * fit),
             height: max(120, desiredContent.height * fit))
 
-        // No-op when the window is already at the target size — avoids
-        // fighting the user's manual resize and dodges thrash during a
-        // sharer-side live drag where contentRect updates per frame.
+        // No-op at the target size already — avoids thrash during a
+        // sharer-side live resize drag.
         let current = cv.bounds.size
         if abs(current.width - bounded.width) < 1, abs(current.height - bounded.height) < 1 {
             return
@@ -3473,24 +2952,17 @@ class AppState: ObservableObject {
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
         // `viewerPresentation.dismiss()` above deliberately retained the
-        // target: Reconnect redials the most recent session, including its
-        // guest token.
-        // End any remote-control session and stop capturing input (also
-        // clears the control border + announces to VoiceOver).
+        // target: Reconnect redials the most recent session.
         if viewerControlState != .none {
             exitViewerControl()
         }
         viewerRenderer?.clearPendingBuffer()
-        // The window survives disconnect (process-lifetime); drop the
-        // content zoom so the next session doesn't inherit a magnified
-        // view of a screen that's gone.
+        // The window survives disconnect; drop the content zoom so the next
+        // session doesn't inherit a magnified view of a gone screen.
         viewerHost?.zoomState = ViewerZoomState()
         viewerWindow?.orderOut(nil)
         AppDiagnostics.viewVisible(Self.viewerWindowSurface, false)
-        // Next connect should snap to the new sharer's dims even if the
-        // user dragged the previous session's window to a custom size.
         userResizedViewer = false
-        // Allow the next session to re-emit the E2E_MARKER on its first frame.
         didLogFirstViewerFrame = false
         refreshViewerWindowTitle()
         // Suspend only after every AppState-owned value is settled. A new
@@ -3525,9 +2997,8 @@ class AppState: ObservableObject {
         dismissViewerNotice()
         syncViewerPresentationEffects()
         postViewerAccessibilityAnnouncement(sessionEndedPresentation(reason).message)
-        // Deliberately NOT: clearPendingBuffer (the last frame is the
-        // context for the reason text), orderOut (the whole point), or the
-        // zoom / resize-tracking resets — `dismissViewerWindow` owns those.
+        // Deliberately NOT clearPendingBuffer/orderOut/zoom resets —
+        // `dismissViewerWindow` owns those.
         didLogFirstViewerFrame = false
         await endingClient?.disconnect()
     }
@@ -3549,12 +3020,8 @@ class AppState: ObservableObject {
     }
 
     /// Account boundaries are stronger than closing an ended-session pane:
-    /// the retained reconnect target belongs to the old tailnet and must not
-    /// survive into the next profile.
+    /// the retained reconnect target must not survive into the next profile.
     private func forgetViewerForAccountTeardown() {
-        // Also cancels a `connect()` suspended while an older client shuts
-        // down, including when account teardown observes `connectionState`
-        // after that synchronous state reset.
         viewerConnectRequestID &+= 1
         dismissViewerWindow()
         isAwaitingAdmission = false
@@ -3572,8 +3039,7 @@ class AppState: ObservableObject {
             if self.connectionState == .viewing {
                 await self.disconnect()
             }
-            // A guest session redials by token — its `host` is empty, and
-            // the token stays valid as long as the sharer's link is up.
+            // A guest session redials by token — `host` is empty.
             await self.connect(
                 to: target.host, displayName: target.displayName,
                 guestToken: target.guestToken)
@@ -3581,14 +3047,9 @@ class AppState: ObservableObject {
     }
 
     /// Map the client's wire-side close reason onto the presentation enum,
-    /// through the shared `resolve` all three platforms use.
-    ///
-    /// `wasAdmitted: true` is not a shrug: `.deniedOrKicked` never rides this
-    /// notification on macOS (the deny path goes through `onDeniedBySharer`,
-    /// which knows the real admission context and passes it), but the shared
-    /// close reason carries the case, and the only state THIS observer accepts
-    /// is an already-admitted session — so the already-admitted wording is the
-    /// correct defensive answer rather than a guess.
+    /// through the shared `resolve` all three platforms use. `wasAdmitted:
+    /// true` because `.deniedOrKicked` never rides this notification on
+    /// macOS — the deny path goes through `onDeniedBySharer` instead.
     nonisolated static func sessionEnding(for reason: ViewerCloseReason) -> ViewerSessionEnding {
         ViewerSessionEndReason.resolve(reason, wasAdmitted: true)
     }
@@ -3597,8 +3058,7 @@ class AppState: ObservableObject {
     /// announcement). The deny-flavored wordings reuse the alert copy so
     /// the two surfaces can't tell the same story differently.
     private func sessionEndedPresentation(_ reason: ViewerSessionEnding) -> ViewerSessionEndedModel.EndedState {
-        // `viewerPresentation.lifecycle.target` is set at every `connect()` entry, so the
-        // fallback (same key the hub's session strip uses) is defensive.
+        // `target` is set at every `connect()` entry; the fallback is defensive.
         let name = viewerPresentation.lifecycle.target?.displayName ?? L("peer")
         switch reason {
         case .sharerStopped:
@@ -3740,41 +3200,30 @@ class AppState: ObservableObject {
     }
 
     /// True when launched with `--ui-preview`: the hub renders a seeded,
-    /// deterministic peer list — no tsnet node, no networking — so CI can
-    /// screenshot the chrome. Same flag, same fake tailnet as the GTK and
-    /// Windows apps' preview modes, so the platforms' screenshots read as
+    /// deterministic peer list — no networking — so CI can screenshot the
+    /// chrome. Same flag/fake tailnet as GTK/Windows, so screenshots read as
     /// one product.
     static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
 
-    /// The extra preview states, each additive on top of `--ui-preview` and
-    /// spelled exactly as the GTK app spells its own (`Apps/linux`'s
-    /// `main.swift`), so one screenshot job drives all three platforms with
-    /// one vocabulary. Each is an *element* match, so passing only
-    /// `--ui-preview-sharing` leaves `isUIPreview` false and seeds nothing —
-    /// CI passes the base flag alongside, as the GTK job does.
+    /// Extra preview states, additive on top of `--ui-preview`, spelled the
+    /// same as the GTK app's. Each is an *element* match, so passing only
+    /// `--ui-preview-sharing` alone seeds nothing.
     static let isUIPreviewRequest = CommandLine.arguments.contains("--ui-preview-request")
     static let isUIPreviewSharing = CommandLine.arguments.contains("--ui-preview-sharing")
     static let isUIPreviewVideo = CommandLine.arguments.contains("--ui-preview-video")
 
-    /// The one preview state that is *not* signed in: the welcome pane only
-    /// exists before sign-in, so it seeds no profile and no peers. It still
-    /// rides `--ui-preview` alongside, for what that flag suppresses rather
-    /// than for what it seeds — the session restore, which would bring a
-    /// real node up and sign the pane away mid-screenshot. The GTK and WinUI
-    /// apps spell it the same, over their own signed-out state — the hub
-    /// before login, login card and join card — so one screenshot job drives
-    /// all three with one vocabulary.
+    /// The one preview state that is *not* signed in — the welcome pane
+    /// seeds no profile/peers, but still rides `--ui-preview` to suppress
+    /// the session restore (which would sign the pane away mid-screenshot).
     static let isUIPreviewWelcome = CommandLine.arguments.contains("--ui-preview-welcome")
 
     /// The seeded preview state: tagged and untagged, online and offline,
-    /// one peer sharing and one relayed — so a single screenshot exercises
-    /// the sharing chip, the route line, the latency figure, and every axis
-    /// of the filter menu. Verbatim data, deliberately not localized.
+    /// one peer sharing and one relayed, so a single screenshot exercises
+    /// every axis. Verbatim data, deliberately not localized.
     private func seedUIPreview() {
         if Self.isUIPreviewWelcome {
-            // Seeded on purpose even though it defaults on: the pane's
-            // Share-via-Link button is behind this gate, so a runner whose
-            // defaults say otherwise would shoot a pane missing a control.
+            // Seeded even though it defaults on: the runner's own defaults
+            // might say otherwise.
             linkSharingEnabled = true
             scheduleUIPreviewWindowCapture()
             return
@@ -3818,29 +3267,17 @@ class AppState: ObservableObject {
         scheduleUIPreviewWindowCapture()
     }
 
-    /// The part of preview bring-up that has to wait for SwiftUI: the viewer
-    /// window and the main window both belong to its scene machinery, which
-    /// has built neither at init time — the video seed needs a window to put
-    /// a frame into, and the window-id file needs one to name. One settle
-    /// hop covers both, and CI's own dwell before the shutter dwarfs it.
-    /// Shared by every preview state, the signed-out one included: the
-    /// screenshot job blocks on that id file whatever is on screen.
+    /// The part of preview bring-up that has to wait for SwiftUI: the
+    /// windows belong to its scene machinery, not yet built at init time.
     private func scheduleUIPreviewWindowCapture() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self = self else { return }
             if Self.isUIPreviewVideo { self.seedUIPreviewVideo() }
-            // Keep looking rather than reporting nothing once. The hub's
-            // NSWindow is SwiftUI's to create, and on a COLD first launch --
-            // Gatekeeper, LaunchServices registration -- it is not there yet
-            // at +2s, while every warm launch after it is. A single attempt
-            // therefore wrote the file for three states out of four, and the
-            // screenshot job blocks on that file: giving up silently cost it
-            // the wait and then the run.
-            // 60s of looking, which has to outlast the screenshot job's own
-            // wait: it spends that time nudging this process with `reopen`
-            // until a window exists, and the answer only becomes yes part way
-            // through.
+            // Keep looking rather than giving up once: on a COLD first
+            // launch (Gatekeeper, LaunchServices) the window isn't there yet
+            // at +2s. 60s outlasts the screenshot job's own wait, which
+            // nudges this process with `reopen` until a window exists.
             for _ in 0..<120 {
                 if self.writeUIPreviewWindowID() { break }
                 try? await Task.sleep(for: .milliseconds(500))
@@ -3859,17 +3296,10 @@ class AppState: ObservableObject {
     }
 
     /// `--ui-preview-sharing`: mid-share with one viewer connected and that
-    /// same viewer asking for control — the two decision surfaces stacked, so
-    /// a single shot carries the roster row, the grant prompt and the
-    /// consequence line under it.
-    ///
-    /// The preview thumbnail and the resolution beside the headline are seeded
-    /// too, because the sharing card renders both and an unseeded one
-    /// photographs as an empty black box over a spinner. The thumbnail is the
-    /// same stand-in frame `--ui-preview-video` feeds the renderer, so the two
-    /// shots agree about what this machine is supposed to be sharing. The
-    /// resolution is stated rather than read off `NSScreen` — a screenshot has
-    /// to say the same thing on every runner.
+    /// same viewer asking for control — a single shot carries the roster
+    /// row, the grant prompt and the consequence line together. Thumbnail
+    /// and resolution stated rather than read off `NSScreen`, so the shot
+    /// looks the same on every runner.
     private func seedUIPreviewSharing() {
         sharingState = .sharing
         currentViewers = [
@@ -3893,11 +3323,8 @@ class AppState: ObservableObject {
             isSharing: true, timestamp: Date(), videoCodec: .hevc)
     }
 
-    /// The `--ui-preview-video` stand-in frame as an `NSImage`, for the
-    /// sharing card's thumbnail — which takes the decoded-and-re-encoded
-    /// preview the capture helper sends up, not a pixel buffer. Same
-    /// CoreImage hop the helper itself makes in `buildPreviewJPEG`, minus the
-    /// JPEG round-trip there is no wire here to need.
+    /// The `--ui-preview-video` stand-in frame as an `NSImage`, since the
+    /// sharing card's thumbnail takes an `NSImage`, not a pixel buffer.
     private static func makeUIPreviewThumbnail(width: Int, height: Int) -> NSImage? {
         guard let buffer = makeUIPreviewFrame(width: width, height: height) else { return nil }
         let image = CIImage(cvPixelBuffer: buffer)
@@ -3905,10 +3332,9 @@ class AppState: ObservableObject {
         return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
     }
 
-    /// `--ui-preview-video`: the viewer window itself — chrome, drawing
-    /// toolbar and overlay over a stand-in frame. `ensureViewer()` builds the
-    /// whole graph (window, toolbar, annotation overlay, stats host), so the
-    /// seed is: make it, feed it a frame, draw on it, front it.
+    /// `--ui-preview-video`: the viewer window — chrome, toolbar, overlay
+    /// over a stand-in frame. `ensureViewer()` builds the graph; the seed is:
+    /// make it, feed it a frame, draw on it, front it.
     private func seedUIPreviewVideo() {
         let renderer = ensureViewer()
         connectionState = .viewing
@@ -3916,19 +3342,15 @@ class AppState: ObservableObject {
         sharerSupportsAnnotations = true
         refreshViewerWindowTitle()
 
-        // Nothing snaps this window here — no real stream ever arrives to
-        // report its dimensions — so state the size rather than inheriting
-        // whatever `ensureViewer` opened at or a previous run autosaved.
-        // 1280x720 is 16:9 and fits the 1920x1080 the screenshot job asks
-        // the runner's display for; centered, so no edge sits against the
-        // screen's and gets clipped out of the capture.
+        // Nothing snaps this window here (no real stream), so state the size
+        // explicitly: 1280x720 fits the 1920x1080 runner display, centered.
         if let window = viewerWindow {
             window.setContentSize(NSSize(width: 1280, height: 720))
             window.center()
         }
 
-        // Front it before the frame: the renderer presents off a display
-        // link, which only runs against a layer that is actually on screen.
+        // Front it before the frame: the renderer's display link only runs
+        // against a layer that is actually on screen.
         viewerWindow?.orderFrontRegardless()
         viewerWindow?.makeKeyAndOrderFront(nil)
 
@@ -3937,12 +3359,9 @@ class AppState: ObservableObject {
                 frame, receiveUptimeNs: DispatchTime.now().uptimeNanoseconds)
         }
 
-        // Raise the stats HUD, holding a plausible steady-state session --
-        // the same deterministic-fake convention as the seeded tailnet above,
-        // and the reason `suppressStatsPublishing` exists: a still image
-        // measures as 0 fps with no codec, which would put a dead session in
-        // the screenshot. The sparkline wants history, so give it a minute of
-        // gently varying samples rather than a flat line.
+        // Raise the stats HUD with a plausible steady-state session: a still
+        // image measures as 0 fps with no codec, which would look like a
+        // dead session, and the sparkline wants a history of varying samples.
         renderer.suppressStatsPublishing = true
         var stats = ViewerStats.empty
         stats.latencyMs = 18
@@ -3962,12 +3381,9 @@ class AppState: ObservableObject {
         }
         renderer.statsModel.isVisible = true
 
-        // One stroke per tool so the overlay and every shape's geometry are
-        // both in the frame. `.click` is deliberately absent: it is an
-        // EPHEMERAL annotation and this canvas is photographed seconds after
-        // launch, so unlike the GTK seed — which can date a stroke into the
-        // far future because its model takes the clock as an argument — this
-        // model sweeps it on a real timer that a screenshot cannot outrun.
+        // One stroke per tool so every shape's geometry is in the frame.
+        // `.click` is absent: it's ephemeral and this model sweeps it on a
+        // real timer that a screenshot cannot outrun.
         func seed(_ tool: AnnotationTool, _ points: [CGPoint], _ colorIndex: Int) {
             viewerOverlay?.model.apply(
                 remoteOp: .add(
@@ -3975,15 +3391,10 @@ class AppState: ObservableObject {
                         id: UUID(), tool: tool, points: points,
                         color: Annotation.RGBA.palette[colorIndex], width: 4)))
         }
-        // Placed ON things in the frame below rather than spread evenly across
-        // it: an oval round a block, an arrow pointing at that oval, a pen
-        // underline, a strike, a rectangle round a line of terminal output.
-        // Five shapes at even spacing proved every tool renders and looked
-        // like a test pattern, which is the wrong read for the shot the
-        // landing page leads with.
-        //
-        // All of it stays clear of the stats HUD, which occupies roughly the
-        // left 19% of the frame down to mid-height.
+        // Placed ON things in the frame below (an oval round a block, an
+        // arrow at it, a pen underline, a rectangle round terminal output)
+        // rather than spread evenly, which read as a test pattern. Stays
+        // clear of the stats HUD (left ~19%, down to mid-height).
         seed(.oval, [CGPoint(x: 0.218, y: 0.200), CGPoint(x: 0.600, y: 0.318)], 4)
         seed(.arrow, [CGPoint(x: 0.790, y: 0.430), CGPoint(x: 0.615, y: 0.318)], 2)
         seed(.line, [CGPoint(x: 0.250, y: 0.438), CGPoint(x: 0.670, y: 0.438)], 1)
@@ -3992,18 +3403,9 @@ class AppState: ObservableObject {
     }
 
     /// A 16:9 stand-in for decoded video: a dark editor over a terminal,
-    /// drawn as bars rather than letterforms. Same role as the GTK app's
-    /// `makePreviewFrame`, in the pixel format the Metal renderer's BGRA path
-    /// already takes -- but a flat gradient made the landing page's lead shot
-    /// read as an abstract, and what the viewer is FOR is somebody else's
-    /// screen, so the stand-in should look like one.
-    ///
-    /// Bars, not text: this is a screenshot on a public page, and a page that
-    /// renders convincing-looking code nobody wrote invites the reader to
-    /// squint at it. The old CSS mockup this replaced used the same device.
-    ///
-    /// The left 19% down to mid-height is deliberately empty of anything that
-    /// matters -- that is where the stats HUD sits.
+    /// drawn as bars rather than letterforms (real-looking fake code invites
+    /// the reader to squint at it). BGRA to match the Metal renderer's
+    /// path. Left 19% down to mid-height stays empty for the stats HUD.
     private static func makeUIPreviewFrame(width: Int, height: Int) -> CVPixelBuffer? {
         var out: CVPixelBuffer?
         let attrs: [CFString: Any] = [
@@ -4030,8 +3432,7 @@ class AppState: ObservableObject {
                     | CGBitmapInfo.byteOrder32Little.rawValue)
         else { return nil }
 
-        // Flip to y-down so these coordinates read like the annotation space
-        // above, where the strokes that land on top of this are written.
+        // Flip to y-down to match the annotation space above.
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: 1, y: -1)
 
@@ -4138,17 +3539,11 @@ class AppState: ObservableObject {
         return buffer
     }
 
-    /// Name the window CI should crop its capture to (`screencapture -l`), so
-    /// a shot is the app's own window plus its shadow rather than the whole
-    /// desktop. Silent no-op without the flag, which is every launch that
-    /// isn't the screenshot job.
-    ///
-    /// An argument rather than an environment variable because the screenshot
-    /// job launches the bundle through `open` — which forwards `--args` but
-    /// not the caller's environment — and `open` is load-bearing there: it is
-    /// what gets the app a real GUI session on the runner.
-    /// Returns true once it has written (or has nothing to write, so the
-    /// caller can stop asking).
+    /// Name the window CI should crop its capture to (`screencapture -l`).
+    /// Silent no-op without the flag. An argument, not an env var, because
+    /// the screenshot job launches via `open`, which forwards `--args` but
+    /// not the caller's environment.
+    /// Returns true once it has written (or has nothing to write).
     @discardableResult
     private func writeUIPreviewWindowID() -> Bool {
         let args = CommandLine.arguments
@@ -4157,11 +3552,8 @@ class AppState: ObservableObject {
         guard next < args.endIndex else { return true }
         let path = args[next]
         guard !path.isEmpty else { return true }
-        // Leave a note of everything on screen beside the id file. The first
-        // version of this picked by `canBecomeMain && .titled` and silently
-        // matched nothing on the plain `--ui-preview` launch while matching
-        // fine on the three seeded ones, and "silently matched nothing" is
-        // not a thing you can debug from a missing file ten minutes later.
+        // Leave a note of everything on screen beside the id file, so a
+        // silent non-match is debuggable later.
         let windows = NSApp.windows
         let dump = windows.map {
             [
@@ -4175,8 +3567,7 @@ class AppState: ObservableObject {
 
         // In video mode the subject is the viewer window. Otherwise take the
         // biggest thing on screen: the hub is the only large window this app
-        // raises, and the MenuBarExtra's backing panels are small — which is
-        // a property they actually have, unlike the style bits above.
+        // raises, and the MenuBarExtra's backing panels are small.
         let subject: NSWindow?
         if Self.isUIPreviewVideo {
             subject = viewerWindow
@@ -4217,12 +3608,9 @@ class AppState: ObservableObject {
         }
 
         // Reuse the long-lived discovery (and its IPN watcher) across
-        // popover opens. Creating a fresh TailscalePeerDiscovery per
-        // refresh stacked up watchers whose observer loops all kept
-        // writing `availablePeers` — each write re-rendered the whole
-        // popover, which read as flicker/jumping while it was open. The
-        // node is created once per process (see getOrCreateNode), but
-        // sign-out tears it down, so rebind if its identity changed.
+        // popover opens — a fresh one per refresh stacked up watchers that
+        // all wrote `availablePeers`, reading as flicker. Rebind if the
+        // node's identity changed (sign-out tears it down).
         if let discovery = peerDiscovery, peerDiscoveryNode === node {
             isDiscovering = true
             logger.log("Discovery: reseeding…")
@@ -4263,14 +3651,9 @@ class AppState: ObservableObject {
             // so N metadata dials never delay the "done" spinner flip.
             Task { @MainActor [weak self] in await self?.refreshPeerShareStatus() }
 
-            // Real-time IPN monitoring runs fire-and-forget so it never
-            // blocks the user-visible "done" signal. The first attempt
-            // usually races tsnet bring-up (this path runs right after
-            // node.up(), before LocalAPI is ready), and the start is now
-            // watchdog-bounded instead of parking — so retry with backoff
-            // until it sticks. Without a live watcher the peer list only
-            // refreshes on popover opens, and the always-rendered menubar
-            // content goes stale between them.
+            // Fire-and-forget so it never blocks the "done" signal. The
+            // first attempt usually races tsnet bring-up, so retry with
+            // backoff until it sticks.
             Task { @MainActor [weak self] in
                 for attempt in 0..<5 {
                     guard let self, self.peerDiscovery === discovery else { return }
@@ -4306,14 +3689,10 @@ class AppState: ObservableObject {
     }
 
     /// Mark the initial discovery "answered" — immediately if peers were
-    /// found, or after a short grace period when the answer was empty. A
-    /// fresh tsnet node serves `backendStatus` before the control plane
-    /// has delivered the netmap, so an empty *first* pass often means
-    /// "not synced yet", not "no Tailscreen devices" — surfacing it
-    /// immediately flashed the empty state and then animated the real
-    /// rows in on top a beat later. The grace keeps the loading skeleton
-    /// up long enough for the IPN watcher's first netmap to land; a
-    /// genuinely empty tailnet settles to the real empty state after it.
+    /// found, or after a short grace period when empty. An empty *first*
+    /// pass often means "not synced yet", not "no Tailscreen devices"; the
+    /// grace keeps the loading skeleton up for the IPN watcher's first
+    /// netmap.
     private func settleInitialDiscoveryAnswer() {
         guard !hasCompletedInitialDiscovery else { return }
         if !availablePeers.isEmpty {
@@ -4323,8 +3702,8 @@ class AppState: ObservableObject {
         let discovery = peerDiscovery
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(3))
-            // Discovery identity check: a sign-out tears the discovery
-            // down and resets the flag — a stale timer must not re-set it.
+            // A sign-out tears the discovery down; a stale timer must not
+            // re-set the flag.
             guard let self, self.peerDiscovery === discovery else { return }
             self.hasCompletedInitialDiscovery = true
         }
@@ -4342,15 +3721,11 @@ class AppState: ObservableObject {
         availablePeers = peers
     }
 
-    /// Query each online Tailscreen peer's TCP/7447 listener for its
-    /// share status (`.metadataRequest` → `.metadataResponse`) and cache
-    /// the answers for the sharing-status filter + the peer rows' share
-    /// captions. Deliberately lazy — it runs off `discoverPeers()` (menu
-    /// open / manual refresh) and when the "only sharing" filter turns on,
-    /// so a large tailnet pays N short-lived dials only while the user is
-    /// actually looking. Answers land incrementally as each dial resolves;
-    /// a peer that gives no answer (offline, legacy build, timeout) has
-    /// its entry removed so the filter treats it as unknown, never stale.
+    /// Query each online Tailscreen peer's TCP/7447 listener for its share
+    /// status, and cache the answers for the sharing-status filter + peer
+    /// rows. Deliberately lazy: runs off `discoverPeers()` and when the
+    /// "only sharing" filter turns on. A peer with no answer has its entry
+    /// removed so the filter treats it as unknown, never stale.
     func refreshPeerShareStatus() async {
         if shareStatusRefreshInFlight { return }
         guard let node = server?.node ?? client?.node ?? self.node else { return }
@@ -4387,11 +3762,8 @@ class AppState: ObservableObject {
         peerLatencyMs = peerLatencyMs.filter { known.contains($0.key) }
     }
 
-    /// Single-peer variant of `refreshPeerShareStatus`, fired when the main
-    /// window's peer-detail pane expands so its share info reflects *now*
-    /// rather than whenever the last full sweep ran. Same rule as the
-    /// sweep: no answer removes the entry, so the pane can never show a
-    /// stale "sharing" state.
+    /// Single-peer variant of `refreshPeerShareStatus`, fired when the peer-
+    /// detail pane expands. Same rule: no answer removes the entry.
     func refreshShareStatus(for peer: TailscreenPeer) async {
         guard peer.isOnline, !peer.tailscaleIP.isEmpty else { return }
         guard let node = server?.node ?? client?.node ?? self.node else { return }
@@ -4414,16 +3786,13 @@ class AppState: ObservableObject {
     }
 
     /// Bring the persistent tsnet node up at launch with browser-open
-    /// suppressed and check whether the on-disk state already authenticates
-    /// us. If yes, the menu flips to its signed-in form without the user
-    /// ever clicking. If no (stale or empty state), the suppressed
-    /// BrowseToURL is dropped silently and the user still sees the
-    /// "Sign in with Tailscale" CTA.
+    /// suppressed, and check whether the on-disk state already
+    /// authenticates us. If not (stale/empty state), the suppressed
+    /// BrowseToURL is dropped silently.
     private func attemptSessionRestore() async {
-        // Skip when the active profile's state directory is empty — the
-        // very first launch (or a just-added profile) has nothing to
-        // restore, and bringing the node up would just emit a BrowseToURL
-        // we're going to drop anyway.
+        // Skip when the state directory is empty — a first launch has
+        // nothing to restore, and bringing the node up would just emit a
+        // BrowseToURL we're going to drop.
         let statePath = profileStore.activeProfile.statePath(
             appSupport: Self.appSupportDirectory(),
             instanceSuffix: TailscreenInstance.stateSuffix)
@@ -4434,10 +3803,8 @@ class AppState: ObservableObject {
         }
 
         // `interactiveLoginRequested` defaults to false, so any BrowseToURL
-        // emitted during this `up()` is dropped by the watcher. If the
-        // state is valid, `up()` returns quickly without ever emitting
-        // one; if it's stale, `up()` will block in the background — that's
-        // fine, it just sits there until the user clicks Sign In.
+        // emitted during this `up()` is dropped. If stale, `up()` blocks in
+        // the background until the user clicks Sign In.
         do {
             let node = try await getOrCreateNode()
             await tailscaleAuth.checkAuthStatus(node: node)
@@ -4459,13 +3826,11 @@ class AppState: ObservableObject {
             return
         }
         isLoggingIn = true
-        // A new attempt is not the old attempt's failure. Cleared here
-        // rather than on success so the reason goes the moment the retry
-        // starts, which is also what stops `nodeBringUpPhase` having to
-        // choose between a live sign-in and a stale reason.
+        // A new attempt is not the old attempt's failure; cleared here so
+        // the reason goes the moment the retry starts.
         nodeFailure = nil
-        // Allow the IPN BrowseToURL handler to actually open a browser
-        // tab — we're here because the user explicitly asked to sign in.
+        // Allow the IPN BrowseToURL handler to open a tab — the user
+        // explicitly asked to sign in.
         interactiveLoginRequested = true
         defer {
             isLoggingIn = false
@@ -4494,12 +3859,8 @@ class AppState: ObservableObject {
             _ = silent
         } catch {
             logger.log("Login error: \(error)")
-            // Both, and they are not redundant: the alert fires once at the
-            // moment of failure and carries the error code, while this is
-            // the state the welcome pane reads afterwards — without it,
-            // returning to that pane showed first-run wording for a tailnet
-            // that had just refused to come up. Same key as the alert's own
-            // message, so the catalog gains nothing to translate.
+            // Both, not redundant: the alert fires once, this is what the
+            // welcome pane reads afterwards. Same key as the alert's message.
             nodeFailure = L("Failed to log in: \(error.localizedDescription)")
             presentError(.loginFailed(error))
         }
@@ -4507,18 +3868,13 @@ class AppState: ObservableObject {
 
     private func getOrCreateNode() async throws -> TailscaleNode {
         // If the node exists AND is running, return it. "Running" is read
-        // from the backend itself (LocalAPI `backendStatus`), not assumed
-        // from existence — a node whose `up()` threw after the assignment
-        // below, or whose backend died since (key expiry, engine stop),
-        // used to be handed back here as a permanently dead node.
+        // from the backend itself, not assumed from existence.
         if let node = self.node {
             switch nodeBringUpState {
             case .upInFlight:
-                // A concurrent caller while `up()` is still blocking —
-                // typically the interactive browser login. Hand back the
-                // same node rather than racing a second bring-up; a status
-                // read here would report NeedsLogin and wrongly tear down
-                // the node mid-login.
+                // A concurrent caller while `up()` is still blocking
+                // (interactive login). Hand back the same node rather than
+                // racing a second bring-up.
                 return node
             case .up:
                 let state = try? await withTimeout(seconds: 3) {
@@ -4579,29 +3935,17 @@ class AppState: ObservableObject {
         self.node = node
         nodeBringUpState = .upInFlight
 
-        // Subscribe to the IPN bus *before* calling `up()`. tsnet's
-        // `tailscale_up` blocks until the backend reaches Running, which on
-        // a fresh device means waiting for the user to complete an
-        // interactive browser login. tsnet signals that login URL by
-        // emitting a BrowseToURL notify on the IPN bus — if nothing's
-        // listening when it fires, `up()` waits forever and the user
-        // never sees the link. Subscribing first guarantees we catch it.
+        // Subscribe to the IPN bus *before* calling `up()`: tsnet emits the
+        // login URL as a BrowseToURL notify, and if nothing's listening when
+        // it fires, `up()` waits forever with the user never seeing the link.
         if authIPNWatcher == nil {
             authIPNWatcher = await startBrowseURLWatcher(node: node)
         }
 
-        // Bring the node up so discovery probes can actually route. Without
-        // this the node's LocalAPI works (so login + status queries succeed),
-        // but tailscale_dial fails silently — every peer probe returns false
-        // and "Browse Shares" always lists zero.
-        //
         // tsnet's up() has no internal timeout. With an auth key there's no
-        // human in the loop, so it should reach Running in seconds — a hang
-        // there means a bad key or an unreachable control plane, and we bound
-        // it so the caller surfaces an error instead of parking forever. The
-        // interactive path (no key) is intentionally left unbounded: up()
-        // legitimately blocks until the user finishes the browser login, which
-        // can take minutes.
+        // human in the loop, so bound it and surface an error on a hang;
+        // the interactive path (no key) stays unbounded since it legitimately
+        // blocks until the user finishes the browser login.
         do {
             try await TsnetNodeFactory.up(node, spec: spec, timeout: .boundedWhenAuthKeyed(seconds: 60))
         } catch {
@@ -4613,38 +3957,25 @@ class AppState: ObservableObject {
         }
         nodeBringUpState = .up
 
-        // Bind the shared TCP/7447 control listener once the node is up.
-        // Idempotent (`start` no-ops on repeat); it has to live across
-        // share start/stop so request-to-share messages reach us even
-        // when we're not currently sharing.
+        // Idempotent; has to live across share start/stop so request-to-share
+        // messages reach us even when we're not currently sharing.
         try await ensureControlListener(node: node)
 
         return node
     }
 
-    /// Start (and keep) the long-lived TCP/7447 control listener bound to
-    /// the local tsnet node — the shared coordinator's lifecycle, with the
-    /// arrival, notification and answer routing wired in `init`. Awaited so
-    /// a bind failure still fails node bring-up, exactly as before.
+    /// Start (and keep) the long-lived TCP/7447 control listener. Awaited so
+    /// a bind failure still fails node bring-up.
     private func ensureControlListener(node: TailscaleNode) async throws {
         guard try await askToShare.ensureListenerStarted(node: node) else { return }
         logger.log("Control listener bound on TCP/\(NetworkConfig.tailscreenPort)")
     }
 
     /// Post and withdraw request-to-share notices to match the live banner
-    /// rows — the fourth call site onto the one shared decision.
-    ///
-    /// Identity is `PendingShareRequest.sourceKey`, which is exactly the key
-    /// the coordinator's inbox already coalesces the banner list on: the
-    /// requester's source IP, never the wire-claimed hostname an attacker can
-    /// vary at will. Keying the notices the same way means a peer retrying
-    /// while its first ask is still on screen replaces one row and mints no
-    /// second banner, and the forget-on-leave prune re-announces a genuinely
-    /// fresh ask after the last one was answered.
-    ///
-    /// Called from the coordinator's `onRequestsChanged` — on arrival and on
-    /// answer, because both edit the list, and the notice for a request
-    /// answered in the app has to come down with it.
+    /// rows. Identity is `PendingShareRequest.sourceKey` (source IP, never
+    /// the wire-claimed hostname), same key the banner list coalesces on, so
+    /// a retry replaces one row rather than minting a second. Called from
+    /// the coordinator's `onRequestsChanged`, on both arrival and answer.
     private func refreshShareRequestNotices() {
         let candidates = pendingShareRequests.map {
             NoticeCandidate(identity: $0.sourceKey, label: $0.fromHostname)
@@ -4659,20 +3990,15 @@ class AppState: ObservableObject {
         post(decision.post)
     }
 
-    /// Answer an incoming request-to-share banner — the coordinator's
-    /// sequencing: the accept/decline response rides the TCP connection the
-    /// request arrived on (best-effort — the requester may have timed out and
-    /// closed it), the row and its notice come down via `onRequestsChanged`,
-    /// and on accept the pre-approval and the picker flow land in the
-    /// closures `init` wired.
+    /// Answer an incoming request-to-share banner. The accept/decline
+    /// response rides the TCP connection the request arrived on
+    /// (best-effort); the row and notice come down via `onRequestsChanged`.
     func respondToShareRequest(_ request: PendingShareRequest, accepted: Bool) {
         askToShare.answer(id: request.id, accept: accepted)
     }
 
-    /// Spin up an IPN-bus watcher whose only job is to open the
-    /// browser-login URL tsnet emits during interactive sign-in. Returns
-    /// the running watcher so the caller can keep it alive for the lifetime
-    /// of the node it's tied to.
+    /// Spin up an IPN-bus watcher that opens the browser-login URL tsnet
+    /// emits during interactive sign-in.
     private func startBrowseURLWatcher(node: TailscaleNode) async -> TailscaleIPNWatcher? {
         let watcher = TailscaleIPNWatcher()
         watcher.onBrowseToURL = { [weak self] url in
@@ -4681,11 +4007,8 @@ class AppState: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 guard self.interactiveLoginRequested else {
-                    // Silent restore in progress: dropping the BrowseToURL
-                    // keeps a stale-state launch from popping a sign-in
-                    // tab the user never asked for. The user clicking
-                    // "Sign in with Tailscale" flips the flag and the
-                    // next emitted URL gets opened.
+                    // Silent restore in progress: don't pop an unrequested
+                    // sign-in tab. Clicking "Sign in" flips the flag.
                     self.logger.log("Suppressing BrowseToURL during silent restore")
                     return
                 }
@@ -4745,25 +4068,15 @@ class AppState: ObservableObject {
     /// Where this hub's tailnet node is, in the vocabulary all three hubs
     /// share (`NodeBringUpPhase`, TailscreenProtocol).
     ///
-    /// A **projection**, not a stored slot, and that is the difference
-    /// between this host and the other two. The GTK picker and the WinUI
-    /// hub own their bring-up state outright, so there the enum IS the
-    /// truth. Here the truth lives in `TailscaleAuth` — a portable object
-    /// this app shares rather than owns — plus the discovery flags. A
-    /// stored phase beside those would be one more value to keep in step
-    /// with `isAuthenticated`, i.e. exactly the two-values-that-can-disagree
-    /// problem that folding GTK's `signInNote` into `failed` removed. So the
-    /// hub reads its phase instead of maintaining one, and the mapping is
-    /// stated once, below, where a test can pin it.
+    /// A **projection**, not a stored slot: the truth lives in
+    /// `TailscaleAuth` (portable, shared not owned) plus the discovery
+    /// flags. A stored phase beside those would be one more value that could
+    /// disagree with `isAuthenticated`.
     ///
-    /// What this deliberately does NOT drive is which pane the window shows.
-    /// `MainWindowView` still branches on `isSwitchingProfile` and
-    /// `isAuthenticated`, because this app renders two of these phases
-    /// differently from the other two hubs — `startingNode` as a spinner on
-    /// the sign-in card that started it (they show a status pane), and an
-    /// account switch as a pane of its own. Both are presentation choices
-    /// layered on the phase, which is what `NodeBringUpPhase`'s own doc
-    /// comment says about the switching pane.
+    /// Does NOT drive which pane the window shows — `MainWindowView` still
+    /// branches on `isSwitchingProfile`/`isAuthenticated`, since this app
+    /// renders `startingNode` and an account switch differently from the
+    /// other hubs. Those are presentation choices layered on the phase.
     var nodePhase: NodeBringUpPhase {
         Self.nodeBringUpPhase(
             isAuthenticated: tailscaleAuth.isAuthenticated,
@@ -4773,32 +4086,23 @@ class AppState: ObservableObject {
             hasCompletedInitialDiscovery: hasCompletedInitialDiscovery)
     }
 
-    /// The pure mapping behind `nodePhase`, extracted for the same reason
-    /// `canSwitchProfile` is: the precedence is the whole content, and read
-    /// off five booleans at a call site it is inferred rather than pinned.
+    /// The pure mapping behind `nodePhase`, extracted so the precedence is
+    /// pinned by a test rather than inferred.
     ///
-    /// **Authenticated wins first, and that ordering is load-bearing.** The
-    /// obvious order — in-flight before settled — lets any window in which
-    /// `isLoading` is still set while `isAuthenticated` has already flipped
-    /// report `startingNode` for somebody who is signed in and looking at
-    /// their screens list. Everything gated on the phase would take that as
-    /// "not settled yet": the list would drop back to a spinner mid-session.
-    /// Reading the settled case first makes that unrepresentable rather than
-    /// merely unlikely.
+    /// **Authenticated wins first.** The obvious order (in-flight before
+    /// settled) would let a window where `isLoading` is still set but
+    /// `isAuthenticated` already flipped report `startingNode` for someone
+    /// already looking at their screens list.
     ///
-    /// Among the signed-out cases a sign-in that is RUNNING outranks a
-    /// failure, so a retry shows its spinner rather than the reason it is
-    /// retrying. `login()` clears `nodeFailure` before it starts, so the two
-    /// should not overlap anyway — this is the belt to that braces.
+    /// Among signed-out cases, a RUNNING sign-in outranks a failure —
+    /// `login()` clears `nodeFailure` before starting, so this is belt and
+    /// braces.
     ///
-    /// **In-flight means BOTH flags**, and one alone is not enough.
-    /// `AppState.isLoggingIn` is set at the top of `login()`, before
+    /// **In-flight means BOTH flags.** `isLoggingIn` is set before
     /// `getOrCreateNode()`; `TailscaleAuth.isLoading` only once the node
-    /// exists and the auth flow itself begins. Reading the second alone
-    /// leaves the whole node-creation window — the slow part, on a first run
-    /// — reporting `signedOut`, so the card offers a Sign in button whose
-    /// press `login()`'s own re-entrancy guard then swallows: the one state
-    /// where a control looks live and does nothing.
+    /// exists. Reading the second alone would report `signedOut` through
+    /// the whole node-creation window, offering a Sign-in button that
+    /// `login()`'s own re-entrancy guard then swallows.
     nonisolated static func nodeBringUpPhase(
         isAuthenticated: Bool,
         isSigningIn: Bool,
@@ -4807,10 +4111,8 @@ class AppState: ObservableObject {
         hasCompletedInitialDiscovery: Bool
     ) -> NodeBringUpPhase {
         if isAuthenticated {
-            // The list is still being built on the first pass after bring-up
-            // — the same test the peer list's loading skeleton makes, now
-            // said once. An empty list before that pass is "no answer yet",
-            // never "no devices".
+            // An empty list before the first discovery pass is "no answer
+            // yet", never "no devices".
             return isDiscovering || !hasCompletedInitialDiscovery ? .discovering : .ready
         }
         if isSigningIn { return .startingNode }
@@ -4843,10 +4145,9 @@ class AppState: ObservableObject {
             tailnetName: profile.tailnetName, profilePicURL: profile.profilePicURL ?? "")
     }
 
-    /// Tear down the live node and everything hanging off it WITHOUT
-    /// logging out — the profile's on-disk tsnet state stays valid, so
-    /// switching back later restores the session silently. This is
-    /// `signOut()`'s teardown half minus `tailscaleAuth.signOut()`.
+    /// Tear down the live node and everything hanging off it WITHOUT logging
+    /// out — the on-disk tsnet state stays valid, so switching back later
+    /// restores silently. `signOut()`'s teardown half minus the sign-out.
     private func teardownNodeKeepingLogin() async {
         await server?.stop()
         server = nil
@@ -4863,10 +4164,9 @@ class AppState: ObservableObject {
         hasCompletedInitialDiscovery = false
         tailscaleAuth.isAuthenticated = false
         tailscaleAuth.userProfile = nil
-        // The reason belonged to the profile being left. Carrying it across
+        // The reason belonged to the profile being left; carrying it across
         // would open the next account's welcome pane on the last one's
-        // failure — the account-boundary rule `forgetViewerForAccountTeardown`
-        // applies to reconnect identity, for the same reason.
+        // failure.
         nodeFailure = nil
     }
 
@@ -4878,27 +4178,18 @@ class AppState: ObservableObject {
     }
 
     /// Pure gate: switching accounts closes the tsnet node, so it's only
-    /// allowed while nothing is riding it — no share (including one still
-    /// starting) and no viewer session (including one still connecting).
-    ///
-    /// A share that FAILED to start is not riding anything: it tore down
-    /// before this ever returns, so it reads through `isLive` rather than
-    /// against `.idle`. Spelled the old way, one failed start locked account
-    /// switching for the rest of the run — the person is told to "stop
-    /// sharing" when nothing is being shared and there is nothing to stop.
-    /// Extracted so the precedence is pinned by tests rather than inferred
-    /// from the two call sites. See `switchProfile` / `addAccountAndSignIn`.
+    /// allowed while nothing is riding it. A share that FAILED to start
+    /// reads through `isLive`, not `.idle` — spelled the other way, one
+    /// failed start would lock account switching for the rest of the run.
     nonisolated static func canSwitchProfile(
         sharing: SharingState, connection: ConnectionState
     ) -> Bool {
         !sharing.isLive && connection == .idle
     }
 
-    /// Switch the active account profile, Tailscale-style: one node at a
-    /// time, other profiles stay logged in on disk. Refuses mid-session;
-    /// otherwise closes the current node locally and brings the selected
-    /// profile up — silently when its saved state still authenticates,
-    /// else the window falls back to the sign-in pane.
+    /// Switch the active account profile: one node at a time, other
+    /// profiles stay logged in on disk. Refuses mid-session; otherwise
+    /// closes the current node and brings the selected profile up.
     func switchProfile(to id: UUID) async {
         guard id != profileStore.activeProfileID else { return }
         guard !isBusyForProfileSwitch else {
@@ -4936,9 +4227,8 @@ class AppState: ObservableObject {
     }
 
     /// Confirm and remove a non-active profile, deleting its on-disk node
-    /// state. Removal is local: the machine may remain listed in that
-    /// tailnet's admin console until it expires. Only directories under
-    /// `profiles/` are ever deleted — never the legacy shared root.
+    /// state. Only directories under `profiles/` are ever deleted, never the
+    /// legacy shared root.
     func confirmRemoveProfile(_ profile: TailscreenProfile) {
         let alert = NSAlert()
         alert.messageText = L("Remove this account?")
@@ -5051,14 +4341,10 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Open (or re-focus) the preferences window. A real titled `NSWindow`
-    /// hosting `SettingsView`, kept around for the process lifetime.
-    /// Resizable above a floor rather than the old fixed 440×600 — the
-    /// grouped Form scrolls either way, but the Accounts and Keyboard
-    /// Shortcuts rows earn their width, and a fixed frame fights large
-    /// system text sizes. `SettingsView` declares the same minimum via
-    /// `.frame(minWidth:minHeight:)`; `contentMinSize` is the AppKit-side
-    /// belt to those SwiftUI braces.
+    /// Open (or re-focus) the preferences window: a real titled `NSWindow`
+    /// hosting `SettingsView`, kept for the process lifetime. Resizable
+    /// above a floor since a fixed frame fights large system text sizes;
+    /// `contentMinSize` is the AppKit-side belt to SwiftUI's own minimum.
     func presentSettings() {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(appState: self))
@@ -5071,9 +4357,8 @@ class AppState: ObservableObject {
             win.center()
             settingsWindow = win
         }
-        // The OS owns the login-item truth (the user can flip it in System
-        // Settings behind our back) — re-read it on every open/refocus so
-        // the General toggle never lies.
+        // The OS owns the login-item truth (flippable in System Settings
+        // behind our back); re-read it on every open.
         refreshLaunchAtLoginStatus()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
@@ -5081,11 +4366,9 @@ class AppState: ObservableObject {
 
     // MARK: - Launch at login
 
-    /// Whether this process can register a login item at all: `SMAppService`
-    /// registers the *bundle*, so a dev build running as a bare executable
-    /// (`make run`, `swift run`) has nothing registrable — `register()`
-    /// would just throw on every flip. The Settings toggle disables itself
-    /// with an explanatory caption instead.
+    /// `SMAppService` registers the *bundle*, so a dev build running as a
+    /// bare executable has nothing registrable — the Settings toggle
+    /// disables itself instead.
     let launchAtLoginAvailable = Bundle.main.bundleURL.pathExtension == "app"
 
     /// Mirror of `SMAppService.mainApp.status == .enabled`. Refreshed on
@@ -5107,10 +4390,8 @@ class AppState: ObservableObject {
         launchAtLoginRequiresApproval = status == .requiresApproval
     }
 
-    /// Register / unregister the app as a login item. Errors surface via
-    /// the standard alert path, and the published state is re-read from
-    /// `SMAppService` afterwards either way — reflecting what the OS
-    /// actually did, not what we asked for.
+    /// Register/unregister the app as a login item; the published state is
+    /// re-read from `SMAppService` afterwards, reflecting what the OS did.
     func setLaunchAtLogin(_ enabled: Bool) {
         guard launchAtLoginAvailable else { return }
         do {
@@ -5127,11 +4408,9 @@ class AppState: ObservableObject {
         refreshLaunchAtLoginStatus()
     }
 
-    /// Open (or re-focus) the docked main window. Routes through the
-    /// SwiftUI `openWindow` action stashed in `openMainWindowAction` so the
-    /// `Window` scene owns the NSWindow; the identifier-prefix fallback
-    /// covers the theoretical gap where no SwiftUI view has appeared yet
-    /// but the scene's window already exists.
+    /// Open (or re-focus) the docked main window via the stashed SwiftUI
+    /// `openWindow` action; the identifier-prefix fallback covers the gap
+    /// where the scene's window exists but no view has stashed it yet.
     func presentMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
         if let openMainWindowAction {
@@ -5143,11 +4422,8 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Raise the persistent viewer window — the "Show Window" action on
-    /// the hub's and the popover's viewing cards. Re-fronts only, same
-    /// ordering as the connect path: the window is built by connect and
-    /// is nil until a first session, in which case there's nothing to
-    /// show — never create one here.
+    /// Raise the persistent viewer window. Re-fronts only — nil until a
+    /// first session — never creates one here.
     func focusViewerWindow() {
         guard let viewerWindow else { return }
         NSApp.activate(ignoringOtherApps: true)
@@ -5155,23 +4431,15 @@ class AppState: ObservableObject {
         viewerWindow.makeKeyAndOrderFront(nil)
     }
 
-    /// Surface an error to the user as an `NSAlert`. Using AppKit
-    /// directly (rather than a SwiftUI `.alert` modifier on the
-    /// menubar view) is required because `MenuBarExtra(.window)`
-    /// dismisses its popover on any click outside the popover bounds
-    /// — including the alert's own buttons — so SwiftUI button
-    /// handlers never run before the popover tears down. An
-    /// `NSAlert` runs in its own modal panel, independent of the
-    /// popover lifecycle. "Copy Details" re-presents the alert so
-    /// the user can read it again after copying.
+    /// Surface an error as an `NSAlert`. AppKit directly, not a SwiftUI
+    /// `.alert`: `MenuBarExtra(.window)` dismisses its popover on any click
+    /// outside its bounds, including an alert's own buttons, so SwiftUI
+    /// button handlers would never run. "Copy Details" re-presents the alert.
     func presentError(_ error: AppError) {
         logger.log("AppError[\(error.code)] \(error.title) — \(error.message)")
-        // Every alert-shaped failure in the app funnels through here, so one
-        // call records them all — including failures added later by someone
-        // who has never heard of this file. The stable `TS-…` code is what
-        // joins a bundle onto the error registry; the message is not recorded
-        // because it is prose that varies with interpolated detail, and the
-        // code plus the surrounding events say more.
+        // Every alert-shaped failure funnels through here, so one call
+        // records them all. The message isn't recorded (prose varies with
+        // interpolated detail); the stable code is what matters.
         AppDiagnostics.fault(code: error.code, title: error.title)
 
         NSApp.activate(ignoringOtherApps: true)
@@ -5207,20 +4475,14 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Legacy free-form alert. Existing call sites use this — wraps
-    /// strings in `AppError.legacy(...)` so the richer surface still
-    /// gets a code + Copy Details, even when the call site doesn't
-    /// supply one.
+    /// Legacy free-form alert: wraps strings in `AppError.legacy(...)` so
+    /// the richer surface still gets a code + Copy Details.
     private func showAlertMessage(title: String, message: String) {
         presentError(.legacy(title: title, message: message))
     }
 
-    /// A soft, non-error informational notice — a plain `.informational`
-    /// `NSAlert` with a single OK button and no error code / Copy Details.
-    /// For *expected* events (e.g. the shared window was closed) that end the
-    /// share but aren't failures, so the scary `presentError` surface is wrong.
-    /// Runs its own modal panel for the same `MenuBarExtra` popover reason
-    /// documented on `presentError`.
+    /// A soft, non-error informational notice — for *expected* events (e.g.
+    /// the shared window was closed) that aren't failures.
     func presentNotice(title: String, message: String) {
         logger.log("Notice: \(title) — \(message)")
         AppDiagnostics.recorder?.record(.noticeShown, fields: ["title": .string(title)])
@@ -5235,46 +4497,37 @@ class AppState: ObservableObject {
 
     // MARK: - Sharer notices
 
-    /// Whether a capture is running — the sound gate for every notice we post.
-    /// See `SharerNoticeDecision.playsSound`: a ding during a share is played
-    /// by the notification daemon, which the "exclude our own audio" flag does
-    /// not cover, so every viewer hears it.
+    /// Whether a capture is running — the sound gate for every notice: a
+    /// ding during a share is played by the notification daemon, which the
+    /// "exclude our own audio" flag doesn't cover, so every viewer hears it.
     private var isCapturing: Bool { sharingState.isLive }
 
-    /// Deliver a batch of notices. The single place `SharerNoticeCenter` is
-    /// touched from the notice paths, so the sound gate can't be forgotten at
-    /// one of them.
+    /// Deliver a batch of notices — the single place `SharerNoticeCenter` is
+    /// touched, so the sound gate can't be forgotten.
     private func post(_ notices: [SharerNotice]) {
         for notice in notices {
             SharerNoticeCenter.shared.post(notice, isCapturing: isCapturing)
         }
     }
 
-    /// Project the connected-viewer roster onto notice candidates.
-    ///
-    /// Keyed by the server's `"ip:port"` id, so a viewer who drops and rejoins
-    /// on a fresh ephemeral port is announced again — an arrival is news each
-    /// time it happens. That is the **opposite** choice from the control-request
-    /// projection below, and the reason `SharerNoticeDecision` takes an opaque
-    /// string instead of picking a key for its callers.
+    /// Project the connected-viewer roster onto notice candidates. Keyed by
+    /// the server's `"ip:port"` id, so a drop-and-rejoin on a fresh
+    /// ephemeral port is announced again — the opposite of the
+    /// control-request choice below.
     nonisolated static func noticeCandidates(_ viewers: [ViewerInfo]) -> [NoticeCandidate] {
         viewers.map { NoticeCandidate(identity: $0.id, label: $0.displayName) }
     }
 
-    /// Project the approval gate onto notice candidates — same `"ip:port"` key
-    /// and same reasoning as the roster.
+    /// Project the approval gate onto notice candidates — same key/reasoning
+    /// as the roster.
     nonisolated static func noticeCandidates(_ pending: [PendingViewerInfo]) -> [NoticeCandidate] {
         pending.map { NoticeCandidate(identity: $0.id, label: $0.displayName) }
     }
 
-    /// Project live control requests onto notice candidates.
-    ///
-    /// Keyed by viewer **IP**, not by the TCP `connectionID` the grant itself
-    /// uses. Every reconnect mints a fresh connection UUID, so a connection-keyed
-    /// notice is a spam vector: drop, redial, and the sharer gets another banner
-    /// for a request they are already looking at. The IP is the same
-    /// non-spoofable anchor the admission gate trusts, and it collapses parallel
-    /// connections from one machine into one ask.
+    /// Project live control requests onto notice candidates, keyed by viewer
+    /// **IP**, not the TCP `connectionID`: every reconnect mints a fresh
+    /// connection UUID, so a connection-keyed notice would spam on
+    /// drop-and-redial.
     nonisolated static func noticeCandidates(_ requests: [ControlRequestInfo]) -> [NoticeCandidate] {
         requests.map { NoticeCandidate(identity: $0.viewerIP, label: $0.displayName) }
     }
@@ -5285,15 +4538,10 @@ class AppState: ObservableObject {
     /// banners, but the in-app roster still works.
     private func handleViewersChanged(_ viewers: [ViewerInfo]) {
         let newIDs = Set(viewers.map { $0.id })
-        // Departures are the one thing `noticesToPost` cannot derive, because
-        // it only ever posts about rows it can see and a viewer who left is by
-        // definition absent from `viewers`. So they are read from the OUTGOING
-        // roster, behind the two gates that keep them news rather than noise:
-        // only viewers whose *arrival* was announced get a departure — a "left"
-        // with no matching "joined" is a non-sequitur — and nothing is posted
-        // while the share is being torn down, since `await server?.stop()`
-        // expels every viewer at once and would otherwise fire one banner per
-        // viewer at the exact moment the sharer already decided to stop.
+        // Departures are read from the OUTGOING roster since `viewers` no
+        // longer has them: only announced arrivals get a departure, and
+        // nothing posts while the share is tearing down (else one banner
+        // per viewer at the moment the sharer already decided to stop).
         let departed: [SharerNotice] =
             isStoppingShare
             ? []
@@ -5310,15 +4558,12 @@ class AppState: ObservableObject {
         if shareLinkToken != nil, viewers.contains(where: \.isGuest) {
             Task { @MainActor [weak self] in await self?.refreshGuestPeers() }
         }
-        // Both rosters, coalesced to the end of the turn — see
-        // `scheduleNoteRoster()`. The roster is re-emitted whenever anything
-        // about it changes, including a StableNodeID resolving, which is
-        // precisely the event a queued Deny & Block is waiting for; noting it
-        // here rather than only on join/leave is what makes the queue drain.
+        // Coalesced to end of turn — see `scheduleNoteRoster()`. Re-emitted
+        // on any roster change, including a StableNodeID resolving, which is
+        // what drains a queued Deny & Block.
         scheduleNoteRoster()
-        // The shared decision does both halves: it prunes IDs that have left
-        // (so a reconnect from the same address is announced again) and posts
-        // only the arrivals not already announced.
+        // The shared decision prunes departed IDs (so a reconnect is
+        // announced again) and posts only unannounced arrivals.
         let decision = SharerNoticeDecision.noticesToPost(
             kind: .viewerJoined,
             candidates: Self.noticeCandidates(viewers),
@@ -5329,14 +4574,12 @@ class AppState: ObservableObject {
     }
 
     /// Sync the published pending list and fire a "wants to view"
-    /// notification for newly-arrived pending viewers. Fires regardless
-    /// of whether the menu popover is open — that's the whole point of
-    /// the approval gate.
+    /// notification for newly-arrived pending viewers, regardless of
+    /// whether the popover is open.
     private func handlePendingViewersChanged(_ pending: [PendingViewerInfo]) {
         pendingViewers = pending
-        // Pending guests already hold a live tunnel (tunnel admission is the
-        // knock, not the approval), so their key fingerprints are resolvable
-        // now — which is exactly when the approval row wants one.
+        // Pending guests already hold a live tunnel, so fingerprints are
+        // resolvable now.
         if shareLinkToken != nil, pending.contains(where: \.isGuest) {
             Task { @MainActor [weak self] in await self?.refreshGuestPeers() }
         }
@@ -5348,10 +4591,9 @@ class AppState: ObservableObject {
             kind: .viewerPending, candidates: candidates,
             alreadyNotified: notifiedPendingViewerIDs)
         notifiedPendingViewerIDs = decision.notified
-        // Whoever left the gate — accepted here, denied here, or gave up —
-        // takes their banner with them. An Accept/Deny left in Notification
-        // Center for somebody already watching can only be pressed to no
-        // effect, which reads as a broken button rather than a stale one.
+        // Whoever left the gate takes their banner with them, or an
+        // Accept/Deny left over for somebody already watching reads as a
+        // broken button.
         SharerNoticeCenter.shared.withdraw(kind: .viewerPending, identities: Array(answered))
         post(decision.post)
     }
@@ -5359,15 +4601,9 @@ class AppState: ObservableObject {
     // MARK: - Remote control (sharer side)
 
     /// Sync the published control-request list and fire a "wants control"
-    /// notification for newly-arrived requests, whether or not the popover is
-    /// open — control is high-stakes, so the prompt shouldn't be missable.
-    ///
-    /// One notification per viewer **IP** per *pending episode*, and the whole
-    /// rule now comes from `SharerNoticeDecision` — this path used to carry its
-    /// own copy of it. The residual reconnect-loop exposure (drop connection,
-    /// re-request, repeat) is accepted; the hard stop for that is the "Allow
-    /// control requests" toggle. The pending row in the app still shows every
-    /// live request; only the notification is deduped.
+    /// notification, whether or not the popover is open. One notification
+    /// per viewer IP per pending episode; the residual reconnect-loop
+    /// exposure is accepted, with "Allow control requests" as the hard stop.
     private func handleControlRequestsChanged(_ requests: [ControlRequestInfo]) {
         controlRequests = requests
         // A queued Accessibility-grant intent dies with its request:
@@ -5391,32 +4627,21 @@ class AppState: ObservableObject {
     }
 
     /// The control request the sharer explicitly clicked Grant on while the
-    /// app lacked the Accessibility permission. In-memory only — deliberately
-    /// never persisted, so a relaunch can't resurrect a stale intent — and
-    /// only ever set from an explicit Grant press (`grantRemoteControl`).
-    /// While set, the request's row in `ControlRequestsList` shows a
-    /// "Waiting for Accessibility permission…" caption and
-    /// `accessibilityGrantRecheckTimer` watches for the permission landing.
+    /// app lacked the Accessibility permission. In-memory only, so a
+    /// relaunch can't resurrect a stale intent. While set, the row shows
+    /// "Waiting for Accessibility permission…" and
+    /// `accessibilityGrantRecheckTimer` watches for it landing.
     @Published private(set) var pendingAccessibilityGrantRequestID: UUID?
 
-    /// 1 s poll scoped to a queued grant intent: started when the intent is
-    /// set, invalidated the moment it clears. A poll rather than an
-    /// app-activation observer because a TCC toggle takes effect with no
-    /// edge this process can observe — the sharer flips the switch in
-    /// System Settings and may interact only with the menubar popover
-    /// afterwards, never re-activating the app. Same polling shape as
-    /// `shareLockProbeTimer`, but intent-scoped like `revokeControlHotkey`
-    /// so idle sessions never tick it.
+    /// 1s poll scoped to a queued grant intent. A poll, not an
+    /// app-activation observer, since a TCC toggle takes effect with no
+    /// edge this process can observe.
     private var accessibilityGrantRecheckTimer: Timer?
 
-    /// Grant remote control to the requesting viewer on `connectionID`. If
-    /// the app lacks the Accessibility TCC grant the server refuses (and
-    /// fires `onControlAccessibilityRequired` → alert + settings deep-link)
-    /// — but the click is remembered as an intent for this specific
-    /// request, and the moment the permission lands while the request is
-    /// still pending the grant completes automatically, so the sharer
-    /// doesn't have to notice the still-pending row and click Grant a
-    /// second time after the trip to System Settings.
+    /// Grant remote control to the requesting viewer. If the app lacks
+    /// Accessibility the server refuses (fires an alert + settings
+    /// deep-link) but the click is remembered as an intent, so the grant
+    /// completes automatically once the permission lands.
     func grantRemoteControl(_ connectionID: UUID) {
         // The newest explicit click wins: a grant aimed at one request
         // supersedes an intent queued for another — control goes to exactly
@@ -5425,8 +4650,8 @@ class AppState: ObservableObject {
             clearAccessibilityGrantIntent()
         }
         guard server?.grantControl(toConnectionID: connectionID) == true else {
-            // Refused. The only refusal a later re-click could cure is the
-            // missing Accessibility permission — queue the intent for
+            // The only refusal a re-click could cure is missing Accessibility
+            // permission — queue the intent for
             // exactly that case, and only while the request is still
             // pending (an intent for a vanished request has nothing to
             // complete).
@@ -5501,13 +4726,9 @@ class AppState: ObservableObject {
         server?.revokeControl(reason: reason)
     }
 
-    /// Register / unregister the panic-revoke hotkey (⌃⌥. by default,
-    /// remappable via `revokeHotkeyChord`) to track the live grant.
-    /// Registration is cheap (Carbon), and scoping it to the grant
-    /// means Tailscreen only claims the system-wide chord while a viewer can
-    /// actually control this Mac. Keeps `id: 2` — the mic hotkey (`id: 1`)
-    /// may be live at the same time, and `GlobalHotkey.handlerShouldFire`'s
-    /// id filter is what keeps the two from swallowing each other's events.
+    /// Register/unregister the panic-revoke hotkey to track the live grant,
+    /// so Tailscreen only claims the chord while a viewer can actually
+    /// control this Mac. Keeps `id: 2`, distinct from the mic hotkey's `id: 1`.
     private func syncRevokeControlHotkey(grantActive: Bool) {
         if grantActive {
             guard revokeControlHotkey == nil else { return }
@@ -5518,8 +4739,8 @@ class AppState: ObservableObject {
             ) { [weak self] in
                 self?.revokeRemoteControl(reason: "panic hotkey")
             }
-            // The real registration is the authoritative availability
-            // answer — it supersedes whatever the last probe reported.
+            // The real registration supersedes whatever the last probe
+            // reported.
             revokeHotkeyRegistered = revokeControlHotkey?.isRegistered ?? false
         } else {
             revokeControlHotkey = nil  // deinit unregisters
@@ -5527,9 +4748,8 @@ class AppState: ObservableObject {
     }
 
     /// Alert + deep-link when a grant is refused for want of Accessibility
-    /// permission. Mirrors the Screen Recording settings deep-link. The
-    /// refused grant is queued by `grantRemoteControl`, so the copy promises
-    /// auto-completion rather than asking for a second click.
+    /// permission. The refused grant is queued by `grantRemoteControl`, so
+    /// the copy promises auto-completion rather than a second click.
     private func presentAccessibilityRequiredAlert() {
         let alert = NSAlert()
         alert.messageText = L("Accessibility Permission Needed")
@@ -5556,11 +4776,9 @@ class AppState: ObservableObject {
         Task { await client.requestControl() }
     }
 
-    /// Viewer leaves control mode (stops capturing + emitting input) and tells
-    /// the sharer to release the grant via `.controlReleased`, so the sharer's
-    /// banner + gate clear in step rather than leaving a zombie grant. Covers
-    /// both the `.requested` (cancel a pending request) and `.controlling`
-    /// states.
+    /// Viewer leaves control mode and tells the sharer to release via
+    /// `.controlReleased`, so the sharer's banner + gate clear in step.
+    /// Covers both `.requested` and `.controlling`.
     func stopViewerControl() {
         guard viewerControlState != .none else { return }
         viewerControlState = .none
@@ -5609,21 +4827,12 @@ class AppState: ObservableObject {
 
     // MARK: - Answering a notification
 
-    /// Act on a notification button press, decoded by
-    /// `TailscreenNotificationDelegate.route`.
-    ///
-    /// **Every case resolves the identity against the live list first.** A
-    /// banner outlives the thing it is about — it sits in Notification Center
-    /// until dismissed, which can be an hour after the viewer gave up — so "the
-    /// row is gone" is the ordinary case here, not an error, and it has to be a
-    /// no-op. The alternative is an Accept aimed at whoever holds that address
-    /// now, which behind one NAT is a different machine; this is the same
-    /// reasoning that makes `SharerAccessCoordinator` prune its queued intents.
-    ///
-    /// The press is deliberately routed into the *same* methods the in-app
-    /// buttons call rather than to the server directly, so a decision made from
-    /// a banner and one made in the window cannot diverge — including the
-    /// pre-approval and policy-persistence side effects hanging off them.
+    /// Act on a notification button press. **Every case resolves the
+    /// identity against the live list first**: a banner can outlive the
+    /// thing it's about, so "the row is gone" is a no-op, not an error —
+    /// else an Accept could land on a different machine reusing that
+    /// address. Routed into the *same* methods the in-app buttons call, so
+    /// a banner decision can't diverge from a window one.
     func handleNoticeAction(kind: SharerNoticeKind, identity: String, action: NoticeAction) {
         switch kind {
         case .viewerPending:
@@ -5646,22 +4855,16 @@ class AppState: ObservableObject {
             }
             respondToShareRequest(request, accepted: action == .approve)
         case .viewerJoined, .viewerLeft:
-            // Reports, not asks — `SharerNoticeKind.actions` gives them no
-            // buttons, so there is nothing that could have been pressed.
+            // Reports, not asks: no buttons, nothing to have pressed.
             break
         }
     }
 
-    /// The control-request half, which is the one that doesn't map 1:1.
-    ///
-    /// The notice is keyed by viewer IP (see `noticeCandidates`) but a grant is
-    /// keyed by the TCP connection, so the press has to find the live request
-    /// or requests behind that address. Denying applies to all of them — the
-    /// banner named a machine, not a socket, and leaving a sibling request
-    /// pending after the sharer said no is not what they answered. Granting
-    /// does not: control of the Mac goes to exactly one connection, and picking
-    /// one of two arbitrarily is a coin flip over who gets the pointer. That
-    /// case opens the list instead, where the rows are distinguishable.
+    /// The control-request half doesn't map 1:1: the notice is keyed by
+    /// viewer IP but a grant is keyed by TCP connection. Denying applies to
+    /// every request behind that address (the banner named a machine, not a
+    /// socket); granting with more than one match opens the list instead of
+    /// picking arbitrarily.
     private func handleControlNoticeAction(viewerIP: String, action: NoticeAction) {
         let matches = controlRequests.filter { $0.viewerIP == viewerIP }
         guard !matches.isEmpty else {
@@ -5680,13 +4883,9 @@ class AppState: ObservableObject {
         grantRemoteControl(request.id)
     }
 
-    /// The banner body was clicked rather than one of its buttons.
-    ///
-    /// That is not an answer, so nothing is decided on the sharer's behalf —
-    /// it opens the surface carrying the decision and lets them look at it.
-    /// The hub window is always the right destination: every prompt that
-    /// decides something about a person renders there as well as in the
-    /// popover, and unlike the popover it can be opened programmatically.
+    /// The banner body was clicked rather than one of its buttons — not an
+    /// answer, so just open the hub, which renders every decision surface
+    /// and can be opened programmatically (unlike the popover).
     func presentNoticeSurface(kind: SharerNoticeKind) {
         logger.log("Notification body clicked (\(kind.rawValue)) — opening the hub")
         presentMainWindow()
@@ -5706,20 +4905,17 @@ class AppState: ObservableObject {
         server?.denyViewer(addr: id)
     }
 
-    /// One-time disconnect of a *connected* viewer — the ✕ button on the
-    /// SharingCard's viewer row. Nothing is remembered: the peer can
-    /// reconnect and goes back through the normal admission gate. For the
-    /// persistent variant, use "Deny & Block" on the pending row (or
-    /// remove/deny via Settings → Viewers).
+    /// One-time disconnect of a *connected* viewer. Nothing is remembered:
+    /// the peer goes back through the normal admission gate on reconnect.
+    /// For the persistent variant, use "Deny & Block" on the pending row.
     func disconnectConnectedViewer(_ id: String) {
         AppDiagnostics.action(.actionViewerKick, ["addr": .string(id)])
         server?.disconnectViewer(addr: id)
     }
 
-    /// "Always Allow": remember the peer as allowed (so future HELLOs skip
-    /// the prompt), then admit them now. If the StableNodeID hasn't resolved
-    /// yet, queue the intent so it's persisted the instant resolution lands
-    /// — the peer is admitted one-time in the meantime.
+    /// "Always Allow": remember the peer as allowed, then admit them now. If
+    /// the StableNodeID hasn't resolved yet, queue the intent to persist on
+    /// resolve; the peer is admitted one-time meanwhile.
     func approvePendingViewerAlways(_ id: String) {
         AppDiagnostics.action(
             .actionViewerApprove, ["addr": .string(id), "remembered": .bool(true)])
@@ -5730,12 +4926,10 @@ class AppState: ObservableObject {
         server?.approveViewer(addr: id)
     }
 
-    /// "Deny & Block": remember the peer as denied (future HELLOs are
-    /// silently rejected), then deny them now. If the StableNodeID hasn't
-    /// resolved yet, queue the intent and leave the peer parked (denied
-    /// access, no video) so the server keeps resolving its StableNodeID —
-    /// the block is persisted the instant resolution lands, rather than
-    /// silently degrading to a one-time deny the peer could re-HELLO past.
+    /// "Deny & Block": remember the peer as denied, then deny them now. If
+    /// the StableNodeID hasn't resolved yet, queue the intent and leave the
+    /// peer parked so the block persists on resolve, rather than degrading
+    /// to a one-time deny the peer could re-HELLO past.
     func denyPendingViewerAndBlock(_ id: String) {
         AppDiagnostics.action(.actionViewerBlock, ["addr": .string(id)])
         if persistPendingViewerPolicy(id, policy: .deny) {
@@ -5746,10 +4940,8 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Keep the remembered-viewers list readable across machine renames:
-    /// whenever a roster snapshot carries a resolved hostname for a peer
-    /// we've remembered, refresh its cosmetic display name. No-ops (no
-    /// persist, no publish) when nothing changed.
+    /// Keep the remembered-viewers list readable across machine renames.
+    /// No-ops when nothing changed.
     private func refreshRememberedDisplayNames(stableIDHostnamePairs: [(String?, String?)]) {
         for (stableID, hostname) in stableIDHostnamePairs {
             guard let stableID, let hostname else { continue }
@@ -5759,14 +4951,9 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Both rosters as the shared queue's identity rows: the connected ones
-    /// first, then the ones parked at the gate.
-    ///
-    /// **Both, never one at a time.** A peer moves between the lists on Accept,
-    /// and a snapshot of only one would prune the other's queued intents as
-    /// "gone" at exactly that moment — the rule `.claude/rules/protocol.md`'s
-    /// Deny & Block pitfall spells out, and the shape `LinuxShareSession` and
-    /// `WindowsShareSession` already use.
+    /// Both rosters as the shared queue's identity rows. Both, never one at a
+    /// time: a peer moves between them on Accept, and a snapshot of only one
+    /// would prune the other's queued intents as "gone".
     private func rosterIdentities() -> [ViewerRosterDecision.RosterIdentity] {
         var rows = currentViewers.map {
             ViewerRosterDecision.RosterIdentity(
@@ -5782,19 +4969,11 @@ class AppState: ObservableObject {
         return rows
     }
 
-    /// Queue a roster note for the end of the current main-actor turn, at most
-    /// one per turn.
-    ///
-    /// The one place this host cannot copy the other two verbatim. `Accept`
-    /// makes the server fire `onPendingViewersChanged` (row removed) and then
-    /// `onViewersChanged` (row added), and both arrive here through their own
-    /// `Task { @MainActor }` hop — so for one turn the row is in NEITHER
-    /// published list, and a note taken right then would prune the very intent
-    /// the Accept just queued. macOS is the host where that matters, because
-    /// macOS is the one that puts Always Allow / Deny & Block on the PENDING
-    /// rows; the GTK and WinUI hubs offer them on connected rows only, where
-    /// nothing moves. Coalescing to the end of the turn lets both callbacks
-    /// land first, so the note sees a settled pair of lists.
+    /// Queue a roster note for the end of the current main-actor turn, at
+    /// most one per turn. `Accept` fires `onPendingViewersChanged` and
+    /// `onViewersChanged` on separate `Task { @MainActor }` hops, so for one
+    /// turn the row is in NEITHER list; coalescing to end of turn lets both
+    /// land first, so the note sees a settled pair.
     private func scheduleNoteRoster() {
         guard !rosterNoteScheduled else { return }
         rosterNoteScheduled = true
@@ -5807,9 +4986,7 @@ class AppState: ObservableObject {
 
     /// Persist any queued intent whose StableNodeID has resolved, refresh
     /// remembered display names, and forget intents whose row has gone.
-    ///
-    /// Persisting fires the remembered-store subscription, which pushes the
-    /// policy to the live server (admitting/expelling as needed).
+    /// Persisting pushes the policy to the live server.
     private func noteRoster() {
         let rows = rosterIdentities()
         for applied in policyIntents.drain(snapshot: rows) {
@@ -5819,10 +4996,9 @@ class AppState: ObservableObject {
             logger.log(
                 "Applied queued \(applied.policy) intent for \(applied.id) → \(applied.stableID)")
         }
-        // Fed the raw HOSTNAMES rather than `RosterIdentity.displayName`,
-        // whose `hostname ?? tailscaleIP` fallback would rewrite a remembered
-        // peer's name to a bare IP for as long as its netmap lookup is
-        // outstanding — the exact thing this refresh exists to undo.
+        // Fed raw HOSTNAMES, not `RosterIdentity.displayName` (whose
+        // fallback would rewrite a remembered name to a bare IP while a
+        // netmap lookup is outstanding).
         var names: [(String?, String?)] = currentViewers.map { ($0.stableID, $0.hostname) }
         names.append(contentsOf: pendingViewers.map { ($0.stableID, $0.hostname) })
         refreshRememberedDisplayNames(stableIDHostnamePairs: names)
@@ -5843,17 +5019,10 @@ class AppState: ObservableObject {
         return true
     }
 
-    /// Vibrancy-backed centered placard shown between HELLO_PENDING and
-    /// HELLO_ACK: spinner + "Waiting for the sharer…" + Cancel.
-    /// Constraint-sized (the caller centers it and caps its width), so long
-    /// translations grow it instead of truncating. Held by AppState and
-    /// synchronized from the lifecycle by `syncViewerPresentationEffects`.
+    /// Retitle the placard, and its VoiceOver group label with it — a stale
+    /// label would announce "waiting for the sharer" over a window still
+    /// dialling.
     @MainActor
-    /// Retitle the placard, and its VoiceOver group label with it.
-    ///
-    /// Both, or the two disagree: the group's label is what a screen reader
-    /// announces when focus lands on the placard, and a stale one would say
-    /// "waiting for the sharer" over a window that is still dialling.
     private func setViewerPlacardText(_ text: String) {
         guard viewerPlacardLabel?.stringValue != text else { return }
         viewerPlacardLabel?.stringValue = text
@@ -5877,8 +5046,7 @@ class AppState: ObservableObject {
         spinner.startAnimation(nil)
 
         // Seeded with the approval wording; `setViewerPlacardText` replaces
-        // it per phase, and the placard is hidden whenever there is no phase
-        // to say, so the seed is never what anybody reads.
+        // it per phase, so the seed is never what anybody reads.
         let waitingText = L("Waiting for the sharer to accept your connection…")
         let label = NSTextField(wrappingLabelWithString: waitingText)
         viewerPlacardLabel = label
@@ -5887,9 +5055,7 @@ class AppState: ObservableObject {
         label.textColor = .labelColor
         label.preferredMaxLayoutWidth = 320
 
-        // Cancel = the same full disconnect ⌘W performs — without it the
-        // only exits from an unanswered approval gate were the close
-        // button and the menu bar.
+        // Cancel = the same full disconnect ⌘W performs.
         let cancelTarget = ClosureActionTarget { [weak self] in
             Task { @MainActor [weak self] in await self?.disconnect() }
         }
@@ -5928,14 +5094,10 @@ class AppState: ObservableObject {
     }
 }
 
-/// Persistence for the Settings → Color capture opt-ins. Mirrors
-/// `ViewerApprovalPreference` — plain `UserDefaults` so `AppState.init`'s
-/// stored-property initialisers can read the saved value without
-/// `@AppStorage`. Tri-state on purpose: a never-touched install (no stored
-/// object) seeds from the pre-Settings env-var escape hatches
-/// (`TAILSCREEN_ENABLE_10BIT=1` / `TAILSCREEN_ENABLE_HDR=1`) so an existing
-/// scripted setup keeps its behavior; once the user flips a toggle the
-/// stored choice wins, in either direction.
+/// Persistence for Settings → Color capture opt-ins. Plain `UserDefaults` so
+/// stored-property initializers can read it without `@AppStorage`.
+/// Tri-state: a never-touched install seeds from the pre-Settings env-var
+/// escape hatches; once the user flips a toggle, the stored choice wins.
 enum ColorCaptureDefaults {
     static let tenBitKey = "enable10BitCapture"
     static let hdrKey = "enableHDRCapture"
@@ -5974,12 +5136,10 @@ enum ColorCaptureDefaults {
     }
 }
 
-/// Persistence for Settings → Link Sharing. Same plain-`UserDefaults`
-/// pattern as `ColorCaptureDefaults` (stored-property initialisers read it
-/// in `AppState.init`). The feature gate defaults **on** — it is inert
-/// until a share flips "Share via Link" on, and the off switch exists for
-/// the "no tokens ever leave this machine" posture, not as a safety
-/// default (approval is mandatory for every guest regardless).
+/// Persistence for Settings → Link Sharing. Defaults **on** — inert until a
+/// share flips "Share via Link" on; the off switch is for "no tokens ever
+/// leave this machine", not a safety default (approval is mandatory for
+/// every guest regardless).
 enum LinkSharingDefaults {
     static let enabledKey = "linkSharingEnabled"
     static let relayURLKey = "linkShareRelayURL"
@@ -6014,12 +5174,9 @@ private final class ClosureActionTarget: NSObject {
     }
 }
 
-/// Invisible view whose only job is to represent the video surface to
-/// accessibility: decoded frames render into a `CAMetalLayer`, which is
-/// not a view and therefore invisible to VoiceOver — without this the
-/// viewer window reads as empty. Framed to the aspect-fit rect by
-/// `AspectFitHostView.layout`; never participates in hit-testing, so
-/// every click still lands on the annotation canvas above it.
+/// Invisible view representing the video surface to accessibility — decoded
+/// frames render into a `CAMetalLayer`, not a view, so VoiceOver sees
+/// nothing without this. Never hit-tests, so clicks still land on the canvas.
 private final class ViewerVideoAccessibilityView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -6042,9 +5199,7 @@ private struct SimpleLogger: LogSink {
     }
 }
 
-/// AppState's own log channel. Mirrors the per-file TSLogger pattern
-/// used by the screen-share + tsnet wrappers so every `[AppState]` line
-/// flows through a single sink we can later redirect or filter.
+/// AppState's own log channel, matching the per-file TSLogger pattern.
 private struct AppLogger: LogSink {
     var logFileHandle: Int32?
 
@@ -6055,14 +5210,12 @@ private struct AppLogger: LogSink {
 
 /// NSWindowDelegate stand-in for the persistent viewer window. Returns
 /// `false` from `windowShouldClose` so AppKit never proceeds with the
-/// NSWindow.close() release cascade that crashed in earlier bisects;
-/// instead it routes the close button to AppState.disconnect, which
-/// orderOuts the window without releasing it.
+/// release cascade that crashed in earlier bisects; routes the close button
+/// to AppState.disconnect, which orderOuts without releasing.
 private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
     private let onClose: () -> Void
-    /// Fired on every `windowDidResize`. AppState distinguishes user vs
-    /// programmatic resizes via a suppress flag set around its own
-    /// `setContentSize` calls — the delegate itself is dumb on purpose.
+    /// AppState distinguishes user vs programmatic resizes via a suppress
+    /// flag; this delegate stays dumb.
     private let onUserResize: () -> Void
     init(onClose: @escaping () -> Void, onUserResize: @escaping () -> Void) {
         self.onClose = onClose
@@ -6092,10 +5245,10 @@ private final class AspectFitHostView: NSView {
     /// rect so VoiceOver's cursor outlines what the eye sees.
     weak var accessibilitySubview: NSView?
 
-    /// While this viewer holds a remote-control grant, draw a highly
-    /// visible orange outline around the video content rect. The toolbar
-    /// item, window title and VoiceOver announcement carry the same state,
-    /// so the color is never the only signal.
+    /// While this viewer holds a remote-control grant, draw a visible
+    /// orange outline around the video content rect. The toolbar item,
+    /// window title and VoiceOver carry the same state, so color is never
+    /// the only signal.
     var showsControlBorder: Bool = false {
         didSet {
             guard showsControlBorder != oldValue else { return }
@@ -6125,19 +5278,15 @@ private final class AspectFitHostView: NSView {
     var videoSize: CGSize = .zero {
         didSet {
             guard videoSize != oldValue else { return }
-            // A sharer-side resolution change invalidates the content
-            // zoom's pan space — reset to fit rather than keep magnifying
-            // a stale region of the old frame.
+            // A resolution change invalidates the content zoom's pan space.
             zoomState = ViewerZoomState()
             needsLayout = true
         }
     }
 
-    /// Continuous content zoom/pan applied on top of the aspect-fit rect.
-    /// All geometry lives in `ViewerZoomMath`; this view only feeds it
-    /// gesture deltas and lays out both the metal layer and the annotation
-    /// overlay from the single rect it returns — keeping the two congruent
-    /// is the invariant that keeps strokes pixel-correct at any zoom.
+    /// Continuous content zoom/pan on top of the aspect-fit rect. Geometry
+    /// lives in `ViewerZoomMath`; laying out the metal layer and the
+    /// overlay from the same rect keeps strokes pixel-correct at any zoom.
     var zoomState = ViewerZoomState() {
         didSet {
             guard zoomState != oldValue else { return }
@@ -6148,10 +5297,8 @@ private final class AspectFitHostView: NSView {
     override func layout() {
         super.layout()
         let rect = ViewerZoomMath.videoRect(fit: aspectFitRect(), state: zoomState)
-        // CALayer frame changes go through an implicit animation by
-        // default — disable it so the layer snaps to the new aspect rect
-        // in lockstep with the overlay subview (and so pinch-zoom doesn't
-        // rubber-band through implicit animations).
+        // Disable the implicit animation so the layer snaps to the new rect
+        // in lockstep with the overlay subview.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer?.frame = rect
@@ -6168,10 +5315,8 @@ private final class AspectFitHostView: NSView {
     // the cursor) but bubble up the responder chain to this host — the
     // overlay doesn't override any of these.
 
-    /// The texture-safe zoom ceiling for the given fit rect: keeps the
-    /// zoomed rect (which frames the layer-backed annotation overlay)
-    /// under Core Animation's per-axis texture limit at this window's
-    /// backing scale.
+    /// Keeps the zoomed rect under Core Animation's per-axis texture limit
+    /// at this window's backing scale.
     private func effectiveMaxScale(fit: CGRect) -> CGFloat {
         ViewerZoomMath.effectiveMaxScale(fit: fit, backingScale: window?.backingScaleFactor ?? 2)
     }
@@ -6206,10 +5351,8 @@ private final class AspectFitHostView: NSView {
         if event.modifierFlags.contains(.option) {
             let fit = aspectFitRect()
             let anchor = convert(event.locationInWindow, from: nil)
-            // Normalize so scrolling up (device-up) always zooms in,
-            // regardless of the natural-scrolling preference — zoom has
-            // no "content to drag", so direction shouldn't flip with it.
-            // ~100 points of scroll doubles (or halves) the zoom.
+            // Normalize so scrolling up always zooms in regardless of
+            // natural-scrolling preference. ~100pt doubles the zoom.
             let dy = event.scrollingDeltaY * unit
             let zoomDelta = event.isDirectionInvertedFromDevice ? -dy : dy
             let delta = CGFloat(pow(2.0, Double(zoomDelta) / 100.0))
@@ -6220,11 +5363,9 @@ private final class AspectFitHostView: NSView {
         }
         if zoomState.isZoomedIn {
             let fit = aspectFitRect()
-            // scrollingDelta is expressed for a flipped (y-down)
-            // coordinate space; this view is non-flipped, so negate Y to
-            // keep the content tracking the fingers. Unlike the ⌥-zoom
-            // above, panning deliberately follows the natural-scrolling
-            // preference — it *is* dragging content.
+            // scrollingDelta is flipped (y-down); this view isn't, so
+            // negate Y. Panning follows natural-scrolling (it's dragging
+            // content), unlike the ⌥-zoom above.
             zoomState = ViewerZoomMath.panned(
                 state: zoomState,
                 by: CGSize(
@@ -6247,16 +5388,13 @@ private final class AspectFitHostView: NSView {
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         super.resizeSubviews(withOldSize: oldSize)
-        // NSView's autoresize machinery would otherwise stretch the
-        // overlay to fill bounds; we manage the frame ourselves.
         needsLayout = true
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        // Toolbar height changes (e.g. style toggle, full-screen enter /
-        // exit) move `contentLayoutRect` without resizing the view, so
-        // bounds-driven layout misses them. Reflect the change here.
+        // Toolbar height changes move `contentLayoutRect` without resizing
+        // the view, so bounds-driven layout misses them.
         if let window = self.window {
             NotificationCenter.default.addObserver(
                 self,
@@ -6272,25 +5410,18 @@ private final class AspectFitHostView: NSView {
     }
 
     /// Effective drawing area — `bounds` minus the unified-toolbar inset.
-    /// With `.unified` toolbar style, contentView spans the full window
-    /// height (the toolbar floats above it), so a bounds-based aspect-fit
-    /// would place equal letterboxes top and bottom, the top one hiding
-    /// behind the opaque toolbar and the bottom one showing as a stray
-    /// black strip. `contentLayoutRect` is the toolbar-excluded subregion
-    /// — aspect-fitting within that keeps the video centered in the area
-    /// the user actually sees.
+    /// A bounds-based aspect-fit would place equal letterboxes top and
+    /// bottom, one hiding behind the opaque toolbar; `contentLayoutRect`
+    /// excludes it.
     private func usableRect() -> CGRect {
         guard let window = self.window else { return bounds }
         let rect = window.contentLayoutRect
         return rect.isEmpty ? bounds : rect.intersection(bounds)
     }
 
-    /// The shared `ViewerPointerMapping.fitRect` does the letterboxing (the
-    /// same arithmetic the GTK and WinUI viewers use, and the same rect the
-    /// pointer mapping normalizes against); this only supplies the
-    /// toolbar-excluded pane and re-bases the result onto its origin.
-    /// `videoSize` holds whole pixel counts (it is set from the decoded
-    /// buffer's integer dimensions), so the `Int` conversion is exact.
+    /// The shared `ViewerPointerMapping.fitRect` does the letterboxing (same
+    /// arithmetic as the GTK/WinUI viewers); this supplies the
+    /// toolbar-excluded pane and re-bases onto its origin.
     private func aspectFitRect() -> CGRect {
         let usable = usableRect()
         guard videoSize.width > 0, videoSize.height > 0,

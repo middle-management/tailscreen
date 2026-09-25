@@ -10,28 +10,23 @@ import enum TailscreenProtocol.SharerNoticeText
 
 /// Posts the sharer's notifications, and routes their buttons back.
 ///
-/// The surface that reaches somebody whose attention is on the thing they are
-/// sharing. During a share this app's window is BEHIND the shared content, and
-/// raising it is itself visible to the viewers — so every mid-share ask costs
-/// an interruption they can see. Worse, "Require approval for new viewers"
-/// defaults on: a sharer who is not looking silently strands whoever tries to
-/// connect, with nothing on screen to notice.
+/// Reaches a sharer whose window is behind the shared content, where raising
+/// it is itself visible to viewers — so approvals need a channel that doesn't
+/// cost an on-screen interruption.
 ///
-/// Deliberately thin — a backend adapter. Which notices to post, which to take
-/// back, and what they say is `SharerNoticeReconciler` / `SharerNoticeText` in
-/// `TailscreenProtocol`, tested on Linux CI; delivery is `GNotifyKit`, gated
-/// against a real daemon. What is left here is bookkeeping: which daemon id
-/// belongs to which peer.
+/// A thin backend adapter: which notices to post/take back and what they say
+/// is `SharerNoticeReconciler`/`SharerNoticeText` in TailscreenProtocol;
+/// delivery is `GNotifyKit`. This file only tracks which daemon id belongs to
+/// which peer.
 ///
 /// `@MainActor` because `DesktopNotifier` must be built on the thread whose
-/// `GMainContext` is iterated — GDBus captures that at subscribe time, and a
-/// notifier built anywhere else posts perfectly and reports no button press
-/// ever. In this app that thread is GTK's main thread.
+/// `GMainContext` is iterated — GDBus captures that at subscribe time, so a
+/// notifier built elsewhere posts fine but never reports a button press.
 @MainActor
 final class SharerNotifications: NoticePosting {
-    /// Nil when there is no session bus or no notification daemon — a headless
-    /// box, a minimal session, a container. A normal state: the hub keeps its
-    /// in-window prompts and nothing is said.
+    /// Nil when there's no session bus or notification daemon (headless box,
+    /// minimal session, container) — a normal state; the hub's in-window
+    /// prompts still work.
     private let notifier: DesktopNotifier?
 
     /// The announce/withdraw bookkeeping, shared with the Windows host — this
@@ -62,9 +57,7 @@ final class SharerNotifications: NoticePosting {
             return
         }
         notifier?.onAction = { [weak self] id, key in
-            // Fires on GTK's main thread, which is the main actor's — the same
-            // assumption the annotation overlay's callbacks make, and the
-            // reason this type is main-actor in the first place.
+            // Fires on GTK's main thread, which is the main actor's.
             MainActor.assumeIsolated {
                 guard let self, let route = self.routes[id] else { return }
                 self.forget(daemonID: id)
@@ -86,11 +79,9 @@ final class SharerNotifications: NoticePosting {
     /// Whether anything will actually be posted. The hub uses this to say so.
     var isAvailable: Bool { notifier != nil }
 
-    /// Whether the daemon can render buttons. False is a real state on several
-    /// minimal daemons; the notice text changes to say where to answer, and
-    /// the share card says so too (`SharerModel.notificationsLackActions`) —
-    /// a banner stating a decision with no way to make it reads as broken
-    /// otherwise.
+    /// Whether the daemon can render buttons — real-false on several minimal
+    /// daemons; the notice text changes to say where to answer instead
+    /// (`SharerModel.notificationsLackActions`).
     var rendersActions: Bool { notifier?.supportsActions ?? false }
 
     // MARK: Asks
@@ -114,13 +105,9 @@ final class SharerNotifications: NoticePosting {
 
     // MARK: Teardown
 
-    /// Take every banner back and forget everybody.
-    ///
-    /// Called BEFORE the rosters are cleared, and that order is the whole
-    /// point: stopping a share expels every viewer at once, so reconciling
-    /// against the resulting empty list would fire one "stopped watching"
-    /// banner per viewer at the exact moment the sharer already decided to
-    /// stop. Clearing first makes the empty snapshot a no-op.
+    /// Take every banner back and forget everybody. Called BEFORE rosters are
+    /// cleared, or reconciling against the empty list would fire one "stopped
+    /// watching" banner per viewer.
     func stop() {
         for id in posted.values { notifier?.withdraw(id) }
         posted.removeAll()
@@ -139,14 +126,13 @@ final class SharerNotifications: NoticePosting {
                 summary: text.summary,
                 body: text.body,
                 actions: text.buttons.map { .init(key: $0.key, label: $0.label) },
-                // Only the two mid-share asks break through Do Not Disturb.
-                // The exemption is revoked per APP, so spending it on an
-                // invitation that arrives while the machine is idle is how it
-                // gets taken away from the ones where somebody is stuck.
+                // Only the two mid-share asks break through Do Not Disturb —
+                // the exemption is revoked per app, so an idle invitation
+                // would spend it that a stuck request needs.
                 urgency: notice.kind.blocksSomeone ? .critical : .normal,
                 replacing: posted[notice.id] ?? 0,
-                // An ask that times out silently leaves the person on the other
-                // end waiting forever with nobody aware of it. A report can go.
+                // A silently-timed-out ask leaves the other end waiting
+                // forever with no one aware; a report can expire.
                 expiresAutomatically: notice.kind.actions.isEmpty)
         else { return }
         posted[notice.id] = id

@@ -1,26 +1,14 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// tailscreen (Linux) — the native desktop app: a full sharer AND viewer, the
-// Linux sibling of Apps/macOS and Apps/windows. The executable is plain
-// `tailscreen`; the package keeps a platform-qualified name because package
-// names are build-graph identity, not what users run.
+// Package name is build-graph identity, not the executable name (`tailscreen`).
 //
-// A SEPARATE package from Packages/TailscreenLinuxBackends on purpose: it pulls
-// in swift-cross-ui + GTK4, which the backends' `linux-viewer` CI job neither
-// needs nor should pay for. Video is a downstream `GtkVideoView` (a
-// swift-cross-ui `View` hosting a `GtkGLArea` with an OpenGL YUV→RGB
-// renderer); chrome is declarative swift-cross-ui, shared with the Windows app
-// via Packages/TailscreenHubUI. See plans/linux-viewer-gtk-plan.md.
+// Separate package from Packages/TailscreenLinuxBackends so GTK4 +
+// swift-cross-ui don't leak into the backends' `linux-viewer` CI job. See
+// plans/linux-viewer-gtk-plan.md.
 //
-// It reuses TailscreenLinuxBackends' `TailscreenViewerCore` (FFmpeg decoder +
-// ALSA sink) and `TailscreenSharerLinux` (X11 capture + libavcodec encode),
-// plus `TailscreenViewerTsnet` (the shared tsnet transport). Pulling Tsnet
-// brings TailscaleKit (→ libtailscale.a), so a live run needs the c-archive.
-//
-// swift-cross-ui is pinned to an exact revision for reproducibility — its `View`
-// protocol is young and can reshape across versions, and our only coupling to it
-// is the small `GtkVideoView`.
+// swift-cross-ui is pinned to an exact revision: its `View` protocol is young
+// and can reshape across versions.
 let package = Package(
     name: "tailscreen-linux",
     dependencies: [
@@ -30,44 +18,32 @@ let package = Package(
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../../Packages/TailscreenLinuxBackends"),
         .package(path: "../../Packages/TailscaleKit"),
-        // X11 root capture — used by the overlay self-test to read the screen
-        // back. Already in the graph transitively via TailscreenLinuxBackends;
-        // declared here because this package imports it directly.
+        // Used directly by the overlay self-test to read the screen back
+        // (already transitive via TailscreenLinuxBackends).
         .package(path: "../../Packages/X11CaptureKit"),
-        // The ScreenCast portal's CaptureEncoding backend, and the portal
-        // session type the app negotiates consent through. Wayland capture —
-        // and, later, single-window capture — comes from here.
+        // Portal ScreenCast backend: Wayland capture (and future
+        // single-window capture).
         .package(path: "../../Packages/TailscreenSharerPortal"),
         .package(path: "../../Packages/PortalCaptureKit"),
-        // XTEST injection, for the overlay INPUT self-test: it drives real X11
-        // events at the armed overlay rather than calling its handlers, which
-        // is the only way to prove the input region actually flipped.
+        // Drives real X11 events at the armed overlay for the overlay INPUT
+        // self-test, proving the input region actually flipped.
         .package(path: "../../Packages/XTestInjectKit"),
-        // The system-wide mute hotkey (XGrabKey). Deliberately NOT part of
-        // XTestInjectKit: that package writes input for the sharer's remote
-        // control, this one reads one chord for the local user, and a
-        // viewer-only run wants the second without linking the first.
+        // System-wide mute hotkey (XGrabKey). Separate from XTestInjectKit
+        // (writes remote-control input) so a viewer-only run needn't link it.
         .package(path: "../../Packages/X11HotkeyKit"),
-        // Desktop notifications. The one sharer surface that reaches
-        // somebody whose attention is on the thing they are sharing — this
-        // window is behind it, and raising it is visible to the viewers.
+        // Desktop notifications — reaches the sharer even when this window
+        // isn't focused.
         .package(path: "../../Packages/GNotifyKit"),
-        // The hub's look — header, screen rows, cards, placards — shared with
-        // the Windows app. It used to live in this executable as
-        // `ViewerChrome.swift`; it moved out when a second swift-cross-ui app
-        // needed the same design system and copying it would have guaranteed
-        // the two drifted apart.
+        // Shared hub UI (header, rows, cards) with the Windows app, kept as
+        // one package so the two don't drift apart.
         .package(path: "../../Packages/TailscreenHubUI"),
-        // The string catalog, shared with the macOS and Windows apps: `L(_:)`
-        // plus the `.lproj`s behind it. A GTK build reads the same
-        // `Localizable.strings` the mac app does, so a string translated for
-        // one is translated for all three.
+        // Shared string catalog with macOS/Windows — one translation serves
+        // all three.
         .package(path: "../../Packages/TailscreenL10n"),
     ],
     targets: [
         // OpenGL YUV→RGB renderer for the GLArea. C so it can call GL (via
-        // epoxy) directly; the Swift side just hands it plane pointers. Links
-        // gtk-4 for the one forward-declared queue-render entry point.
+        // epoxy) directly; Swift side only hands it plane pointers.
         .target(
             name: "CGtkVideo",
             linkerSettings: [
@@ -76,26 +52,22 @@ let package = Package(
                 .linkedLibrary("glib-2.0"),
             ]
         ),
-        // GTK4's headers for the C targets below. See the module map for why
-        // this is declared here rather than reused from swift-cross-ui.
+        // GTK4 headers for the C targets below; see the module map for why
+        // not reused from swift-cross-ui.
         .systemLibrary(
             name: "CGtk4Sys",
             path: "Sources/CGtk4Sys",
             pkgConfig: "gtk4-x11",
             providers: [.apt(["libgtk-4-dev"])]
         ),
-        // The sharer's annotation overlay: a click-through, always-on-top
-        // window showing viewers' strokes on the sharer's own screen. C
-        // because the two things it does that GTK4 will not — override-redirect
-        // placement and stacking — are raw X11, and because the interesting
-        // halves (`ReceivedAnnotations`, `AnnotationRasterizer`) already live
-        // in the portable tier where Linux CI tests them.
+        // The sharer's click-through, always-on-top annotation overlay. C
+        // because override-redirect placement/stacking are raw X11, which
+        // GTK4 won't do; the testable logic (`ReceivedAnnotations`,
+        // `AnnotationRasterizer`) lives in the portable tier.
         .target(
             name: "CGtkOverlay",
             dependencies: ["CGtk4Sys"]
         ),
-        // GtkVideoView + the video sink + frame store: the downstream video
-        // surface, reusable by the live app and the render self-test.
         .target(
             name: "TailscreenViewerGtk",
             dependencies: [
@@ -105,14 +77,12 @@ let package = Package(
                 .product(name: "Gtk", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-                // The pure GTK→InputEvent capture mapping (`ViewerInputMapping`)
-                // lives in Core so it's unit-tested by the linux-viewer job;
-                // GtkVideoView feeds it raw GDK integers. Already linked by the
-                // executable target, so no new system dependency.
+                // `ViewerInputMapping` (GTK→InputEvent) lives in Core so it's
+                // unit-tested by linux-viewer; this target only feeds it raw
+                // GDK integers.
                 .product(name: "TailscreenViewerCore", package: "TailscreenLinuxBackends"),
-                // The placard/status strings this target publishes are user
-                // facing, so it reads the catalog directly rather than
-                // handing English up to the app to translate.
+                // Publishes user-facing placard/status strings, so it reads
+                // the L10n catalog directly.
                 .product(name: "TailscreenL10n", package: "TailscreenL10n"),
             ]
         ),
@@ -124,49 +94,42 @@ let package = Package(
                 .product(name: "TailscreenSharerLinux", package: "TailscreenLinuxBackends"),
                 "TailscreenViewerGtk",
                 "CGtkOverlay",
-                // GDK's clipboard, for the share card's Copy buttons — two
-                // calls, and swift-cross-ui wraps widgets rather than the
-                // display's clipboard. See Clipboard.swift.
+                // GDK clipboard for the share card's Copy buttons;
+                // swift-cross-ui doesn't expose it. See Clipboard.swift.
                 "CGtk4Sys",
-                // X11 root capture, for the overlay self-test: it draws a known
-                // pattern and then reads the screen back to prove the pixels
-                // actually landed. Already in the graph via TailscreenSharerLinux;
-                // named explicitly because this target imports it directly.
+                // Used by the overlay self-test to read the screen back and
+                // verify pixels landed (already transitive via
+                // TailscreenSharerLinux).
                 .product(name: "X11CaptureKit", package: "X11CaptureKit"),
                 .product(name: "TailscreenSharerPortal", package: "TailscreenSharerPortal"),
-                // Named directly because the app owns the PortalSession: it
-                // negotiates consent and holds it for the life of the share,
-                // so the backend never has to raise a second dialog.
+                // The app owns the PortalSession (negotiates consent once,
+                // held for the share's life).
                 .product(name: "PortalCaptureKit", package: "PortalCaptureKit"),
                 .product(name: "XTestInjectKit", package: "XTestInjectKit"),
-                // ⌃⌥M held system-wide, so a sharer who has alt-tabbed into
-                // the thing they are showing can still mute themselves.
+                // ⌃⌥M system-wide mute, reachable even when alt-tabbed into
+                // the shared app.
                 .product(name: "X11HotkeyKit", package: "X11HotkeyKit"),
                 .product(name: "GNotifyKit", package: "GNotifyKit"),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-                // FFmpeg decoder + the shared tsnet transport, reused from the
-                // Packages/TailscreenLinuxBackends library package. A path
-                // dependency's identity is its DIRECTORY basename, not its
-                // `name:` — which is why `package:` below reads
-                // "TailscreenLinuxBackends" and not "tailscreen-linux".
+                // A path dependency's identity is its DIRECTORY basename, not
+                // `name:` — hence `package: "TailscreenLinuxBackends"` below,
+                // not "tailscreen-linux".
                 .product(name: "TailscreenViewerCore", package: "TailscreenLinuxBackends"),
                 .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
-                // `TailscreenControlListener` — the idle TCP/7447 listener that
-                // answers an incoming "please share". Kept separate from the
-                // share's own listener on purpose: an ask arrives exactly when
-                // this machine is not sharing.
+                // Idle TCP/7447 listener answering an incoming "please share"
+                // ask; separate from the share's own listener since asks
+                // arrive when this machine isn't sharing.
                 .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
                 .product(name: "TailscreenL10n", package: "TailscreenL10n"),
             ],
             linkerSettings: [
-                // Resolve libtailscale.a for the tsnet transport. Belt and
-                // braces: libtailscale.pc anchors its own -L to ${pcfiledir},
-                // so pkg-config supplies the real path and this flag only
-                // matters when the build runs from this directory.
+                // Belt-and-braces: libtailscale.pc already anchors -L to
+                // ${pcfiledir} via pkg-config; this only matters if built
+                // from outside that context.
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
         ),

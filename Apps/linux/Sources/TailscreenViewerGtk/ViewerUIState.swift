@@ -2,19 +2,18 @@ import Foundation
 import SwiftCrossUI
 import TailscreenL10n
 
-// Targeted imports: all of TailscreenProtocol would collide with SwiftCrossUI's
-// own `Published` / `ObservableObject` (both ship reactive shims on Linux, where
-// Combine is absent). Only the tool enum and the color type are needed here.
+// Targeted imports: importing all of TailscreenProtocol would collide with
+// SwiftCrossUI's own `Published`/`ObservableObject` shims (Combine is absent
+// on Linux).
 import struct TailscreenProtocol.Annotation
 import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.VideoColorInfo
 import enum TailscreenProtocol.ViewerSessionEndReason
 import enum TailscreenProtocol.ViewerSessionPhase
 
-/// Observable UI state for the viewer chrome (placards, and later the stats
-/// overlay). Updated from the transport/sink; the swift-cross-ui view tree
-/// observes it and re-renders. Marked to update on the main thread — swift-cross-ui
-/// reactivity, like the GLArea, is main-thread.
+/// Observable UI state for the viewer chrome (placards, stats overlay).
+/// Updated from the transport/sink; all mutation is dispatched to the main
+/// thread, since swift-cross-ui reactivity (like the GLArea) is main-thread.
 public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// True once the first decoded frame has been shown — hides the connecting
     /// placard and reveals the video.
@@ -24,14 +23,10 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// flows ("Connecting…", "Waiting for the sharer to accept…", etc.).
     @Published public var status = L("Connecting…")
 
-    /// A non-modal notice about a session that is still RUNNING — rendered as
-    /// a strip above the video by `ViewerNoticeBanner`, never in place of it.
-    /// Nil when there is nothing to say.
-    ///
-    /// Deliberately not a `sessionPhase` case: every phase is a state the
-    /// session is IN, and this is a remark about a session that is still in
-    /// `viewing`. The one thing that posts it today is the decode-stall
-    /// ladder's terminal rung, whose whole point is that the picture stays.
+    /// A non-modal notice about a still-RUNNING session — rendered as a strip
+    /// above the video by `ViewerNoticeBanner`, never in place of it. Nil when
+    /// there's nothing to say. Not a `sessionPhase` case: this is a remark
+    /// about a session still `viewing`, not a state it's in.
     @Published public var notice: String?
 
     /// True once the sharer's HELLO_ACK advertised `ScreenShareCaps.remoteControl`
@@ -61,16 +56,13 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
 
     public typealias SessionPhase = ViewerSessionPhase
 
-    /// Why an ended session ended, already split by admission context (the
-    /// transport's `deniedOrKicked` + `wasAdmitted` becomes `declined` or
-    /// `disconnectedBySharer` at the mapping site).
-    ///
-    /// The shared `ViewerSessionEndReason` — the same list the chrome's
-    /// `HubSessionEndReason` names and `ViewerSessionPhase.ended` carries.
+    /// Why an ended session ended, split by admission context (transport's
+    /// `deniedOrKicked` + `wasAdmitted` → `declined` / `disconnectedBySharer`
+    /// at the mapping site). Shared with `HubSessionEndReason`.
     public typealias EndReason = ViewerSessionEndReason
 
-    /// True from a session's ended/failed placard — the states that render
-    /// over (instead of) the frozen frame even though `hasVideo` is still set.
+    /// True for the states that render over the frozen frame even though
+    /// `hasVideo` is still set.
     public var sessionIsOver: Bool {
         switch sessionPhase {
         case .ended, .failed: return true
@@ -78,30 +70,23 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Live video stats for the HUD overlay (viewer-side: fps counted at the
-    /// sink, resolution from the decoded frame). Network stats (bitrate/loss)
+    /// Live video stats for the HUD overlay. Network stats (bitrate/loss)
     /// need portable `ViewerSession` counters — a follow-up.
     @Published public var fps = 0
     @Published public var videoWidth = 0
     @Published public var videoHeight = 0
-    /// The stream's colour encoding as the decoder reported it — e.g.
-    /// `"BT.709 · limited"`. Empty until the first stats window closes, which
-    /// is what the HUD keys off to decide whether to print the line at all:
-    /// a blank colour line reads as "unknown", which is worse than no line.
+    /// e.g. `"BT.709 · limited"`. Empty until the first stats window closes;
+    /// the HUD keys off that to hide the line rather than show "unknown".
     @Published public var videoColorLabel = ""
     /// Whether the stats HUD is shown (toggled from the control bar).
     @Published public var showStats = false
 
-    /// Whether this machine opened a capture device for this session — the
-    /// capability that decides whether the mic control exists at all. False on
-    /// a box with no microphone, or one whose device failed to open, and the
-    /// button is then absent rather than present-and-inert.
+    /// Whether this machine opened a capture device — decides whether the mic
+    /// control exists at all (absent, not present-and-inert, when false).
     @Published public var micAvailable = false
-    /// Whether the microphone is live. Starts off: joining a share must never
-    /// put somebody on the air, which is also what the macOS viewer does.
+    /// Starts off: joining a share must never put somebody on the air.
     @Published public var micOn = false
-    /// Set once the device has gone away mid-session, so the control can say so
-    /// instead of silently ceasing to work.
+    /// Set once the device has gone away mid-session.
     @Published public var micFailure: String?
 
     /// Annotation toolbar state (shown only when the sharer advertised
@@ -110,16 +95,11 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     @Published public var activeTool: AnnotationTool?
 
     /// True when captured input should reach the sharer: a grant is live AND
-    /// no annotation tool is armed.
-    ///
-    /// One spelling of the rule, because two consumers need it and they must
-    /// not disagree — `InputForwarder` gates every captured event on it, and
-    /// the video view's wheel handler asks it whether to scroll the sharer or
-    /// zoom locally. Drawing wins over controlling on purpose: with a pen
-    /// armed a drag is a stroke, not a click, and GTK fans each event to every
-    /// attached controller, so without the clause a controlling viewer who
-    /// armed the pen would draw on the overlay AND drag on the sharer's
-    /// desktop at once.
+    /// no annotation tool is armed. One spelling of the rule shared by
+    /// `InputForwarder` and the video view's wheel handler, so they can't
+    /// disagree. Drawing wins over controlling: GTK fans each event to every
+    /// attached controller, so without this a pen-armed drag would both draw
+    /// and drag the sharer's desktop.
     public var forwardsRemoteInput: Bool {
         controlState == .active && activeTool == nil
     }
@@ -148,11 +128,9 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { self.inSession = active }
     }
 
-    /// True once the user asked to end the current session — the placard's
-    /// Cancel, or the in-session Stop. Polled by the transport's `shouldClose`
-    /// each loop pass (both sides run on the main thread); reset by
-    /// `beginSession`, which is enqueued before the session task starts
-    /// polling, so a stale request can never end the next session at birth.
+    /// True once the user asked to end the session. Polled by the transport's
+    /// `shouldClose`; reset by `beginSession` before the session task starts
+    /// polling, so a stale request can't end the next session at birth.
     @Published public private(set) var closeRequested = false
 
     /// Ask the live session to end (safe from any thread). The transport
@@ -213,13 +191,9 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { self.status = newStatus }
     }
 
-    /// Mark video as flowing on the main thread (safe to call from anywhere).
-    ///
-    /// Also clears any notice, which is what makes a stall RECOVERABLE rather
-    /// than merely survivable: the sink's first-frame latch is re-armed when
-    /// the stall is announced, so the next frame that decodes lands here and
-    /// takes the banner away by itself. A notice about a stream that is
-    /// visibly running again is worse than no notice.
+    /// Mark video as flowing and clear any notice — the sink's first-frame
+    /// latch re-arms on a stall, so the next decoded frame lands here and
+    /// removes the banner by itself.
     public func markVideoFlowing() {
         DispatchQueue.main.async {
             self.hasVideo = true
@@ -248,26 +222,11 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Video decoding has fatally stalled — the portable escalation ladder's
-    /// terminal rung. Say so without taking the picture away.
-    ///
-    /// This used to flip `hasVideo` off and fail the session, which put the
-    /// sentence on the placard at the cost of the frozen last frame and of the
-    /// session's own UI — for a condition the ladder calls terminal only in
-    /// the sense that IT has run out of moves. One decode puts the stream
-    /// back, the last frame is still the most useful thing on screen until
-    /// then, and the macOS viewer has answered this with a non-modal banner
-    /// over the frame since it stopped raising alerts mid-session.
-    ///
-    /// The placard is still right when there is nothing to keep. On this host
-    /// `hasVideo` and the `viewing` phase flip together on the first decoded
-    /// frame (`GtkVideoSink`'s `onFirstFrame`), so a stall with `hasVideo`
-    /// false is a session that has never shown a frame at all — a decoder that
-    /// cannot read this stream, where a banner would hang over a connecting
-    /// spinner that is never going to resolve, with no Reconnect and no way
-    /// back. That case fails the session, as before. The Windows viewer needs
-    /// no such branch: its video surface is up from admission, so the banner
-    /// always has somewhere to be.
+    /// Video decoding has fatally stalled (the escalation ladder's terminal
+    /// rung). Says so without taking the picture away — unless no frame has
+    /// ever been shown (`hasVideo` false), in which case there's no picture to
+    /// keep and the session fails outright, as a connecting spinner that will
+    /// never resolve.
     public func noteVideoStalled(_ message: String) {
         DispatchQueue.main.async {
             if self.hasVideo {
@@ -278,11 +237,8 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// The capture device went away mid-session — unplugged, or taken.
-    ///
-    /// Both flags move together: leaving `micOn` true would show a live
-    /// microphone that is recording nothing, which is the one wrong answer a
-    /// mute indicator can give.
+    /// The capture device went away mid-session. Both flags move together:
+    /// leaving `micOn` true would show a live mic recording nothing.
     public func noteMicFailure(_ message: String) {
         DispatchQueue.main.async {
             self.micOn = false

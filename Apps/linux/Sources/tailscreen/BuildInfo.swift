@@ -1,30 +1,19 @@
 import Foundation
 import TailscreenProtocol
 
-/// Which build this is.
-///
-/// The macOS and Windows apps each carry one of these
-/// (`Apps/macOS/Sources/BuildInfo.swift`,
-/// `Apps/windows/Sources/tailscreen/BuildInfo.swift`); keep the three shaped
-/// alike. It deliberately stays a per-app file rather than moving into
-/// TailscreenKit: the value is *stamped by CI*, and each platform's workflow
-/// rewrites its own copy.
+/// Which build this is. Mirrored per-app (macOS, Windows) rather than shared
+/// via TailscreenKit, because each platform's CI workflow stamps its own
+/// copy.
 enum BuildInfo {
-    /// Short commit SHA. **Rewritten by the "Stamp the build" step** in
+    /// Short commit SHA. Rewritten by the "Stamp the build" step in
     /// `.github/workflows/app-linux.yml`, which fails the job if the
-    /// placeholder survives rather than shipping a binary that lies about
-    /// which commit it is. A local `make` build legitimately reads "dev".
+    /// placeholder survives. A local `make` build legitimately reads "dev".
     static let commit = "dev"
 
-    /// Marketing version, stamped by the same step from the workflow's
-    /// `version` input.
-    ///
-    /// Load-bearing beyond display: `releaseChannel` reads it to decide
-    /// whether diagnostics record by default, so an unstamped release would
-    /// classify as a development build and record — contrary to the documented
-    /// stable-release opt-in. An empty `version` input means a per-push or PR
-    /// build and deliberately leaves this "dev": that is a build under test,
-    /// and recording by default is right for it.
+    /// Marketing version, stamped by the same step. Load-bearing beyond
+    /// display: `releaseChannel` reads it to decide whether diagnostics
+    /// record by default, so an unstamped build classifies as dev (records)
+    /// rather than falsely claiming the stable opt-in.
     static let version = "dev"
 
     /// Derived, not stamped, so it cannot go stale: SwiftPM defines `DEBUG` in
@@ -56,10 +45,8 @@ enum BuildInfo {
         ReleaseChannel.classify(version: version)
     }
 
-    /// The distro and release, which is the first thing anybody asks about a
-    /// capture or portal problem on this platform. Falls back to a bare
-    /// "Linux" when `/etc/os-release` is missing or unreadable, which is
-    /// normal inside a minimal container.
+    /// Falls back to bare "Linux" when `/etc/os-release` is missing or
+    /// unreadable (normal in a minimal container).
     static var platform: String {
         guard let text = try? String(contentsOfFile: "/etc/os-release", encoding: .utf8) else {
             return "Linux"

@@ -4,24 +4,16 @@ import SwiftUI
 /// The app's menu bar, declared through SwiftUI `Commands` instead of a
 /// hand-built `NSMenu`.
 ///
-/// The hand-built menu was a relic of the app's menubar-only era: a
-/// `MenuBarExtra` accessory app never cares about `NSApp.mainMenu`, so when
-/// the docked hub window arrived, a full AppKit menu was bolted on and
-/// defended reactively — reinstalled on `didFinishLaunching` and
-/// `didBecomeActive`, because SwiftUI's scene machinery re-asserts its own
-/// minimal menu across scene updates. That defense had a hole: while
-/// *sharing*, the popover re-renders about once a second (live preview,
-/// viewer roster), the machinery stomps the menu, and no activation edge
-/// follows to restore it — so Settings, File, and Tools silently vanished
-/// from the bar exactly when a session was up. Declaring the menu HERE
-/// closes the hole by construction: the menu SwiftUI re-asserts *is* this
-/// one. It also brings back the standard Edit menu, whose absence from the
-/// hand-built bar meant ⌘C/⌘V/⌘X/⌘A never reached the hub's search field.
+/// A hand-built menu had to be reinstalled on every activation because
+/// SwiftUI's scene machinery re-asserts its own minimal menu across scene
+/// updates — and while sharing, the popover re-renders about once a second
+/// with no activation edge to trigger a re-fix, so Settings/File/Tools would
+/// silently vanish mid-session. Declaring the menu here closes that hole by
+/// construction: the menu SwiftUI re-asserts *is* this one.
 ///
-/// Item enabling/checkmarks that `NSMenuItemValidation` used to compute
-/// are `.disabled(_:)`/`Toggle` driven off `appState` — the canvas model's
-/// changes are forwarded into `appState.objectWillChange`
-/// (`ensureViewer`), so tool checkmarks and Undo/Clear enabling stay live.
+/// Enabling/checkmarks are `.disabled(_:)`/`Toggle` driven off `appState` —
+/// the canvas model's changes forward into `appState.objectWillChange`
+/// (`ensureViewer`), so tool checkmarks and Undo/Clear stay live.
 struct AppCommands: Commands {
     @ObservedObject var appState: AppState
 
@@ -50,15 +42,12 @@ struct AppCommands: Commands {
         }
 
         // ── File ──
-        // No New Window: the hub is a single re-openable window
-        // (Window menu → Tailscreen), and the viewer window is created by
-        // connecting, not by ⌘N.
+        // No New Window: the hub is a single re-openable window, and the
+        // viewer window is created by connecting, not ⌘N.
         CommandGroup(replacing: .newItem) {}
         CommandGroup(replacing: .saveItem) {
-            // ⌘W acts on an actual session: disconnect while viewing, or
-            // close the ended-state viewer window. There is deliberately
-            // no plain Close item — the hub window closes via its traffic
-            // light and stays re-openable.
+            // ⌘W acts on a session: disconnect while viewing, or close the
+            // ended-state viewer window. No plain Close item.
             Button(L("Disconnect")) {
                 NotificationCenter.default.post(
                     name: .tailscreenDisconnectRequested, object: nil)
@@ -67,12 +56,9 @@ struct AppCommands: Commands {
             .disabled(
                 appState.connectionState != .viewing && !appState.viewerSessionIsOver)
 
-            // Mirrors the global mic-toggle hotkey (⌃⌥M unless remapped in
-            // Settings → Keyboard Shortcuts). A menu key equivalent only
-            // fires while Tailscreen is frontmost — the global registration
-            // covers the rest — but printing it here is what makes the
-            // shortcut *findable*: the menu feeds Help-menu search,
-            // VoiceOver, and System Settings → Keyboard Shortcuts.
+            // Mirrors the global mic-toggle hotkey (⌃⌥M unless remapped).
+            // Printing it here makes the shortcut findable via Help-menu
+            // search, VoiceOver, and System Settings → Keyboard Shortcuts.
             Button(appState.isMicOn ? L("Mute Microphone") : L("Unmute Microphone")) {
                 NotificationCenter.default.post(
                     name: .tailscreenToggleMicrophone, object: nil)
@@ -81,14 +67,11 @@ struct AppCommands: Commands {
 
             Divider()
 
-            // Sharer-side panic revoke and viewer-side release share one
-            // chord (⌃⌥. unless remapped) — one muscle memory for "stop
-            // remote control" in either role. A key equivalent dispatches
-            // to the FIRST enabled item, and sharing-while-viewing can make
-            // both roles live at once, so the revoke yields the chord while
-            // *we* are controlling someone else's Mac (revoking our own
-            // grantee on a release keypress would be the wrong grant); it
-            // stays one click away in the SharingCard either way.
+            // Sharer-side revoke and viewer-side release share one chord
+            // (⌃⌥. unless remapped). A key equivalent fires the FIRST
+            // enabled item, so the revoke yields the chord while *we* are
+            // controlling someone else's Mac (still one click away on the
+            // SharingCard).
             Button(L("Stop Remote Control")) {
                 appState.revokeRemoteControl(reason: "menu")
             }
@@ -105,11 +88,9 @@ struct AppCommands: Commands {
         }
 
         // ── Edit ──
-        // Only the undo region is replaced: annotations have their own
-        // undo model, and a focused text field's undo comes back the
-        // moment a canvas isn't active. The pasteboard region is left
-        // alone on purpose — the hand-built menu dropped it, which is why
-        // ⌘C/⌘V never worked in the hub's search field.
+        // Only the undo region is replaced: annotations have their own undo
+        // model, and a focused text field's undo comes back once a canvas
+        // isn't active. The pasteboard region is left alone.
         CommandGroup(replacing: .undoRedo) {
             Button(L("Undo Annotation")) {
                 ViewerCommands.shared.activeOverlay?.performLocalUndo()
@@ -126,8 +107,7 @@ struct AppCommands: Commands {
 
         // ── View ──
         // Window-sizing presets + continuous content zoom. The system
-        // supplies Enter Full Screen (⌃⌘F) per key window, which is the
-        // native behavior the hand-built menu used to emulate.
+        // supplies Enter Full Screen (⌃⌘F) per key window.
         CommandGroup(before: .toolbar) {
             Button(L("Actual Size")) { postViewerZoom(1.0) }
                 .keyboardShortcut("0", modifiers: .command)
@@ -141,10 +121,8 @@ struct AppCommands: Commands {
 
             Divider()
 
-            // Continuous content zoom (⌥⌘±) — magnifies a region of the
-            // received video inside the current window, unlike the presets
-            // above. ⌥⌘ (not ⇧⌘): "+" is already a shifted character, so
-            // ⇧⌘+ would collide with the plain ⌘+ preset.
+            // ⌥⌘ (not ⇧⌘): "+" is already a shifted character, so ⇧⌘+ would
+            // collide with the plain ⌘+ preset above.
             Button(L("Zoom In")) {
                 appState.zoomViewerContent(by: ViewerZoomMath.menuZoomStep)
             }
@@ -181,10 +159,8 @@ struct AppCommands: Commands {
         }
 
         // ── Window ──
-        // Re-open the docked main window after the user closed it —
-        // otherwise the only ways back are the Dock icon and the popover's
-        // "Open Tailscreen" row. "Tailscreen" is a brand noun,
-        // deliberately unlocalized.
+        // Re-open the docked main window after the user closed it.
+        // "Tailscreen" is a brand noun, deliberately unlocalized.
         CommandGroup(before: .windowArrangement) {
             Button("Tailscreen") {
                 appState.presentMainWindow()
@@ -214,10 +190,8 @@ struct AppCommands: Commands {
     }
 }
 
-/// The About panel, with the version, a short description, project link,
-/// and license + copyright — the standard panel without options is
-/// essentially blank in dev builds (no Info.plist) and sparse in release
-/// builds.
+/// The About panel, with version, description, project link, and copyright
+/// — the standard panel without options is nearly blank in dev builds.
 @MainActor
 enum AboutPanel {
     static func show() {
@@ -237,9 +211,8 @@ enum AboutPanel {
             .credits: creditsAttributedString(),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): copyright
         ]
-        // Only surface the build number when it differs from the marketing
-        // version — release.yml currently sets both to the same string, and
-        // showing "1.2.0 (1.2.0)" is just noise.
+        // Only surface the build number when it differs, or "1.2.0 (1.2.0)"
+        // is just noise.
         if let build, build != shortVersion {
             opts[.version] = build
         }

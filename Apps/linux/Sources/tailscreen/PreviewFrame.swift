@@ -2,9 +2,9 @@ import Foundation
 import TailscreenViewer
 
 /// A plain 16:9 gradient frame used only by `--ui-preview-video`, so the hub /
-/// annotation overlay can be screenshotted over something video-shaped. The CI
-/// render self-test deliberately keeps `makeColorBarsFrame()` — its pixel
-/// assertions are calibrated to those bars.
+/// annotation overlay can be screenshotted over something video-shaped. The
+/// render self-test keeps `makeColorBarsFrame()` instead, calibrated to those
+/// bars.
 func makePreviewFrame(width: Int, height: Int) -> DecodedVideoFrame {
     let cw = (width + 1) / 2
     let ch = (height + 1) / 2

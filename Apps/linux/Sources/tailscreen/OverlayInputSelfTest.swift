@@ -2,31 +2,19 @@ import Foundation
 import TailscreenProtocol
 import XTestInjectKit
 
-/// `tailscreen --overlay-input-self-test`: prove the sharer can actually draw
-/// on their own screen, and — the part that matters more — prove they can stop.
+/// `tailscreen --overlay-input-self-test`: prove the sharer can draw on their
+/// own screen, and — more importantly — prove they can stop.
 ///
-/// Separate from `--overlay-self-test`, which asks whether the overlay's pixels
-/// reach the framebuffer. This asks the opposite question about the same
-/// window: whether it can take the pointer *back* from the desktop when a tool
-/// is armed, and hand it over again on Escape.
+/// Separate from `--overlay-self-test` (pixels reaching the framebuffer).
+/// This checks the opposite: whether the overlay takes the pointer back from
+/// the desktop when a tool is armed, and releases it on Escape. Both failure
+/// modes are silent in production: an input region that never flips just
+/// looks like a broken tool, while Escape never arriving locks the sharer
+/// behind a fullscreen click-swallowing window with no way out.
 ///
-/// Both halves fail silently in production, in the two worst ways this feature
-/// has:
-///
-///   * **The input region never flips.** Every click sails through to the
-///     desktop exactly as before, so the sharer selects a pen, drags, and
-///     nothing is drawn — while their clicks land on whatever was underneath.
-///     Nothing errors; the tool just looks broken.
-///   * **Escape never arrives.** Now the overlay is a fullscreen,
-///     override-redirect, click-swallowing window over the sharer's entire
-///     desktop, with no window-manager decoration to close it and no visible
-///     way out. That is not a cosmetic bug — it is a person locked out of their
-///     own machine until they can reach a terminal.
-///
-/// So the test drives real X11 input through XTEST — the same path the remote
-/// control injector uses — rather than calling the GTK signal handlers
-/// directly. Calling the handlers would prove the Swift wiring and skip
-/// precisely the two things that break.
+/// Drives real X11 input through XTEST — the same path the remote-control
+/// injector uses — rather than calling the GTK signal handlers directly,
+/// which would skip exactly the two things that break.
 enum OverlayInputSelfTest {
     static let passMarker = "CGTKOVERLAY_INPUT_SELFTEST result=PASS"
 
@@ -35,19 +23,12 @@ enum OverlayInputSelfTest {
     private static let dragStart = CGPoint(x: 0.30, y: 0.40)
     private static let dragEnd = CGPoint(x: 0.70, y: 0.60)
 
-    /// How far a reported point may sit from the injected one and still count.
-    ///
-    /// Not zero: the injector rounds to whole screen pixels on the way out and
-    /// the overlay divides by its own size on the way back, so a couple of
-    /// pixels of round-trip error is arithmetic, not a fault. Tight enough that
-    /// a genuinely wrong mapping — a swapped axis, an unscaled offset — is well
-    /// outside it.
+    /// Not zero: rounding to whole screen pixels and back is arithmetic, not a
+    /// fault, but a swapped axis or unscaled offset is well outside this.
     private static let tolerance = 0.02
 
-    /// Escape, as a USB HID keyboard usage. The injector translates to a
-    /// keysym and then to this server's keycode; going through the real table
-    /// is the point, since a wrong entry here is a key that silently does
-    /// nothing.
+    /// Escape as a USB HID usage — goes through the real HID→keysym→keycode
+    /// table, since a wrong entry there is a key that silently does nothing.
     private static let escapeHID: UInt16 = 0x29
 
     private final class Recorder: @unchecked Sendable {
@@ -69,8 +50,8 @@ enum OverlayInputSelfTest {
             return
         }
         // `XTestInjector` rather than the sharer's `X11InputInjector` wrapper:
-        // this test wants the root region and a raw injection target, and the
-        // wrapper's vocabulary is `PickerSelection`, which means nothing here.
+        // this wants the root region and a raw injection target, not the
+        // wrapper's `PickerSelection` vocabulary.
         let injector = XTestInjector()
         guard injector.isTrusted() else {
             finish(false, "this X server has no XTEST extension, so nothing can be injected")
@@ -91,8 +72,8 @@ enum OverlayInputSelfTest {
         overlay.onPointer = { phase, point in recorder.note(phase, point) }
         overlay.onEscape = { recorder.noteEscape() }
 
-        // Map, so the window exists to be armed. Arming a never-shown window
-        // would fail for a reason that says nothing about the feature.
+        // Map first — arming a never-shown window would fail for an unrelated
+        // reason.
         overlay.apply(
             .add(
                 Annotation(
@@ -106,8 +87,7 @@ enum OverlayInputSelfTest {
                 return
             }
             injector.activate(region: region)
-            // A beat for the input region and focus change to reach the server
-            // before anything is injected against them.
+            // Let the input region + focus change reach the server first.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 inject(injector: injector)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -121,10 +101,9 @@ enum OverlayInputSelfTest {
         injector.apply(
             .mouseDown(
                 x: dragStart.x, y: dragStart.y, button: .left, modifiers: []))
-        // A midpoint as well as the end: GtkGestureDrag reports offsets from
-        // the press, and a mapping that forgot to add the start back would
-        // still land the *end* somewhere plausible while every intermediate
-        // point collapsed toward the origin.
+        // A midpoint too: GtkGestureDrag reports offsets from the press, and a
+        // mapping that forgot to add the start back would still land the end
+        // plausibly while every intermediate point collapsed to the origin.
         injector.apply(
             .mouseMove(
                 x: (dragStart.x + dragEnd.x) / 2, y: (dragStart.y + dragEnd.y) / 2))
@@ -139,8 +118,8 @@ enum OverlayInputSelfTest {
     private static func check(
         recorder: Recorder, overlay: SharerAnnotationOverlay, injector: XTestInjector
     ) {
-        // Disarm before asserting anything. A failing assertion must not be the
-        // reason a developer's desktop is left under a click-swallowing window.
+        // Disarm before asserting anything, so a failing assertion can't leave
+        // the desktop under a click-swallowing window.
         _ = overlay.setInteractive(false)
         injector.deactivate()
         overlay.clear()

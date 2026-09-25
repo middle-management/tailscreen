@@ -3,12 +3,11 @@ import TailscreenProtocol
 import TailscreenViewerTsnet
 
 /// Relays finalized local annotation ops (`AnnotationStore.onLocalOp`) to the
-/// sharer over the `ViewerBackChannel`, funnelling them through ONE `AsyncStream`
-/// drained by a single consumer so add/undo/clear order is preserved on the wire
-/// (the same ordering discipline the input forwarder uses). The channel is
-/// re-bindable: a new session's channel replaces the old one, and the single
-/// drain loop reads whichever is current — so annotations keep working after a
-/// back-to-picker reconnect.
+/// sharer over the `ViewerBackChannel`. Funnels them through ONE `AsyncStream`
+/// drained by a single consumer so add/undo/clear order is preserved on the
+/// wire. The channel is re-bindable: a new session's channel replaces the old
+/// one, and the same drain loop keeps reading, so a back-to-picker reconnect
+/// doesn't break annotations.
 @MainActor
 final class AnnotationForwarder {
     private var channel: ViewerBackChannel?

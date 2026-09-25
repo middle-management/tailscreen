@@ -16,8 +16,8 @@ import enum TailscreenProtocol.GlobalHotkeyUnavailability
 import struct TailscreenProtocol.NoticeCandidate
 import enum TailscreenProtocol.PeerPolicy
 import struct TailscreenProtocol.PendingShareRequest
-// Targeted imports: pulling in all of TailscreenProtocol collides with
-// SwiftCrossUI's own `Published` / `ObservableObject` shims on Linux.
+// Targeted imports: importing all of TailscreenProtocol would collide with
+// SwiftCrossUI's own `Published`/`ObservableObject` shims on Linux.
 import struct TailscreenProtocol.PickerSelection
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
@@ -36,145 +36,90 @@ typealias PendingViewer = LinuxShareSession.PendingViewer
 /// Drives the *sharing* half of the app: start/stop a share, and publish who's
 /// watching so the chrome can render it.
 ///
-/// The counterpart of `PickerModel`, and deliberately just as thin — a façade
-/// over `LinuxShareSession` (Packages/TailscreenLinuxBackends), which owns the
-/// engine: server lifecycle, access control, the drawing latch, voice, and the
-/// idle control listener, all tested headless on Linux CI. What stays here is
-/// exactly what needs the app: the `@Published` mirrors SwiftCrossUI observes,
-/// the localized wording, the desktop-notification reconcile, and the portal
-/// negotiation, whose consent dialog is inherently UI.
+/// A thin façade over `LinuxShareSession` (which owns the engine: server
+/// lifecycle, access control, drawing latch, voice, idle control listener,
+/// tested headless on Linux CI). What stays here is what needs the UI: the
+/// `@Published` mirrors, localized wording, notification reconcile, and the
+/// portal negotiation (its consent dialog is inherently UI).
 ///
-/// **It borrows the viewer's tsnet node** rather than bringing up its own. Two
-/// nodes would mean two tailnet identities for one app: peers would see a
-/// phantom second machine, and the sharer wouldn't be reachable at the address
-/// the viewer half advertises. The macOS app solves this the same way —
-/// `AppState` owns one node and passes it to both the server and the client.
+/// **Borrows the viewer's tsnet node** rather than bringing up its own — two
+/// nodes would mean two tailnet identities for one app. Same solution as
+/// macOS's `AppState`.
 @MainActor
 final class SharerModel: ObservableObject {
     typealias Phase = LinuxShareSession.Phase
 
     @Published var phase: Phase = .idle
-    /// Bumped whenever the remembered-policy layer changes.
-    ///
-    /// SwiftCrossUI's `ObservableObject` shim has no `objectWillChange`, and
-    /// the thing that changed lives in the engine's `SharerAccessCoordinator`
-    /// rather than in a `@Published` here — deliberately, since it is portable
-    /// and this app only renders it. A counter is the shim's idiom for
-    /// "something you cannot see moved"; the roster rows read the engine when
-    /// they redraw.
+    /// Bumped whenever the remembered-policy layer changes. SwiftCrossUI's
+    /// `ObservableObject` shim has no `objectWillChange`, and the change lives
+    /// in the engine's `SharerAccessCoordinator`, not a `@Published` here —
+    /// a counter is the shim's idiom for "something you can't see moved".
     @Published private(set) var accessGeneration = 0
 
     /// Who is watching, for the sharing card's roster.
-    ///
-    /// Structured rather than a list of IP strings, which is what it was: this
-    /// is the surface a sharer uses to change their mind about somebody
-    /// already admitted, and before it existed this app could admit a viewer
-    /// and then do nothing about them.
     @Published var viewers: [ConnectedViewer] = []
     /// Viewers parked awaiting approval, when the approval gate is on.
     @Published var pendingViewers: [PendingViewer] = []
 
-    /// Viewers asking to drive this machine.
-    ///
-    /// The engine supplies an `X11InputInjector` whenever XTEST is present,
-    /// which is what makes the server advertise `ScreenShareCaps.remoteControl`
-    /// — so viewers are *offered* Request Control. Until this existed the
-    /// request then reached a host that never read it: the viewer's toolbar
-    /// said "requested", the sharer saw nothing, and there was no way to say
-    /// yes. Advertising a capability and providing no way to exercise it is
-    /// worse than not advertising it.
+    /// Viewers asking to drive this machine. The engine only advertises
+    /// `ScreenShareCaps.remoteControl` (offering Request Control at all) when
+    /// XTEST gives it an `X11InputInjector`.
     @Published private(set) var controlRequests: [ControlRequestInfo] = []
 
-    /// Who is driving this machine right now, by display name, or nil.
-    ///
-    /// Drives the "Take back control" action, which is the only way to end a
-    /// grant from this side. Already stale-guarded by the engine — the
-    /// generation bookkeeping lives there, beside the hop that makes it
-    /// necessary.
+    /// Who is driving this machine right now, by display name, or nil. Drives
+    /// "Take back control". Already stale-guarded by the engine's generation
+    /// bookkeeping.
     @Published private(set) var controlGrantedTo: String?
 
-    /// Posts the sharer's notifications and routes their buttons back.
-    ///
-    /// Built once for the life of the app rather than per share: connecting to
-    /// the bus is the expensive part, and an ask to SHARE arrives precisely
-    /// when no share is running.
+    /// Posts the sharer's notifications and routes their buttons back. Built
+    /// once for the app's life, not per share: connecting to the bus is the
+    /// expensive part, and an ask to share arrives precisely when none is
+    /// running.
     private let notifications = SharerNotifications()
 
-    /// Whether this machine has nowhere to post notifications.
-    ///
-    /// Said on the card, but only while sharing: a sharer who is not looking
-    /// at the app is exactly who a notification would have reached, so the one
-    /// moment worth telling them it will not is the moment they are about to
-    /// stop looking. Off a share it is noise about a feature nobody is using.
+    /// Whether this machine has nowhere to post notifications. Shown only
+    /// while sharing — off a share it's noise about a feature nobody is
+    /// using.
     var notificationsUnavailable: Bool { !notifications.isAvailable }
 
     /// Why the system-wide mute chord could not be taken, mirrored from
-    /// `MuteHotkeyController` (see the wiring in `main.swift`) so the share
-    /// card can say so — the controller's own report goes to stderr, which
-    /// reaches nobody mid-share. Nil while the chord is held, or before a
-    /// microphone made holding it worthwhile.
+    /// `MuteHotkeyController` so the share card can say so (its own report
+    /// goes to stderr, which reaches nobody mid-share).
     @Published private(set) var muteHotkeyUnavailability: GlobalHotkeyUnavailability?
 
     func setMuteHotkeyUnavailability(_ reason: GlobalHotkeyUnavailability?) {
         muteHotkeyUnavailability = reason
     }
 
-    /// Whether notifications post but their daemon drops the buttons.
-    ///
-    /// A real state on several minimal daemons, and a quieter failure than no
-    /// notifications at all: the banner appears, worded to say where to
-    /// answer (`SharerNoticeText`'s no-`actions` degradation), but the
-    /// one-click Accept the sharer may be counting on does not exist. The card
-    /// says so — the same reason the Windows card distinguishes "off for this
-    /// app" from "no runtime".
+    /// Whether notifications post but their daemon drops the buttons — real on
+    /// several minimal daemons: the banner appears but the one-click Accept
+    /// doesn't exist, so the card says so.
     var notificationsLackActions: Bool {
         notifications.isAvailable && !notifications.rendersActions
     }
 
-    /// Why a grant could not be given, when one could not. Nil renders nothing.
-    ///
-    /// `grantControl` returning false is otherwise completely silent: the
-    /// prompt row disappears (the request was consumed) and nothing happens,
-    /// which reads as the button not working. On this host it means the
-    /// injector stopped being trusted — XTEST went away under a live share —
-    /// so it is rare, and rare-and-silent is exactly the combination that
-    /// costs an afternoon.
+    /// Why a grant could not be given. `grantControl` returning false is
+    /// otherwise silent (the prompt row just disappears); on this host it
+    /// means XTEST stopped being trusted mid-share.
     @Published private(set) var controlNote: String?
 
-    /// Why the last "Change source…" did not take — a note on a share that is
-    /// STILL RUNNING, which is why it is a slot of its own and not `.failed`.
-    ///
-    /// It used to be the phase. `changeSource` re-points a live share and the
-    /// engine does not stop the server when it throws, so writing
-    /// `.failed(reason)` there described a running share as a failed start:
-    /// `canStart` turned true, so a second Start could be pressed straight
-    /// over the top of it and overwrite the engine's server reference, and
-    /// `isSharing` turned false, so the card dropped its Stop button and its
-    /// roster while viewers were still watching. Every other host already
-    /// keeps this distinction — macOS stops the share outright on a failed
-    /// retarget, and the WinUI engine never touches its phase here — so this
-    /// was the one place `ShareBringUpPhase.failed` did not mean what the
-    /// type says it means.
+    /// Why the last "Change source…" did not take — a note on a share that's
+    /// STILL RUNNING, kept separate from `.failed` because `changeSource`
+    /// doesn't stop the server on failure; writing `.failed` here would wrongly
+    /// flip `canStart`/`isSharing` while viewers keep watching.
     @Published private(set) var sourceChangeNote: String?
 
-    /// Whether new viewers have to be let in by hand.
-    ///
-    /// Persisted, and read back at launch through the shared
-    /// `ViewerApprovalPreference` so this app, the Windows app and the macOS
-    /// app cannot disagree about the default (on) or the
-    /// `TAILSCREEN_OPEN_DOOR=1` harness override. Mutate via
-    /// `setRequireApproval` — assigning here would change the switch without
-    /// telling the live server, which is the one place it matters.
+    /// Whether new viewers have to be let in by hand. Persisted via the shared
+    /// `ViewerApprovalPreference` so all three apps agree on the default (on)
+    /// and the `TAILSCREEN_OPEN_DOOR=1` override. Mutate via
+    /// `setRequireApproval`, not by assigning directly — that would skip
+    /// telling the live server.
     @Published private(set) var requireApproval: Bool = ViewerApprovalPreference.load()
 
-    /// The encoder knobs the next share will start with.
-    ///
-    /// Persisted through the portable `QualitySettingsStore` — the same store
-    /// and the same key the macOS Settings pane writes, so the model's clamps
-    /// and its decode-with-fallback are shared rather than reimplemented.
-    /// Read at start rather than pushed live: both non-mac capture backends
-    /// take their settings at construction, so a mid-share change lands on the
-    /// NEXT share and the card's caption says exactly that.
+    /// The encoder knobs the next share will start with. Persisted through
+    /// the portable `QualitySettingsStore` (shared with macOS Settings). Read
+    /// at start, not pushed live: capture backends take settings at
+    /// construction, so a mid-share change lands on the NEXT share.
     @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
 
     /// Whether this host can share at all. X11 capture needs a display; on a
@@ -188,8 +133,7 @@ final class SharerModel: ObservableObject {
     @Published private(set) var shareRequests: [PendingShareRequest] = []
 
     /// The share engine: server lifecycle, access control, drawing latch,
-    /// voice, and the idle control listener, in
-    /// `Packages/TailscreenLinuxBackends` where Linux CI tests it with no GTK.
+    /// voice, idle control listener; tested headless on Linux CI.
     private let engine: LinuxShareSession
 
     /// Supplied by `main` — hands back the live tsnet node to share.
@@ -198,13 +142,10 @@ final class SharerModel: ObservableObject {
         set { engine.nodeProvider = newValue }
     }
 
-    /// Supplied by `main` — opens a capture device, or throws if there is none.
-    ///
-    /// A factory rather than an instance because a share is a session: the
-    /// device is opened when sharing starts and released when it stops. A
-    /// long-lived open would keep the OS microphone indicator lit while idle,
-    /// which is exactly the thing a person reads as "this app is listening".
-    /// Nil means this build has no capture backend at all.
+    /// Supplied by `main` — opens a capture device, or throws if there's none.
+    /// A factory, not an instance: a long-lived open would keep the OS
+    /// microphone indicator lit while idle. Nil means no capture backend at
+    /// all.
     var microphoneFactory: (() throws -> MicrophoneCapturing)? {
         get { engine.microphoneFactory }
         set { engine.microphoneFactory = newValue }
@@ -218,24 +159,20 @@ final class SharerModel: ObservableObject {
     @Published private(set) var micAvailable = false
     @Published private(set) var micOn = false
 
-    /// The live share link's token + busy flag, mirrored off the engine so
-    /// the card's link section renders without owning any lifecycle. Nil
-    /// token = link off, which is what the toggle shows.
+    /// The live share link's token + busy flag, mirrored off the engine. Nil
+    /// token = link off.
     @Published private(set) var linkToken: String?
     @Published private(set) var linkBusy = false
-    /// True while a LINK-ONLY share is running: started signed out, so the
-    /// guest tunnel is the server's only socket and the link is the only way
-    /// in. The card states the mode instead of drawing a toggle that could
-    /// not be flipped off.
+    /// True while a LINK-ONLY share is running (started signed out — the
+    /// guest tunnel is the server's only socket). The card states the mode
+    /// rather than drawing a toggle that couldn't be flipped off.
     @Published private(set) var isLinkOnlyShare = false
 
     /// Supplied by `main` — whether starting a share *right now*, with no
-    /// tsnet node, should mint a link-only share rather than refuse.
-    ///
-    /// True exactly while the hub sits on its signed-out pane. Deliberately
-    /// not "is the node nil": the node is also nil mid-bring-up, and a Start
-    /// pressed while a browser login is in flight means "share on my tailnet,
-    /// in a moment", not "share to strangers by link instead".
+    /// tsnet node, should mint a link-only share rather than refuse. True
+    /// exactly on the signed-out pane; deliberately not "is the node nil"
+    /// (also nil mid-bring-up, which means "share on my tailnet in a
+    /// moment", not "share by link").
     var linkOnlyShareAllowed: (() -> Bool)?
 
     /// The card's Share via Link toggle / New Link, forwarded to the engine.
@@ -245,29 +182,20 @@ final class SharerModel: ObservableObject {
     // MARK: Sharer drawing
 
     /// The sharer's own drawing state — the engine's store, exposed for the
-    /// toolbar's ink swatch. The stroke geometry, the undo stack and the
-    /// identity-derived colour are shared code rather than a second
-    /// implementation on the sharing side.
+    /// toolbar's ink swatch.
     var drawing: AnnotationStore { engine.drawing }
-    /// The armed tool, or nil when the sharer is not drawing. Mirrors the
-    /// engine's latch, which is not observable.
+    /// The armed tool, or nil. Mirrors the engine's latch, which is not
+    /// observable.
     @Published private(set) var activeTool: AnnotationTool?
-    /// Why drawing could not be armed, when it could not.
-    ///
-    /// Shown rather than swallowed because the failure is invisible otherwise:
-    /// the tool would appear selected and the pointer would keep going to the
-    /// desktop, which reads as "drawing is broken" rather than "this session
-    /// would not let the overlay take the keyboard".
+    /// Why drawing could not be armed. Shown, not swallowed: otherwise the
+    /// tool would appear selected while clicks kept going to the desktop.
     @Published private(set) var drawingNote: String?
 
     init(display: String? = nil) {
         let processEnvironment = ProcessInfo.processInfo.environment
         let display = display ?? processEnvironment["DISPLAY"]
-        // Probed once, at startup, and deliberately with the call that puts
-        // NOTHING on screen. Deciding which backend to use requires knowing
-        // whether a portal exists, and a check that raised a consent dialog
-        // would mean asking permission in order to decide whether to ask
-        // permission.
+        // Probed once at startup, with the call that puts NOTHING on screen —
+        // deciding a backend must not itself raise a consent dialog.
         let portal = PortalSessionHost()
         let environment = CaptureBackendSelection.Environment(
             session: CaptureBackendSelection.sessionKind(fromEnvironment: processEnvironment),
@@ -281,11 +209,9 @@ final class SharerModel: ObservableObject {
         self.unavailableReason = CaptureBackendSelection.unavailableReason(environment: environment)
         self.engine = LinuxShareSession(display: display)
 
-        // Worth saying out loud, because it is the case that used to fail
-        // SILENTLY: `$DISPLAY` is set on Wayland by XWayland, so the old
-        // display-only gate passed and the share captured the XWayland root —
-        // whatever X11 apps happened to be running, often nothing at all —
-        // while the UI said "Sharing" and viewers saw a blank screen.
+        // $DISPLAY is set on Wayland by XWayland, so a display-only gate would
+        // pass and capture the (likely empty) XWayland root while viewers saw
+        // a blank screen — warn instead.
         if environment.session == .wayland && !environment.portalAvailable {
             FileHandle.standardError.write(
                 Data(
@@ -296,9 +222,8 @@ final class SharerModel: ObservableObject {
 
         wireEngine()
 
-        // A notification button answers exactly what the card's button does,
-        // through the same methods — so there is one implementation of each
-        // decision and the two surfaces cannot drift.
+        // A notification button routes through the same methods as the
+        // card's button, so the two surfaces can't drift.
         notifications.onAnswer = { [weak self] kind, identity, accept in
             guard let self else { return }
             switch kind {
@@ -322,7 +247,7 @@ final class SharerModel: ObservableObject {
         }
     }
 
-    /// Mirror the engine into the `@Published` surface, and reconcile the
+    /// Mirror the engine into the `@Published` surface, and reconcile
     /// notifications with every snapshot. The engine invokes everything on the
     /// main actor, so nothing here hops.
     private func wireEngine() {
@@ -332,17 +257,14 @@ final class SharerModel: ObservableObject {
         engine.onViewersChanged = { [weak self] rows in
             guard let self else { return }
             self.viewers = rows
-            // Keyed by `ip:port`, deliberately: a genuine rejoin IS news, and
-            // the mac viewer-roster path keys the same way for the same
-            // reason.
+            // Keyed by `ip:port`: a genuine rejoin IS news.
             self.notifications.applyViewers(
                 rows.map { NoticeCandidate(identity: $0.id, label: $0.label) })
         }
         engine.onPendingViewersChanged = { [weak self] rows in
             guard let self else { return }
             self.pendingViewers = rows
-            // The identity IS the id `approve`/`deny` take, so a button press
-            // routes back with nothing to re-derive.
+            // The identity IS the id `approve`/`deny` take.
             self.notifications.applyAsk(
                 kind: .viewerPending,
                 candidates: rows.map { NoticeCandidate(identity: $0.id, label: $0.label) })
@@ -380,9 +302,8 @@ final class SharerModel: ObservableObject {
         }
         engine.onShareRequestsChanged = { [weak self] requests in
             guard let self else { return }
-            // Card AND notifications together — an ask that expires from the
-            // inbox but keeps its banner is an invitation whose Share button
-            // answers a connection that has already gone.
+            // Card AND notifications together, or an expired ask could keep a
+            // banner whose Share button answers a connection already gone.
             self.shareRequests = requests
             self.notifications.applyAsk(
                 kind: .requestToShare,
@@ -395,9 +316,8 @@ final class SharerModel: ObservableObject {
     }
 
     /// The cleanup only this side can do when a share stops being live. Fired
-    /// by the engine BEFORE the rosters empty, which is what keeps the
-    /// notification teardown ahead of the empty-list reconcile — see
-    /// `LinuxShareSession.onShareDidEnd`.
+    /// by the engine BEFORE the rosters empty, keeping notification teardown
+    /// ahead of the empty-list reconcile.
     private func shareDidEnd(_ reason: LinuxShareSession.EndReason) {
         switch reason {
         case .stopped:
@@ -408,15 +328,13 @@ final class SharerModel: ObservableObject {
             notifications.stop()
             controlNote = nil
             sourceChangeNote = nil
-            // Same reason as `stopSharing`: capture ending for any reason —
-            // including the user pressing stop in the compositor's own
-            // indicator — must take the session down with it.
+            // Capture ending for any reason (including the compositor's own
+            // stop indicator) must take the session down with it.
             portal.close()
             canChangeSource = false
             captureMatchesOverlay = false
-            // A preview that outlives its capture is the worst version of
-            // this feature: a still picture of a screen that is no longer
-            // going anywhere, indistinguishable from a live one.
+            // A preview that outlives its capture would look indistinguishable
+            // from a live one.
             preview = nil
         case .startFailed:
             captureMatchesOverlay = false
@@ -425,13 +343,9 @@ final class SharerModel: ObservableObject {
     }
 
     /// Whether this machine can share ONE WINDOW OR APP, as opposed to the
-    /// whole screen. Only the portal can, so this is false on a session with
-    /// no portal even when screen sharing works perfectly.
-    ///
-    /// Derived from the same `choose` the share path runs, never asked
-    /// separately: a button that offered a share the backend then refused
-    /// would be the two disagreeing, which is the failure `canShareAnything`
-    /// exists to prevent on the primary button.
+    /// whole screen. Only the portal can. Derived from the same `choose` the
+    /// share path runs, never asked separately, so the button and the backend
+    /// can't disagree.
     var canShareWindow: Bool {
         if case .unavailable = CaptureBackendSelection.choose(
             intent: .windowOrApp, environment: captureEnvironment)
@@ -442,33 +356,22 @@ final class SharerModel: ObservableObject {
     }
 
     /// Whether the LIVE share is portal-backed, and therefore re-pointable.
-    ///
-    /// Not the same question as `canShareWindow`: a machine can have a portal
-    /// while the current share is X11 root capture, and that share has nothing
-    /// to change — an X11 session captures exactly one thing.
+    /// Not the same as `canShareWindow`: a machine can have a portal while the
+    /// current share is X11 root capture, which has nothing to change.
     @Published private(set) var canChangeSource = false
 
     /// Whether the overlay's rectangle is genuinely what is being captured.
-    ///
-    /// **The outline must not lie.** `makeOverlay` sizes the window from the X
-    /// display, because that is the only geometry this side reliably has — the
-    /// portal hands back a stream size but no position on screen, so a share of
-    /// one window gets an overlay the size of the whole desktop. For
-    /// annotations that is a pre-existing coordinate problem; for the outline
-    /// it is worse in kind, because a border around the entire screen while one
-    /// window is being shared states the opposite of the truth.
-    ///
-    /// So the indicator is shown only where the two are known to agree: an X11
-    /// display share. A portal share gets no outline rather than a wrong one —
-    /// the same call the capability bits make everywhere else here.
+    /// `makeOverlay` sizes the window from the X display — the only geometry
+    /// this side reliably has, since the portal gives a stream size but no
+    /// position — so a single-window portal share gets an overlay the size of
+    /// the whole desktop. The outline is shown only when the two are known to
+    /// agree (X11 display share); a portal share gets none rather than a
+    /// wrong one.
     private var captureMatchesOverlay = false
 
-    /// The most recent preview of what viewers are receiving, or nil when
-    /// nothing is being captured.
-    ///
+    /// The most recent preview of what viewers are receiving, or nil.
     /// `ThumbnailScaler.Thumbnail` rather than the card's `HubPreview`: this
-    /// model is deliberately free of the UI package, and the mapping is one
-    /// line at the render site.
+    /// model stays free of the UI package.
     @Published private(set) var preview: ThumbnailScaler.Thumbnail?
 
     private let display: String?
@@ -478,11 +381,9 @@ final class SharerModel: ObservableObject {
     /// not become Wayland halfway through.
     private let captureEnvironment: CaptureBackendSelection.Environment
 
-    /// The card's headline: what this machine is DOING. The viewer count used
-    /// to live here ("Sharing to 2") and is now the card's own pill, beside
-    /// this line — the same split the macOS sharer card makes, and the reason
-    /// this string is a constant while sharing rather than a sentence that
-    /// rewrites itself every time somebody joins.
+    /// The card's headline: what this machine is DOING. The viewer count is
+    /// the card's own pill beside this line (same split as macOS), so this
+    /// stays a constant while sharing rather than rewriting per join.
     var statusLine: String {
         switch phase {
         case .idle: return unavailableReason ?? L("Not sharing")
@@ -492,12 +393,9 @@ final class SharerModel: ObservableObject {
         }
     }
 
-    /// The line under the headline: what is true about the share right now.
-    ///
-    /// Only ever one thing, and the more urgent one wins — somebody parked at
-    /// the approval gate is stuck on a placard with nothing on screen, which
-    /// outranks the fact that nobody has joined yet. Nil while idle: the
-    /// headline already says everything there is to say.
+    /// The line under the headline. Only ever one thing; the more urgent wins
+    /// (someone parked at the approval gate outranks "nobody watching yet").
+    /// Nil while idle.
     var statusDetail: String? {
         guard phase == .sharing else { return nil }
         if !pendingViewers.isEmpty {
@@ -507,9 +405,8 @@ final class SharerModel: ObservableObject {
     }
 
     /// Seed the sharing-state chrome for `--ui-preview-sharing` — fake data,
-    /// no engine, no capture. Lives here because the interesting fields are
-    /// deliberately `private(set)`: the preview mode is the one caller allowed
-    /// to write them without the engine behind it.
+    /// no engine, no capture. The one caller allowed to write the
+    /// `private(set)` fields without the engine behind them.
     func seedForUIPreview(
         preview thumbnail: ThumbnailScaler.Thumbnail?,
         viewers rows: [ConnectedViewer],
@@ -523,13 +420,10 @@ final class SharerModel: ObservableObject {
         micAvailable = mic
     }
 
-    /// Begin sharing this host's screen.
-    ///
-    /// Which backend that means is `CaptureBackendSelection`'s answer, not this
-    /// method's: X11 root capture where it is genuinely an X11 session, the
-    /// ScreenCast portal on Wayland. The portal branch raises a consent dialog
-    /// and therefore has to go around the main thread, which is why the two
-    /// paths diverge here rather than at the capture factory.
+    /// Begin sharing this host's screen. Which backend is
+    /// `CaptureBackendSelection`'s answer; the portal branch raises a consent
+    /// dialog and has to go around the main thread, so the two paths diverge
+    /// here rather than at the capture factory.
     func startSharing() {
         guard canShare, phase.canStart else { return }
         switch CaptureBackendSelection.choose(
@@ -546,48 +440,38 @@ final class SharerModel: ObservableObject {
                 return encoder
             })
         case .portal:
-            // `.monitor`: this entry point is "share my screen". Offering the
-            // window picker here would mean the primary button sometimes
-            // shares a window without being asked to.
+            // `.monitor`: this is "share my screen" — offering the window
+            // picker here would share a window without being asked.
             beginPortalShare(sources: [.monitor])
         case .unavailable(let reason):
             phase = .failed(reason)
         }
     }
 
-    /// Begin sharing ONE WINDOW OR APP.
-    ///
-    /// Always the portal — X11 root capture cannot scope to a window, and
-    /// `choose` refuses rather than widening the request to the whole screen.
-    /// The portal draws its own picker, so this app deliberately does not have
-    /// a window list: the compositor knows which windows exist and which the
-    /// person is allowed to see, and duplicating that would be both redundant
-    /// and less trustworthy.
+    /// Begin sharing ONE WINDOW OR APP. Always the portal — X11 root capture
+    /// can't scope to a window. The portal draws its own picker; this app has
+    /// no window list of its own, since the compositor is the trustworthy
+    /// source of which windows exist.
     func startWindowShare() {
         guard canShareWindow, phase.canStart else { return }
         switch CaptureBackendSelection.choose(
             intent: .windowOrApp, environment: captureEnvironment)
         {
         case .portal:
-            // `.window` alone, not `[.monitor, .window]`: the person asked for
-            // a window, and portals render the requested source types as tabs
-            // — offering Screen back would be the app second-guessing a choice
-            // already made on the card.
+            // `.window` alone, not `[.monitor, .window]`: offering Screen back
+            // would second-guess a choice already made on the card.
             beginPortalShare(sources: [.window])
         case .x11, .unavailable:
-            // Unreachable while `canShareWindow` gates the button, and handled
-            // rather than force-unwrapped because the gate and this switch are
-            // two reads of one decision that could drift.
+            // Unreachable while `canShareWindow` gates the button; handled
+            // rather than force-unwrapped since the two are separate reads of
+            // one decision that could drift.
             phase = .failed(L("this session cannot share a single window"))
         }
     }
 
-    /// Ask for consent, then share what the portal granted.
-    ///
-    /// The negotiation is awaited rather than blocked on: the dialog is a
-    /// person, `negotiate` blocks its thread until they answer, and this is the
-    /// GTK main thread. Blocking here would freeze the whole app for as long as
-    /// the dialog was up.
+    /// Ask for consent, then share what the portal granted. Awaited, not
+    /// blocked on: `negotiate` blocks its thread until the person answers, and
+    /// this is the GTK main thread.
     private func beginPortalShare(sources: PortalSession.SourceTypes = [.monitor]) {
         phase = .starting
         let portal = self.portal
@@ -608,9 +492,8 @@ final class SharerModel: ObservableObject {
                     return encoder
                 })
             case .cancelled:
-                // A person declining to share their screen is not a failure,
-                // and an error placard would be the app arguing with a
-                // deliberate choice. Straight back to idle, saying nothing.
+                // Not a failure — a deliberate choice. Straight back to idle,
+                // saying nothing.
                 phase = .idle
             case .failed(let reason):
                 phase = .failed(reason)
@@ -619,26 +502,12 @@ final class SharerModel: ObservableObject {
     }
 
     /// Re-point a live share at something else, without dropping the viewers
-    /// already watching.
-    ///
-    /// Portal-only, and it necessarily raises a second consent dialog: the
-    /// portal grants a session for what the person picked, so picking
-    /// something else is a new grant. That is the portal's design and not
-    /// something to route around — the alternative would be a share that could
-    /// silently widen its own scope after consent was given.
-    ///
-    /// Offers BOTH monitors and windows regardless of what the share started
-    /// as: this is the moment the person is explicitly re-choosing, so
-    /// narrowing them to the kind they picked last time would be the app
-    /// deciding for them.
-    ///
-    /// Declining leaves the existing share running and untouched — the
-    /// dialog was about a *change*, so refusing it means "keep what I have",
-    /// not "stop sharing".
+    /// already watching. Portal-only, and necessarily a second consent
+    /// dialog: a new selection is a new grant, by the portal's own design.
+    /// Offers BOTH monitors and windows, since the person is explicitly
+    /// re-choosing. Declining leaves the existing share running untouched.
     func changeSource() {
         guard canChangeSource, phase == .sharing else { return }
-        // A new attempt is not the old attempt's failure — the same rule the
-        // node bring-up follows when it clears `nodeFailure` on retry.
         sourceChangeNote = nil
         let portal = self.portal
         Task { @MainActor in
@@ -648,9 +517,8 @@ final class SharerModel: ObservableObject {
                     kind: .display, displayID: 0, windowID: nil, bundleIDs: [])
                 guard let selectionData = try? JSONEncoder().encode(selection) else { return }
                 do {
-                    // The new factory travels WITH the data: this backend is
-                    // built against a PipeWire node id, so swapping the
-                    // selection bytes alone would restart the old source.
+                    // The new factory travels WITH the data: swapping only
+                    // the selection bytes would restart the old PipeWire node.
                     _ = try await engine.changeSource(
                         filterData: selectionData,
                         captureFactory: { [sink = previewSink()] in
@@ -664,9 +532,7 @@ final class SharerModel: ObservableObject {
                     sourceChangeNote = L("could not change the shared source: \(error)")
                 }
             case .cancelled:
-                // Keep sharing what we were already sharing. Saying nothing is
-                // the whole point: they declined a change, not the share.
-                break
+                break  // declined a change, not the share
             case .failed(let reason):
                 sourceChangeNote = reason
             }
@@ -674,12 +540,9 @@ final class SharerModel: ObservableObject {
     }
 
     /// The callback every capture backend publishes its preview through.
-    ///
-    /// Attached inside each capture factory rather than passed through
-    /// `beginShare`, because the property lives on the concrete backend and the
-    /// factory is the only place its type is known — and because a factory that
-    /// carries the sink keeps publishing across the server's restart budget,
-    /// which is the whole reason `onTimings` on Windows is shaped this way too.
+    /// Attached inside each capture factory, not passed through `beginShare`,
+    /// so it keeps publishing across the server's restart budget (same reason
+    /// Windows' `onTimings` is shaped this way).
     ///
     /// Fires on a capture thread (PipeWire's, for the portal), so it hops.
     private func previewSink() -> @Sendable (ThumbnailScaler.Thumbnail) -> Void {
@@ -691,11 +554,8 @@ final class SharerModel: ObservableObject {
     /// Everything after "which backend": hand the engine the node and the
     /// capture factory. The engine owns the rest of the start sequence.
     private func beginShare(captureFactory: @escaping @Sendable () -> CaptureEncoding) {
-        // Nil node is a real mode, not a failure: signed out, the share comes
-        // up over the guest tunnel and the link is the only way in — the
-        // macOS welcome pane's "Share your screen via Link…". It is a failure
-        // anywhere else, and `linkOnlyShareAllowed` is what tells the two
-        // apart; see its note.
+        // Nil node is a real mode (signed-out link-only share), not always a
+        // failure — `linkOnlyShareAllowed` tells the two apart.
         let node = nodeProvider?()
         if node == nil, linkOnlyShareAllowed?() != true {
             phase = .failed(L("Tailscale isn't up yet"))
@@ -717,10 +577,8 @@ final class SharerModel: ObservableObject {
     }
 
     func stopSharing() {
-        // Ending the portal session is what makes the compositor drop its own
-        // "your screen is being shared" indicator. Leaving it open would tell
-        // the person their screen is still going out after they stopped it —
-        // and on some desktops leaves the indicator until the process dies.
+        // Ending the portal session drops the compositor's sharing indicator;
+        // some desktops leave it lit until the process dies otherwise.
         portal.close()
         canChangeSource = false
         preview = nil
@@ -731,10 +589,8 @@ final class SharerModel: ObservableObject {
     // MARK: Drawing
 
     /// Arm a drawing tool, or disarm with nil. Selecting the armed tool again
-    /// disarms it, matching the viewer's toolbar. The arm/disarm ordering —
-    /// and the refusal when the overlay cannot also take the keyboard — is the
-    /// engine's `SharerDrawingLatch`; this only forwards and words the
-    /// refusal.
+    /// disarms it. Arm/disarm ordering and the keyboard-focus refusal are the
+    /// engine's `SharerDrawingLatch`; this only forwards and words it.
     func selectTool(_ tool: AnnotationTool?) {
         engine.selectTool(tool)
     }
@@ -757,12 +613,9 @@ final class SharerModel: ObservableObject {
     }
 
     /// Build the overlay at the capture's exact pixel geometry, or nil if this
-    /// session cannot host one.
-    ///
-    /// The size comes from an `X11ScreenCapture` rather than from GDK's
-    /// monitor list because it must match what the encoder actually sends:
-    /// `captureWidth`/`captureHeight` round down to even for I420, and
-    /// annotations are normalized against the encoded frame.
+    /// session cannot host one. Sized from `X11ScreenCapture`, not GDK's
+    /// monitor list, since `captureWidth`/`captureHeight` round down to even
+    /// for I420 and annotations are normalized against the encoded frame.
     private static func makeOverlay(display: String?) -> SharerOverlaySurface? {
         guard SharerAnnotationOverlay.isSupported else { return nil }
         guard let probe = try? X11ScreenCapture(display: display) else { return nil }
@@ -772,20 +625,17 @@ final class SharerModel: ObservableObject {
 
     // MARK: Incoming asks to share
 
-    /// Bring up (or re-point) the idle control listener.
-    ///
-    /// Idempotent per node and safe to call on every node change — which is
-    /// how it is called, because there is no single moment when "the node is
-    /// ready" that this model observes. A listener already bound to the same
-    /// node is left alone.
+    /// Bring up (or re-point) the idle control listener. Idempotent per node
+    /// and safe to call on every node change (there's no single "node ready"
+    /// moment this model observes).
     func ensureControlListener() {
         engine.ensureControlListener()
     }
 
     /// Answer an ask: reply on its own connection, and on accept pre-approve
     /// the asker and start sharing (the engine calls back into
-    /// `startSharing()` for the last step — picking a backend is this side's
-    /// job).
+    /// `startSharing()` for the last step, since picking a backend is this
+    /// side's job).
     func answerShareRequest(id: UUID, accept: Bool) {
         engine.answerShareRequest(id: id, accept: accept)
     }
@@ -796,11 +646,9 @@ final class SharerModel: ObservableObject {
     /// Whether a decision on this row is queued behind identity resolution.
     func isDeferred(rowID: String) -> Bool { engine.isDeferred(rowID: rowID) }
 
-    /// "Always Allow" / "Deny & Block" on a roster row.
-    ///
-    /// Persisting fires the engine's `onPoliciesChanged`, which pushes the map
-    /// at the live server — which is what makes a block on somebody already
-    /// watching actually expel them, rather than merely stop them coming back.
+    /// "Always Allow" / "Deny & Block" on a roster row. Persisting fires the
+    /// engine's `onPoliciesChanged`, pushing the map at the live server — what
+    /// makes a block on someone already watching actually expel them.
     func remember(rowID: String, stableID: String?, label: String, policy: PeerPolicy) {
         engine.remember(rowID: rowID, stableID: stableID, label: label, policy: policy)
     }
@@ -811,10 +659,8 @@ final class SharerModel: ObservableObject {
     }
 
     /// One-time disconnect of a connected viewer — the roster's Disconnect.
-    ///
     /// Nothing is remembered: their next HELLO goes back through the normal
-    /// admission gate. That is the difference between this and Deny & Block,
-    /// and it is why both exist.
+    /// admission gate (unlike Deny & Block).
     func disconnect(_ addr: String) { engine.disconnect(addr) }
 
     /// Admit a viewer parked at the approval gate. `addr` is the
@@ -825,17 +671,13 @@ final class SharerModel: ObservableObject {
 
     // MARK: Remote control
 
-    /// Hand the pointer and keyboard to a viewer who asked for them.
+    /// Hand the pointer and keyboard to a viewer who asked for them. The
+    /// server holds ONE grantee at a time, gated on that connection id.
+    /// Returns false when the request is already gone (not worth an alert).
     ///
-    /// The server holds ONE grantee at a time and gates injection on that
-    /// exact connection id, so this is the whole of the decision — there is no
-    /// second switch to also set. It returns false when the request is already
-    /// gone (the viewer gave up, or disconnected), which is not an error worth
-    /// an alert: the row disappears on the next snapshot either way.
-    ///
-    /// **Keyboard reaches the whole machine, not the shared window.** X11
-    /// delivers a synthetic key to whatever has focus, and scoping it is not
-    /// something XTEST can do — the same warning the macOS grant carries.
+    /// **Keyboard reaches the whole machine, not the shared window** — X11
+    /// delivers synthetic keys to whatever has focus, and XTEST can't scope
+    /// that (same warning as the macOS grant).
     @discardableResult
     func grantControl(to requestID: UUID) -> Bool {
         let granted = engine.grantControl(to: requestID)
@@ -854,11 +696,8 @@ final class SharerModel: ObservableObject {
         engine.revokeControl()
     }
 
-    /// Change the encoder knobs and remember them.
-    ///
-    /// Deliberately does NOT touch a running share: the capture backend was
-    /// built with the old values and there is no re-push path on this host, so
-    /// pretending otherwise would be a control that appears to work.
+    /// Change the encoder knobs and remember them. Deliberately does NOT
+    /// touch a running share: there's no re-push path on this host.
     func setQuality(_ new: QualitySettings) {
         let normalized = new.normalized()
         guard normalized != quality else { return }
@@ -867,12 +706,9 @@ final class SharerModel: ObservableObject {
     }
 
     /// Flip the approval gate, persist it, and push it at a live share.
-    ///
     /// Applied mid-share on purpose: `setRequireApproval(false)` drains
-    /// whoever is already parked (minus anyone remembered-deny), so turning
-    /// the gate off is also how you admit a queue in one click. Turning it on
-    /// mid-share affects the next HELLO — viewers already admitted stay
-    /// admitted, exactly as on macOS.
+    /// whoever is parked (minus remembered-deny), admitting a queue in one
+    /// click. Turning it on affects only the next HELLO — as on macOS.
     func setRequireApproval(_ enabled: Bool) {
         guard enabled != requireApproval else { return }
         requireApproval = enabled
@@ -880,19 +716,15 @@ final class SharerModel: ObservableObject {
         engine.setRequireApproval(enabled)
     }
 
-    /// A start that failed. Not private: `startSharing()` treats it as a
-    /// retryable state, and the welcome pane has to offer the button that
-    /// retries — one answer, read in both places, so a pane cannot end up
-    /// withholding a button the model would have accepted.
+    /// A start that failed. Not private: `startSharing()` and the welcome
+    /// pane's retry button both need this same read.
     var isFailed: Bool { phase.hasFailed }
 }
 
 /// A stable, tailnet-legal node name for this host's share-capable node.
-///
-/// Stable across launches on purpose: a peer that reconnects should find the
-/// same screen rather than a new one each time the app restarts. Sanitised by
-/// the shared `TailscreenInstance.nodeLabel` — tsnet hostnames are DNS labels,
-/// and this rule used to be written per-app with only this copy correct.
+/// Stable across launches so a reconnecting peer finds the same screen.
+/// Sanitised by the shared `TailscreenInstance.nodeLabel` (tsnet hostnames are
+/// DNS labels).
 @MainActor
 func localShareName() -> String {
     TailscreenInstance.nodeLabel(from: ProcessInfo.processInfo.hostName, fallback: "linux")

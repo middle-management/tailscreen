@@ -2,30 +2,24 @@ import Foundation
 import TailscreenProtocol
 import X11HotkeyKit
 
-/// The X11 half of the mute hotkey: everything about taking the chord that is
-/// this platform's, and nothing else.
-///
-/// The controller around it — when to hold, when to let go, what a press
-/// flips, what is said and how often — is `PortableMuteHotkey` in
-/// TailscreenProtocol, shared with the WinUI app and tested on Linux CI.
+/// The X11 half of the mute hotkey. The controller — when to hold/release,
+/// what a press flips, what's said and how often — is the shared
+/// `PortableMuteHotkey` in TailscreenProtocol.
 ///
 /// Two things here are genuinely X11's:
 ///
-///   * **The environment decision comes first**, and is re-taken on each
-///     acquisition rather than cached. `$DISPLAY` is set on Wayland — XWayland
-///     sets it — so a "do we have a display?" gate passes there and the grab
-///     then silently under-delivers; `X11HotkeySupport` is the same
-///     session-type-first rule `CaptureBackendSelection` uses. Re-taken because
-///     a session type can only really change across a login, but caching a "no"
-///     would also cache a transient failure to open the display.
-///   * **Detectable auto-repeat**, which the Windows side gets for free from
-///     `MOD_NOREPEAT`. Not fatal — losing the shortcut entirely is the worse
-///     trade for a case that only arises while somebody leans on a key — but a
-///     held chord may flutter the mute, so it is said once.
+///   * **The environment decision comes first, re-taken on each acquisition
+///     (not cached).** `$DISPLAY` is set under XWayland too, so a naive
+///     "do we have a display?" gate would pass on Wayland and the grab would
+///     silently under-deliver; `X11HotkeySupport` uses the same
+///     session-type-first rule as `CaptureBackendSelection`. Not cached
+///     because a transient display-open failure shouldn't stick as a
+///     permanent "no".
+///   * **Detectable auto-repeat**, which Windows gets for free from
+///     `MOD_NOREPEAT`. Not fatal here, but a held chord may flutter the mute,
+///     so it's warned about once.
 struct X11MuteHotkeyBinding: GlobalHotkeyBinding {
-    /// Where the auto-repeat warning goes. Passed in rather than written here
-    /// so this file has one console convention and the controller has the same
-    /// one.
+    /// Passed in so this file and the controller share one console convention.
     let note: @Sendable (String) -> Void
 
     func hold(
@@ -43,11 +37,8 @@ struct X11MuteHotkeyBinding: GlobalHotkeyBinding {
     }
 }
 
-/// The GTK app's mute-hotkey controller: the shared one, over the X11 binding.
-///
-/// A factory rather than a subclass because `PortableMuteHotkey` is final and
-/// has nothing left for a host to override — the whole of this app's part is
-/// the binding above and the stderr convention below.
+/// The GTK app's mute-hotkey controller: `PortableMuteHotkey` over the X11
+/// binding. A factory, not a subclass, since `PortableMuteHotkey` is final.
 @MainActor
 func makeMuteHotkeyController(
     sharerMicAvailable: @escaping @MainActor () -> Bool,

@@ -24,16 +24,14 @@ import enum TailscreenSharer.ViewerHealth
 //   tailscreen --capture-backend-report
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
-// With a host argument the viewer dials it directly. WITHOUT one it enters
-// picker mode: it brings the tsnet node up, discovers Tailscreen sharers on the
-// tailnet, and shows a native list to choose from (L4).
+// With a host argument the viewer dials it directly. Without one it enters
+// picker mode: brings the tsnet node up, discovers sharers on the tailnet,
+// and shows a native list.
 //
-// The window shows decoded video via the downstream GtkVideoView. The tsnet
-// transport (reused from Packages/TailscreenLinuxBackends) runs on the main actor as a Task that
-// swift-cross-ui's RunLoop tick services, feeding frames into the shared
-// FrameStore; `present` (main thread) requests a GLArea repaint. The live tsnet
-// leg is local-only. `--render-self-test` is the headless CI render gate (no
-// network): it renders a colour-bars frame, reads the pixels back, and exits.
+// The tsnet transport runs on the main actor as a Task that swift-cross-ui's
+// RunLoop tick services, feeding frames into the shared FrameStore; `present`
+// requests a GLArea repaint. `--render-self-test` is the headless CI render
+// gate (no network): renders color bars, reads pixels back, exits.
 
 // swift-cross-ui's `App.main()` default-constructs the app, so shared state
 // lives at module scope.
@@ -47,8 +45,7 @@ let gProfiles = ProfileStore()
 let gAnnotations = AnnotationStore()
 let gAnnoForwarder = AnnotationForwarder()
 let gSharer = SharerModel()
-// The system-wide mute hotkey. Built only on the live audio path — see the
-// comment where it is assigned.
+// The system-wide mute hotkey. Built only on the live audio path.
 var gMuteHotkey: PortableMuteHotkey?
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
@@ -58,45 +55,36 @@ var gAddAccount: (@MainActor @Sendable () -> Void)?
 var gReturnToPicker: (@MainActor @Sendable () -> Void)?
 var gOpenLogin: (@MainActor @Sendable () -> Void)?
 // The welcome pane's sign-in button: bring the active profile's node up, or —
-// when a restore already parked a login URL — open that page rather than
-// starting a second bring-up behind the one already waiting on it.
+// when a restore already parked a login URL — open that page instead of
+// starting a second bring-up behind it.
 var gSignIn: (@MainActor @Sendable () -> Void)?
-// Portable lifecycle for the current/most-recent viewer. GTK still publishes
-// its toolkit-facing phase through ViewerUIState, but reconnect identity now
-// has the same one-value invariant as macOS and Windows: row/address/token
-// cannot drift across parallel "last ..." slots.
+// Portable lifecycle for the current/most-recent viewer, matching macOS and
+// Windows: row/address/token can't drift across parallel "last ..." slots.
 var gViewerLifecycle = ViewerSessionLifecycle()
-// Redial `gViewerLifecycle.target` (the ended/failed placard's Reconnect). Wired in the
-// live block; nil in previews/self-tests, which hides the button.
-// Deliberately NOT `@Sendable`, unlike its neighbours: it captures
-// `startSession`, whose captures (the FFmpeg decoder, the audio sink) are not
-// Sendable — and it is only ever called from the main actor anyway.
+// Redial `gViewerLifecycle.target` (the ended/failed placard's Reconnect).
+// Not `@Sendable`, unlike its neighbours: it captures non-Sendable state
+// (the FFmpeg decoder, the audio sink) and only runs on the main actor.
 var gReconnect: (@MainActor () -> Void)?
 // Join a share-by-token session with a parsed token (the hub's join card).
-// Same non-`@Sendable` reasoning as `gReconnect`: it captures `startSession`.
 var gJoinShare: (@MainActor (String) -> Void)?
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
-// Headless SHARER gate: draw a known stroke on the annotation overlay and read
-// the screen back through X11 capture to prove it landed. See OverlaySelfTest.
+// Headless SHARER gate: draw a known stroke on the annotation overlay and
+// read the screen back through X11 capture. See OverlaySelfTest.
 let gOverlaySelfTest = gArgs.contains("--overlay-self-test")
 let gOverlayInputSelfTest = gArgs.contains("--overlay-input-self-test")
 let gOutlineSelfTest = gArgs.contains("--outline-self-test")
-// Which capture backend this machine would use, and why. Prints and exits;
-// raises no dialog. Covers the wiring between the environment and
-// `CaptureBackendSelection`, which its unit tests cannot reach.
+// Which capture backend this machine would use, and why. Covers the wiring
+// between the environment and `CaptureBackendSelection` that unit tests
+// can't reach.
 if gArgs.contains("--capture-backend-report") {
     CaptureBackendReport.run()
 }
-// Headless chrome preview: render the hub with fake data and no networking, for
-// screenshots / visual review under Xvfb. Never used in a real run.
+// Headless chrome preview: render the hub with fake data, no networking.
 let gUIPreview = gArgs.contains("--ui-preview")
-// The one preview state that is NOT signed in: the pane a first launch now
-// opens on, where the two no-account ways in earn their place. A modifier on
-// the seeded preview rather than its own branch — everything the hub seeds is
-// still wanted behind it, so the flag is the only difference between the two
-// screenshots. Spelled as the macOS and WinUI apps spell it, so one screenshot
-// job drives all three with one vocabulary.
+// The signed-out pane a first launch opens on. A modifier on the seeded
+// preview, not its own branch, so it's the only difference between the two
+// screenshots. Spelled like the macOS/WinUI equivalent.
 let gUIPreviewWelcome = gArgs.contains("--ui-preview-welcome")
 // True when launched with no host arg → the picker drives host selection.
 var gPickerMode = false
@@ -111,8 +99,7 @@ func fail(_ message: String) -> Never {
 }
 
 /// Open a URL in the local browser (best-effort) — the same `xdg-open` hop
-/// `gOpenLogin` takes, shared so the empty list's install CTA does not grow a
-/// second spelling of it.
+/// `gOpenLogin` takes.
 @MainActor
 func openInBrowser(_ urlString: String) {
     let process = Process()
@@ -121,19 +108,11 @@ func openInBrowser(_ urlString: String) {
     try? process.run()
 }
 
-/// Parse the live-run arguments. The host is OPTIONAL — its absence selects
-/// picker mode. The returned `ViewerConfig` carries an empty hostname then
-/// (`prepare` ignores hostname; the chosen sharer's IP fills it in before `run`).
 /// The sharer's playback sink for viewers' voices, opened on first use.
-///
-/// Separate from the viewer's `audioSink` because the two are alive at
-/// different times — this app can share while not watching — and because
-/// sharing one would mean a viewing session's teardown silently taking the
-/// share's audio with it. Failure is best-effort and permanent for the
-/// process: a machine with no output device shares fine, it just cannot hear.
-/// A holder rather than a bare global: `main.swift` is top-level code, where a
-/// `var` cannot carry a global actor, and this is only ever touched from the
-/// main actor.
+/// Separate from the viewer's `audioSink`: the two are alive at different
+/// times (this app can share while not watching), and sharing one would let
+/// a viewing session's teardown take the share's audio with it. A holder,
+/// not a bare global, since top-level `var` can't carry a global actor.
 @MainActor
 final class SharerVoiceSink {
     static let shared = SharerVoiceSink()
@@ -172,10 +151,8 @@ func parseConfig() -> (
         let arg = args.removeFirst()
         switch arg {
         case "--join":
-            // A share-by-token session from the command line — accepts the
-            // same inputs as the hub's join card (bare token or a
-            // `tailscreen:` link). Mutually exclusive with a host: each names
-            // a different way to reach one sharer.
+            // Same inputs as the hub's join card (bare token or a
+            // `tailscreen:` link). Mutually exclusive with a host.
             guard let value = args.first else { fail("--join needs a token or tailscreen: link") }
             guard let token = ShareLinkFormat.token(fromUserInput: value) else {
                 fail("--join: that doesn't look like a share token or tailscreen: link")
@@ -200,9 +177,9 @@ func parseConfig() -> (
         case let other where other.hasPrefix("--"):
             fail("unknown option \(other)")
         default:
-            // A scheme-handler launch: the .desktop's `Exec=tailscreen %u`
-            // hands the clicked link over as a positional argument, so a
-            // `tailscreen:` URL is join input, never a hostname.
+            // A scheme-handler launch (`Exec=tailscreen %u`) hands the clicked
+            // link over positionally, so a `tailscreen:` URL is join input,
+            // never a hostname.
             if arg.lowercased().hasPrefix("\(ShareLinkFormat.scheme):") {
                 guard joinToken == nil else { fail("more than one join link — pass one") }
                 guard let token = ShareLinkFormat.token(fromUserInput: arg) else {
@@ -225,9 +202,8 @@ func parseConfig() -> (
 }
 
 /// The transport's close reason as the UI's end reason. The wire carries ONE
-/// deny byte for both a declined approval and a mid-session kick; whether an
-/// SSRC had been assigned (`wasAdmitted`) is what splits the wording — the
-/// same context split the macOS viewer applies.
+/// deny byte for both a declined approval and a mid-session kick;
+/// `wasAdmitted` (was an SSRC assigned) splits the wording, as on macOS.
 func sessionEndReason(
     _ reason: ViewerCloseReason, wasAdmitted: Bool
 ) -> ViewerUIState.EndReason {
@@ -240,36 +216,25 @@ func sessionEndReason(
 }
 
 if gSelfTest {
-    // Headless render gate: a colour-bars frame the GtkVideoView renders and
-    // the self-test verifies via glReadPixels. No transport.
+    // Headless render gate: color bars the self-test verifies via
+    // glReadPixels. No transport.
     gStore.set(makeColorBarsFrame())
 } else if gOverlaySelfTest {
-    // Headless SHARER-overlay gate. Scheduled rather than run here: it needs
-    // the GTK main loop up to create a window and to service the repaint it
-    // posts, and swift-cross-ui ticks RunLoop.main, so a main-queue block set
-    // now runs once the app is live. It exits the process itself, pass or fail.
+    // Scheduled, not run inline: needs the GTK main loop up to create a
+    // window and service its repaint. Exits the process itself.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OverlaySelfTest.run() }
 } else if gOverlayInputSelfTest {
-    // The other half of the same window: can it take the pointer back from the
-    // desktop when a tool is armed, and give it up again on Escape. Same
-    // scheduling reason as above.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OverlayInputSelfTest.run() }
 } else if gOutlineSelfTest {
-    // The recording indicator: does the border reach a real desktop, and does
-    // it leave the middle of the screen alone. Same scheduling reason again.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OutlineSelfTest.run() }
 } else if gUIPreview {
-    // Headless chrome preview: seed the picker with fake sharers and render the
-    // hub without any networking, so the UI can be screenshotted / reviewed.
+    // Headless chrome preview: seed the picker with fake sharers, no
+    // networking, for screenshots under Xvfb.
     gPickerMode = true
-    // `--ui-preview-welcome` holds the pane a first launch now opens on: the
-    // sign-in card over the two ways in that need no account. Everything
-    // below still seeds, so the flag is the only difference between the two
-    // screenshots.
     gPicker.phase = gUIPreviewWelcome ? .signedOut : .ready
     gSignIn = {}
-    // Tagged and untagged, online and offline, so the header's filter menu has
-    // every axis to show in a screenshot.
+    // Tagged and untagged, online and offline, so the filter menu has every
+    // axis to show.
     gPicker.sharers = [
         DiscoveredSharer(id: "1", hostname: "robert-macbook", tailscaleIP: "100.64.0.12", isOnline: true),
         DiscoveredSharer(
@@ -279,9 +244,7 @@ if gSelfTest {
             id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44", isOnline: false,
             tags: ["tag:media"])
     ]
-    // The preview is a screenshot surface, not a returning user: show the whole
-    // seeded list (including the offline row) regardless of what this machine
-    // happens to have persisted.
+    // Show the whole seeded list regardless of what this machine persisted.
     gPicker.setFilter(.default, persist: false)
     gPicker.shareInfo = [
         "1": TailscreenMetadata(
@@ -292,19 +255,15 @@ if gSelfTest {
     // Show the account menu in the preview (no-op actions).
     gSwitchProfile = { _ in }
     gAddAccount = {}
-    // Render the "Join a Share…" card too (no-op): the live idle hub always
-    // offers it, and a screenshot without it under-sells the shipped chrome.
+    // Render the "Join a Share…" card too (no-op), since the live idle hub
+    // always offers it.
     gJoinShare = { _ in }
-    // `--ui-preview-video` jumps straight to the video state (a color-bars
-    // frame) so the window-grows-to-video behaviour is screenshot-reviewable.
+    // Jump straight to the video state so window-grows-to-video is
+    // screenshot-reviewable.
     if gArgs.contains("--ui-preview-video") {
-        // A 16:9 gradient stand-in for real video — big enough that the
-        // annotation overlay is legible in a screenshot. (The CI render
-        // self-test keeps using the small colour-bars frame, which its pixel
-        // assertions are calibrated against.)
+        // A 16:9 gradient stand-in, big enough for the annotation overlay to
+        // be legible.
         gStore.set(makePreviewFrame(width: 960, height: 540))
-        // Name the fake peer so the watching bar's "Watching <host>" reads as
-        // it would live rather than trailing off into nothing.
         gViewerLifecycle.begin(
             ViewerSessionTarget(
                 host: "100.64.0.12",
@@ -321,11 +280,8 @@ if gSelfTest {
         gUIState.activeTool = .pen
         // One stroke per tool so the overlay + shape geometry are both visible.
         func seed(_ tool: AnnotationTool, _ points: [CGPoint], _ colorIndex: Int) {
-            // Dated absurdly far ahead on purpose. `.click` is an EPHEMERAL
-            // stroke (0.8 s — `ReceivedAnnotations.ephemeralLifetimeNs`), and
-            // this canvas exists to be photographed by the screenshot job
-            // seconds after launch; seeded against the real clock the marker
-            // would be swept before the shutter fired.
+            // Dated far ahead on purpose: `.click` is ephemeral (0.8s) and
+            // would otherwise be swept before the screenshot's shutter fires.
             gAnnotations.apply(
                 .add(
                     Annotation(
@@ -345,11 +301,9 @@ if gSelfTest {
         gUIState.sessionPhase = .awaitingApproval
     }
     // The share card mid-share: preview thumbnail, drawing toolbar, a viewer
-    // row with its remember/kick actions. The one hub state the screenshot job
-    // never covered — which is how its clipped layout shipped unseen.
+    // row with its remember/kick actions.
     if gArgs.contains("--ui-preview-sharing") {
-        // A 16:10 gradient stand-in at the scaler's real output size, so the
-        // card lays out against exactly what a live capture hands it.
+        // A 16:10 gradient stand-in at the scaler's real output size.
         let (width, height) = (360, 225)
         var rgba = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height {
@@ -362,9 +316,7 @@ if gSelfTest {
         }
         gSharer.seedForUIPreview(
             preview: ThumbnailScaler.Thumbnail(width: width, height: height, rgba: rgba),
-            // Two rows, one healthy and one not, so the screenshot carries
-            // both dot colours and the health sentence that must always
-            // accompany them.
+            // One healthy row and one not, so both dot colours show.
             viewers: [
                 ConnectedViewer(
                     id: "100.64.0.12:52411", label: "robert-macbook",
@@ -373,8 +325,7 @@ if gSelfTest {
                     id: "100.64.0.44:39120", label: "living-room-tv",
                     stableID: "stable-2", health: .degraded)
             ],
-            // One viewer parked at the gate, so the approval prompt — the
-            // highest-stakes row this card renders — is in the screenshot.
+            // One viewer parked at the gate, so the approval prompt is shown.
             pending: [
                 PendingViewer(
                     id: "100.64.0.31:41822", label: "studio-imac", stableID: nil)
@@ -383,26 +334,18 @@ if gSelfTest {
     }
 } else {
     // Live path: reuse the tsnet transport, driving decoded frames into the
-    // shared store. The transport is @MainActor; started as a Task here, it
-    // runs interleaved with the GTK loop (swift-cross-ui ticks RunLoop.main),
-    // so `present` — and thus the GLArea repaint — happens on the main thread.
+    // shared store. @MainActor, started as a Task, interleaved with the GTK
+    // loop (swift-cross-ui ticks RunLoop.main).
     let (baseConfig, host, wantAudio, explicitStateDir, joinToken) = parseConfig()
-    // Picker mode is decided by the command line (no host argument), so decide
-    // it HERE, before anything reads it. It used to be set where the picker
-    // block starts — below `transport.retainsNodeAcrossSessions = gPickerMode`,
-    // which therefore always read false: the first viewing session's teardown
-    // took the sharer's borrowed node down with it, so "Share my screen" then
-    // failed with "Tailscale isn't up yet" while the peer list sat silently
-    // stale (quietRefresh swallows discovery failures by design).
-    // `--join` is the guest twin of the direct-host path: one named session,
-    // no picker.
+    // Decided here, before anything reads it — must be set before
+    // `transport.retainsNodeAcrossSessions` below, or the first viewing
+    // session's teardown takes the sharer's borrowed node down with it.
     gPickerMode = host == nil && joinToken == nil
     let sink = GtkVideoSink(store: gStore, uiState: gUIState)
     let transport = TsnetTransport()
-    // Audio out: an ALSA sink fronted by a background thread so its blocking
-    // device write never runs on the GTK main thread (the transport loop is
-    // serviced by RunLoop.main). Best-effort — a missing/busy device (or a
-    // headless box) shouldn't block viewing, so failure just drops to video-only.
+    // ALSA sink fronted by a background thread so its blocking device write
+    // never runs on the GTK main thread. Best-effort: failure just drops to
+    // video-only.
     var audioSink: AudioSink?
     if wantAudio {
         do {
@@ -411,10 +354,8 @@ if gSelfTest {
             FileHandle.standardError.write(Data("warning: audio disabled (\(error))\n".utf8))
         }
     }
-    // Audio in: the same best-effort rule, and the same reason it is built
-    // here rather than per session — opening a capture device is the slow,
-    // failable part, and a box with no microphone should discover that once.
-    // Nil means no mic control is offered at all, which is the honest answer.
+    // Same best-effort rule, built once (not per session) since opening a
+    // capture device is the slow, failable part. Nil means no mic control.
     var microphone: MicrophoneCapturing?
     if wantAudio {
         do {
@@ -425,68 +366,53 @@ if gSelfTest {
         }
     }
     // Inbound back-channel handlers: control grant/revoke drive the toolbar's
-    // state machine. Inbound annotation *rendering* (drawing relayed strokes on
-    // an overlay canvas) is a follow-up — the plumbing already carries the ops.
-    // Relay finalized local annotation ops; apply relayed ops to the canvas.
+    // state machine. Relay finalized local annotation ops; apply relayed ops.
     gAnnotations.onLocalOp = { op in gAnnoForwarder.submit(op) }
     let backChannelHandlers = ViewerBackChannel.Handlers(
         onAnnotation: { op in gAnnotations.apply(op) },
         onControlGranted: { gUIState.setControlState(.active) },
         onControlRevoked: { reason in gUIState.setControlState(.revoked(reason: reason)) })
 
-    // The sharer borrows this transport's node rather than bringing up its own
-    // — one app, one tailnet identity. `retainsNodeAcrossSessions` is what
-    // makes that safe: without it the node goes down when a viewing session
-    // ends, which would silently kill an in-progress share.
+    // The sharer borrows this transport's node — one app, one tailnet
+    // identity. `retainsNodeAcrossSessions` stops the node going down when a
+    // viewing session ends and silently killing an in-progress share.
     transport.retainsNodeAcrossSessions = gPickerMode
     gSharer.nodeProvider = { transport.liveNode }
-    // The sharer's own voice: the same ALSA ends the viewer uses, handed over
-    // as closures so `SharerModel` names no audio library. The factory is
-    // called at share start and the device released at share stop — a
-    // long-lived open would keep the microphone indicator lit while idle.
+    // The sharer's own voice, handed over as closures so `SharerModel` names
+    // no audio library. Factory opens at share start, releases at stop.
     if wantAudio {
         gSharer.microphoneFactory = { try makeALSAMicrophone() }
-        // Built on first use and kept for the process: unlike capture, an
-        // output device that is open but silent costs nothing and shows
-        // nothing, and reopening it per share would add a stall to Stop/Start.
+        // Kept for the process: an idle-but-open output device costs nothing,
+        // and reopening it per share would stall Stop/Start.
         gSharer.playRemoteVoice = { pcm in SharerVoiceSink.shared.resolve()?.play(pcm) }
     }
 
-    // Mute from OUTSIDE the window. The in-window buttons only exist while the
-    // app is in front of you, and during a share it is behind whatever you are
-    // showing — which is exactly when muting matters most.
-    //
-    // The two microphones stay separate (`toggleMic` vs `toggleShareMic`);
-    // `MuteHotkeyRouting` picks which one the single chord flips, and the
-    // controller holds the grab only while there is one to flip.
+    // Mute from outside the window: during a share this window sits behind
+    // whatever's shown, exactly when muting matters most.
     if wantAudio {
         gMuteHotkey = makeMuteHotkeyController(
             sharerMicAvailable: { gSharer.micAvailable },
             viewerMicAvailable: { gUIState.micAvailable },
             toggleSharerMic: { gSharer.toggleMic() },
             toggleViewerMic: { gVoice.toggle() })
-        // Mirror the chord's failure into the model the share card observes:
+        // Mirror the chord's failure into the model the share card observes —
         // the controller's own report goes to stderr, which reaches nobody
-        // mid-share, and an unregistered mute shortcut looks exactly like one
-        // that works — until it is trusted.
+        // mid-share.
         gMuteHotkey?.onUnavailabilityChange = { reason in
             gSharer.setMuteHotkeyUnavailability(reason)
         }
         gMuteHotkey?.start()
     }
 
-    // Run a viewing session against a chosen host/IP. Shared by the direct-host
-    // path, the picker's selection callback, and the ended placard's Reconnect
-    // (all on the main actor). Drives the session-lifecycle placard; the way
-    // OUT of an ended session is the placard's own Reconnect / Back buttons —
-    // no timed auto-return, because a sentence that explains why a session
-    // ended must stay readable until the person acts on it.
+    // Run a viewing session against a chosen host/IP. Shared by the
+    // direct-host path, the picker's selection, and Reconnect. No timed
+    // auto-return from an ended session — the explanation must stay readable
+    // until the person acts.
     func startSession(host dialHost: String, displayName: String, guestToken: String? = nil) {
         var config = baseConfig
         if let guestToken {
-            // Share-by-token: the token names the relay and the sharer, so
-            // everything tailnet-related in `baseConfig` is inert — the
-            // transport skips node bring-up entirely.
+            // The token names the relay and sharer, so everything
+            // tailnet-related in `baseConfig` is inert.
             config = ViewerConfig(guestToken: guestToken)
         } else {
             config.hostname = dialHost
@@ -498,21 +424,15 @@ if gSelfTest {
         gAnnotations.resetForNewSession()
         gUIState.beginSession()
         gUIState.setMicAvailable(false)
-        // A reference box for the transport's end verdict, set from the
-        // @Sendable onEnded callback (both it and the post-run read run on
-        // MainActor). nil after `run` returns means the USER ended it (the
-        // placard's Cancel / the in-session Stop via `closeRequested`).
+        // Set from the @Sendable onEnded callback; nil after `run` returns
+        // means the USER ended it (Cancel / in-session Stop).
         final class EndedBox: @unchecked Sendable {
             var value: (reason: ViewerCloseReason, wasAdmitted: Bool)?
         }
         let ended = EndedBox()
         Task { @MainActor in
-            // A fresh decoder per session (matching the Windows host, and the
-            // mac client's per-connect `VideoDecoder`): no stale codec context
-            // leaks across sessions, and creating it here — inside the main
-            // actor, where the transport drives it and where the ladder's
-            // reset callback fires — is what lets both hold it without
-            // crossing an isolation region.
+            // A fresh decoder per session (matching Windows/mac): no stale
+            // codec context leaks across sessions.
             let decoder = FFmpegVideoDecoder()
             do {
                 try await transport.run(
@@ -520,9 +440,7 @@ if gSelfTest {
                     audioSink: audioSink, shouldClose: { gUIState.closeRequested },
                     backChannelHandlers: backChannelHandlers,
                     microphone: microphone,
-                    // `attach` publishes availability itself, off the latch —
-                    // a second `setMicAvailable(true)` here would be the UI
-                    // asserting a capability the latch had not granted.
+                    // `attach` publishes availability itself, off the latch.
                     onVoiceReady: { uplink in
                         guard gViewerLifecycle.isActive(sessionID) else { return }
                         gVoice.attach(uplink)
@@ -538,10 +456,6 @@ if gSelfTest {
                     onAdmitted: { caps in
                         Task { @MainActor in
                             guard gViewerLifecycle.markViewing(for: sessionID) else { return }
-                            // The sharer's caps decide, guest or tailnet: the
-                            // back-channel rides the guest tunnel too now, and
-                            // a sharer that predates it doesn't advertise these
-                            // bits over a link in the first place.
                             gUIState.setCaps(
                                 remoteControl: caps.contains(.remoteControl),
                                 annotations: caps.contains(.annotations))
@@ -558,18 +472,14 @@ if gSelfTest {
                     onEnded: { reason, wasAdmitted in
                         ended.value = (reason, wasAdmitted)
                     },
-                    // Decode-recovery ladder opt-in: at the wedged-decoder rung
-                    // drop the lazy libavcodec context so the next AU (a fresh
-                    // keyframe — the session asks for one) rebuilds it.
+                    // Decode-recovery ladder opt-in: drop the lazy libavcodec
+                    // context so the next (fresh-keyframe) AU rebuilds it.
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: {
                         guard gViewerLifecycle.isActive(sessionID) else { return }
-                        // Terminal rung: say so over the frozen frame rather
-                        // than taking it away (`noteVideoStalled` owns that
-                        // rule, including the one case that still fails the
-                        // session). Unlatch the sink first, so a frame that
-                        // decodes later re-announces video and clears the
-                        // banner by itself.
+                        // Say so over the frozen frame (`noteVideoStalled`
+                        // owns that rule). Unlatch the sink first, so a later
+                        // decode re-announces video and clears the banner.
                         sink.resetForNewSession()
                         gUIState.noteVideoStalled(
                             L(
@@ -580,8 +490,6 @@ if gSelfTest {
                 FileHandle.standardError.write(Data("session ended\n".utf8))
                 gVoice.detach()
                 if let end = ended.value {
-                    // Sharer stop / deny / kick / timeout / socket death: the
-                    // placard explains it and offers Reconnect / Back.
                     let reason = sessionEndReason(end.reason, wasAdmitted: end.wasAdmitted)
                     guard gViewerLifecycle.end(reason, for: sessionID) else { return }
                     gUIState.post(sessionPhase: .ended(reason))
@@ -605,13 +513,10 @@ if gSelfTest {
     }
 
     // The ended/failed placard's Reconnect: redial whoever this session (or
-    // the last one) dialed. The picker's row callback is not reusable here —
-    // the peer may have dropped off the refreshed list while their share
-    // merely restarted.
+    // the last one) dialed. Not the picker's row callback: the peer may have
+    // dropped off the refreshed list while their share merely restarted.
     gReconnect = {
         guard let target = gViewerLifecycle.target else { return }
-        // A guest session redials by token — its dial host is empty, and the
-        // token stays valid as long as the sharer's link is up.
         startSession(
             host: target.host, displayName: target.displayName,
             guestToken: target.guestToken)
@@ -629,17 +534,14 @@ if gSelfTest {
         // Direct guest connect — a token was named on the command line.
         startSession(host: "", displayName: L("Shared screen"), guestToken: joinToken)
     } else {
-        // Picker mode (gPickerMode, set above): bring the node up, discover
-        // sharers, and let the user choose. Dialing the chosen sharer's tailnet
-        // IP (not its hostname) also sidesteps the `from == dest`
-        // hostname-match limitation.
+        // Picker mode: bring the node up, discover sharers, let the user
+        // choose. Dials the tailnet IP, not the hostname, sidestepping the
+        // `from == dest` hostname-match limitation.
         gPicker.onSelect = { sharer in
             startSession(host: sharer.tailscaleIP, displayName: sharer.displayName)
         }
-        // Ask a machine to start sharing. The task parks for up to two minutes
-        // on the far side, so nothing here awaits it inline — the row shows
-        // that the ask is outstanding and the window stays usable, including
-        // for viewing a different screen that came free meanwhile.
+        // Ask a machine to start sharing. Parks for up to two minutes on the
+        // far side; nothing here awaits it inline, so the window stays usable.
         gPicker.onAskToShare = { sharer in
             let id = sharer.id
             let ip = sharer.tailscaleIP
@@ -648,70 +550,52 @@ if gSelfTest {
                 let outcome = await transport.requestToShare(ip: ip, from: localShareName())
                 switch outcome {
                 case .accepted:
-                    // Not a success message: they are still choosing what to
-                    // show, and their share appears in this list on its own
-                    // when it starts.
                     gPicker.finishAsking(
                         id, outcome: L("Accepted — they're choosing what to share"))
                 case .declined:
                     gPicker.finishAsking(id, outcome: L("Declined"))
                 case .noAnswer:
-                    // One wording for away, closed and too-old-to-understand,
-                    // because the asker cannot act on the difference.
+                    // One wording for away/closed/too-old, since the asker
+                    // can't act on the difference.
                     gPicker.finishAsking(id, outcome: L("No reply"))
                 }
             }
         }
 
-        // Discover sharers on the live node, then sweep their live share status
-        // (name / resolution) concurrently. Reused by the initial bring-up and
-        // the header Refresh, so the list can be re-listed without re-login.
+        // Discover sharers on the live node, then sweep their live share
+        // status concurrently. Reused by the initial bring-up and Refresh.
         @Sendable func discoverAndSweep() {
             Task { @MainActor in
                 do {
                     gPicker.phase = .discovering
                     let peers = try await transport.discoverPeers()
-                    // Raw and unfiltered: the source of truth the header's
-                    // filter projects from (and what its tag menu enumerates).
-                    // Hiding offline machines is now the filter's job — and it
-                    // defaults to on, so the list looks unchanged. Only the
-                    // metadata sweep stays online-only: dialing a machine tsnet
-                    // says is down buys nothing but a timeout.
+                    // Raw and unfiltered, for the header filter to project
+                    // from. Only the metadata sweep stays online-only: dialing
+                    // a machine tsnet says is down buys nothing but a timeout.
                     gPicker.sharers = peers
                     let online = peers.filter { $0.isOnline }
-                    // Prune share status for peers no longer online — same
-                    // rule as quietRefresh below. Without it a peer that left
-                    // discovery kept its `shareInfo` entry, so the same id
-                    // returning later showed a stale "Sharing" chip until its
-                    // next probe landed.
+                    // Prune share status for peers no longer online, or a
+                    // returning id shows a stale "Sharing" chip until its next
+                    // probe lands.
                     gPicker.shareInfo = PeerShareStatusMap.pruned(
                         gPicker.shareInfo, toPresent: Set(online.map(\.id)))
-                    // Label the header with the tailnet these rows belong to
-                    // (falling back to the login) — set before `.ready`, so
-                    // the placard never flashes the old guidance text.
+                    // Set before `.ready`, so the placard never flashes the
+                    // old guidance text.
                     gPicker.tailnetName = transport.tailnetName
                     gPicker.accountIdentity = transport.accountIdentity
                     gPicker.phase = .ready
-                    // Start answering asks to share. Here rather than at
-                    // bring-up because a successful discovery is the first
-                    // point at which the node is provably usable, and it is
-                    // idempotent per node — so the 10 s auto-refresh also
-                    // re-points it after a profile switch brings a different
-                    // node up.
+                    // Idempotent per node, so the 10s auto-refresh also
+                    // re-points it after a profile switch.
                     gSharer.ensureControlListener()
-                    // Lazy per-sharer probe: the sharing chip + resolution, and
-                    // the round-trip time behind the detail pane's Route line —
-                    // one dial, not two, since this was already a TCP round trip
-                    // over the live path.
+                    // One dial, not two: the sharing chip + resolution and the
+                    // route's latency come off the same probe.
                     await withTaskGroup(of: (String, PeerProbe).self) { group in
                         for sharer in online {
                             group.addTask { (sharer.id, await transport.probePeer(ip: sharer.tailscaleIP)) }
                         }
                         for await (id, probe) in group {
-                            // No answer CLEARS the chip rather than keeping the
-                            // last one — see `PeerShareStatusMap`. `probePeer`
-                            // already reports no latency without an answer, so
-                            // the two stay in step.
+                            // No answer CLEARS the chip rather than keeping
+                            // the last one — see `PeerShareStatusMap`.
                             gPicker.shareInfo = PeerShareStatusMap.recording(
                                 probe.metadata, for: id, in: gPicker.shareInfo)
                             gPicker.latencyMs[id] = probe.latencyMs
@@ -725,11 +609,9 @@ if gSelfTest {
         }
         gPicker.onRefresh = { discoverAndSweep() }
 
-        // Quiet auto-refresh: while the list is showing, re-list every 10 s
-        // WITHOUT flipping to the "discovering…" placard, so peers coming/going
-        // are reflected live (a lightweight stand-in for an IPN-bus subscription;
-        // full IPN wiring is a follow-up). Skips while a session/bring-up is in
-        // flight (phase is not ready).
+        // Quiet auto-refresh: re-list every 10s without flipping to the
+        // "discovering…" placard. Skips while a session/bring-up is in
+        // flight.
         @Sendable func quietRefresh() {
             Task { @MainActor in
                 guard gPicker.phase.isReady else { return }
@@ -743,14 +625,9 @@ if gSelfTest {
                     for sharer in online {
                         group.addTask { (sharer.id, await transport.probePeer(ip: sharer.tailscaleIP)) }
                     }
-                    // Exactly what `discoverAndSweep` does, which it did not
-                    // used to: this pass once KEPT the previous answer when a
-                    // probe came back empty, so the same chip meant different
-                    // things depending on which refresh ran last — and a
-                    // machine that stopped sharing and stopped answering in the
-                    // same window kept reading "Sharing" until it either
-                    // answered again or left the tailnet. A no-answer is
-                    // status-unknown, so it clears; see `PeerShareStatusMap`.
+                    // Same rule as `discoverAndSweep`: a no-answer is
+                    // status-unknown, so it clears rather than keeping the
+                    // last chip; see `PeerShareStatusMap`.
                     for await (id, probe) in group {
                         gPicker.shareInfo = PeerShareStatusMap.recording(
                             probe.metadata, for: id, in: gPicker.shareInfo)
@@ -773,11 +650,8 @@ if gSelfTest {
             gUIState.returnToPickerState()
             gAnnotations.resetForNewSession()
             gPicker.endDialing()
-            // Where "back" goes depends on whether there is a tailnet behind
-            // this window at all. A guest who joined by link while signed out
-            // has no node and no list: dropping them on an empty Screens list
-            // would answer "where did everyone go" with a tailnet problem
-            // they do not have. Back to the pane they came from instead.
+            // A signed-out link guest has no node and no list; send them back
+            // to the pane they came from instead of an empty Screens list.
             guard transport.liveNode != nil else {
                 gPicker.phase = .signedOut
                 return
@@ -801,15 +675,10 @@ if gSelfTest {
             explicitStateDir ? baseConfig.statePath : profile.statePath
         }
 
-        /// Has this profile ever signed in? — i.e. is there tsnet state on
-        /// disk worth restoring.
-        ///
-        /// The whole difference between "restore the session I already have"
-        /// and "start a login nobody asked for", and the same test the macOS
-        /// hub's `attemptSessionRestore` makes: an empty (or absent) state
-        /// directory means a first launch or a freshly added account, where
-        /// bringing a node up would emit a browser login URL the person never
-        /// asked for and leave the window saying "Waiting for login…".
+        /// Has this profile ever signed in? Distinguishes "restore the
+        /// session I already have" from "start a login nobody asked for" —
+        /// an empty state dir means a first launch that shouldn't emit a
+        /// browser login URL unprompted.
         @Sendable func hasSavedLogin(_ profile: ViewerProfile) -> Bool {
             let path = stateDir(for: profile)
             let contents = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
@@ -818,13 +687,10 @@ if gSelfTest {
 
         // Bring up (or switch to) a profile: tear the current node down, reset
         // the picker, prepare under the profile's state dir, then discover.
-        //
-        // `restoring` is the silent half: a launch reviving a saved session,
-        // not a person asking to sign in. If that state turns out to need the
-        // browser after all, the pane goes back to signed-out carrying the URL
-        // — the node stays parked in `up()` waiting on exactly that page, so
-        // the button opens it rather than starting a second bring-up behind
-        // the first.
+        // `restoring` is the silent half (a launch reviving a saved session);
+        // if it turns out to need the browser after all, the pane goes back
+        // to signed-out carrying the URL rather than starting a second
+        // bring-up behind the parked one.
         @Sendable func bringUp(
             profile: ViewerProfile, restoring: Bool = false, switching: Bool = false
         ) {
@@ -834,18 +700,15 @@ if gSelfTest {
                 gPicker.sharers = []
                 gPicker.shareInfo = [:]
                 gPicker.endDialing()
-                // Set on every path through here, so a plain sign-in after a
-                // switch clears it rather than inheriting the last one's word.
+                // Set on every path so a plain sign-in after a switch clears
+                // it rather than inheriting the last one's word.
                 gPicker.isSwitchingAccount = switching
                 gPicker.phase = .startingNode
                 var config = baseConfig
                 config.statePath = stateDir(for: profile)
-                // Register under a discoverable name when this host can share:
-                // `isTailscreenServerHostname` excludes the viewer prefix, so a
-                // viewer-named node could never be picked by anyone. The cost
-                // is that the app appears in peers' lists while idle — which is
-                // exactly what the macOS app does, with the "only screens being
-                // shared" filter (a metadata probe) telling idle from sharing.
+                // Register under a discoverable name when this host can
+                // share, same as macOS (idle vs. sharing is told apart by the
+                // metadata probe, not by hiding idle nodes).
                 if gSharer.canShare {
                     config.nodeRole = .shareCapable(name: localShareName())
                 }
@@ -856,9 +719,8 @@ if gSelfTest {
                             Task { @MainActor in
                                 gPicker.loginURL = url.absoluteString
                                 guard restoring else { return }
-                                // The saved state did not authenticate. Say so
-                                // where the way out is, instead of sitting on
-                                // a login the person never started.
+                                // The saved state didn't authenticate; say so
+                                // rather than sit on an unstarted login.
                                 gPicker.phase = .failed(
                                     L("Your saved Tailscale sign-in needs renewing."))
                             }
@@ -871,9 +733,6 @@ if gSelfTest {
                     discoverAndSweep()
                 } catch {
                     FileHandle.standardError.write(Data("node bring-up failed: \(error)\n".utf8))
-                    // Back to the pane the button is on, carrying the reason —
-                    // an empty screens list would blame the tailnet for a node
-                    // that never came up.
                     gPicker.phase = .failed(L("Could not start Tailscale: \(error)"))
                 }
             }
@@ -886,16 +745,12 @@ if gSelfTest {
             bringUp(profile: gProfiles.active, switching: true)
         }
         gAddAccount = {
-            // Also a switch as far as the window is concerned: the node this
-            // one is on goes down and another comes up in its place.
             bringUp(profile: gProfiles.addProfile(), switching: true)
         }
-        // The welcome pane's button. A parked login URL means a node is
-        // already blocked in `up()` waiting on that page — opening it is the
-        // way through; a second bring-up would only queue behind it.
+        // A parked login URL means a node is already blocked waiting on that
+        // page — open it rather than queue a second bring-up behind it.
         gSignIn = {
             if gPicker.loginURL != nil {
-                // Not a switch: this is the parked login being opened.
                 gPicker.isSwitchingAccount = false
                 gPicker.phase = .startingNode
                 gOpenLogin?()
@@ -903,17 +758,14 @@ if gSelfTest {
             }
             bringUp(profile: gProfiles.active)
         }
-        // A share started from the welcome pane has no node behind it — it is
-        // a link-only share. Nowhere else: mid-bring-up the node is nil too,
-        // and Start there means "share on my tailnet", not "share to
-        // strangers by link instead".
+        // A share started from the welcome pane is link-only. Only there:
+        // mid-bring-up the node is nil too, and Start then means "share on
+        // my tailnet".
         gSharer.linkOnlyShareAllowed = { gPicker.phase.isSignedOut }
 
-        // Restore a saved session, or sit on the welcome pane. NOT an
-        // unconditional bring-up: this app used to open by starting a tsnet
-        // node nobody had asked it to, so a first launch met the person with a
-        // login they had not begun — and the two things they can do without an
-        // account at all (join by link, share by link) were behind it.
+        // Restore a saved session, or sit on the welcome pane — never an
+        // unconditional bring-up, so a first launch doesn't meet the person
+        // with an unrequested login.
         if hasSavedLogin(gProfiles.active) {
             bringUp(profile: gProfiles.active, restoring: true)
         }
@@ -949,9 +801,7 @@ struct ViewerApp: App {
     private var showingPickerList: Bool { picker.phase.isReady }
 
     /// The tailnet card's body copy: the pitch by default, or whatever went
-    /// wrong — a failed bring-up, or a saved sign-in that turned out to need
-    /// the browser again. The reason belongs on the card the retry button is
-    /// on, not in a status line somewhere else.
+    /// wrong.
     private var welcomeTailnetMessage: String {
         picker.signInNote
             ?? L(
@@ -959,22 +809,16 @@ struct ViewerApp: App {
             )
     }
 
-    /// The pane's join handler, absent (so the field is not drawn) in the
-    /// previews and self-tests that wire no session machinery.
+    /// The pane's join handler, absent (so the field is not drawn) in
+    /// previews and self-tests.
     private var welcomeJoin: (@MainActor @Sendable (String) -> Void)? {
         guard gJoinShare != nil else { return nil }
         return { token in gJoinShare?(token) }
     }
 
-    /// What the pane's share-link card offers — the pinned decision, given
-    /// this host's three flags. `.starting` counts as neither idle nor
-    /// announceable until the token exists, which is exactly the moment
-    /// `isLinkOnlyShare` flips.
-    ///
-    /// `.failed` counts as idle because `SharerModel.startSharing()` accepts
-    /// it: a failed link-only start puts its reason in `welcomeShareNote`,
-    /// and a reason with no button under it is a dead end — the person has
-    /// to quit the app to try again.
+    /// What the pane's share-link card offers, given this host's three flags.
+    /// `.failed` counts as idle: `startSharing()` accepts it, and a dead-end
+    /// reason with no retry button would need quitting the app.
     private var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: sharer.canShare,
@@ -983,11 +827,9 @@ struct ViewerApp: App {
     }
 
     /// …and its button. A parked login URL means the page is already waiting
-    /// to be opened, which is a different act from starting a sign-in.
+    /// to be opened, different from starting a sign-in.
     private var welcomeButtonLabel: String {
         if picker.loginURL != nil { return L("Open the sign-in page") }
-        // Reads off the phase, like the WinUI hub's twin of this line — the
-        // retry label and the reason it prints now come from one case.
         return picker.phase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
     }
 
@@ -1001,20 +843,15 @@ struct ViewerApp: App {
         gPickerMode && picker.phase.isBringingUp
     }
 
-    // Refresh is offered only from the settled picking state. Captures the
-    // module-global `gPicker` (Sendable) rather than `self` so the closure can
-    // satisfy the Button action's `@MainActor @Sendable` type.
+    // Captures the module-global `gPicker` (Sendable) rather than `self` so
+    // the closure satisfies the Button action's `@MainActor @Sendable` type.
     private var headerOnRefresh: (@MainActor @Sendable () -> Void)? {
         guard gPickerMode && showingPickerList else { return nil }
         return { gPicker.refresh() }
     }
 
     /// The peer-list filter, offered from the same settled picking state as
-    /// Refresh — there is nothing to filter while the node is still coming up.
-    /// All three axes are live here: the picker keeps the raw peer list
-    /// (including offline machines), `DiscoveredSharer` now carries the netmap's
-    /// ACL tags, and the existing metadata sweep already fills `shareInfo`,
-    /// which is the sharing axis's input.
+    /// Refresh.
     private var headerFilter: HubFilter? {
         guard gPickerMode && showingPickerList else { return nil }
         return HubFilter(
@@ -1036,17 +873,12 @@ struct ViewerApp: App {
     }
 
     /// The window's content: the headless render self-test surface, live video
-    /// (once frames flow) with its remote-control bar, or the hub chrome
-    /// (header + picker / connecting placard) before video. The `GtkVideoView`
-    /// is mounted only when there's something to show, so the hub chrome sits on
-    /// the native GTK window background rather than over a black GL surface — the
-    /// first frame is stored before `hasVideo` flips, so mounting renders it.
-    // The host this session dialed (for the session placard and the watching
-    // bar) — the retained dial target, which `startSession` sets synchronously
-    // before any of this can re-render. There used to be a fallback onto the
-    // picker's own `connecting(host)` here, for "anything that races the
-    // retention"; nothing did, and holding a second copy of one moment in two
-    // state machines is exactly the drift the shared phase removed.
+    /// with its remote-control bar, or the hub chrome before video.
+    /// `GtkVideoView` is mounted only when there's something to show, so the
+    /// hub chrome sits on the native GTK background rather than a black GL
+    /// surface.
+    // The host this session dialed, for the placard and watching bar —
+    // `startSession` sets this synchronously before any re-render.
     private var sessionHost: String {
         gViewerLifecycle.target?.displayName ?? ""
     }
@@ -1056,12 +888,10 @@ struct ViewerApp: App {
         phase
     }
 
-    /// The server's viewer health as the chrome's — case for case, for the
-    /// same import-direction reason as `hubPhase`: TailscreenHubUI draws the
-    /// roster without importing the sharer tier. The Windows app carries the
-    /// twin of this function; three lines duplicated is the price of that
-    /// boundary, and the WORDING (the part that would actually drift) is
-    /// written once, in `HubViewerHealth.note`.
+    /// The server's viewer health as the chrome's — case for case, so
+    /// TailscreenHubUI draws the roster without importing the sharer tier.
+    /// The Windows app carries the twin of this; the wording that would
+    /// actually drift is written once, in `HubViewerHealth.note`.
     private static func hubHealth(_ health: ViewerHealth) -> HubViewerHealth {
         switch health {
         case .good: return .good
@@ -1085,33 +915,24 @@ struct ViewerApp: App {
     }
 
     /// Sitting on the welcome pane — no node, no login in flight. A FAILED
-    /// bring-up counts: the way out of it is the same pane with its button
-    /// relabelled, which is what `welcomeButtonLabel` reads the reason for.
+    /// bring-up counts: `welcomeButtonLabel` relabels the same pane's button.
     private var isSignedOut: Bool { picker.phase.isSignedOut }
 
-    /// A share running with nobody signed in — the state that replaces the
-    /// welcome pane rather than adding to it.
-    ///
-    /// `.failed` is deliberately NOT here: a failed start has no share to
-    /// show, its card would carry a Start button beside the pane's own, and
-    /// the way back to signing in would be gone. The reason goes to the
-    /// pane's share-link card instead (`welcomeShareNote`), under the button
-    /// that would try again.
+    /// A share running with nobody signed in — replaces the welcome pane.
+    /// `.failed` deliberately NOT here: that has no share to show, and the
+    /// reason goes to the pane's share-link card instead (`welcomeShareNote`).
     private var showingSignedOutShare: Bool {
         guard gPickerMode, isSignedOut else { return false }
         return sharer.phase == .starting || sharer.phase == .sharing
     }
 
-    /// Whether the hub column renders the welcome pane rather than the picker.
-    /// Hoisted out of the view body for the usual reason: a pattern match
-    /// inside a multi-condition `if` in this result builder is one of the
-    /// shapes that fails to typecheck with a diagnostic pointing nowhere.
+    /// Whether the hub column renders the welcome pane rather than the
+    /// picker. Hoisted out of the view body: a pattern match inside a
+    /// multi-condition `if` in this result builder fails to typecheck.
     private var showingWelcome: Bool { gPickerMode && isSignedOut && !showingSignedOutShare }
 
-    /// The live share, alone, in the hub's own column — no sign-in card, no
-    /// join card. Signed out this is the only surface the share's link,
-    /// roster and approvals could be on, and it should read as the whole
-    /// window rather than as a postscript to an empty state.
+    /// The live share, alone, in the hub's own column — signed out, this is
+    /// the only surface the share's link/roster/approvals could be on.
     @ViewBuilder private var signedOutSharingColumn: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -1127,16 +948,14 @@ struct ViewerApp: App {
     }
 
     /// A link-only start that failed, worded for the card that offered it.
-    /// Nil in every other state — including while one is running, which the
-    /// sharing view says far better than a sentence could.
+    /// Nil otherwise, including while one is running.
     private var welcomeShareNote: String? {
         guard case .failed = sharer.phase else { return nil }
         return sharer.statusLine
     }
 
     /// The hub's sharing card. Only offered in picker mode: the direct-host
-    /// path (`tailscreen <host>`) is a one-shot viewer invocation,
-    /// and growing a share button onto it would be surprising.
+    /// path is a one-shot viewer invocation.
     private var shareCard: ShareCard? {
         guard gPickerMode else { return nil }
         return ShareCard(
@@ -1145,28 +964,19 @@ struct ViewerApp: App {
             isSharing: sharer.phase == .sharing,
             isStarting: sharer.phase == .starting,
             canShare: sharer.canShare,
-            // Signed out, the button says what it will actually do: there is
-            // no tailnet to share to, so the share comes up over the guest
-            // tunnel with its link as the only way in. Same wording as the
-            // macOS welcome pane's link.
+            // Signed out, the button says what it will do: no tailnet, so
+            // the share comes up over the guest tunnel with its link as the
+            // only way in.
             startLabel: isSignedOut ? L("Share your screen via Link…") : L("Share my screen"),
             notes: {
                 var notes: [String] = []
-                // Only after a grant was refused — see `SharerModel.controlNote`.
                 if let controlNote = sharer.controlNote { notes.append(controlNote) }
-                // A "Change source…" that did not take. A NOTE rather than a
-                // phase, because the share it failed to re-point is still
-                // running — see `SharerModel.sourceChangeNote`.
+                // The share it failed to re-point is still running, so a note
+                // rather than a phase — see `SharerModel.sourceChangeNote`.
                 if let sourceNote = sharer.sourceChangeNote { notes.append(sourceNote) }
-                // Said only while sharing, and only when true: the person this
-                // would have reached is the one who has stopped looking at
-                // this window, so they should be told before they do. Two
-                // distinct silences with two different fixes, exactly as the
-                // Windows card splits "no runtime" from "off for this app":
-                // no daemon at all, or a daemon that renders the banner but
-                // silently drops its buttons (the freedesktop `actions`
-                // capability), leaving an ask worded to say where to answer
-                // — with nothing here saying so, that reads as broken.
+                // Said only while sharing, so the sharer is told before they
+                // stop looking at this window. Splits "no daemon" from
+                // "daemon drops buttons" like the Windows card does.
                 if sharer.phase == .sharing && sharer.notificationsUnavailable {
                     notes.append(
                         L("No desktop notifications on this system — approvals appear here only"))
@@ -1176,9 +986,8 @@ struct ViewerApp: App {
                             "This desktop's notifications can't show buttons — answer approvals in this window"
                         ))
                 }
-                // The mute chord's failure, said beside the microphone it
-                // would have muted: the press that discovers it is the one
-                // made believing this side had gone quiet.
+                // The mute chord's failure, said beside the mic it would have
+                // muted.
                 if sharer.micAvailable, let hotkey = gMuteHotkey,
                     let reason = sharer.muteHotkeyUnavailability
                 {
@@ -1189,15 +998,11 @@ struct ViewerApp: App {
                 return notes
             }(),
             // The roster: who is watching, and what can be done about them.
-            // `notes` is now free for statistics; a person is not a note.
             viewers: sharer.viewers.map { Self.hubViewerRow($0) },
-            // Viewers parked at the approval gate. The shared card renders
-            // these exactly like the Windows app's control requests, because
-            // they are the same interaction and this window is the only place
-            // either can be answered.
+            // Viewers parked at the approval gate, rendered like the Windows
+            // app's control requests (same interaction).
             prompts: sharer.pendingViewers.map {
-                // `id` is the server's `"ip:port"` key, which is what
-                // approve/deny take; the label is only what the row says.
+                // `id` is the server's `"ip:port"` key, which approve/deny take.
                 HubPrompt(
                     id: $0.id, message: L("\($0.label) wants to watch"),
                     acceptLabel: L("Accept"), declineLabel: L("Deny"),
@@ -1211,23 +1016,17 @@ struct ViewerApp: App {
                         id: $0.id.uuidString,
                         message: "\($0.displayName) wants to control this machine")
                 }
-                // Somebody asking this machine to start sharing. Third source
-                // into one prompt list, and last on purpose: a viewer at the
-                // gate is stuck on a Connecting placard with nothing on
-                // screen, while an asker is merely waiting. The more blocked
-                // person goes first.
+                // Last on purpose: a viewer at the gate is stuck on a blank
+                // Connecting placard, while an asker is merely waiting.
                 + sharer.shareRequests.map {
                     HubPrompt(
                         id: $0.id.uuidString,
                         message: L("\($0.fromHostname) wants you to share your screen"),
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
                 },
-            // The approval gate governs TAILNET viewers, and a link-only
-            // share has none: every viewer is a guest, and a guest is parked
-            // for explicit approval whatever this says (`admissionDecision`).
-            // Showing it would be a switch wired to nothing, under a caption
-            // describing a tailnet this share never bound a listener on. The
-            // macOS card withholds it in the same state for the same reason.
+            // The approval gate governs TAILNET viewers; a link-only share
+            // has none (every viewer is a guest, always parked for explicit
+            // approval), so showing it would be a switch wired to nothing.
             settings: sharer.isLinkOnlyShare
                 ? []
                 : [
@@ -1243,23 +1042,20 @@ struct ViewerApp: App {
                 settings: sharer.quality,
                 isSharing: sharer.phase == .sharing,
                 onChange: { gSharer.setQuality($0) }),
-            // The only way to end a grant from this side. Named after the
-            // person holding it, because "revoke control" does not say who
-            // currently has it and that is the fact the sharer needs.
+            // Named after the person holding it, since "revoke control" alone
+            // doesn't say who currently has it.
             extraAction: sharer.controlGrantedTo.map { holder in
                 HubAction(label: L("Take back control from \(holder)")) {
                     gSharer.revokeControl()
                 }
             },
-            // Absent unless a capture device was actually opened for this
-            // share, so a machine with no microphone shows no control rather
-            // than one that cannot unmute.
+            // Absent unless a capture device was actually opened, so a
+            // machine with no microphone shows no control at all.
             microphone: sharer.micAvailable
                 ? HubMicrophone(isOn: sharer.micOn, toggle: { gSharer.toggleMic() })
                 : nil,
-            // Only while sharing: the overlay these tools drive exists for the
-            // share's lifetime, and a tool armed against nothing would take the
-            // screen over for no reason.
+            // Only while sharing: the overlay these tools drive exists for
+            // the share's lifetime.
             drawing: sharer.phase == .sharing
                 ? HubDrawing(
                     activeTool: sharer.activeTool,
@@ -1269,24 +1065,21 @@ struct ViewerApp: App {
                     undo: { gSharer.undoDrawing() },
                     clear: { gSharer.clearDrawing() })
                 : nil,
-            // Absent, not disabled, when this session has no portal: sharing
-            // one window is a capability an X11-only desktop genuinely lacks,
-            // and a greyed button would invite the question "why".
+            // Absent, not disabled, when this session has no portal: an
+            // X11-only desktop genuinely lacks this capability.
             secondaryStart: sharer.canShareWindow
                 ? HubAction(
                     label: L("Share a window or app…"),
                     perform: { gSharer.startWindowShare() })
                 : nil,
             // Only for a portal-backed share: an X11 session captures exactly
-            // one thing, so there would be nothing to change.
+            // one thing.
             changeSource: sharer.canChangeSource && sharer.phase == .sharing
                 ? HubAction(
                     label: L("Change source…"), perform: { gSharer.changeSource() })
                 : nil,
-            // What is actually on the wire, once a second. Only while
-            // sharing: the model clears it on every teardown path, and this
-            // second gate means a preview that somehow outlived its capture
-            // still cannot be shown next to a Start button.
+            // Only while sharing, so a preview that somehow outlived its
+            // capture can't show next to a Start button.
             preview: sharer.phase == .sharing
                 ? sharer.preview.map {
                     HubPreview(width: $0.width, height: $0.height, rgba: $0.rgba)
@@ -1299,11 +1092,9 @@ struct ViewerApp: App {
             onDecline: { Self.answerPrompt($0, accept: false) })
     }
 
-    /// One roster row. A method rather than an inline closure in the
-    /// `ShareCard` call for the usual result-builder-typechecker reason —
-    /// and because the guest branch (badge on, remember-actions off: those
-    /// persist under a StableNodeID a guest never has, and Deny already
-    /// denylists the guest's node key at the tunnel) doubles the ternaries.
+    /// One roster row. A method, not an inline closure, since the guest
+    /// branch (badge on, remember-actions off — those persist under a
+    /// StableNodeID a guest never has) doubles the ternaries.
     @MainActor
     private static func hubViewerRow(_ viewer: ConnectedViewer) -> HubViewerRow {
         let stableID = viewer.stableID
@@ -1336,16 +1127,14 @@ struct ViewerApp: App {
             onForget: { gSharer.forget(rowID: viewer.id, stableID: stableID) })
     }
 
-    /// The card's share-by-token half, live only while sharing. A computed
-    /// property with an explicit type for the usual result-builder reason.
+    /// The card's share-by-token half, live only while sharing.
     private var hubLinkSharing: HubLinkSharing? {
         guard sharer.phase == .sharing else { return nil }
         let guests =
             sharer.viewers.filter(\.isGuest).count
             + sharer.pendingViewers.filter(\.isGuest).count
-        // Hoisted with explicit types: closure literals needing @MainActor
-        // @Sendable inference inside one init call (plus the conditional
-        // optional) sink the Swift 6 typechecker outright on Linux.
+        // Hoisted with explicit types: @MainActor @Sendable closure inference
+        // inside one init call sinks the Swift 6 typechecker on Linux.
         let toggle: @MainActor @Sendable (Bool) -> Void = { gSharer.setLinkSharing($0) }
         var newLink: (@MainActor @Sendable () -> Void)?
         if sharer.linkToken != nil {
@@ -1355,24 +1144,18 @@ struct ViewerApp: App {
             token: sharer.linkToken,
             busy: sharer.linkBusy,
             guestCount: guests,
-            // A link-only share has no off position short of Stop Sharing —
-            // the card says so rather than drawing a switch that would refuse
-            // to flip.
+            // A link-only share has no off position short of Stop Sharing.
             isOnlyWayIn: sharer.isLinkOnlyShare,
             onToggle: toggle,
             onNewLink: newLink,
-            // GDK's clipboard — so the link is a click rather than a careful
-            // drag across three wrapped lines of token.
             onCopy: { copyToClipboard($0) })
     }
 
-    /// Route a card prompt back to whichever feature raised it.
-    ///
-    /// Matched against the live pending list rather than by inspecting the
-    /// id's shape. An `"ip:port"` and a UUID happen to be distinguishable
-    /// today, and a dispatch leaning on that is one id-format change away from
-    /// starting a share when somebody meant to admit a viewer. The Windows app
-    /// learned this first and its `answerPrompt` says the same thing.
+    /// Route a card prompt back to whichever feature raised it. Matched
+    /// against the live pending list, never by inspecting the id's shape —
+    /// an `"ip:port"` and a UUID are distinguishable today, but leaning on
+    /// that is one id-format change from admitting a viewer when someone
+    /// meant to start a share.
     @MainActor
     private static func answerPrompt(_ id: String, accept: Bool) {
         if gSharer.pendingViewers.contains(where: { $0.id == id }) {
@@ -1384,9 +1167,8 @@ struct ViewerApp: App {
             return
         }
         guard let requestID = UUID(uuidString: id) else { return }
-        // Two UUID-shaped sources now share this id space, which is exactly
-        // why the shape is never consulted: an ask to share and a request to
-        // drive this machine are very different things to say yes to.
+        // Two UUID-shaped sources share this id space, which is why the shape
+        // is never consulted.
         if gSharer.controlRequests.contains(where: { $0.id == requestID }) {
             if accept {
                 gSharer.grantControl(to: requestID)
@@ -1399,11 +1181,9 @@ struct ViewerApp: App {
         gSharer.answerShareRequest(id: requestID, accept: accept)
     }
 
-    /// The picker's discovered machines as hub rows, with the metadata sweep's
-    /// answer folded in so the shared chrome derives the sharing chip.
-    ///
-    /// Built from the FILTERED projection; `picker.sharers` stays raw so the tag
-    /// menu and any future auto-connect still see every machine.
+    /// The picker's discovered machines as hub rows, with the metadata
+    /// sweep's answer folded in. Built from the FILTERED projection;
+    /// `picker.sharers` stays raw for the tag menu.
     private var hubScreens: [HubScreen] {
         picker.filteredSharers.map { sharer in
             HubScreen(
@@ -1415,8 +1195,7 @@ struct ViewerApp: App {
     }
 
     /// The share-by-token way in, when the live block wired it (nil in
-    /// previews/self-tests, which hides the card). A computed property with an
-    /// explicit type for the usual result-builder reason.
+    /// previews/self-tests, which hides the card).
     private var hubJoinCard: HubJoinCard? {
         guard gJoinShare != nil else { return nil }
         return HubJoinCard(onJoin: { token in gJoinShare?(token) })
@@ -1426,11 +1205,9 @@ struct ViewerApp: App {
         if gSelfTest {
             GtkVideoView(store: gStore, selfTest: true)
         } else if ui.inSession && ui.sessionIsOver {
-            // Ended/failed placard. Checked BEFORE `hasVideo` on purpose: once
-            // video had flowed, `hasVideo` stays set, and the old order left a
-            // finished session as a frozen frame with the explanation
-            // unreachable underneath it. The placard owns the way out —
-            // Reconnect redials the retained sharer, Back returns to the list.
+            // Checked BEFORE `hasVideo`: once video has flowed, `hasVideo`
+            // stays set, so a finished session would otherwise render as a
+            // frozen frame with the explanation unreachable underneath.
             VStack(spacing: 0) {
                 ViewerHeader(subtitle: L("Viewer"))
                 Divider()
@@ -1441,14 +1218,10 @@ struct ViewerApp: App {
                     onBack: placardBack)
             }
         } else if ui.hasVideo {
-            // Toolbar ROW above the video (the mac viewer puts its annotation
-            // NSToolbar in the window's title bar, not floating over the
-            // content), then the video with its overlays beneath it.
+            // Toolbar ROW above the video, then the video with its overlays.
             VStack(spacing: 0) {
                 // Who is being watched, and the one way to leave from this
-                // side — the same slim bar the Windows viewer carries, and the
-                // first time the GTK viewer can end its own session (the
-                // transport's `shouldClose` polls `closeRequested`).
+                // side (the transport's `shouldClose` polls `closeRequested`).
                 HStack(spacing: 8) {
                     Text(L("Watching \(sessionHost)"))
                         .font(.caption)
@@ -1461,11 +1234,9 @@ struct ViewerApp: App {
                 .frame(maxWidth: .infinity)
                 .background(HubStyle.barFill)
                 Divider()
-                // Something to say about a session that is still going —
-                // today the decode-stall ladder's last rung. Above the video
-                // and below the bar that can end it, so the sentence and the
-                // way out sit together; the picture underneath is untouched,
-                // which is the whole reason this is a strip and not a placard.
+                // Something to say about a session that is still going
+                // (today: the decode-stall ladder's last rung). A strip, not
+                // a placard, so the picture underneath stays untouched.
                 if let notice = ui.notice {
                     ViewerNoticeBanner(message: notice) { gUIState.notice = nil }
                     Divider()
@@ -1476,9 +1247,8 @@ struct ViewerApp: App {
                         inkColor: ui.inkColor ?? gAnnotations.color,
                         statsShown: ui.showStats,
                         onSelectTool: { tool in
-                            // Radio behaviour like the mac tool group, plus
-                            // click-the-selected-tool to disarm — a Linux viewer
-                            // still needs plain drags for zoom/pan + control.
+                            // Click-the-selected-tool disarms, since a Linux
+                            // viewer still needs plain drags for zoom/pan.
                             let disarm = gUIState.activeTool == tool
                             gUIState.activeTool = disarm ? nil : tool
                             gAnnotations.mode = disarm ? .off : .drawing(tool)
@@ -1497,14 +1267,13 @@ struct ViewerApp: App {
                 ZStack {
                     GtkVideoView(
                         store: gStore, onInputEvent: { gInput.submit($0) },
-                        // The wheel is the one captured event with a local
-                        // fallback (zoom), so the view has to ask the gate
-                        // itself rather than let `submit` drop it silently.
+                        // The wheel has a local fallback (zoom), so the view
+                        // asks the gate itself rather than `submit` dropping
+                        // it silently.
                         forwardsInput: { gUIState.forwardsRemoteInput },
                         annotations: gAnnotations,
                         chromeHeight: ui.annotationsAvailable ? HubStyle.toolbarHeight : 0)
-                    // Stats HUD, pinned top-left over the video (toggleable from
-                    // the toolbar, like the mac viewer's Stats item).
+                    // Stats HUD, pinned top-left, toggleable from the toolbar.
                     if ui.showStats {
                         VStack {
                             HStack {
@@ -1517,11 +1286,8 @@ struct ViewerApp: App {
                         }
                         .padding(10)
                     }
-                    // Session affordances, pinned at the bottom: talking and
-                    // taking control. Each appears on its own capability — a
-                    // sharer that cannot inject input does not hide the
-                    // microphone, and a machine with no microphone does not
-                    // hide Request Control.
+                    // Session affordances, pinned at the bottom. Each appears
+                    // on its own capability, independently.
                     if ui.micAvailable || ui.remoteControlAvailable {
                         VStack {
                             Spacer()
@@ -1548,9 +1314,7 @@ struct ViewerApp: App {
                 }
             }
         } else if ui.inSession {
-            // A session is up but no video yet: connecting / awaiting-approval
-            // placard, with a working Cancel — waiting at somebody else's
-            // approval prompt must never be a state you cannot leave.
+            // Connecting / awaiting-approval placard, with a working Cancel.
             VStack(spacing: 0) {
                 ViewerHeader(subtitle: L("Viewer"))
                 Divider()
@@ -1575,11 +1339,8 @@ struct ViewerApp: App {
                     onAddAccount: gAddAccount)
                 Divider()
                 if showingWelcome {
-                    // Nothing has been brought up: no node, no login, nothing
-                    // on the network. The pane offers the sign-in that starts
-                    // one — and, beside it rather than behind it, the two
-                    // paths that need no Tailscale account: joining a share by
-                    // link, and minting one of your own.
+                    // Nothing brought up yet. Offers sign-in, plus the two
+                    // paths that need no account: joining or minting a link.
                     HubSignInPane(
                         tailnetMessage: welcomeTailnetMessage,
                         signInLabel: welcomeButtonLabel,
@@ -1590,37 +1351,26 @@ struct ViewerApp: App {
                         shareNote: welcomeShareNote)
                 } else if showingSignedOutShare {
                     // Signed out WITH a share running: the sharing view owns
-                    // the window, and the welcome pane is gone until it
-                    // stops. Two things that each want the whole column would
-                    // otherwise stack, and "get started" over a share already
-                    // going out is not a screen anybody should be shown.
+                    // the window until it stops.
                     signedOutSharingColumn
                 } else if gPickerMode {
                     PickerContent(
                         statusLine: picker.statusLine,
                         isPicking: showingPickerList,
-                        // Placeholder rows while a list is being built. The
-                        // phase names the state, so there is nothing to
-                        // derive; `.discovering` already sets `isPicking`
-                        // false and takes the rows off screen, so this
-                        // changes what fills the gap rather than whether
-                        // there is one. The quiet 10 s re-list never enters
-                        // this phase and so never blanks anything.
+                        // Placeholder rows while a list is being built; the
+                        // quiet 10s re-list never enters `.discovering` and so
+                        // never blanks anything.
                         isDiscovering: picker.phase == .discovering,
                         screens: hubScreens,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,
-                        // The empty list's way out: every machine that could
-                        // appear there is one without Tailscreen yet. Same
-                        // link (and catalog key) as the macOS hub.
+                        // The empty list's way out. Same link/key as macOS.
                         emptyAction: HubAction(
                             label: L("Get Tailscreen for your other devices"),
                             perform: { openInBrowser("https://tailscreen.dev/install/") }),
                         hiddenByFilter: picker.hiddenByFilter,
                         askingIDs: picker.asking,
                         askNotes: picker.askOutcome,
-                        // The chrome hands back the row's id rather than a
-                        // transport type it deliberately does not import.
                         onSelect: { id in
                             guard let chosen = gPicker.sharers.first(where: { $0.id == id })
                             else { return }
@@ -1643,10 +1393,8 @@ struct ViewerApp: App {
 }
 
 // Open the session record before the UI comes up, so a bundle starts with the
-// build stamp rather than with whatever happened to be recorded first.
-// Recording is on or off per `DiagnosticsPreference` — see
-// `.claude/rules/diagnostics.md`. There is no settings toggle on this host
-// yet; `TAILSCREEN_DIAGNOSTICS=1` / `=0` forces it either way.
+// build stamp. See .claude/rules/diagnostics.md; `TAILSCREEN_DIAGNOSTICS=1`/
+// `=0` forces it (no settings toggle on this host yet).
 DiagnosticsHost.start(environment: BuildInfo.diagnosticsEnvironment)
 
 ViewerApp.main()
