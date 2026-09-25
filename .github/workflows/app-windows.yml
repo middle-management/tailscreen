@@ -260,8 +260,8 @@ jobs:
       #
       # LGPL, not GPL, and that is a licensing decision rather than a
       # convenience one: Tailscreen is MIT, and linking a GPL FFmpeg build would
-      # impose GPL on the whole app. The LGPL build has no libx264, so it cannot
-      # ENCODE H.264 — exactly right for a viewer.
+      # impose GPL on the whole app. The LGPL build has no libx264/libx265;
+      # the sharer encodes H.264 with libopenh264 (BSD), which it does ship.
       #
       # The version is pinned, but the PIN IS TO A ROLLING TAG, and that is the
       # failure mode worth knowing: BtbN publishes every branch's build under
@@ -280,6 +280,15 @@ jobs:
           branch=n8.1
           version=8.1
           url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-${branch}-latest-${FFMPEG_FLAVOUR}-lgpl-shared-${version}.zip
+          # arm64 is pinned to a dated build: BtbN's 2026-09-24 winarm64 build
+          # (same n8.1.3 source as the good 09-21 one) crashes the packaged app
+          # inside avcodec-62.dll at launch (0xC0000005), while win64 is fine.
+          # Month-end autobuilds are kept long-term; dailies are pruned after
+          # ~2 weeks. Move back to `latest` once a newer winarm64 build passes
+          # this job's MSIX launch check.
+          if [ "$FFMPEG_FLAVOUR" = winarm64 ]; then
+            url=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n8.1.2-50-g1a748fe2cd-winarm64-lgpl-shared-${version}.zip
+          fi
           if ! curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$url"; then
             echo "::error::FFmpeg asset not found: $url"
             echo "A 404 here is almost never the network. BtbN serves every branch"

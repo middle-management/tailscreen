@@ -56,6 +56,9 @@ $packageName = $PackageName
 $appId = 'Tailscreen'
 $imported = $null
 $installed = $false
+# Read by the exit-code classification before any branch sets it; under
+# StrictMode an unset read throws and masks the real failure.
+$script:verdict = $null
 
 function Write-Finding($stage, $text) {
   Write-Host ""
