@@ -2,40 +2,22 @@ import AppKit
 import CoreGraphics
 
 /// A thin border drawn around exactly the region being captured, for the
-/// duration of a share.
+/// duration of a share — shows the sharer *what viewers can see*, tracking a
+/// moved window or a Space switch rather than a static status glyph.
 ///
-/// It answers a question a status glyph cannot: not "a share is running
-/// somewhere" but "**this** is what they can see." That distinction is the
-/// whole value — a sharer who has moved a window, switched Spaces or
-/// forgotten which display they picked learns the truth by looking at the
-/// screen rather than by asking the app.
+/// Two load-bearing rules:
+/// 1. **Tracks the region, not the screen** — shares tracking statics/miss-
+///    threshold with `SharerOverlayWindow` so the two can't disagree.
+/// 2. **Never captured itself**: `sharingType = .none`, or a display share
+///    would draw the border into the video for every viewer.
 ///
-/// Two rules make it honest rather than decorative, and both are load-bearing:
-///
-/// 1. **It tracks the region, not the screen.** A window share outlines that
-///    window and follows it; a display share outlines that display. An outline
-///    that lags what is actually captured is a *lie* about what viewers can
-///    see, which is worse than no outline at all. The tracking is shared with
-///    `SharerOverlayWindow` (same statics, same miss-threshold) precisely so
-///    the two cannot disagree about where the shared region is.
-/// 2. **It is never captured itself.** `sharingType = .none` asks macOS to omit
-///    this window from screen capture. Without it, a display share would draw a
-///    border into the video and every viewer would see a frame around their own
-///    view of your screen. See the caveat on `panel` below.
-///
-/// Deliberately a separate window from `SharerOverlayWindow` rather than a
-/// border added to it. That panel is created *lazily* — only when the first
-/// annotation arrives or "Draw on Screen" is toggled — so it does not exist for
-/// an ordinary share, and in display mode it is deliberately **inside** the
-/// capture region so the sharer's own strokes reach viewers. Both properties
-/// are exactly wrong for an outline, which must exist for the whole share and
-/// must stay out of the video.
+/// A separate window from `SharerOverlayWindow`, which is created lazily and
+/// sits *inside* the capture region (so strokes reach viewers) — both wrong
+/// for an outline, which must exist for the whole share and stay out of the video.
 @MainActor
 final class CaptureOutlineWindow {
-    /// Reuses `SharerOverlayWindow.Mode` rather than defining a parallel enum:
-    /// both types answer "where is the shared region?" and the projection from
-    /// a `PickerSelection` (`AppState.overlayMode(for:)`) is already written
-    /// and tested once.
+    /// Reuses `SharerOverlayWindow.Mode` rather than a parallel enum — both
+    /// answer "where is the shared region?"
     typealias Mode = SharerOverlayWindow.Mode
 
     private let panel: NSPanel
@@ -44,15 +26,10 @@ final class CaptureOutlineWindow {
     private var screenChangeObserver: NSObjectProtocol?
     private var consecutiveMisses = 0
 
-    /// Matches `SharerOverlayWindow.missThreshold`'s reasoning: at 20 Hz this
-    /// is ~150 ms, long enough to ride out a Mission Control transition and
-    /// short enough that a real Space switch hides the outline before anyone
-    /// notices it floating over nothing.
+    /// At 20Hz, ~150ms: rides out a Mission Control transition but hides the
+    /// outline before a real Space switch looks like a bug.
     private static let missThreshold = 3
 
-    /// Border thickness in points. Thin enough not to obscure content at the
-    /// edges, thick enough to read as deliberate rather than as a rendering
-    /// artifact.
     private static let lineWidth: CGFloat = 4
 
     init(mode: Mode) {
@@ -68,22 +45,16 @@ final class CaptureOutlineWindow {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        // Above `SharerOverlayWindow`'s `.statusBar` so the outline is never
-        // hidden under the annotation canvas, and so it survives a full-screen
-        // app — a share does not stop when the sharer goes full-screen, so
-        // neither should the sign that one is running.
+        // Above SharerOverlayWindow's .statusBar, and survives full-screen apps.
         panel.level = .screenSaver
-        // A capture indicator that can swallow a click would be a bug in its
-        // own right: it covers the entire shared region.
+        // Covers the entire shared region, so it must not swallow clicks.
         panel.ignoresMouseEvents = true
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = false
-        // **The rule that keeps the outline out of the video.** Without this a
-        // display share captures the border and every viewer sees a frame
-        // around their own view. Needs a first-run visual check on a real
-        // desktop: if ScreenCaptureKit ever stops honouring `sharingType`, the
-        // fallback is to pass this window's `CGWindowID` down to the capture
-        // helper and add it to `SCContentFilter`'s excluded set.
+        // Keeps the outline out of the video — without this, a display share
+        // captures its own border. If ScreenCaptureKit stops honoring
+        // `sharingType`, fall back to excluding this window's CGWindowID via
+        // SCContentFilter instead.
         panel.sharingType = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
@@ -114,13 +85,12 @@ final class CaptureOutlineWindow {
 
     private func startTrackingIfNeeded() {
         guard trackingTimer == nil else { return }
-        // Display and application shares are static — the panel already covers
-        // the display and only a display-configuration change moves it, which
-        // the observer below handles.
+        // Display/application shares are static; only a display-config change
+        // moves them, handled by the observer below.
         guard case .window = mode else { return }
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            // Added to `RunLoop.main`, so this fires on the main thread;
-            // `assumeIsolated` skips a per-tick Task allocation.
+            // Runs on the main thread (added to RunLoop.main); assumeIsolated
+            // skips a per-tick Task allocation.
             MainActor.assumeIsolated { self?.updateTrackedFrame() }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -157,9 +127,8 @@ final class CaptureOutlineWindow {
             cocoa.width > 0, cocoa.height > 0
         else {
             consecutiveMisses += 1
-            // The shared window is off the current Space (or gone). Hiding
-            // rather than freezing matters: an outline left behind on an empty
-            // patch of desktop claims a boundary that is not there.
+            // Hide rather than freeze: a stale outline claims a boundary that
+            // isn't there once the window is off-Space or gone.
             if consecutiveMisses >= Self.missThreshold, panel.isVisible {
                 panel.orderOut(nil)
             }
@@ -176,34 +145,25 @@ final class CaptureOutlineWindow {
 
     // MARK: - Drawing
 
-    /// Strokes the border inset by half the line width, so the whole stroke
-    /// lands *inside* the panel. Stroking on the bounds edge would clip the
-    /// outer half and render as a 2pt line that looks like a mistake.
+    /// Insets the stroke by half the line width so it lands inside the panel
+    /// rather than clipping at the bounds edge.
     ///
-    /// **No `isFlipped` override, deliberately.** The stroke is a rect inset
-    /// symmetrically from `bounds`, which is the same rect either way up, so
-    /// the override this view used to carry changed nothing on screen — and it
-    /// cost something real. An `@objc` member of a `@MainActor` type carries a
-    /// dynamic executor precondition, and `isFlipped` is asked for by AppKit's
-    /// hit-test/tracking machinery on every mouse move over this panel: a
-    /// borderless, `screenSaver`-level window covering the whole shared
-    /// region, i.e. most of where the pointer ever is. v0.10.0-rc.12 died
-    /// there (`swift_task_isCurrentExecutorWithFlags` → `swift_getObjectType`
-    /// on a wild pointer, SIGBUS, `_NSTrackingAreaAKManager` → hit test →
-    /// `isFlipped`). `draw(_:)` below is the one `@objc` member left and it is
-    /// reached from display, not from hit testing; before adding another, ask
-    /// whether AppKit calls it from a geometry path — `nonisolated` is the
-    /// escape hatch when the override is genuinely needed (see
+    /// **No `isFlipped` override.** The inset rect from `bounds` is identical
+    /// either way up, so the override changed nothing on screen while costing
+    /// a real crash: `isFlipped` is an `@objc` member on a `@MainActor` type,
+    /// and AppKit's hit-test machinery calls it on every mouse move over this
+    /// screenSaver-level panel covering the whole shared region — a wild
+    /// pointer there caused a SIGBUS (v0.10.0-rc.12). Before adding another
+    /// `@objc` override here, check whether AppKit calls it from a geometry
+    /// path; `nonisolated` is the escape hatch when genuinely needed (see
     /// `RemoteControlInputView`).
     private final class OutlineView: NSView {
         override func draw(_ dirtyRect: NSRect) {
             let inset = CaptureOutlineWindow.lineWidth / 2
             let path = NSBezierPath(rect: bounds.insetBy(dx: inset, dy: inset))
             path.lineWidth = CaptureOutlineWindow.lineWidth
-            // `systemRed` rather than a fixed colour: it is the platform's own
-            // "recording" signal, it adapts to Increase Contrast, and it does
-            // not collide with the annotation palette, which is what a viewer's
-            // strokes are drawn in.
+            // Platform's own "recording" signal; adapts to Increase Contrast
+            // and doesn't collide with the annotation palette.
             NSColor.systemRed.withAlphaComponent(0.9).setStroke()
             path.stroke()
         }

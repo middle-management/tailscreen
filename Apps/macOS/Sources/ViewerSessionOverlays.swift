@@ -4,10 +4,8 @@ import SwiftUI
 
 // MARK: - Session-ended overlay
 
-/// State + wiring for the "session ended" pane drawn over the viewer
-/// window's last frame when the session ends without the user asking —
-/// sharer stop, idle timeout, connection loss, or a deny/kick. Replaces
-/// the old behaviour of the window silently vanishing.
+/// Drawn over the viewer window's last frame when the session ends without
+/// the user asking — sharer stop, idle timeout, connection loss, or a deny/kick.
 @MainActor
 final class ViewerSessionEndedModel: ObservableObject {
     struct EndedState: Equatable {
@@ -23,19 +21,13 @@ final class ViewerSessionEndedModel: ObservableObject {
     var onClose: (@MainActor () -> Void)?
 }
 
-/// Centered card over a dimmed copy of the last frame: why the session
-/// ended, a prominent Reconnect, and a Close. Modelled on
-/// ``ViewerShortcutsOverlay``'s card styling so the viewer's overlays read
-/// as one family.
 struct ViewerSessionEndedOverlay: View {
     @ObservedObject var model: ViewerSessionEndedModel
 
     var body: some View {
         ZStack {
-            // Dim the frozen last frame beneath. Deliberately NOT
-            // tap-to-dismiss — leaving is a decision the two buttons carry;
-            // the backdrop only swallows clicks so the annotation canvas
-            // underneath doesn't receive them.
+            // Deliberately not tap-to-dismiss — leaving is a decision the two
+            // buttons carry; this only swallows clicks meant for the canvas beneath.
             Color.black.opacity(0.55)
                 .contentShape(Rectangle())
 
@@ -87,9 +79,7 @@ struct ViewerSessionEndedOverlay: View {
     }
 }
 
-/// Wraps `ViewerSessionEndedOverlay` in an `NSHostingView` pinned to the
-/// viewer's full content view; hidden whenever `model.state` is nil. Same
-/// pattern as `ViewerShortcutsOverlayHost`.
+/// Hidden whenever `model.state` is nil. Same pattern as `ViewerShortcutsOverlayHost`.
 @MainActor
 final class ViewerSessionEndedOverlayHost {
     let view: NSHostingView<ViewerSessionEndedOverlay>
@@ -109,8 +99,7 @@ final class ViewerSessionEndedOverlayHost {
             }
     }
 
-    /// Pin the overlay to fill `parent`. Caller adds `view` as a subview
-    /// before calling.
+    /// Caller adds `view` as a subview before calling.
     func layout(in parent: NSView) {
         view.frame = parent.bounds
         view.autoresizingMask = [.width, .height]
@@ -220,8 +209,6 @@ final class ViewerNoticeBannerHost {
             }
     }
 
-    /// Pin the banner into `parent`. Caller adds `view` as a subview
-    /// before calling.
     func layout(in parent: NSView, inset: CGFloat = 12) {
         self.parent = parent
         self.inset = inset

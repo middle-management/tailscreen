@@ -2,13 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Small "always-on-top" diagnostics overlay drawn in the viewer window's
-/// top-left corner. Bound to a ``ViewerStatsModel`` (owned by the renderer)
-/// so it follows real-time stat updates with no extra plumbing.
-///
-/// Toggled by the toolbar's chart button — see `ViewerToolbar`. The view's
-/// `isHidden` is driven by `model.isVisible` so toggling on a live session
-/// just flips the hosting view in and out without rebuilding state.
+/// Toggled by the toolbar's chart button — see `ViewerToolbar`.
 struct ViewerStatsOverlay: View {
     @ObservedObject var model: ViewerStatsModel
 
@@ -29,12 +23,8 @@ struct ViewerStatsOverlay: View {
             row(L("FEC recovered"), "\(stats.fecRecovered)")
             row(L("Bitrate"), formatBitrate(stats.bitrateBps))
             row(L("Codec"), stats.codec.map(formatCodec) ?? "—")
-            // Standards names ("P3", "BT.2020 · PQ") — unlocalized, like the
-            // codec names above. Absent for a plain BT.709 stream, which tags
-            // nothing, so "—" means "not signalled" rather than "unknown".
+            // "—" for a plain BT.709 stream means "not signalled", not "unknown".
             row(L("Color"), stats.colorLabel ?? "—")
-            // "Tailscale" is a brand noun (unlocalized); the guest label is
-            // ordinary UI copy.
             row(L("Connection"), model.isGuestSession ? L("Guest link") : "Tailscale")
             chartSection
         }
@@ -55,8 +45,6 @@ struct ViewerStatsOverlay: View {
         .accessibilityLabel(accessibilitySummary(stats))
     }
 
-    /// Two stacked sparklines — latency (top) and bitrate (bottom). Both
-    /// share the same x-axis (1 sample per second, oldest left, newest right).
     /// Auto-scaled per chart so a quiet bitrate doesn't squash latency spikes.
     private var chartSection: some View {
         let history = model.history
@@ -140,8 +128,6 @@ struct ViewerStatsOverlay: View {
         return Color(red: 1.0, green: 0.45, blue: 0.45)
     }
 
-    /// White while the counter is zero, red once anything has gone wrong —
-    /// a nonzero decode-failure count deserves attention even when small.
     private func countColor(_ count: Int) -> Color {
         count == 0 ? .white : Color(red: 1.0, green: 0.45, blue: 0.45)
     }
@@ -174,11 +160,8 @@ struct ViewerStatsOverlay: View {
         }
     }
 
-    /// VoiceOver summary for the combined overlay element. Every fragment
-    /// routes through `L(...)`; numbers that need printf precision are
-    /// pre-formatted into a `String` first so the catalog key carries a
-    /// plain `%@` / `%lld` (interpolating a raw Double would emit a
-    /// specifier the catalog doesn't use).
+    /// Numbers needing printf precision are pre-formatted into a `String`
+    /// first, so the catalog key carries a plain `%@`/`%lld`.
     private func accessibilitySummary(_ stats: ViewerStats) -> String {
         var parts: [String] = []
         if let ms = stats.latencyMs {
@@ -202,10 +185,8 @@ struct ViewerStatsOverlay: View {
     }
 }
 
-/// Filled sparkline backed by an optional-Double sample buffer. Renders
-/// a tinted area under the line, breaks across `nil` gaps, and draws a
-/// dot on the most recent sample so a flat line still tells you whether
-/// the stream is live or stale.
+/// Breaks across `nil` gaps; draws a dot on the most recent sample so a flat
+/// line still tells you whether the stream is live or stale.
 struct Sparkline: View {
     let samples: [Double?]
     let minValue: Double
@@ -290,19 +271,13 @@ struct Sparkline: View {
     }
 }
 
-/// Wraps `ViewerStatsOverlay` in an `NSHostingView` so AppKit code in
-/// `AppState.ensureViewer()` can pin it as a subview of the viewer's
-/// content view. The hosting view observes `model.isVisible` and toggles
-/// `isHidden` on itself so the overlay disappears immediately on toggle —
-/// no SwiftUI animation lag.
 @MainActor
 final class ViewerStatsOverlayHost {
     let view: NSHostingView<ViewerStatsOverlay>
     private let model: ViewerStatsModel
     private var visibilityCancellable: AnyCancellable?
     private var contentCancellable: AnyCancellable?
-    /// Parent the overlay is pinned into. Weak so the host never retains
-    /// the viewer's content view.
+    /// Weak so the host never retains the viewer's content view.
     private weak var parent: NSView?
     private var inset: CGFloat = 12
 
@@ -313,11 +288,9 @@ final class ViewerStatsOverlayHost {
         host.autoresizingMask = []
         host.isHidden = !model.isVisible
         self.view = host
-        // Drive isHidden off the model's `isVisible` via Combine so the
-        // toolbar toggle is reflected the next runloop tick. The hosting
-        // view stays attached either way — only its visibility flips —
-        // which keeps the overlay's @ObservedObject subscription live.
-        // Becoming visible also re-measures: the frame may be stale from
+        // The hosting view stays attached either way (only visibility
+        // flips), keeping the overlay's @ObservedObject subscription live.
+        // Re-measures on becoming visible: the frame may be stale from
         // content that changed while hidden.
         self.visibilityCancellable = model.$isVisible
             .receive(on: DispatchQueue.main)
@@ -325,11 +298,8 @@ final class ViewerStatsOverlayHost {
                 self?.view.isHidden = !isVisible
                 if isVisible { self?.applyLayout() }
             }
-        // Re-measure on every stats snapshot. The frame used to be
-        // measured once from `fittingSize` at build time, so the
-        // degraded-warning row clipped when it appeared later. Snapshots
-        // land ~1 Hz and `applyLayout` no-ops on an unchanged frame, so
-        // this stays cheap.
+        // Re-measure on every stats snapshot, or the degraded-warning row
+        // clips when it appears later than the initial `fittingSize`.
         self.contentCancellable = model.$stats
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -337,10 +307,6 @@ final class ViewerStatsOverlayHost {
             }
     }
 
-    /// Pin the overlay to the top-left of `parent`, below the unified
-    /// toolbar. Caller is expected to add `view` as a subview before
-    /// calling; the placement then re-runs on every stats snapshot so the
-    /// frame tracks content size changes.
     func layout(in parent: NSView, inset: CGFloat = 12) {
         self.parent = parent
         self.inset = inset
@@ -350,11 +316,9 @@ final class ViewerStatsOverlayHost {
     private func applyLayout() {
         guard let parent else { return }
         let size = view.fittingSize
-        // The video lays out in the window's `contentLayoutRect` (the
-        // toolbar-excluded subregion — see `AspectFitHostView.usableRect`);
-        // raw `parent.bounds` spans the full window height with the
-        // unified toolbar floating over its top, which parked the
-        // overlay's first rows underneath the toolbar. Anchor below it.
+        // Raw `parent.bounds` spans the full window height with the unified
+        // toolbar floating over its top; anchor below `contentLayoutRect`
+        // instead, or the overlay's first rows park under the toolbar.
         var top = parent.bounds.maxY
         if let window = parent.window {
             let usable = window.contentLayoutRect

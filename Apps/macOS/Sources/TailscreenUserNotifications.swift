@@ -1,44 +1,23 @@
 import Foundation
 import UserNotifications
 
-/// The app's `UNUserNotificationCenterDelegate`, and the place a notification
+/// The app's `UNUserNotificationCenterDelegate`, and where a notification
 /// button press comes back to.
 ///
-/// Without a delegate, a notification posted while Tailscreen is frontmost
-/// displays **nothing at all** — the system's default for a foreground app is
-/// to suppress it, and `add(_:)` reports success either way. There was no
-/// delegate anywhere in the target, so every post made while the user had the
-/// app in front was silently dropped: exactly the moment someone has just
-/// clicked the menubar item and a viewer arrives.
+/// Without a delegate, a notification posted while frontmost displays
+/// **nothing at all** — the system suppresses it for a foreground app and
+/// `add(_:)` reports success either way.
 ///
-/// The same object receives `didReceive response:`, which is the only way an
-/// actionable notification reports which button was pressed. That half is
-/// deliberately thin — it turns two opaque strings back into a
-/// `(SharerNoticeKind, identity, NoticeAction)` triple and hands it to
-/// `AppState`, which owns every one of those decisions already.
-///
-/// Stateless, so `@unchecked Sendable` costs nothing to guarantee — it exists
-/// only to satisfy the `static let shared` a delegate needs in order to be
-/// retained (`UNUserNotificationCenter.delegate` is weak).
-///
-/// The protocol conformance lives in the extension below rather than on this
-/// line, so the declaration fits on one line: swift-format wraps a longer one
-/// and puts the opening brace on its own line, which swiftlint's
-/// `opening_brace` rule rejects — the two tools cannot both be satisfied by a
-/// wrapped declaration, so the fix is to not need one. Same reasoning as
-/// `AccountProfileStore.init`'s `fm` local.
+/// `@unchecked Sendable` costs nothing since it's stateless — only needed for
+/// the `static let shared` a delegate needs to be retained (`.delegate` is weak).
 final class TailscreenNotificationDelegate: NSObject, @unchecked Sendable {
     static let shared = TailscreenNotificationDelegate()
 
-    /// Install once at launch. No-op on unbundled builds, where
-    /// `UNUserNotificationCenter.current()` raises rather than degrading.
-    ///
-    /// Registering the categories here rather than at first post is not
-    /// tidiness: a notification whose `categoryIdentifier` names a category
-    /// the system has not seen is delivered **without its buttons**, with no
-    /// error anywhere. Since categories are process-global state and posts can
-    /// arrive within a second of launch, the only safe time to register them
-    /// is before anything can post.
+    /// No-op on unbundled builds, where `UNUserNotificationCenter.current()`
+    /// raises. Registering categories here, not at first post: a notification
+    /// whose `categoryIdentifier` names an unseen category is delivered
+    /// without its buttons, silently, and posts can arrive within a second of
+    /// launch.
     @MainActor
     static func install() {
         guard Bundle.main.bundleIdentifier != nil else { return }
@@ -49,11 +28,8 @@ final class TailscreenNotificationDelegate: NSObject, @unchecked Sendable {
 }
 
 extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
-    /// Show banners even when Tailscreen is the active app. `.list` keeps it
-    /// in Notification Center so a sharer who looks away mid-share can still
-    /// find out somebody is waiting; `.sound` is honoured only for posts that
-    /// asked for one, and a post made during a share deliberately does not
-    /// (see `SharerNoticeDecision.playsSound`).
+    /// `.list` keeps it in Notification Center; `.sound` is honored only for
+    /// posts that asked for one (see `SharerNoticeDecision.playsSound`).
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -63,15 +39,10 @@ extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
         completionHandler([.banner, .list, .sound])
     }
 
-    /// A button was pressed, or the banner itself was clicked or dismissed.
-    ///
-    /// Everything needed to route this is read out of `response` **before** the
-    /// hop to the MainActor: `UNNotificationResponse` is a non-`Sendable` class
-    /// and this callback arrives on UN's own queue, so only the two `String`s
-    /// cross. `completionHandler` is called synchronously rather than from
-    /// inside the `Task` for the same reason — it is not a `@Sendable` closure,
-    /// and the system only needs to know we accepted the response, not that we
-    /// finished acting on it.
+    /// Everything needed is read out of `response` before hopping to
+    /// MainActor: `UNNotificationResponse` isn't `Sendable`, so only the two
+    /// `String`s cross. `completionHandler` is called synchronously for the
+    /// same reason — it's not `@Sendable`.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -86,27 +57,11 @@ extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
         completionHandler()
     }
 
-    /// Turn the daemon's two strings back into a decision and deliver it.
-    ///
-    /// Three outcomes, and the split between the first two is the whole point
-    /// of keeping the action *key* distinct from the button *label*:
-    ///
-    ///   * one of our own keys → the sharer answered, so `AppState` acts on it;
-    ///   * the system's "user clicked the banner body" identifier → not an
-    ///     answer, so it opens the surface where the decision lives and lets
-    ///     them look at it first. This is the macOS spelling of what Windows
-    ///     carries as `WindowsToastPayload.openActionKey`, and it has to be
-    ///     checked *before* the key lookup — `action(forKey:)` would fold it
-    ///     into `.dismiss`, which is the right default for a key nobody
-    ///     recognises and the wrong one for a click we can explain;
-    ///   * anything else, including the system's dismiss identifier and any
-    ///     activation string this build did not mint → nothing at all. Swiping
-    ///     a banner away must never be recorded as a decision about a person.
-    ///
-    /// The lookup is `SharerNoticeText.action(forKey:)` — the same one the
-    /// freedesktop and Windows backends route through — and never a comparison
-    /// against a button's title, which is localized and would match in English
-    /// only.
+    /// Three outcomes: one of our own keys -> `AppState` acts on it; the
+    /// system's "clicked the banner body" identifier -> opens the surface
+    /// instead (checked before the key lookup, or it folds into `.dismiss`);
+    /// anything else (including dismiss) -> nothing. Swiping a banner away
+    /// must never record as a decision about a person.
     @MainActor
     static func route(noticeID: String, actionIdentifier: String) {
         guard let decoded = SharerNotice.decodeID(noticeID) else { return }

@@ -1,44 +1,31 @@
 import Foundation
 
 // macOS's implementations of the two seams the portable sharer data plane
-// (`TailscreenSharer`) runs on.
-//
-// `TailscaleScreenShareServer` lives in `Packages/TailscreenKit` and knows
-// nothing about ScreenCaptureKit, VideoToolbox, or `CGEvent`. Everything
-// platform-specific about being a *sharer* on this OS is behind these two
-// conformances plus the convenience initializer that wires them together.
+// (`TailscreenSharer`) runs on; `TailscaleScreenShareServer` itself knows
+// nothing about ScreenCaptureKit, VideoToolbox, or `CGEvent`.
 
 // MARK: - Capture + encode
 
-/// The capture-helper subprocess wrapper satisfies `CaptureEncoding` as-is:
-/// its callback surface and command set were already the capture-helper wire
-/// (`CaptureHelperWire.OutType` / `InType`), which is exactly what the
-/// protocol was shaped from. No adapter code — just the declaration.
+/// Already matches `CaptureEncoding`: the capture-helper wire
+/// (`CaptureHelperWire.OutType`/`InType`) is what the protocol was shaped from.
 extension HelperScreenCapture: CaptureEncoding {}
 
 // MARK: - Remote-control injection
 
-/// The `CGEvent` injector satisfies `InputInjecting` as-is. Note this runs in
-/// the **main** process, not a helper: injection needs Accessibility TCC, not
-/// Screen Recording, so there's no `replayd` coupling to isolate.
+/// Runs in the **main** process, not a helper: injection needs Accessibility
+/// TCC, not Screen Recording, so there's no `replayd` coupling to isolate.
 extension RemoteControlInjector: InputInjecting {}
 
 // MARK: - Wiring
 
 extension TailscaleScreenShareServer {
-    /// The macOS sharer: capture through a fresh `--capture-helper` child per
-    /// share (process death is the only thing that reliably releases
-    /// `replayd`'s per-bundle slot, which is why this is a factory rather than
-    /// one long-lived object), and input injection through `CGEvent`.
+    /// macOS sharer: a fresh `--capture-helper` child per share (process death
+    /// is the only reliable way to release `replayd`'s per-bundle slot, hence
+    /// a factory rather than one long-lived object) plus `CGEvent` injection.
     ///
-    /// Supplying the injector is what makes this build advertise
-    /// `ScreenShareCaps.remoteControl`, so viewers offer Request Control — the
-    /// portable server withholds that bit when a host passes no injector.
-    /// `rendersAnnotations` is the same idea for `ScreenShareCaps.annotations`,
-    /// and it withholds by default too: macOS says `true` because
-    /// `SharerOverlayWindow` genuinely puts viewers' strokes on screen. This
-    /// initializer is the one place the mac build states what it can do, so
-    /// every capability claim belongs here rather than at a call site.
+    /// Passing the injector/`rendersAnnotations: true` is what makes the
+    /// portable server advertise `ScreenShareCaps.remoteControl`/`.annotations`
+    /// — the sole place this build states its capabilities.
     convenience init() {
         self.init(
             port: NetworkConfig.tailscreenPort,

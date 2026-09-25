@@ -13,21 +13,12 @@ func resolveHelperExecutable() -> URL? {
     return Bundle.main.executableURL
 }
 
-/// Main-process wrapper around the `Tailscreen --picker-helper` child.
-/// Spawns it, reads exactly one framed payload (`[len:4 BE][bytes]`)
-/// off stdout, returns the archived `SCContentFilter` bytes (or `nil`
-/// if the user cancelled), then waits for the helper to exit.
-///
-/// We keep this transactional rather than long-lived: each call
-/// spawns a fresh helper, gets one selection, and the helper exits.
-/// That's the architectural payoff for keeping the picker out of the
-/// long-running main process — no XPC state from the picker UI
-/// session ever lives in the same PID as the SCStream-driving capture
-/// helper.
+/// Wrapper around the `Tailscreen --picker-helper` child. Transactional, not
+/// long-lived: each call spawns a fresh helper, gets one selection, and the
+/// helper exits — no XPC state from the picker UI session lives in the same
+/// PID as the SCStream-driving capture helper.
 enum PickerHelperClient {
-    /// Spawn the picker helper and await the user's selection.
-    /// Returns the JSON-encoded `PickerSelection` bytes for the
-    /// chosen content, or `nil` if the user cancelled.
+    /// Returns JSON-encoded `PickerSelection` bytes, or `nil` if cancelled.
     static func run(timeoutSeconds: TimeInterval = 120) async throws -> Data? {
         guard let exe = resolveHelperExecutable() else {
             throw PickerHelperClientError.executableNotFound
@@ -38,15 +29,13 @@ enum PickerHelperClient {
 
         let stdoutPipe = Pipe()
         proc.standardOutput = stdoutPipe
-        // Inherit stderr so any picker-helper warnings / errors land in
-        // the merged log alongside the parent's logs.
+        // Inherit stderr so picker-helper warnings land in the merged log.
 
         try proc.run()
 
         let handle = stdoutPipe.fileHandleForReading
 
-        // Hop the blocking pipe read off the main actor. The helper only
-        // writes one frame, but the read happens after macOS's picker UI has
+        // Off the main actor: the read happens after the picker UI
         // interacted with the user, so it can take arbitrarily long.
         let readTask = Task<Data?, Never> {
             await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
@@ -56,14 +45,11 @@ enum PickerHelperClient {
             }
         }
 
-        // Watchdog. SCContentSharingPicker has been observed to never fire its
-        // selection callback on some macOS builds, and the helper has no
-        // internal timeout — without this `readFramed` blocks forever and the
-        // whole share flow hangs with no UI and no way to cancel. On deadline,
-        // SIGTERM the helper; closing its stdout unblocks the read (→ nil). We
-        // capture the pid rather than the non-Sendable `Process` so the Task
-        // closure stays Sendable. The timeout is generous: the user may take a
-        // while to pick, so this only bites a genuinely wedged picker.
+        // SCContentSharingPicker has been observed to never fire its selection
+        // callback on some macOS builds, with no internal timeout — without
+        // this, `readFramed` blocks forever. SIGTERM on deadline; closing
+        // stdout unblocks the read (-> nil). Captures the pid, not the
+        // non-Sendable `Process`, to keep the Task closure Sendable.
         let timedOut = OSAllocatedUnfairLock(initialState: false)
         let pid = proc.processIdentifier
         let watchdog = Task {
@@ -82,10 +68,8 @@ enum PickerHelperClient {
             throw PickerHelperClientError.timedOut
         }
 
-        // Ensure the helper has fully exited before we return so the parent's
-        // next picker spawn doesn't race teardown of the previous one. macOS
-        // keeps the SCContentSharingPicker singleton process-wide; serializing
-        // across separate child PIDs avoids cross-talk between sessions.
+        // SCContentSharingPicker is a process-wide singleton; wait for full
+        // exit so the next spawn doesn't race this one's teardown.
         proc.waitUntilExit()
 
         if proc.terminationStatus >= 2 {
@@ -96,12 +80,9 @@ enum PickerHelperClient {
         return payload
     }
 
-    /// Read one framed payload (`[len:4 BE][bytes:len]`) off the pipe.
-    /// Returns `nil` for `len == 0` (user cancelled) and for any read
-    /// error / EOF — the caller treats both as "no selection". Matches
-    /// the picker helper's wire format (`PickerHelperFraming`) exactly; if
-    /// you change one side, change the other. Internal (not private) so
-    /// `WireByteRegistryTests` can round-trip writer → reader.
+    /// `[len:4 BE][bytes:len]`, matching `PickerHelperFraming` exactly.
+    /// `nil` for `len == 0` (cancelled) or any read error/EOF. Internal so
+    /// `WireByteRegistryTests` can round-trip writer -> reader.
     static func readFramed(_ handle: FileHandle) -> Data? {
         guard let header = readExactly(handle, count: 4), header.count == 4 else {
             return nil

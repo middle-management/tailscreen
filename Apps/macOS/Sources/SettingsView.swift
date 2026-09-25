@@ -3,17 +3,10 @@ import Carbon.HIToolbox
 import CoreAudio
 import SwiftUI
 
-/// Native System-Settings-style preferences surface, presented in its own
-/// window via ⌘, (`AppCommands`' "Settings…" item and the in-popover
-/// "Settings…" row both route to `AppState.presentSettings()`).
-///
-/// The menubar module surfaces the same quick toggles inline — Control Center
-/// style — but a Mac user reflexively reaches for ⌘, , so the preferences also
-/// get a proper home here with room to grow. A grouped `Form` gives the
-/// inset-rounded look of System Settings without hand-rolled chrome. The
-/// window is resizable above a 440×480 floor (`presentSettings` sets the
-/// AppKit side); the Form scrolls regardless, so nothing here needs a fixed
-/// height.
+/// Native System-Settings-style preferences, presented via ⌘, (both
+/// `AppCommands`' "Settings…" item and the popover row route to
+/// `AppState.presentSettings()`). The window is resizable above a 440x480
+/// floor; the Form scrolls regardless.
 struct SettingsView: View {
     @ObservedObject var appState: AppState
 
@@ -43,10 +36,8 @@ struct SettingsView: View {
 
     // MARK: - General
 
-    /// Launch at login via `SMAppService` (state + registration live on
-    /// AppState). A dev build running as a bare executable has no bundle to
-    /// register, so the toggle disables itself and says why instead of
-    /// throwing on every flip.
+    /// A dev build running as a bare executable has no bundle to register, so
+    /// the toggle disables itself and says why.
     private var generalSection: some View {
         Section(L("General")) {
             Toggle(
@@ -79,11 +70,8 @@ struct SettingsView: View {
 
     // MARK: - Accounts
 
-    /// Every saved profile with a visible per-row Remove button. This is
-    /// the discoverable twin of the header's account NSMenu, where removal
-    /// hides behind ⌥-clicking a non-active row — a trap nobody falls out
-    /// of by accident. Rows re-render through AppState's forwarded
-    /// `profileStore.objectWillChange` (see `AppState.init`).
+    /// Discoverable twin of the header's account NSMenu, where removal hides
+    /// behind ⌥-clicking a non-active row.
     private var accountsSection: some View {
         Section(L("Accounts")) {
             ForEach(appState.profileStore.profiles) { profile in
@@ -121,15 +109,11 @@ struct SettingsView: View {
             }
             Spacer(minLength: 4)
             if isActive {
-                // A text badge, not a colored dot — status that reads as
-                // color alone is banned (see the a11y rules).
+                // Text badge, not a colored dot — no color-only status.
                 Text(L("Active"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             } else {
-                // `confirmRemoveProfile` runs the confirmation alert and
-                // refuses the active/last profile — same path the header
-                // menu's hidden alternate item uses.
                 Button(L("Remove")) {
                     appState.confirmRemoveProfile(profile)
                 }
@@ -141,11 +125,6 @@ struct SettingsView: View {
 
     // MARK: - Keyboard Shortcuts
 
-    /// The two global hotkeys, each with a recorder and a reset. The
-    /// registration warnings surface what `RegisterEventHotKey` only
-    /// reports as a return code: a chord another app already owns is
-    /// silently refused, and an advertised-but-dead shortcut is worse than
-    /// none (see `GlobalHotkey.isRegistered`).
     private var keyboardShortcutsSection: some View {
         Section(L("Keyboard Shortcuts")) {
             shortcutRow(
@@ -180,10 +159,7 @@ struct SettingsView: View {
         }
     }
 
-    /// One shortcuts row: command name, the recorder (whose idle title is
-    /// the current chord), and a reset affordance. `registered == false`
-    /// appends the inline "in use elsewhere" warning — icon + text, never
-    /// color alone.
+    /// `registered == false` appends the inline "in use elsewhere" warning.
     @ViewBuilder
     private func shortcutRow(
         title: String,
@@ -238,10 +214,6 @@ struct SettingsView: View {
 
     // MARK: - Link sharing
 
-    /// The share-by-token feature gate + relay override. The consent
-    /// posture is stated here once, in full, because this is the only
-    /// surface with room for it — the menubar section carries the short
-    /// version.
     private var linkSharingSection: some View {
         Section(L("Link sharing")) {
             Toggle(
@@ -412,11 +384,7 @@ struct SettingsView: View {
                     }
                 )
             ) {
-                // Codec names are brand nouns — deliberately unlocalized
-                // (see CLAUDE.md's Localization section). HEVC here is
-                // the *explicit* choice: unlike Automatic (HEVC with
-                // H.264 fallback) it never downgrades, so H.264-only
-                // viewers can't watch — the caption below says so.
+                // Codec names are brand nouns — deliberately unlocalized.
                 Text(L("Automatic")).tag(QualitySettings.CodecPreference.auto)
                 Text(verbatim: "HEVC").tag(QualitySettings.CodecPreference.hevc)
                 Text(verbatim: "H.264").tag(QualitySettings.CodecPreference.h264)
@@ -441,9 +409,8 @@ struct SettingsView: View {
                     }
                 ))
             if let ceilingBps = appState.qualitySettings.maxBitrateBps {
-                // `normalized()` keeps the ceiling clamped to the
-                // bounds and rounded to a whole Mbps, so the integer
-                // division here is always exact — no display fudging.
+                // `normalized()` clamps and rounds to a whole Mbps, so this
+                // integer division is always exact.
                 Stepper(
                     value: Binding(
                         get: { ceilingBps / 1_000_000 },
@@ -470,8 +437,7 @@ struct SettingsView: View {
         Section(L("Color")) {
             Toggle(L("10-bit color"), isOn: $appState.enable10BitCapture)
             Toggle(isOn: $appState.enableHDRCapture) {
-                // Acronym, same unlocalized class as the codec names.
-                Text(verbatim: "HDR")
+                Text(verbatim: "HDR")  // acronym, unlocalized
             }
             Text(
                 L(
@@ -483,21 +449,16 @@ struct SettingsView: View {
         }
     }
 
-    /// Encoder-quality slider (`kVTCompressionPropertyKey_Quality` via
-    /// `QualitySettings.encoderQuality`). The named presets differentiate
-    /// on this knob, so the slider only unlocks on Custom — otherwise it
-    /// just *shows* the preset's effective value. The value label makes the
-    /// 0.30–1.00 position readable at a glance; the slider itself carries
-    /// the accessible value.
+    /// The named presets differentiate on this knob, so the slider only
+    /// unlocks on Custom — otherwise it shows the preset's effective value.
     private var encoderQualityRow: some View {
         HStack(spacing: 12) {
             Slider(
                 value: Binding(
                     get: { appState.qualitySettings.encoderQuality },
                     set: { newValue in
-                        // No `updating(encoderQuality:)` twin exists on the
-                        // type; set the knob directly and re-normalize,
-                        // which is exactly what those helpers do.
+                        // No `updating(encoderQuality:)` twin exists; set the
+                        // knob directly and re-normalize.
                         var updated = appState.qualitySettings
                         updated.encoderQuality = newValue
                         appState.qualitySettings = updated.normalized()
@@ -551,17 +512,9 @@ struct SettingsView: View {
 
     // MARK: - Diagnostics
 
-    /// Record what happens during a session, and get it to somebody who can
-    /// read it.
-    ///
-    /// Lives next to About because that is where the build stamp is, and the
-    /// two are asked for together: "which build are you on, and what did it
-    /// do?" is one question.
-    ///
-    /// The caption states the default rather than leaving it implicit. A
-    /// candidate records by default, and a user who has not been told that is
-    /// being recorded without knowing — which is the thing the disclosure
-    /// exists to prevent, whether or not the contents are sensitive.
+    /// Lives next to About, where the build stamp is — "which build, and what
+    /// did it do?" is one question. Caption states the default explicitly, so
+    /// a candidate's on-by-default recording is disclosed rather than silent.
     private var diagnosticsSection: some View {
         Section(L("Diagnostics")) {
             Toggle(
@@ -573,23 +526,17 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            // Deliberately NOT disabled while recording is off. Stopping keeps
-            // what was already recorded — that is the whole point of the
-            // switch not erasing — and the documented workflow is exactly
-            // "reproduce the problem, stop recording, hand the file over".
-            // Gating export on the toggle blocked that, and the only way out
-            // was to turn recording back on, which writes a misleading fresh
-            // `recording.started` into the very bundle being exported.
+            // Deliberately NOT disabled while recording is off: the toggle
+            // doesn't erase, and the workflow is "reproduce, stop, export".
+            // Gating this on the toggle would force re-enabling first, which
+            // writes a misleading fresh `recording.started` into the bundle
+            // being exported.
             Button(L("Export Diagnostics…")) {
                 appState.exportDiagnostics()
             }
 
-            // Beside Export rather than anywhere else, because the pair is
-            // the point: you export yours, they export theirs, and this is
-            // what turns the two files into one readable answer. Not disabled
-            // when nothing has been recorded here either — merging two files
-            // somebody sent you is a real thing to want, and this Mac's own
-            // recording is included only if it has anything in it.
+            // Not disabled when nothing recorded here either — merging files
+            // someone sent you is a real use case.
             Button(L("Merge With…")) {
                 appState.mergeDiagnostics()
             }
@@ -612,9 +559,6 @@ struct SettingsView: View {
         }
     }
 
-    /// Why the toggle is where it is, worded for the channel this build is on
-    /// — a tester being told recording is on by default, a release user being
-    /// told it is not.
     private static var diagnosticsCaption: String {
         switch BuildInfo.releaseChannel {
         case .releaseCandidate:
@@ -635,14 +579,8 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section(L("About")) {
             LabeledContent(L("Version"), value: Self.versionString)
-            // The build/environment line the GTK and Windows apps show in
-            // their window footer. macOS has a Settings scene, so it lives
-            // here rather than under the peer list — diagnostics belong
-            // behind ⌘, on this platform, not in the hub chrome.
-            //
-            // Selectable on purpose: the entire point of the line is
-            // pasting it into a bug report, and a diagnostic you can't
-            // copy is half a diagnostic.
+            // Selectable on purpose: the point of the line is pasting it into
+            // a bug report.
             LabeledContent(L("Build")) {
                 Text(environmentLine)
                     .font(.caption.monospaced())
@@ -654,12 +592,9 @@ struct SettingsView: View {
         }
     }
 
-    /// Running apps the user could add to the Cloaked Apps list: ordinary
-    /// (Dock-visible) apps, minus Tailscreen itself and anything already
-    /// cloaked. `NSWorkspace` is legal here — it's AppKit, not the
-    /// ScreenCaptureKit family CLAUDE.md bans from the main process — and
-    /// enumerating *running* apps mirrors Tuple's "Add…" flow without
-    /// needing a full /Applications scan.
+    /// Dock-visible running apps, minus Tailscreen itself and anything
+    /// already cloaked. `NSWorkspace` is AppKit, not the ScreenCaptureKit
+    /// family CLAUDE.md bans from the main process.
     @MainActor
     private func cloakableRunningApps() -> [(name: String, bundleID: String)] {
         let cloaked = Set(appState.appCloak.entries.map(\.bundleID))
@@ -678,16 +613,9 @@ struct SettingsView: View {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    /// Build stamp + running architecture + the quality knobs actually in
-    /// force — the macOS counterpart of `AppUIState.environmentLine` in the
-    /// Windows and GTK apps. The stamp leads because every other number on
-    /// screen depends on it being right.
-    ///
-    /// Reads `appState.qualitySettings`, not `QualitySettings.default` as the
-    /// footer-only hosts do: this app has the Quality pickers directly above,
-    /// so the line must name what this Mac will actually encode with —
-    /// including a Custom preset — or it would contradict the control that
-    /// set it.
+    /// Reads `appState.qualitySettings`, not `QualitySettings.default`: the
+    /// Quality pickers are right above, so this must name what the Mac will
+    /// actually encode with, including a Custom preset.
     private var environmentLine: String {
         let quality = appState.qualitySettings
         let build = BuildInfo.summary
@@ -710,17 +638,13 @@ struct SettingsView: View {
 
 // MARK: - Shortcut recorder
 
-/// AppKit-backed shortcut recorder. SwiftUI has no key-capture control:
-/// recording must swallow the *next* keyDown chord regardless of focus,
-/// which is a local `NSEvent` monitor's job. Click to arm, press a chord to
-/// store it, Esc cancels; a chord is refused (with a beep) unless it
-/// carries at least one of ⌃⌥⌘ and names a key the display vocabulary can
-/// spell (`HotkeyChord.isValidUserChord`) — the same no-bare-keys rule
-/// `GlobalHotkeyMapping` applies on the other platforms, because a bare key
-/// registered system-wide is stolen from every other app on the machine.
+/// SwiftUI has no key-capture control: swallowing the next keyDown chord
+/// regardless of focus needs a local `NSEvent` monitor. Click to arm, press a
+/// chord to store it, Esc cancels; refused (with a beep) unless it carries
+/// >=1 of ⌃⌥⌘ and names a key the display vocabulary can spell — a bare key
+/// registered system-wide is stolen from every other app.
 private struct ShortcutRecorderButton: NSViewRepresentable {
-    /// "⌃⌥M"-style rendering of the stored chord, or nil when the stored
-    /// key is unmappable — the idle button then reads "Record Shortcut".
+    /// nil when the stored key is unmappable — idle button reads "Record Shortcut".
     let chordDisplay: String?
     let accessibilityLabel: String
     let onRecord: (HotkeyChord) -> Void
@@ -758,14 +682,12 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
     final class Coordinator: NSObject {
         weak var button: NSButton?
         var onRecord: ((HotkeyChord) -> Void)?
-        /// Title shown while not recording — the chord, or "Record Shortcut".
         var idleTitle = ""
         private var monitor: Any?
         private var resignObserver: NSObjectProtocol?
-        /// The one coordinator currently recording, app-wide. Arming a
-        /// second recorder cancels the first so two monitors can't both
-        /// swallow one keystroke. Weak: a recorder being torn down must not
-        /// be kept alive by it.
+        /// Arming a second recorder cancels the first, so two monitors can't
+        /// both swallow one keystroke. Weak so a torn-down recorder isn't
+        /// kept alive by it.
         private static weak var active: Coordinator?
 
         var isRecording: Bool { monitor != nil }
@@ -788,12 +710,8 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
             Coordinator.active = self
             button?.title = L("Type shortcut…")
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                // Local monitors fire on the main thread; `assumeIsolated`
-                // bridges to our @MainActor state. Only Sendable scalars
-                // cross the bridge (NSEvent isn't one), and the isolated
-                // side answers just "was it handled" — everything a live
-                // recorder sees is swallowed so no keystroke leaks through
-                // to the menu equivalents underneath it.
+                // `assumeIsolated` bridges to @MainActor state; only Sendable
+                // scalars cross (NSEvent isn't one).
                 let keyCode = event.keyCode
                 let carbonModifiers = HotkeyChord.carbonModifiers(from: event.modifierFlags)
                 let handled = MainActor.assumeIsolated { () -> Bool in
@@ -803,11 +721,8 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
                 }
                 return handled ? nil : event
             }
-            // The Settings window is kept for the process lifetime, so
-            // closing it never dismantles this view — without this, an
-            // armed monitor would outlive the window and swallow keystrokes
-            // app-wide. Losing key status (close, ⌘Tab, click elsewhere)
-            // cancels the recording instead.
+            // Settings window is kept for process lifetime, so closing it
+            // never dismantles this view; losing key status cancels instead.
             resignObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didResignKeyNotification,
                 object: button?.window,
@@ -819,9 +734,6 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
             }
         }
 
-        /// Act on a keystroke seen while armed: Esc cancels, a valid chord
-        /// is stored, anything else beeps. The caller swallows the event in
-        /// every case.
         private func handleKeyDown(keyCode: UInt16, carbonModifiers: UInt32) {
             if keyCode == UInt16(kVK_Escape) {
                 cancelRecording()

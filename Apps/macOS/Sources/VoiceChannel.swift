@@ -4,44 +4,28 @@ import Foundation
 import TailscaleKit
 import os
 
-// `VoiceStats` and the pure decision layer this file used to define
-// (`audioRoute` / `decoderGateAction` / `gapAction` / `jitterBufferTarget` /
-// `shouldLogClamp` / `clampToUnitRange` / `staleSSRCs` /
-// `concealmentEmitCount` / `concealmentFadeOut` / `isStarveResume` /
-// `isPauseDeviation`, plus their value types) now live in the portable
-// `VoiceReceiveDecisions` namespace in TailscreenAudio, so the Linux and
-// Windows voice receive path (`VoiceDownlink`) can share them. This pipeline
-// composes the same decisions; the aliases below keep the queue-confined code
-// and the mac-side tests reading naturally.
+// `VoiceStats` and the pure decision layer (`audioRoute`/`decoderGateAction`/
+// `gapAction`/`jitterBufferTarget`/etc.) live in the portable
+// `VoiceReceiveDecisions` namespace in TailscreenAudio, shared with the
+// Linux/Windows receive path (`VoiceDownlink`). This pipeline composes the
+// same decisions; the aliases below keep the queue-confined code reading naturally.
 
-/// Process-side voice pipeline: PCM in → Opus enc → RTP out, and RTP in →
-/// Opus dec (per SSRC) → `VoiceMixer` (per 20 ms slot) → mixed PCM out.
-/// Hardware capture/playback glue is in `MicCapture` (added in Task 7) which
-/// feeds this class.
+/// PCM in -> Opus enc -> RTP out, and RTP in -> Opus dec (per SSRC) ->
+/// `VoiceMixer` (per 20ms slot) -> mixed PCM out. Hardware glue is `MicCapture`.
 ///
-/// The mix is real summation, not a name: `MicCapture` schedules everything
-/// `onMixedPCM` delivers onto ONE `AVAudioPlayerNode`, which plays its
-/// buffers in turn — so emitting per SSRC with two remote voices (a sharer
-/// hearing two viewers; a viewer hearing the sharer at SSRC 0 plus another
-/// viewer's relayed voice) time-multiplexed them, 20 ms of each in
-/// alternation, and the doubled queue depth tripped the overrun cap on top.
-/// The mixer (portable, shared with `VoiceDownlink`) sums the frames of
-/// different SSRCs that land in the same slot; a single voice passes
-/// through unchanged. Decoding, concealment, jitter and fades stay per SSRC.
+/// The mix is real summation: `MicCapture` schedules everything `onMixedPCM`
+/// delivers onto ONE `AVAudioPlayerNode`, so emitting per SSRC with two
+/// remote voices would time-multiplex them instead of mixing (and double the
+/// queue depth against the overrun cap). `VoiceMixer` sums frames landing in
+/// the same slot; decoding, concealment, jitter and fades stay per SSRC.
 ///
-/// Thread-safe via an internal serial queue: capture callbacks (audio
-/// thread) and network callbacks (TailscaleKit reader task) call into
-/// public methods which dispatch onto the queue. State only mutates on
-/// the queue.
+/// Thread-safe via an internal serial queue: capture and network callbacks
+/// dispatch onto it; state only mutates there.
 ///
-/// Marked `@unchecked Sendable`: all stored mutable state (`_isMuted`,
-/// `decoders`, `decoderFailures`, `receiveStates`, `mixer`,
-/// `lastTargetRefreshNs`, `lastStatsLogNs`, `lastLoggedStats`) is touched
-/// only from `queue`.
-/// `statsLock` and `jitterTargetDepth` are the cross-thread values —
-/// lock-published because `MicCapture` reads/writes them from the
-/// MainActor. `onMixedPCM` is the documented exception — set it once
-/// before any `receive(_:)`.
+/// `@unchecked Sendable`: stored mutable state is touched only from `queue`.
+/// `statsLock`/`jitterTargetDepth` are lock-published for `MicCapture`'s
+/// MainActor reads/writes. `onMixedPCM` is the exception — set once before
+/// any `receive(_:)`.
 final class VoiceChannel: @unchecked Sendable {
     let localSSRC: UInt32
     var isMuted: Bool {
@@ -49,27 +33,16 @@ final class VoiceChannel: @unchecked Sendable {
         set { queue.sync { _isMuted = newValue } }
     }
 
-    /// Invoked on the internal queue every time the encoder produces an
-    /// RTP packet. Caller should pass it to the network layer.
     private let onSend: (Data) -> Void
 
-    /// Invoked on the internal queue with one frame of PCM per 20 ms playout
-    /// slot: every remote voice that landed in the slot, summed and clamped
-    /// by `VoiceMixer` (a lone voice passes through untouched). Mixing is
-    /// done HERE, not by the caller — `MicCapture` schedules each frame onto
-    /// one shared player node, which plays its buffers sequentially and so
-    /// cannot mix.
-    ///
-    /// Set this once before the first `receive(_:)` call. Mutating it
-    /// concurrently with packet ingestion is unsafe; the queue reads it
-    /// without synchronization.
+    /// One frame of PCM per 20ms playout slot, summed by `VoiceMixer`. Set
+    /// once before the first `receive(_:)` call; the queue reads it without
+    /// synchronization.
     var onMixedPCM: (([Float]) -> Void)?
 
-    /// Invoked on the internal queue with decoded PCM for one inbound
-    /// *system-audio* packet (RTP PT 99). Kept separate from `onMixedPCM` so
-    /// `MicCapture` can schedule it into a dedicated `AVAudioPlayerNode` —
-    /// funnelling two 50 Hz streams into one node time-multiplexes them instead
-    /// of mixing. Set once before the first `receive(_:)` call.
+    /// Kept separate from `onMixedPCM` so `MicCapture` schedules it into a
+    /// dedicated `AVAudioPlayerNode` — one node would time-multiplex the two
+    /// 50Hz streams instead of mixing. Set once before the first `receive(_:)` call.
     var onSystemAudioPCM: (([Float]) -> Void)?
 
     private let queue = DispatchQueue(label: "VoiceChannel")
@@ -80,25 +53,18 @@ final class VoiceChannel: @unchecked Sendable {
     private var decoders: [UInt32: OpusVoiceDecoder] = [:]
     private var decoderFailures: [UInt32: DecoderFailureRecord] = [:]
     private var receiveStates: [UInt32: ReceiveState] = [:]
-    /// The per-slot sum every voice emission (decoded or concealed) passes
-    /// through on its way to `onMixedPCM`. Queue-confined like `decoders`.
     private var mixer = VoiceMixer()
     private var lastTargetRefreshNs: UInt64 = 0
     private var lastStatsLogNs: UInt64 = 0
     private var lastLoggedStats = VoiceStats()
-    /// Cadence gate in front of `audio.summary`, the same five-second window
-    /// the transport rows use so an audio row lines up with the transport row
-    /// beside it. Queue-confined like the rest of the inbound bookkeeping.
+    /// Same five-second window the transport rows use, so an audio row lines
+    /// up with the transport row beside it.
     private var audioSummarySampler = DiagnosticsTransportSampler()
-    /// Counters as they stood when the previous `audio.summary` was recorded,
-    /// so each row carries deltas rather than running totals.
+    /// Counters as of the previous `audio.summary`, so each row carries
+    /// deltas rather than running totals.
     private var lastSummaryStats = VoiceStats()
-    /// Distinct voice SSRCs that delivered a packet in the open window, and
-    /// whether system audio did. Both are what `audio.summary` reports as
-    /// what was playing — deliberately "delivered in this window" rather than
-    /// "has a decoder", so a stream that stops reads as 0 instead of holding
-    /// its last count forever, which is what makes "the microphone is on and
-    /// nothing is arriving" a legible row.
+    /// "Delivered in this window", not "has a decoder" — a stream that stops
+    /// reads as 0 instead of holding its last count forever.
     private var voiceSSRCsThisWindow: Set<UInt32> = []
     private var systemAudioThisWindow = false
     private let statsLock = OSAllocatedUnfairLock<VoiceStats>(initialState: VoiceStats())
@@ -108,43 +74,27 @@ final class VoiceChannel: @unchecked Sendable {
     private let logger = TSLogger()
 
     // Portable constants, forwarded so `MicCapture` and the mac tests keep
-    // their `VoiceChannel.` spelling. Values live with the decisions that
-    // consume them (`VoiceReceiveDecisions`) so the two can never drift apart.
-
-    /// One Opus frame's worth of samples at 48 kHz = 20 ms.
+    // their `VoiceChannel.` spelling.
     static let samplesPerFrame = VoiceReceiveDecisions.samplesPerFrame
-    /// Samples faded at a concealment boundary to mask the MDCT
-    /// overlap-add discontinuity click.
     static let fadeSampleCount = VoiceReceiveDecisions.fadeSampleCount
-    /// Startup playback queue depth, in `samplesPerFrame` buffers.
     static let initialJitterTargetDepth = VoiceReceiveDecisions.initialJitterTargetDepth
-    /// Headroom above the adaptive target depth before `MicCapture` drops
-    /// an incoming buffer instead of scheduling it — the clock-drift
-    /// backstop (see `MicCapture.scheduleSamples`).
+    /// Headroom before `MicCapture` drops an incoming buffer instead of
+    /// scheduling it — the clock-drift backstop.
     static let playbackSlackBuffers = VoiceReceiveDecisions.playbackSlackBuffers
-    /// Idle time after which a peer's receive state is evicted (10 s).
     static let receiveStateIdleNs = VoiceReceiveDecisions.receiveStateIdleNs
-    /// Live-path values for `decoderGateAction`'s cooldown/permanent knobs.
     static let decoderInitRetryCooldownNs = VoiceReceiveDecisions.decoderInitRetryCooldownNs
     static let decoderInitFailureLimit = VoiceReceiveDecisions.decoderInitFailureLimit
 
-    /// Bookkeeping for one SSRC whose decoder failed to initialize.
-    /// (Aliased: `VoiceChannelTests` and the failure paths construct it.)
     typealias DecoderFailureRecord = VoiceReceiveDecisions.DecoderFailureRecord
 
-    /// `GapAction` narrowed for `trackArrival`: `.dropStale` returns from
-    /// `processInbound` before arrival tracking runs, so this type has no
-    /// case for it — the compiler enforces the invariant.
+    /// `GapAction` narrowed for `trackArrival`: `.dropStale` returns before
+    /// arrival tracking runs, so this type has no case for it.
     private enum ArrivalKind: Equatable {
-        /// `GapAction.decode` — in order.
         case inOrder
-        /// `GapAction.concealThenDecode` — gap filled, fade in the frame.
         case concealed
-        /// `GapAction.discontinuity` — resync, skip the jitter fold.
         case discontinuity
     }
 
-    /// Per-SSRC inbound bookkeeping. Queue-confined like `decoders`.
     private typealias ReceiveState = VoiceReceiveDecisions.ReceiveState
 
     init(localSSRC: UInt32, onSend: @escaping (Data) -> Void) throws {
@@ -154,15 +104,12 @@ final class VoiceChannel: @unchecked Sendable {
         self.packetizer = AudioRTPPacketizer(ssrc: localSSRC)
     }
 
-    /// Push exactly `samplesPerFrame` (960) PCM samples (one Opus frame's
-    /// worth) for outbound transmission. No-op when muted.
+    /// No-op when muted.
     func processOutboundFrame(_ pcm: [Float]) {
         queue.async {
             guard !self._isMuted else { return }
-            // Also the summary's clock while transmitting: a session whose
-            // inbound voice has stopped would otherwise stop reporting at
-            // exactly the moment "nothing is arriving" became the thing
-            // worth recording.
+            // Also the summary's clock while transmitting, so a session
+            // whose inbound voice stopped keeps reporting it.
             self.maybeRecordAudioSummary(nowNs: DispatchTime.now().uptimeNanoseconds)
             do {
                 guard let au = try self.encoder.encode(pcm: pcm) else { return }
@@ -174,18 +121,13 @@ final class VoiceChannel: @unchecked Sendable {
         }
     }
 
-    /// Ingest one inbound RTP audio packet. Decodes per SSRC and emits
-    /// PCM via `onMixedPCM`, concealing small sequence gaps with
-    /// fade-masked silence.
     func receive(_ packet: Data) {
         queue.async {
             self.processInbound(packet)
         }
     }
 
-    /// Forget all per-SSRC decoders, failure records, sequence/jitter
-    /// state, and counters. Called when the share session ends so a
-    /// future session starts fresh.
+    /// Called when the share session ends so a future session starts fresh.
     func reset() {
         queue.async {
             self.decoders.removeAll()
@@ -206,39 +148,29 @@ final class VoiceChannel: @unchecked Sendable {
 
     // MARK: - Cross-thread published values
 
-    /// Playback queue depth (in 20 ms buffers) the jitter estimator
-    /// currently recommends. Read by `MicCapture.scheduleSamples` on the
-    /// MainActor; refreshed on `queue` — hence the lock.
+    /// Read by `MicCapture.scheduleSamples` on the MainActor; refreshed on
+    /// `queue` — hence the lock.
     var currentJitterTargetDepth: Int {
         jitterTargetDepth.withLock { $0 }
     }
 
-    /// Snapshot of the cumulative resilience counters. Safe from any thread.
     var currentStats: VoiceStats {
         statsLock.withLock { $0 }
     }
 
-    /// The effective output device, for `audio.summary` to name.
-    ///
-    /// Pushed in by the host rather than read out: the device is Core Audio
-    /// state that lives on the MainActor, and every row wants it, so it is
-    /// lock-published here exactly as `jitterTargetDepth` is published the
-    /// other way. A row's whole purpose is to be self-contained — a reader
-    /// should not have to scroll back to the last `audio.devices.changed` to
-    /// learn what the numbers beside it were measured through.
+    /// Pushed in by the host: Core Audio device state lives on the
+    /// MainActor, so it's lock-published here (like `jitterTargetDepth` the
+    /// other way), keeping each row self-contained.
     func setOutputDeviceName(_ name: String?) {
         outputDeviceName.withLock { $0 = name }
     }
 
-    /// Record a playback-side drop of an incoming buffer at the queue cap.
     /// Called from the MainActor (`MicCapture`).
     func noteOverrunDrop() {
         statsLock.withLock { $0.overrunDrops += 1 }
     }
 
-    /// Record an audible playback starve (pending queue hit zero while
-    /// the player was running, and audio resumed shortly after — see
-    /// `isStarveResume`). Called from the MainActor (`MicCapture`).
+    /// Called from the MainActor (`MicCapture`).
     func noteUnderrun() {
         statsLock.withLock { $0.underruns += 1 }
     }
@@ -258,21 +190,18 @@ final class VoiceChannel: @unchecked Sendable {
         case .voice:
             break
         }
-        // Drop our own loopback if the network somehow returned it.
-        guard parsed.ssrc != localSSRC else { return }
+        guard parsed.ssrc != localSSRC else { return }  // drop our own loopback
         voiceSSRCsThisWindow.insert(parsed.ssrc)
         let now = DispatchTime.now().uptimeNanoseconds
-        // Single dictionary fetch per packet (50 Hz hot path): the helpers
-        // thread `state` through and each exit path writes it back once.
+        // Single dictionary fetch per packet (50Hz hot path); each exit path
+        // writes it back once.
         var state = receiveStates[parsed.ssrc]
         guard
             case .allow = VoiceReceiveDecisions.decoderGateAction(
                 record: decoderFailures[parsed.ssrc], nowNs: now)
         else {
-            // Gate-dropped packets still advance the sequence/timestamp
-            // baseline (no jitter fold, no concealment, no decode) so the
-            // first packet after the cooldown doesn't read as a spurious
-            // gap — a needless discontinuity count and fade-in.
+            // Gate-dropped packets still advance the baseline, or the first
+            // packet after cooldown reads as a spurious gap.
             Self.advanceBaseline(&state, parsed: parsed, arrivalNs: now)
             receiveStates[parsed.ssrc] = state
             return
@@ -283,9 +212,7 @@ final class VoiceChannel: @unchecked Sendable {
         let kind: ArrivalKind
         switch action {
         case .dropStale:
-            // Late arrival of a packet whose gap was already concealed —
-            // decoding it now would play those 20 ms twice. State is
-            // untouched, so nothing needs writing back.
+            // Decoding it now would play those 20ms twice.
             return
         case .decode:
             kind = .inOrder
@@ -307,12 +234,9 @@ final class VoiceChannel: @unchecked Sendable {
         maybeLogStats(nowNs: now)
     }
 
-    /// Decode one system-audio packet (PT 99, reserved SSRC 1) and emit via
-    /// `onSystemAudioPCM`. Reuses the per-SSRC decoder + failure-cooldown
-    /// machinery but skips the voice jitter/concealment pipeline — playback is
-    /// queue-paced in `MicCapture`, and the system-audio SSRC is disjoint from
-    /// every voice SSRC (0 sharer, ≥2 viewers) so the shared dictionaries never
-    /// collide.
+    /// Reuses the per-SSRC decoder + failure-cooldown machinery but skips the
+    /// voice jitter/concealment pipeline — playback is queue-paced in
+    /// `MicCapture`, and the system-audio SSRC never collides with a voice SSRC.
     private func processSystemAudioInbound(_ parsed: AudioRTPDepacketizer.Parsed) {
         guard let emit = onSystemAudioPCM else { return }
         let now = DispatchTime.now().uptimeNanoseconds
@@ -336,13 +260,9 @@ final class VoiceChannel: @unchecked Sendable {
         }
     }
 
-    /// Advance the per-SSRC sequence/timestamp clocks and fold this
-    /// packet into the RFC 3550 smoothed inter-arrival jitter:
-    /// `J += (|D| - J) / 16`, where `D` compares the arrival-time delta
-    /// against the RTP-timestamp delta (48 kHz units → ms). The fold is
-    /// skipped on a discontinuity — a resync's huge timestamp jump isn't
-    /// jitter — and on a pause-shaped deviation (send-side mute), which
-    /// just resyncs the baseline instead of poisoning the estimator.
+    /// RFC 3550 smoothed inter-arrival jitter: `J += (|D| - J) / 16`. Skipped
+    /// on a discontinuity (a resync's timestamp jump isn't jitter) and on a
+    /// pause-shaped deviation (send-side mute), which just resyncs the baseline.
     private static func trackArrival(
         _ state: inout ReceiveState?,
         parsed: AudioRTPDepacketizer.Parsed,
@@ -472,8 +392,6 @@ final class VoiceChannel: @unchecked Sendable {
         do {
             let decoder = try ensureDecoder(for: parsed.ssrc)
             let raw = try decoder.decode(au: parsed.au)
-            // Successful init + non-throwing decode: the SSRC is healthy,
-            // forget any failure history.
             decoderFailures.removeValue(forKey: parsed.ssrc)
             guard !raw.isEmpty else { return }
             var samples = raw
@@ -502,10 +420,9 @@ final class VoiceChannel: @unchecked Sendable {
         }
     }
 
-    /// Failure bookkeeping. Init failures (no decoder cached yet) upsert
-    /// the cooldown record — the gate then swallows packets until
-    /// the cooldown elapses, so this logs at most once per window. Decode
-    /// (not init) failures keep the decoder; transient corruption is normal.
+    /// Init failures (no decoder cached yet) upsert the cooldown record;
+    /// decode (not init) failures keep the decoder, since transient
+    /// corruption is normal.
     private func recordDecodeFailure(for ssrc: UInt32, error: Error, nowNs: UInt64) {
         guard decoders[ssrc] == nil else {
             logger.log("VoiceChannel: decode failed for ssrc=\(ssrc): \(error)")
@@ -530,8 +447,6 @@ final class VoiceChannel: @unchecked Sendable {
         }
     }
 
-    /// Ramp the first `fadeSampleCount` samples up from zero to mask the
-    /// decode restart after a concealment gap or resync.
     private static func applyFadeIn(_ samples: inout [Float]) {
         let span = min(fadeSampleCount, samples.count)
         guard span > 0 else { return }
@@ -559,16 +474,9 @@ final class VoiceChannel: @unchecked Sendable {
                 + "jitter=\(String(format: "%.1f", snapshot.smoothedJitterMs))ms")
     }
 
-    /// Record one `audio.summary` per closed window, whether or not a counter
-    /// moved.
-    ///
-    /// The difference from `maybeLogStats` above is the point of the event.
-    /// That line fires at most once a minute and only when a counter changed,
-    /// which is right for a log somebody is watching scroll past and wrong for
-    /// a bundle: a call that sounds bad while the counters sit still produces
-    /// no lines at all, and a reader cannot tell that from a call with no
-    /// voice in it. This fires on the window regardless, and carries what was
-    /// playing so the numbers mean something.
+    /// Unlike `maybeLogStats`, fires on the window regardless of whether a
+    /// counter moved — a call that sounds bad while counters sit still must
+    /// not read the same as a call with no voice in it.
     private func maybeRecordAudioSummary(nowNs: UInt64) {
         guard let windowNs = audioSummarySampler.windowClosed(nowNs: nowNs) else { return }
         let streams = voiceSSRCsThisWindow.count
@@ -582,11 +490,9 @@ final class VoiceChannel: @unchecked Sendable {
             microphoneOn: !_isMuted,
             jitterTargetDepth: jitterTargetDepth.withLock { $0 },
             outputDevice: outputDeviceName.withLock { $0 },
-            // `MicCapture` counts both, on the MainActor, through
-            // `noteOverrunDrop` / `noteUnderrun`.
             playbackQueueTracked: true)
-        // Cheap when nothing is playing, and the window bookkeeping above
-        // still advanced — a suppressed window must not fold into the next.
+        // Window bookkeeping above still advanced — a suppressed window
+        // must not fold into the next.
         guard VoiceStats.shouldRecordSummary(context: context) else { return }
 
         let snapshot = statsLock.withLock { $0 }
@@ -625,23 +531,16 @@ final class VoiceChannel: @unchecked Sendable {
     #endif
 }
 
-/// AVAudioEngine glue: input from VoiceProcessingIO mic (with built-in
-/// AEC), output through the same VPIO unit (so AEC has the right
-/// reference signal). Feeds inbound PCM frames into the VoiceChannel
-/// and renders outbound PCM blocks the channel decoded from RTP.
 /// Drains the AVAudioEngine input tap on the audio render thread and feeds
-/// 960-sample frames into the VoiceChannel. Lives outside `@MainActor`
-/// because installTap fires on AVAudioEngine's serialized real-time queue;
-/// hopping every callback to `@MainActor` (a) drops Swift 6 isolation
-/// assertions, and (b) introduces unacceptable latency at 50 Hz.
+/// 960-sample frames into the VoiceChannel. Lives outside `@MainActor`:
+/// installTap fires on AVAudioEngine's serialized real-time queue, and
+/// hopping every callback to MainActor would introduce unacceptable latency
+/// at 50Hz.
 ///
 /// All state is touched only from the tap callback, which AVAudioEngine
-/// serializes — `@unchecked Sendable` is sound under that contract.
+/// serializes.
 private final class TapBuffer: @unchecked Sendable {
     private let channel: VoiceChannel
-    /// The portable 960-sample framer from TailscreenAudio (same one
-    /// `SystemAudioTap` and `MicrophonePipeline` use), replacing an inline
-    /// accumulate-and-drain copy.
     private var framer = PCMFramer(frameSamples: VoiceChannel.samplesPerFrame)
     private var converter: AVAudioConverter?
     private let targetFormat: AVAudioFormat
@@ -664,17 +563,11 @@ private final class TapBuffer: @unchecked Sendable {
         self.targetFormat = target
     }
 
-    /// Lazily (re)build the converter when the buffer's actual format
-    /// differs from what we last saw. Required because
-    /// `AVAudioInputNode.outputFormat(forBus:)` lies on macOS+VPIO until
-    /// the first buffer renders — we install the tap with `format: nil`
-    /// and discover the real format only when buffers start arriving.
-    ///
-    /// We always pre-extract channel 0 to mono before any sample-rate
-    /// conversion. With VPIO, the input bus presents `[mic, ref_L,
-    /// ref_R]`-style multi-channel layouts; AVAudioConverter's default
-    /// 3ch→1ch downmix sums all channels (peak hits ~6.0 = clipped).
-    /// Picking channel 0 explicitly gives clean mic audio.
+    /// `AVAudioInputNode.outputFormat(forBus:)` lies on macOS+VPIO until the
+    /// first buffer renders, so the real format is only known once buffers
+    /// arrive. Always extracts channel 0 to mono first: with VPIO the input
+    /// bus presents multi-channel `[mic, ref_L, ref_R]`, and
+    /// AVAudioConverter's default downmix sums all channels (clipping).
     private func ensureConverter(for sourceFormat: AVAudioFormat) -> Bool {
         if let last = lastSourceFormat,
             last.sampleRate == sourceFormat.sampleRate,
@@ -686,9 +579,8 @@ private final class TapBuffer: @unchecked Sendable {
         lastSourceFormat = sourceFormat
         sourceSampleRate = sourceFormat.sampleRate
 
-        // After mono extraction the pre-converter format is 1-channel
-        // at the source's sample rate. If that already matches the
-        // target (48 kHz mono Float32), no AVAudioConverter is needed.
+        // No AVAudioConverter needed if the mono-extracted format already
+        // matches 48kHz mono Float32.
         if sourceFormat.sampleRate == 48_000
             && sourceFormat.commonFormat == .pcmFormatFloat32
         {
@@ -719,16 +611,11 @@ private final class TapBuffer: @unchecked Sendable {
     func process(_ buffer: AVAudioPCMBuffer) {
         guard ensureConverter(for: buffer.format) else { return }
 
-        // Always extract just channel 0 (mic with VPIO; for raw input
-        // it's the only channel that matters anyway). Build a fresh
-        // mono PCMBuffer so AVAudioConverter sees a 1-channel stream
-        // and never has to decide how to downmix.
         guard let srcCd = buffer.floatChannelData?[0] else { return }
         let frameLen = Int(buffer.frameLength)
         guard frameLen > 0 else { return }
 
-        // Fast path: input already 48 kHz Float32 — channel 0 is the
-        // final mono audio, no conversion needed.
+        // Fast path: already 48kHz Float32.
         if converter == nil {
             let samples = Array(UnsafeBufferPointer(start: srcCd, count: frameLen))
             appendAndDrain(samples)
@@ -751,8 +638,6 @@ private final class TapBuffer: @unchecked Sendable {
         monoBuf.frameLength = AVAudioFrameCount(frameLen)
         memcpy(monoCd, srcCd, frameLen * MemoryLayout<Float>.size)
 
-        // Output capacity: input frames scaled by sample-rate ratio + slack
-        // for converter buffering.
         let ratio = 48_000.0 / sourceSampleRate
         let outCap = AVAudioFrameCount(Double(frameLen) * ratio + 64)
         guard outCap > 0,
@@ -768,10 +653,8 @@ private final class TapBuffer: @unchecked Sendable {
         var error: NSError?
         let inputBlock: AVAudioConverterInputBlock = { [flag] _, statusOut in
             if flag.done {
-                // `.noDataNow`, NOT `.endOfStream`. AVAudioConverter
-                // latches endOfStream and permanently refuses input
-                // after seeing it once — making this a one-shot
-                // converter when we want a streaming one.
+                // `.noDataNow`, not `.endOfStream`: the latter latches and
+                // permanently refuses further input.
                 statusOut.pointee = .noDataNow
                 return nil
             }
@@ -803,15 +686,11 @@ final class MicCapture {
     private let channel: VoiceChannel
     private let engine = AVAudioEngine()
     private var playerNodes: [AVAudioPlayerNode] = []
-    /// Dedicated player node for shared system audio, summed with the voice
-    /// player(s) by `mainMixerNode`. Load-bearing: two concurrent 50 Hz PCM
-    /// streams serialized into one node time-multiplex instead of mixing.
+    /// Load-bearing: two concurrent 50Hz PCM streams serialized into one
+    /// node would time-multiplex instead of mixing.
     private var systemAudioPlayer: AVAudioPlayerNode?
-    /// Pending-buffer bookkeeping for the voice player and the system-audio
-    /// node (AVAudioPlayerNode exposes no queue depth). Both are touched
-    /// only on @MainActor, and both are reset by `resetPlaybackQueues` at
-    /// every point where the node's queue is known to be empty — the type's
-    /// doc-comment says why that is not optional.
+    /// AVAudioPlayerNode exposes no queue depth; reset by
+    /// `resetPlaybackQueues` at every point the node's queue is known empty.
     private var voiceQueue = PlaybackQueueAccounting()
     private var systemAudioQueue = PlaybackQueueAccounting()
     private let mixer: AVAudioMixerNode
@@ -821,32 +700,23 @@ final class MicCapture {
     private(set) var isCapturing = false
     private var configChangeObserver: NSObjectProtocol?
 
-    /// Silent sink that pulls the input node continuously. AVAudioEngine
-    /// only renders an input node when something downstream is pulling
-    /// from it (the output device, ultimately) — installing a tap alone
-    /// is *not* enough on macOS, the tap is a passive observer. Without
-    /// this connection, the engine pulls input exactly once during
-    /// start-up and then idles, which surfaces as "exactly one tap
-    /// buffer, then silence". `outputVolume = 0` keeps the user from
-    /// hearing their own voice through the speakers.
+    /// AVAudioEngine only renders an input node when something downstream
+    /// pulls from it; installing a tap alone is not enough on macOS. Without
+    /// this, the engine pulls input once at start-up then idles, surfacing
+    /// as "one tap buffer, then silence". `outputVolume = 0` keeps the user
+    /// from hearing their own voice.
     private let inputSinkMixer = AVAudioMixerNode()
     private var inputSinkConnected = false
 
-    /// When `TAILSCREEN_VOICE_TEST_TONE=1`, capture skips the mic
-    /// entirely and feeds a generated 440 Hz sine into the encoder.
-    /// Lets us isolate codec/transport/playback bugs from
-    /// AEC/feedback issues when running two instances on one Mac.
+    /// Isolates codec/transport/playback bugs from AEC/feedback issues when
+    /// running two instances on one Mac.
     private var testToneTimer: DispatchSourceTimer?
     private static var isTestToneEnabled: Bool {
         ProcessInfo.processInfo.environment["TAILSCREEN_VOICE_TEST_TONE"] == "1"
     }
 
-    /// Optional per-engine device override. `nil` means "follow the
-    /// system default" — AVAudioEngine's default behavior. Set via
-    /// `setInputDevice` / `setOutputDevice`; applied at engine start
-    /// time, so changes only take effect after the next
-    /// engine.stop()/start() cycle (handled by the toggle paths and
-    /// the `setDevice` methods themselves).
+    /// `nil` means "follow the system default". Applied at engine start
+    /// time, so changes take effect after the next stop()/start() cycle.
     private var inputDeviceID: AudioDeviceID?
     private var outputDeviceID: AudioDeviceID?
 
@@ -913,13 +783,8 @@ final class MicCapture {
         }
     }
 
-    /// (Re)connect every player into the mixer. Done at `startPlayback`
-    /// and again after voice processing is enabled and after a
-    /// configuration change: enabling VPIO replaces the I/O unit under
-    /// the output node, and a configuration change uninitialises the
-    /// engine, so the graph built before either is not relied on to have
-    /// survived. Connecting an already-connected pair just re-establishes
-    /// it, which is the point.
+    /// Done at `startPlayback` and again after voice processing/config
+    /// changes, since those aren't relied on to preserve the graph.
     private func connectPlayers() {
         for player in playerNodes {
             engine.connect(player, to: mixer, format: outputFormat)
@@ -929,11 +794,9 @@ final class MicCapture {
         }
     }
 
-    /// Push the configured device IDs down to the AudioUnits sitting
-    /// underneath `engine.inputNode` / `engine.outputNode`. Called
-    /// every time we (re)start the engine. Engine must be stopped at
-    /// the call site — `kAudioOutputUnitProperty_CurrentDevice` is
-    /// only honored when the unit isn't running.
+    /// Engine must be stopped at the call site —
+    /// `kAudioOutputUnitProperty_CurrentDevice` is only honored when the
+    /// unit isn't running.
     private func applyInputDevice() {
         guard let id = inputDeviceID else { return }
         if let unit = engine.inputNode.audioUnit {
@@ -970,26 +833,18 @@ final class MicCapture {
         }
         self.outputFormat = fmt
 
-        // Pipe decoded PCM into a player node so the user hears it. One frame
-        // per 20 ms slot, every remote voice already summed by the channel's
-        // `VoiceMixer`: a player node plays its buffers in turn, so it cannot
-        // mix two voices itself — and the pending-buffer bookkeeping below
-        // (jitter target, overrun cap) is sized for one stream per slot.
         channel.onMixedPCM = { [weak self] samples in
             Task { @MainActor [weak self] in self?.scheduleSamples(samples) }
         }
 
-        // System audio decoded by the channel goes to its own player node so
-        // it mixes with (rather than time-multiplexes against) voice.
+        // Its own player node so it mixes with, rather than time-multiplexes
+        // against, voice.
         channel.onSystemAudioPCM = { [weak self] samples in
             Task { @MainActor [weak self] in self?.scheduleSystemAudioSamples(samples) }
         }
 
-        // AVAudioEngine reconfigures itself on route/format change (mic
-        // hot-plug, sample-rate negotiation when VPIO engages, default-
-        // device flip). Reconfigure tears down node connections, so an
-        // installed input tap stops firing — observed as "exactly one
-        // packet, then silence". Reinstall the tap whenever this fires.
+        // A reconfigure tears down node connections, so an installed input
+        // tap stops firing ("exactly one packet, then silence").
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -999,16 +854,12 @@ final class MicCapture {
         }
     }
 
-    /// Start the playback half of the engine. Builds the player → mixer →
-    /// output graph and starts the engine without touching the input node,
-    /// so listening works without prompting for microphone permission.
+    /// Starts the engine without touching the input node, so listening
+    /// works without prompting for microphone permission.
     func startPlayback() throws {
         guard !isPlaying else { return }
-        // New playback session: the priming counter and pending count
-        // start from zero, and the reset's new generation orphans any
-        // scheduleBuffer completion still in flight from a previous
-        // session — a stale completion must not drive the count negative
-        // or record a bogus drain.
+        // Orphans any scheduleBuffer completion still in flight from a
+        // previous session, or a stale completion could drive the count negative.
         voiceQueue.reset()
         systemAudioQueue.reset()
         let player = AVAudioPlayerNode()
@@ -1021,26 +872,17 @@ final class MicCapture {
         connectPlayers()
         applyOutputDevice()
         try engine.start()
-        // Don't call player.play() yet. scheduleSamples kicks
-        // playback off only after the channel's adaptive target
-        // depth is queued, so the player has runway and doesn't
-        // underrun on the first arrival hiccup.
+        // Don't call player.play() yet — scheduleSamples kicks off playback
+        // once the jitter target depth is queued, so it doesn't underrun on
+        // the first arrival hiccup.
         isPlaying = true
         logger.log("MicCapture: playback engine started (output-only, no mic, awaiting jitter buffer).")
     }
 
-    /// Enable microphone capture. Requests permission, restarts the engine
-    /// with VoiceProcessingIO enabled (for hardware AEC), and installs the
-    /// input tap. Throws if permission is denied or the engine reconfigure
-    /// fails.
+    /// Throws if permission is denied or the engine reconfigure fails.
     func enableCapture() async throws {
         guard !isCapturing else { return }
 
-        // Test-tone bypass: skip the mic entirely, feed a 440 Hz
-        // sine wave into VoiceChannel at the Opus frame cadence
-        // (960 samples / 48 kHz = 20 ms). Useful for testing
-        // codec + transport + playback in isolation without AEC
-        // contention from running two instances on one Mac.
         if Self.isTestToneEnabled {
             startTestTone()
             isCapturing = true
@@ -1057,13 +899,9 @@ final class MicCapture {
             )
         }
 
-        // setVoiceProcessingEnabled requires the engine to be stopped.
-        // Stopping it empties the players' queues — the buffers already
-        // scheduled for the other side's voice are gone, with or without
-        // their completions — so the bookkeeping is reset with them
-        // (`resetPlaybackQueues`), and playback is re-primed by the
-        // jitter-buffer kick once the engine is back rather than by a
-        // blind `play()` here.
+        // setVoiceProcessingEnabled requires the engine to be stopped, which
+        // empties the players' queues; bookkeeping resets with them, and
+        // playback re-primes via the jitter-buffer kick once the engine is back.
         if isPlaying {
             resetPlaybackQueues(reason: "enabling voice processing")
             engine.stop()
@@ -1072,23 +910,16 @@ final class MicCapture {
             try engine.inputNode.setVoiceProcessingEnabled(true)
             try engine.outputNode.setVoiceProcessingEnabled(true)
         } catch {
-            // Don't swallow: without VPIO the input is whatever raw
-            // hardware format AVAudioEngine picks (e.g. 5ch 44.1kHz from
-            // an aggregate device), AEC is off, and the resulting tap
-            // often fires once before the engine renegotiates.
+            // Don't swallow: without VPIO, AEC is off and the tap often
+            // fires once before the engine renegotiates.
             logger.log("MicCapture: VPIO not engaged: \(error). Continuing without AEC.")
         }
-        // Voice processing swaps the I/O unit under the output node and
-        // changes its format; the player → mixer edges built by
-        // `startPlayback` before that are re-established rather than
-        // trusted to have survived it. (The mixer → output edge the engine
-        // makes on its own at start, and the input sink below is wired
-        // after VPIO is on.)
+        // Voice processing swaps the I/O unit under the output node, so the
+        // player -> mixer edges are re-established rather than trusted to survive.
         if isPlaying { connectPlayers() }
 
-        // The name, not just the ID: when capture goes one-and-done it often
-        // reveals a virtual loopback (BlackHole, Loopback, an aggregate)
-        // sitting where the user assumes the built-in mic is.
+        // The name, not just ID: reveals a virtual loopback sitting where
+        // the user assumes the built-in mic is.
         let defaultInput = AudioDevices.defaultInputID().flatMap { AudioDevices.name(of: $0) }
         logger.log("MicCapture: default input device = \(defaultInput ?? "<unknown>")")
 
@@ -1101,9 +932,7 @@ final class MicCapture {
         }
         self.tapBuffer = buffer
 
-        // Wire the input node into the active processing graph so the
-        // engine pulls it every render cycle. See `inputSinkMixer`
-        // doc-comment — the tap alone doesn't drive rendering on macOS.
+        // See `inputSinkMixer` doc-comment.
         if !inputSinkConnected {
             engine.attach(inputSinkMixer)
             inputSinkMixer.outputVolume = 0
@@ -1112,21 +941,14 @@ final class MicCapture {
             inputSinkConnected = true
         }
 
-        // Install the tap BEFORE `engine.start()`, with `format: nil`.
-        // `format: nil` lets AVAudioEngine deliver whatever format the
-        // input actually produces; pre-start `outputFormat(forBus:)`
-        // lies (returns the *output* device's stream description), so
-        // we discover the real format lazily inside TapBuffer on the
-        // first buffer.
+        // `format: nil`: pre-start `outputFormat(forBus:)` lies (returns the
+        // output device's format), so the real format is discovered lazily
+        // inside TapBuffer.
         Self.installTap(on: engine.inputNode, buffer: buffer)
 
         applyInputDevice()
         applyOutputDevice()
         try engine.start()
-        // No `play()` here: the players were stopped with their queues
-        // above, and `scheduleSamples` restarts each one once the jitter
-        // target is queued ahead again — the same priming as a fresh
-        // `startPlayback`.
         logger.log("MicCapture: capture started (engineRunning=\(engine.isRunning)).")
 
         isCapturing = true
@@ -1160,8 +982,6 @@ final class MicCapture {
             isCapturing = false
         }
         if isPlaying {
-            // Orphans in-flight scheduleBuffer completions (a new
-            // generation) before the players are torn down.
             resetPlaybackQueues(reason: "stop")
             engine.stop()
             for node in playerNodes { engine.detach(node) }
@@ -1172,25 +992,14 @@ final class MicCapture {
         }
     }
 
-    /// Called from the AVAudioEngineConfigurationChange notification —
-    /// the engine observed a hardware format or route change (VPIO
-    /// renegotiating the sample rate as it engages, a default-device
-    /// flip, a mic or headset hot-plug), stopped itself, and uninitialised.
-    /// Three things need putting back, and each was missed at some point:
-    ///
-    /// - The players' queues went with the engine, without completions,
-    ///   so their bookkeeping is reset here (see `resetPlaybackQueues`)
-    ///   and the players are re-primed by the jitter-buffer kick. Carrying
-    ///   the old counts over is how playback stayed silent after the mic
-    ///   toggle in 0.10.0-rc.14.
-    /// - The input tap stops firing after a reconfigure ("exactly one
-    ///   buffer, then silence"), and the input format may have changed
-    ///   (e.g. VPIO renegotiated to mono 24 kHz): rebuild the converter and
-    ///   reinstall the tap while capturing.
-    /// - The engine has to be started again — for playback as much as for
-    ///   capture. A handler that only ran while capturing left a
-    ///   listening-only viewer's engine stopped for good after an
-    ///   output-device change.
+    /// Three things need putting back after AVAudioEngine stops itself and
+    /// uninitializes on a hardware format/route change:
+    /// - Player queues went with the engine, so bookkeeping resets and
+    ///   re-primes via the jitter-buffer kick.
+    /// - The input tap stops firing and the input format may have changed;
+    ///   rebuild the converter and reinstall the tap while capturing.
+    /// - The engine must restart even for a listening-only viewer, not just
+    ///   while capturing.
     private func handleConfigurationChange() {
         guard isPlaying || isCapturing else { return }
         if isPlaying {
@@ -1219,25 +1028,15 @@ final class MicCapture {
                 + "(playing=\(isPlaying) capturing=\(isCapturing) running=\(engine.isRunning)).")
     }
 
-    /// Mutable state for the test-tone timer. Lives outside
-    /// `@MainActor` so the timer queue can mutate phase without
-    /// hopping. `@unchecked Sendable` is sound because only the
-    /// timer queue touches `phase`.
+    /// Lives outside `@MainActor` so the timer queue can mutate `phase`
+    /// without hopping; sound since only that queue touches it.
     private final class TestToneState: @unchecked Sendable {
         var phase: Float = 0
     }
 
-    /// Generate a 440 Hz sine wave and push it into `channel` as
-    /// 960-sample frames at the Opus frame cadence. Each frame is
-    /// `960 / 48000` = 20 ms; we run a serial DispatchSource
-    /// timer at that interval. Phase accumulates across frames so
-    /// the sine stays continuous (no clicks at frame boundaries).
     private func startTestTone() {
-        // Build the timer in a nonisolated context. Otherwise the
-        // closure passed to setEventHandler implicitly inherits
-        // MicCapture's @MainActor isolation, and Swift 6's runtime
-        // executor check trips `dispatch_assert_queue_fail` when the
-        // timer queue dispatches a MainActor-isolated closure.
+        // Nonisolated context, or the closure inherits MainActor isolation
+        // and trips Swift 6's executor check when the timer queue dispatches it.
         testToneTimer = Self.makeTestToneTimer(channel: channel)
     }
 
@@ -1273,11 +1072,9 @@ final class MicCapture {
         channel.processOutboundFrame(samples)
     }
 
-    /// Install the input tap from a nonisolated context so the closure
-    /// AVAudioEngine retains does not inherit `@MainActor` isolation from
-    /// `start()`. Without this, the audio render thread invoking the tap
-    /// trips Swift 6's `dispatch_assert_queue` check (SIGTRAP) on the very
-    /// first buffer.
+    /// Nonisolated so the retained closure doesn't inherit `@MainActor`
+    /// isolation, which would trip Swift 6's executor check on the audio
+    /// render thread.
     nonisolated private static func installTap(
         on inputNode: AVAudioInputNode,
         buffer: TapBuffer
@@ -1296,24 +1093,18 @@ final class MicCapture {
     /// — are `PlaybackQueueAccounting`'s; this method owns the AVFAudio
     /// calls around them.
     ///
-    /// The cap: the sender's `DispatchSourceTimer` drifts a hair faster
-    /// than the receiver's audio clock, so without a cap the queue grows
-    /// unbounded → seconds of playback latency that you hear when muting
-    /// (queue keeps draining after the sender stops). Dropping at
-    /// `targetDepth + playbackSlackBuffers` eats one frame (~20 ms) at
-    /// most and keeps end-to-end latency bounded near
-    /// `(targetDepth + slack) * 20 ms` — the clock-drift backstop.
+    /// The cap: the sender's timer drifts a hair faster than the receiver's
+    /// audio clock, so without one the queue grows unbounded (audible
+    /// latency after muting). Dropping at `targetDepth + playbackSlackBuffers`
+    /// eats one ~20ms frame at most and bounds end-to-end latency.
     private func scheduleSamples(_ samples: [Float]) {
         guard isPlaying, let player = playerNodes.first else { return }
-        // A past drain-to-zero counts as an underrun only if audio
-        // resumes shortly after (starve-then-resume). A drain followed by
-        // this long a silence was a benign stop (mute / end of stream).
+        // Counts as an underrun only if audio resumes shortly after
+        // (starve-then-resume); a drain followed by silence was a benign
+        // stop (mute/end of stream).
         if voiceQueue.takeStarveVerdict(nowNs: DispatchTime.now().uptimeNanoseconds) {
             channel.noteUnderrun()
         }
-        // Adaptive jitter-buffer depth: 20 ms buffers, sized by the
-        // channel from RFC 3550 inter-arrival jitter (initially 3 ≈ 64 ms,
-        // bounded at 12 ≈ 256 ms of added latency).
         let targetDepth = channel.currentJitterTargetDepth
         guard let buffer = Self.makeBuffer(samples, format: outputFormat) else { return }
         let verdict = voiceQueue.schedule(
@@ -1326,23 +1117,13 @@ final class MicCapture {
             return
         }
         let generation = voiceQueue.generation
-        // AVFAudio runs this on its own `CompletionHandlerQueue`, never the
-        // main queue — and not only when a buffer finishes playing: a buffer
-        // still pending when `stop()` tears the node down is discarded, and
-        // the command destructor invokes the handler synchronously on that
-        // queue. `scheduleBuffer`'s handler isn't `@Sendable`, so the
-        // compiler infers MainActor isolation from this class and Swift 6's
-        // runtime traps on the off-main executor check
-        // (dispatch_assert_queue_fail → SIGTRAP). Typing the closure
-        // `@Sendable` makes it non-isolated, so it runs on AVFAudio's queue
-        // with no executor assertion and the `Task` below does the hop — the
-        // same trap, and the same fix, as `installTap` and
-        // `SharerNoticeCenter.ensureAuthorization`.
+        // AVFAudio runs this on its own queue, sometimes synchronously from
+        // `stop()`'s command destructor. `@Sendable` avoids the inferred
+        // MainActor isolation that would trap under Swift 6's executor
+        // check — same fix as `installTap`.
         let onBufferConsumed: @Sendable () -> Void = { [weak self] in
-            // Hop to MainActor before mutating @MainActor state. The
-            // captured generation lets the accounting orphan a completion
-            // for a buffer a reset already discarded. Re-read the player
-            // from self rather than capturing the non-Sendable node.
+            // Captured generation lets accounting orphan a completion for a
+            // buffer a reset already discarded.
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.voiceQueue.consumed(
@@ -1353,16 +1134,11 @@ final class MicCapture {
             }
         }
         player.scheduleBuffer(buffer, completionHandler: onBufferConsumed)
-        // Defer the first play() until we have a small queue ahead — and
-        // the first after every reset, since the players are stopped
-        // with their queues.
         if kickPlayback { player.play() }
     }
 
-    /// Schedule one decoded system-audio block into the dedicated node. A twin
-    /// of `scheduleSamples` but simpler: fixed jitter target, no underrun
-    /// bookkeeping (the sharer's voice players already drive the jitter
-    /// estimate). Drops at a fixed cap so clock drift can't grow the queue.
+    /// A twin of `scheduleSamples` but simpler: fixed jitter target, no
+    /// underrun bookkeeping (voice players already drive the jitter estimate).
     private func scheduleSystemAudioSamples(_ samples: [Float]) {
         guard isPlaying, let player = systemAudioPlayer else { return }
         guard let buffer = Self.makeBuffer(samples, format: outputFormat) else { return }
@@ -1376,10 +1152,6 @@ final class MicCapture {
             return
         }
         let generation = systemAudioQueue.generation
-        // `@Sendable` for the reason `scheduleSamples`' handler is: AVFAudio
-        // calls it on its own queue (including synchronously from the command
-        // destructor when `stop()` discards a pending buffer), and an
-        // inferred-MainActor closure traps there under Swift 6.
         let onBufferConsumed: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -1391,7 +1163,6 @@ final class MicCapture {
             }
         }
         player.scheduleBuffer(buffer, completionHandler: onBufferConsumed)
-        // Defer the first play() until a small queue is buffered ahead.
         if kickPlayback { player.play() }
     }
 
@@ -1411,12 +1182,8 @@ final class MicCapture {
         return buffer
     }
 
-    // `nonisolated` is load-bearing: `MicCapture` is `@MainActor`, so without
-    // it the `requestAccess` completion closure inherits MainActor isolation.
-    // TCC fires the callback on `com.apple.root.default-qos` and Swift 6's
-    // executor assertion (`swift_task_isCurrentExecutorWithFlagsImpl`) trips
-    // a `brk 1`. The body touches no MainActor state, so isolation is
-    // unnecessary anyway.
+    // `nonisolated` is load-bearing: TCC fires the callback off-main, and an
+    // inferred MainActor closure would trap under Swift 6's executor check.
     nonisolated private static func requestMicPermission() async -> Bool {
         await withCheckedContinuation { cont in
             AVCaptureDevice.requestAccess(for: .audio) { granted in
@@ -1428,18 +1195,7 @@ final class MicCapture {
 
 // MARK: - Logger
 
-/// The voice path's log sink, teed into the diagnostics bundle exactly as the
-/// viewer client's is.
-///
-/// Until this it only printed, which meant the two lines that answer "the audio
-/// was crackly" existed but reached nobody: `VoiceChannel`'s once-a-minute
-/// `stats concealed=… discontinuities=… overruns=… underruns=… clamped=…
-/// jitter=…ms`, and every `MicCapture:` engine line (playback started, VPIO
-/// engaged or refused, tap reinstalled after a configuration change, a device
-/// bind that failed). A 0.10.0-rc.15 bundle pair from a call both ends
-/// described as crackly could rule out packet loss and rule out link
-/// saturation, and then had nothing further to say, because none of that was
-/// in the file.
+/// Teed into the diagnostics bundle exactly as the viewer client's sink is.
 private struct TSLogger: LogSink {
     var logFileHandle: Int32?
 

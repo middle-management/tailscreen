@@ -4,30 +4,20 @@ import CoreMedia
 import CoreVideo
 import Foundation
 import ImageIO
-// `@preconcurrency` because SCShareableContent isn't Sendable and we
-// need to hop the result of `excludingDesktopWindows(_:onScreenWindowsOnly:)`
-// back to the @MainActor reconstruction code below. The cross-actor
-// send is safe in practice — we use the value once on the same
-// actor — but the framework hasn't been audited for Sendable yet.
+// `@preconcurrency`: SCShareableContent isn't Sendable; the cross-actor hand-off
+// to @MainActor below is safe (used once on the same actor) but unaudited.
 @preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
 import os
 
-/// Entry point for `Tailscreen --capture-helper`. Owns the SCStream
-/// + VideoEncoder pipeline; pipes encoded access units back to the
-/// main process via stdout. Reads control messages on stdin.
-///
-/// Exits when:
-///   - main sends `shutdown`
-///   - SCStream's didStopWithError fires (replayd dropped us)
-///   - SIGTERM / SIGINT (main killed us)
+/// Entry point for `Tailscreen --capture-helper`. Owns the SCStream +
+/// VideoEncoder pipeline; pipes encoded access units to the main process via
+/// stdout, reads control messages on stdin. Exits on `shutdown`, SCStream's
+/// `didStopWithError` (replayd dropped us), or SIGTERM/SIGINT.
 enum CaptureHelperMain {
     static func run() -> Never {
-        // Save the real stdout (FD 1) and redirect FD 1 → stderr so that
-        // every `print()` and any stray write to FD 1 from inside our
-        // existing capture stack lands in stderr instead of corrupting
-        // the binary frame protocol. The frame writer writes to the
-        // saved FD, which is still connected to the parent's pipe.
+        // Redirect FD 1 -> stderr so stray prints don't corrupt the binary
+        // frame protocol; the frame writer keeps the saved FD 1.
         let savedStdout = dup(1)
         if savedStdout >= 0 {
             _ = dup2(2, 1)
@@ -40,17 +30,10 @@ enum CaptureHelperMain {
             let runner = CaptureHelperRunner(writer: writer)
             installSignalHandlers(writer: writer, runner: runner)
             installStdinReader(writer: writer, runner: runner)
-            // Capture starts in `installStdinReader` once the parent
-            // delivers the archived `SCContentFilter`.
-            //
-            // Startup watchdog: if the parent never sends a
-            // `contentFilter` frame (e.g. it died mid-spawn or its
-            // stdin write was somehow skipped), the helper would
-            // otherwise sit on the run loop forever with no SCStream
-            // and no exit signal. After 10 s of no `startWithFilter`
-            // call, bail with a `permanent:` fatal so the server's
-            // crash-budget loop doesn't keep respawning into the
-            // same wedge.
+            // Startup watchdog: if the parent never delivers a `contentFilter`
+            // frame, bail with `permanent:` rather than sitting on the run
+            // loop forever, so the crash-budget loop doesn't keep respawning
+            // into the same wedge.
             try? await Task.sleep(for: .seconds(10))
             if !runner.hasStarted {
                 writer.writeFatal(
@@ -59,7 +42,6 @@ enum CaptureHelperMain {
             }
         }
         RunLoop.main.run()
-        // RunLoop.main.run() never returns.
         exit(0)
     }
 
@@ -85,8 +67,7 @@ enum CaptureHelperMain {
         }
         signal(SIGINT, SIG_IGN)
         sigInt.resume()
-        // Hold the dispatch sources alive for the process lifetime.
-        Self.signalSources = [sigSrc, sigInt]
+        Self.signalSources = [sigSrc, sigInt]  // held for process lifetime
     }
 
     @MainActor
@@ -108,14 +89,9 @@ enum CaptureHelperMain {
                     let fps = payload.readBE32() ?? 60
                     Task { await runner.setFrameInterval(Int(fps)) }
                 case .contentFilter:
-                    // Decode the JSON `PickerSelection`, fetch the
-                    // shareable content (allowed in the helper —
-                    // CLAUDE.md only forbids `SCShareableContent`
-                    // calls in the main process), reconstruct the
-                    // filter, and start capture. Has to land on the
-                    // main actor so the SCStream + VideoToolbox
-                    // setup sequence runs on the same thread the
-                    // rest of the helper expects.
+                    // `SCShareableContent` is only legal here, never in the
+                    // main process. Must land on @MainActor for the SCStream
+                    // + VideoToolbox setup sequence.
                     let payloadCopy = payload
                     Task { @MainActor in
                         do {
@@ -129,18 +105,13 @@ enum CaptureHelperMain {
                                 filter, colorInfo: colorInfo,
                                 captureAudio: selection.captureAudio)
                         } catch let error as PickerReconstructionError {
-                            // The captured window/display/app no longer
-                            // resolves — the user closed it. Non-retryable like
-                            // `permanent:`, but tagged `source-gone:` so the
-                            // main process can treat it as an expected stop
-                            // (a gentle notice) rather than an error alert.
+                            // Captured window/display/app no longer resolves
+                            // (user closed it) — expected stop, not an error.
                             writer.writeFatal("source-gone: \(error)")
                             exit(3)
                         } catch {
-                            // `permanent:` prefix tells the server's
-                            // onUnexpectedExit handler not to burn the
-                            // crash-restart budget — re-spawning will
-                            // hit the same decode/reconstruct error.
+                            // `permanent:` tells the server's crash-restart
+                            // budget not to retry — respawning hits the same error.
                             writer.writeFatal(
                                 "permanent: contentFilter decode/reconstruct failed: \(error)")
                             exit(3)
@@ -163,13 +134,9 @@ enum CaptureHelperMain {
 
     nonisolated(unsafe) private static var signalSources: [DispatchSourceSignal] = []
 
-    /// Reconstruct an `SCContentFilter` from the primitives the
-    /// picker-helper extracted on the other side of the wire. Calls
-    /// `SCShareableContent` to resolve the IDs into live SC* objects
-    /// — legal here because we're inside the capture-helper, not the
-    /// main process. If anything fails to resolve (e.g. the user
-    /// quit the window between picking and the helper spawning) the
-    /// caller falls back to its existing fatal-error path.
+    /// Reconstruct an `SCContentFilter` from the primitives the picker-helper
+    /// extracted, resolving IDs via `SCShareableContent` — legal only here,
+    /// not the main process.
     @MainActor
     static func buildFilter(from selection: PickerSelection) async throws -> SCContentFilter {
         let content = try await SCShareableContent.excludingDesktopWindows(
@@ -181,12 +148,10 @@ enum CaptureHelperMain {
             else {
                 throw PickerReconstructionError.displayNotFound(selection.displayID)
             }
-            // Cloaked Apps: hide the cloaked apps' windows from viewers. The
-            // exclusion is by *application*, so new windows of a resolved
-            // app stay hidden without a filter rebuild. A cloaked app that
-            // isn't running can't resolve here — the parent watches for its
-            // launch (`AppState`'s NSWorkspace observer) and re-pushes the
-            // filter so it gets cloaked by the respawned helper.
+            // Cloaked Apps: excluded by application, so new windows of a
+            // resolved app stay hidden without a filter rebuild. A cloaked app
+            // not yet running can't resolve here — `AppState`'s NSWorkspace
+            // observer re-pushes the filter on its launch.
             let cloakedSet = Set(selection.excludedBundleIDs)
             guard !cloakedSet.isEmpty else {
                 return SCContentFilter(display: display, excludingWindows: [])
@@ -204,11 +169,8 @@ enum CaptureHelperMain {
             }
             return SCContentFilter(desktopIndependentWindow: window)
         case .application:
-            // SCContentFilter's "share these apps" constructor is
-            // anchored to a display. The picker tells us which one
-            // via `displayID`; if it's missing (rare — the picker
-            // always picks a display context for app shares) fall
-            // back to the main display.
+            // SCContentFilter's "share these apps" constructor is anchored to
+            // a display; fall back to the main one if the picker omitted it.
             let displayID = selection.displayID ?? CGMainDisplayID()
             guard let display = content.displays.first(where: { $0.displayID == displayID })
             else {
@@ -221,13 +183,10 @@ enum CaptureHelperMain {
         }
     }
 
-    /// Pick the `ColorInfo` to capture + encode with for this selection.
-    /// Phase 1 (Display P3 tagging at 8-bit) is on by default for wide-gamut
-    /// displays; 10-bit HEVC Main 10 and HDR (BT.2020 PQ) are opt-in via
-    /// `TAILSCREEN_ENABLE_10BIT` / `TAILSCREEN_ENABLE_HDR` and gated on the
-    /// display actually being capable. A viewer's 8-bit fallback request
-    /// (`TAILSCREEN_FORCE_8BIT`) or codec fallback (`TAILSCREEN_FORCE_H264`,
-    /// which forces the 8-bit-only H.264 path) both pin the capture to 8-bit.
+    /// Display P3 8-bit tagging is on by default for wide-gamut displays;
+    /// 10-bit HEVC Main 10 / HDR (BT.2020 PQ) are opt-in via
+    /// `TAILSCREEN_ENABLE_10BIT`/`TAILSCREEN_ENABLE_HDR`, gated on display
+    /// capability. `TAILSCREEN_FORCE_8BIT`/`TAILSCREEN_FORCE_H264` both pin 8-bit.
     @MainActor
     static func captureColorInfo(for selection: PickerSelection, env: [String: String]) -> ColorInfo {
         let forceH264 = env["TAILSCREEN_FORCE_H264"] == "1"
@@ -237,23 +196,21 @@ enum CaptureHelperMain {
         let displayID = selection.displayID ?? CGMainDisplayID()
         let wideGamut = displayIsWideGamut(displayID)
         let hdrCapable = enableHDR && displayIsHDR(displayID)
-        // 10-bit is HEVC-only (H.264 stays 8-bit) and opt-in; a viewer's
-        // 8-bit request overrides.
+        // 10-bit is HEVC-only; a viewer's 8-bit request overrides.
         let want10 = (enable10bit || hdrCapable) && !forceH264 && !force8bit
         let bitDepth = want10 ? 10 : 8
         return ColorInfo.forDisplay(wideGamut: wideGamut, hdrCapable: hdrCapable, bitDepth: bitDepth)
     }
 
-    /// True when the display renders a wider gamut than sRGB (P3 or better) —
-    /// every modern MacBook / Studio Display. Reads the display's assigned
-    /// color space; safe on any thread.
+    /// True when the display renders wider than sRGB (P3 or better). Safe on
+    /// any thread.
     static func displayIsWideGamut(_ displayID: CGDirectDisplayID) -> Bool {
         let colorSpace = CGDisplayCopyColorSpace(displayID)
         return colorSpace.isWideGamutRGB
     }
 
-    /// True when the display advertises EDR headroom above SDR (an XDR / Pro
-    /// Display XDR panel). Must run on the main thread (`NSScreen`).
+    /// True when the display advertises EDR headroom above SDR. Must run on
+    /// the main thread (`NSScreen`).
     @MainActor
     static func displayIsHDR(_ displayID: CGDirectDisplayID) -> Bool {
         let screenNumberKey = NSDeviceDescriptionKey(rawValue: "NSScreenNumber")
@@ -284,82 +241,60 @@ extension Data {
     }
 }
 
-/// SCStream + VideoEncoder lifecycle inside the helper. Captured
-/// pixel buffers go through `VideoEncoder` and the resulting access
-/// units are written to the framed wire on stdout instead of fanning
-/// out as RTP.
+/// SCStream + VideoEncoder lifecycle inside the helper. Encoded access units
+/// go to the framed wire on stdout instead of fanning out as RTP.
 @MainActor
 private final class CaptureHelperRunner {
     private let writer: HelperFrameWriter
     private let captureWrapper = ScreenCapture()
     private var encoder: VideoEncoder?
-    /// System-audio pipeline (CMSampleBuffer → Opus AU). Created in
-    /// `startWithFilter` only when the selection asked for audio capture.
+    /// System-audio pipeline (CMSampleBuffer → Opus AU), created only when the
+    /// selection asked for audio capture.
     private var systemAudioTap: SystemAudioTap?
-    /// Live enable/disable latch for system-audio *emission*, toggled by the
-    /// `setAudioEnabled` wire message. Locked because the tap's encode callback
-    /// (SCStream audio queue) reads it while the stdin reader writes it. The
-    /// server re-sends the desired value after every (re)spawn.
+    /// Emission latch toggled by the `setAudioEnabled` wire message. Locked:
+    /// the tap's encode callback (SCStream audio queue) reads it while the
+    /// stdin reader writes it.
     private let audioEnabled = OSAllocatedUnfairLock<Bool>(initialState: false)
-    /// Spawn-time quality knobs (fps cap, codec preference, bandwidth
-    /// ceiling) the parent delivered via environment variables — see
-    /// `QualitySettings.helperEnvironment()`. Read once: the parent
-    /// snapshots settings per share session, so a helper's knobs never
-    /// change mid-life (live ceiling changes ride the `setBitrate` wire
-    /// message instead).
+    /// Spawn-time quality knobs from `QualitySettings.helperEnvironment()`.
+    /// Read once — live ceiling changes ride the `setBitrate` wire message.
     private let quality = QualitySettings.fromEnvironment(ProcessInfo.processInfo.environment)
-    /// Color characteristics chosen for this share (BT.709 8-bit by default,
-    /// Display P3 on wide-gamut displays, BT.2020 PQ 10-bit for opt-in HDR).
-    /// Threaded into both the SCStream config (pixel format + colorSpaceName)
-    /// and the encoder (color VUI tags + profile) so capture and encode agree.
+    /// Color characteristics for this share, threaded into both the SCStream
+    /// config and the encoder so capture and encode agree.
     private var colorInfo: ColorInfo = .bt709FullRange8
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
-    /// True once `startWithFilter(_:)` has been called. Read by the
-    /// startup watchdog in `CaptureHelperMain.run()`; `fileprivate`
-    /// so `CaptureHelperMain` (same file, different type) can read it.
+    /// Read by the startup watchdog in `CaptureHelperMain.run()`.
     fileprivate var hasStarted = false
 
-    /// Pending contentRect (points) from the most recent SCStream frame
-    /// where the source rect differed from the current buffer. Coalesced
-    /// by `resizeDebounceTimer` so a 60 Hz live drag becomes one
-    /// `updateConfiguration` per ~200 ms instead of per frame — SCStream
-    /// thrashes the pipeline if you reconfigure faster than the encoder
+    /// Pending contentRect (points), coalesced by `resizeDebounceTimer` so a
+    /// 60Hz live drag becomes one `updateConfiguration` per ~200ms instead of
+    /// per frame — SCStream thrashes if reconfigured faster than the encoder
     /// can spin up new sessions.
     private var pendingResizeRect: CGRect?
     private var resizeDebounceTimer: Timer?
-    /// Quiet window after the last contentRect change before applying
-    /// the resize. 200 ms is long enough to ride out a continuous drag
-    /// without flickering the encoder; short enough that the viewer
-    /// sees the new dims promptly when the user lets go.
     private static let resizeDebounceSeconds: TimeInterval = 0.2
 
     init(writer: HelperFrameWriter) {
         self.writer = writer
     }
 
-    /// Bring the SCStream up against an `SCContentFilter` delivered
-    /// by the parent over stdin. The filter retains XPC handles to
-    /// system services it acquired in the picker subprocess; calling
-    /// any other `SCContentFilter`/`SCShareableContent` API in this
-    /// process before this point would invalidate them.
+    /// Bring the SCStream up against a filter delivered over stdin. It
+    /// retains XPC handles from the picker subprocess; calling any other
+    /// `SCContentFilter`/`SCShareableContent` API here first would invalidate them.
     func startWithFilter(
         _ filter: SCContentFilter, colorInfo: ColorInfo = .bt709FullRange8, captureAudio: Bool
     ) async {
         self.colorInfo = colorInfo
         if hasStarted {
-            // A second start request is a parent-side bug. Refuse it
-            // rather than racing two SCStreams against the same
-            // helper's encoder state.
+            // A second start request is a parent-side bug; refuse rather than
+            // racing two SCStreams against the same encoder state.
             writer.writeLog("capture-helper: ignored duplicate start request")
             return
         }
         hasStarted = true
         if captureAudio {
-            // Build the tap and its audio-output hookup before the SCStream
-            // comes up. The encode callback runs on the SCStream audio queue;
-            // capture the writer + latch directly (both `Sendable`) so it never
-            // hops to the MainActor — the same no-hop rationale as the heartbeat.
+            // Capture writer + latch directly (both Sendable) so the encode
+            // callback (SCStream audio queue) never hops to MainActor.
             let writer = self.writer
             let latch = self.audioEnabled
             do {
@@ -382,9 +317,8 @@ private final class CaptureHelperRunner {
         captureWrapper.onContentRectChanged = { [weak self] rect in
             Task { @MainActor [weak self] in self?.scheduleResize(to: rect) }
         }
-        // Forward capture liveness as a heartbeat. Runs on the SCStream
-        // delegate queue; write directly (the writer is thread-safe) with no
-        // MainActor hop, so a busy main thread can't mask capture liveness.
+        // Write directly, no MainActor hop, so a busy main thread can't mask
+        // capture liveness.
         captureWrapper.onStreamSample = { [writer = self.writer] in
             writer.writeHeartbeat()
         }
@@ -394,8 +328,7 @@ private final class CaptureHelperRunner {
                 if Self.isUserStopped(error) {
                     self.writer.writeLog("SCStream stopped by user (Control Center)")
                     self.writer.writeUserStopped()
-                    // Give the wire flush a moment, then exit cleanly.
-                    try? await Task.sleep(for: .milliseconds(50))
+                    try? await Task.sleep(for: .milliseconds(50))  // let the wire flush
                     exit(0)
                 }
                 self.writer.writeFatal("SCStream stopped: \(error?.localizedDescription ?? "nil")")
@@ -421,18 +354,14 @@ private final class CaptureHelperRunner {
         await captureWrapper.stop()
     }
 
-    /// Toggle system-audio emission. The audio SCStream output stays up; this
-    /// just flips whether the tap forwards encoded AUs, so mute/unmute is
-    /// instant. No-op when the share started without audio capture.
+    /// Flips whether the tap forwards encoded AUs (mute/unmute); the audio
+    /// SCStream output itself stays up.
     func setAudioEnabled(_ on: Bool) async {
         audioEnabled.withLock { $0 = on }
     }
 
-    /// Coalesce per-frame contentRect updates from SCStream into one
-    /// pending resize; reset the debounce timer each tick so the apply
-    /// only fires once the user stops dragging. Sized in points; the
-    /// applier multiplies by the filter's `pointPixelScale` for pixel
-    /// dims.
+    /// Coalesce per-frame contentRect updates; resets the debounce timer each
+    /// tick so the apply fires only once dragging stops.
     private func scheduleResize(to rect: CGRect) {
         pendingResizeRect = rect
         resizeDebounceTimer?.invalidate()
@@ -471,11 +400,8 @@ private final class CaptureHelperRunner {
         encoder?.setBitrate(bps)
     }
 
-    /// Apply an fps-ladder step from the server's congestion controller by
-    /// retuning the SCStream's `minimumFrameInterval`. The encoder keeps its
-    /// configured parameters; a lower delivery rate simply feeds it fewer
-    /// frames (the primary rate lever). Runs in the helper — never the main
-    /// process — per CLAUDE.md.
+    /// Applies an fps-ladder step by retuning the SCStream's
+    /// `minimumFrameInterval`; the encoder's own config is unchanged.
     func setFrameInterval(_ fps: Int) async {
         guard fps > 0 else { return }
         await captureWrapper.updateFrameInterval(fps: fps)
@@ -487,9 +413,8 @@ private final class CaptureHelperRunner {
 
     private func handleFrame(_ pixelBuffer: CVPixelBuffer) {
         frameCounter &+= 1
-        // Downsample + JPEG-encode every ~half-second worth of frames
-        // for the SharingCard thumbnail. Skipping to a low rate keeps
-        // the pipe traffic dominated by the actual H.264/HEVC AUs.
+        // ~Every half-second, for the SharingCard thumbnail; keeps pipe
+        // traffic dominated by the actual AUs.
         if frameCounter == 1 || frameCounter % 30 == 0 {
             if let jpeg = buildPreviewJPEG(from: pixelBuffer) {
                 writer.writePreviewJPEG(jpeg)
@@ -498,13 +423,6 @@ private final class CaptureHelperRunner {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
-        // Log each unique frame size we see. SCStream pins the buffer
-        // dims to the configured width/height at start; when the shared
-        // window resizes the SCContentFilter's contentRect changes but
-        // the buffer dims do not, so a steady stream of unchanged dims
-        // here while the user is resizing means we'd need
-        // `stream.updateConfiguration` (not currently wired up) to
-        // follow the window.
         if width != lastWidth || height != lastHeight {
             writer.writeLog(
                 "capture-helper: frame dims \(lastWidth)x\(lastHeight) -> \(width)x\(height) (frame #\(frameCounter))"
@@ -518,33 +436,22 @@ private final class CaptureHelperRunner {
             encoder?.shutdown()
             let newEncoder = VideoEncoder()
             do {
-                // The parent sets TAILSCREEN_FORCE_H264=1 when a viewer
-                // reported it can't decode HEVC; it overrides the user's
-                // codec preference so the whole share falls back to the
-                // universally-decodable codec.
+                // TAILSCREEN_FORCE_H264=1 means a viewer can't decode HEVC;
+                // it overrides the user's codec preference for the whole share.
                 let forceH264 = ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
                 let preferred = quality.preferredVideoCodec(forceH264: forceH264)
                 newEncoder.encoderQuality = quality.encoderQuality
-                // Explicit HEVC preference: no H.264 rung on the ladder —
-                // the user opted out of the fallback (H.264-only viewers
-                // can't watch), so an encoder that can't do HEVC should
-                // fail the share, not silently downgrade. Irrelevant when
-                // forceH264 already picked H.264 above.
+                // Explicit HEVC preference means no H.264 fallback rung: fail
+                // rather than silently downgrade. Moot when forceH264 already won.
                 newEncoder.allowsH264Fallback = quality.codecPreference != .hevc
-                // Tag the encoder with the captured color (BT.709 / P3 /
-                // BT.2020) + bit depth; the encoder's fallback ladder drops
-                // 10-bit → 8-bit and HEVC → H.264 if VideoToolbox refuses.
+                // The fallback ladder drops 10-bit -> 8-bit and HEVC -> H.264
+                // if VideoToolbox refuses.
                 newEncoder.colorInfo = colorInfo
                 try newEncoder.setup(
                     width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred)
                 let codec = newEncoder.codec
-                // Tighten the encoder's DataRateLimits ceiling below the
-                // bits-per-pixel formula it was set up with, to whichever
-                // ceiling applies: the user's if they capped bandwidth,
-                // else `QualitySettings.automaticCeilingBps`. Uses the
-                // shared `VideoEncoder.computeBitrate` and the shared
-                // `cappedBitrate` — the server's adaptive sweep anchors its
-                // baseline through the same two, so the two stay coherent.
+                // Uses the same `computeBitrate`/`cappedBitrate` the server's
+                // adaptive sweep anchors to, so the two stay coherent.
                 let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
                 let computed = VideoEncoder.computeBitrate(
                     width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
@@ -555,14 +462,9 @@ private final class CaptureHelperRunner {
                 writer.writeLog("capture-helper: encoder \(codec) \(width)x\(height) @\(quality.fpsCap)fps")
                 lastWidth = width
                 lastHeight = height
-                // Capture `writer` directly so the callback writes
-                // synchronously from the encoder's serial output thread.
-                // VideoEncoder fires onParameterSets THEN onEncodedData
-                // back-to-back for keyframes; routing through
-                // `Task @MainActor` reorders them and main ends up
-                // broadcasting an AVCC AU before SPS/PPS arrive,
-                // which the viewer's decoder can't decode → black
-                // screen. Writing inline preserves the order.
+                // Write inline (not `Task @MainActor`): onParameterSets fires
+                // before onEncodedData for keyframes, and hopping actors can
+                // reorder them, sending an AVCC AU before SPS/PPS -> black screen.
                 let w = writer
                 let firstFrameFlag = FirstFrameFlag()
                 newEncoder.onParameterSets = { params in
@@ -584,10 +486,9 @@ private final class CaptureHelperRunner {
         encoder?.encode(pixelBuffer: pixelBuffer)
     }
 
-    /// One-shot atomic flag for "have we written the firstFrame
-    /// signal yet". Touched only from the encoder's serial output
-    /// thread, but `@unchecked Sendable` lets the runner construct
-    /// it on @MainActor and hand it across.
+    /// One-shot flag; touched only from the encoder's serial output thread,
+    /// but `@unchecked Sendable` lets the runner construct it on @MainActor
+    /// and hand it across.
     final class FirstFrameFlag: @unchecked Sendable {
         private var sent = false
         func markIfFirst() -> Bool {
@@ -597,11 +498,8 @@ private final class CaptureHelperRunner {
         }
     }
 
-    /// Downsample the captured CVPixelBuffer to ~280 px wide and
-    /// encode JPEG bytes for the SharingCard thumbnail. Emits raw
-    /// JPEG (rather than `NSImage`) because the wire protocol only
-    /// carries bytes — the parent reconstructs an `NSImage` on the
-    /// other side via `HelperScreenCapture.onPreviewImage`.
+    /// Raw JPEG bytes (the wire only carries bytes); the parent reconstructs
+    /// an `NSImage` via `HelperScreenCapture.onPreviewImage`.
     private func buildPreviewJPEG(from pixelBuffer: CVPixelBuffer) -> Data? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let srcExtent = ciImage.extent
@@ -619,9 +517,8 @@ private final class CaptureHelperRunner {
         return mutable as Data
     }
 
-    /// True when SCStream's `didStopWithError` payload is the
-    /// `userStopped` Control Center signal (vs. replayd's many
-    /// internal-error variants).
+    /// True for the `userStopped` Control Center signal, vs. replayd's
+    /// internal-error variants.
     static func isUserStopped(_ error: Error?) -> Bool {
         guard let error else { return false }
         let nsErr = error as NSError

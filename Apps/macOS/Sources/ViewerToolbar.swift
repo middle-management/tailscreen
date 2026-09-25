@@ -33,7 +33,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private weak var toolGroupItem: NSToolbarItemGroup?
     private weak var undoToolbarItem: NSToolbarItem?
     private weak var clearAllToolbarItem: NSToolbarItem?
-    /// Whether the sharer renders/relays annotations (`ScreenShareCaps.annotations`).
     /// Drives the drawing tools' + undo/clear items' enabled state so the
     /// viewer doesn't offer annotation UI a non-supporting sharer would ignore.
     private var annotationsEnabled = true
@@ -42,13 +41,11 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private weak var statsToolbarItem: NSToolbarItem?
     private var statsCancellable: AnyCancellable?
     private weak var statsModel: ViewerStatsModel?
-    /// Remote-control toolbar item + the state it renders. The item is
-    /// inserted/removed dynamically (see `updateControlItem`), so it's
-    /// genuinely *hidden* against a sharer that can't inject input.
+    /// Inserted/removed dynamically (see `updateControlItem`), genuinely
+    /// hidden against a sharer that can't inject input.
     private weak var controlToolbarItem: NSToolbarItem?
     private var controlCancellable: AnyCancellable?
     private var controlState: ViewerControlState = .none
-    /// Drawing-color menu item; mirrors `AnnotationCanvasModel.currentColor`.
     private weak var colorMenuItem: NSMenuToolbarItem?
     private var colorCancellable: AnyCancellable?
     private var currentColor: Annotation.RGBA = Annotation.defaultColor
@@ -73,9 +70,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 .sink { [weak self] isOn in
                     self?.updateMicIcon(isOn: isOn)
                 }
-            // Keep the remote-control item tracking
-            // `viewerControlState` / `sharerSupportsRemoteControl` — same
-            // Combine pattern as the tool-group sync below.
             controlCancellable = appState.$viewerControlState
                 .combineLatest(appState.$sharerSupportsRemoteControl)
                 .receive(on: DispatchQueue.main)
@@ -87,13 +81,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
 
     private func updateMicIcon(isOn: Bool) {
         let symbol = isOn ? "mic.fill" : "mic.slash"
-        // The symbol's accessibilityDescription is what VoiceOver reads for
-        // the item (same rule as `updateStatsIcon`) — and both it and the
-        // tooltip must flip with the state, or the item keeps announcing
-        // the action that already happened.
         let a11y = isOn ? L("Mute microphone") : L("Unmute microphone")
-        // Parenthetical chord tracks the remappable hotkey; hidden when the
-        // stored chord can't be spelled (nil display) rather than misprinted.
+        // Hidden when the stored chord can't be spelled, rather than misprinted.
         let chord = appState?.micShortcutDisplay
         let tip =
             isOn
@@ -103,17 +92,13 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         micToolbarItem?.toolTip = tip
     }
 
-    /// Insert/remove + restyle the remote-control item for the current
-    /// viewer-side state. Present only while the sharer advertised
-    /// injection support (or a request/grant is still live, so the exit
-    /// affordance can't vanish mid-teardown) — mirroring the menubar
-    /// popover, which hides rather than disables the same affordance.
+    /// Present only while the sharer advertised support, or a request/grant
+    /// is still live so the exit affordance can't vanish mid-teardown.
     private func updateControlItem(state: ViewerControlState, supported: Bool) {
         controlState = state
         let wanted = supported || state != .none
         let index = toolbar.items.firstIndex { $0.itemIdentifier == Self.remoteControl }
         if wanted, index == nil {
-            // Lead the right-hand cluster (where the stats button sits).
             let statsIndex = toolbar.items.firstIndex { $0.itemIdentifier == Self.stats }
             toolbar.insertItem(
                 withItemIdentifier: Self.remoteControl,
@@ -126,10 +111,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    /// Restyle the remote-control item per state: idle → "Request
-    /// Control", pending → cancel affordance, controlling → an orange
-    /// "Stop Controlling". The label + VoiceOver description carry the
-    /// same state as the color, so the tint is never the only signal.
+    /// Label + VoiceOver description carry the state too, so the tint is
+    /// never the only signal.
     private func applyControlVisuals(to item: NSToolbarItem) {
         switch controlState {
         case .none:
@@ -155,10 +138,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    /// Subscribe to the canvas model so keyboard shortcuts (`1`–`6`,
-    /// `⌘1`–`⌘6`) that change `currentTool` directly keep the toolbar's
-    /// selected segment in sync. Without this the toolbar only updates
-    /// when the user clicks it.
+    /// Keeps the toolbar's selected segment in sync with keyboard shortcuts
+    /// (`1`-`6`, `⌘1`-`⌘6`) that change `currentTool` directly.
     func bind(canvasModel: AnnotationCanvasModel) {
         self.canvasModel = canvasModel
         toolCancellable = canvasModel.$currentTool
@@ -167,9 +148,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 self?.updateToolSelection(tool)
             }
         updateToolSelection(canvasModel.currentTool)
-        // Mirror the model's stroke color onto the color item's swatch —
-        // it starts at the identity-derived palette color, so the swatch is
-        // also how the user learns which color is "theirs".
         colorCancellable = canvasModel.$currentColor
             .receive(on: DispatchQueue.main)
             .sink { [weak self] color in
@@ -185,8 +163,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    /// Swatch + spoken label for the color item. The current color is
-    /// folded into the tooltip and VoiceOver description — the swatch
+    /// Folds the color into the tooltip/VoiceOver description — the swatch
     /// alone would be color-only status.
     private func applyColorVisuals(to item: NSMenuToolbarItem) {
         let name = Self.paletteColorName(for: currentColor)
@@ -202,10 +179,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         toolGroupItem?.selectedIndex = idx
     }
 
-    /// Subscribe to the viewer stats model so the stats toolbar button
-    /// doubles as an always-visible degraded-connection badge — the stats
-    /// overlay itself may be hidden when the decode ladder trips, but the
-    /// toolbar is always on screen.
+    /// The stats toolbar button doubles as an always-visible
+    /// degraded-connection badge, since the stats overlay itself may be hidden.
     func bind(statsModel: ViewerStatsModel) {
         self.statsModel = statsModel
         statsCancellable = statsModel.$stats
@@ -220,39 +195,22 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
 
     private func updateStatsIcon(degraded: Bool) {
         let symbol = degraded ? "exclamationmark.triangle" : "chart.bar.xaxis"
-        // The symbol's accessibilityDescription is what VoiceOver reads for
-        // the item (see `makeButton`) — passing nil here would clobber the
-        // description the initial build set and leave VoiceOver users with
-        // no degraded signal at all.
         let tip = degraded ? L("Connection degraded — click for stats") : L("Toggle stream stats overlay")
         statsToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
         statsToolbarItem?.toolTip = tip
     }
 
-    /// Enable/disable the annotation tools (drawing group + undo + clear) to
-    /// match the sharer's advertised annotation capability. Toggles any items
-    /// already vended by the delegate and remembers the state for items AppKit
-    /// binds later. The mac sharer always advertises annotations, so the
-    /// disabled branch is exercised only against a future non-annotation
-    /// (Linux/Windows) sharer.
     func setAnnotationsEnabled(_ enabled: Bool) {
         annotationsEnabled = enabled
         toolGroupItem?.isEnabled = enabled
         undoToolbarItem?.isEnabled = enabled
         clearAllToolbarItem?.isEnabled = enabled
         colorMenuItem?.isEnabled = enabled
-        // AppKit auto-validation used to silently re-enable these on the
-        // next window update; `ViewerCommands.validateToolbarItem` now
-        // answers with the same state — kick a pass so everything settles
-        // together.
         toolbar.validateVisibleItems()
     }
 
-    /// Re-render the mic item's tooltip so its parenthetical chord tracks a
-    /// Settings remap — the `$isMicOn` sink only fires on mic toggles, so
-    /// `AppState.micHotkeyChord.didSet` calls this (its channel into the
-    /// toolbar, alongside the cheat-sheet sync — the menu needs no push,
-    /// it's SwiftUI Commands reading the @Published chord).
+    /// Called by `AppState.micHotkeyChord.didSet`, since the `$isMicOn` sink
+    /// only fires on mic toggles, not on a Settings remap.
     func refreshMicChordDisplay() {
         guard let appState else { return }
         updateMicIcon(isOn: appState.isMicOn)
@@ -261,8 +219,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // `remoteControl` is deliberately absent: it's inserted only while
-        // the sharer supports injection (see `updateControlItem`).
+        // `remoteControl` inserted dynamically, see `updateControlItem`.
         [
             Self.toolGroup, Self.colorMenu, .flexibleSpace, Self.stats, Self.shortcuts,
             Self.microphone, Self.undo, Self.clearAll
@@ -316,8 +273,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 action: #selector(ViewerCommands.toggleMicrophone(_:))
             )
             micToolbarItem = item
-            // Image description + tooltip flip with mic state; route the
-            // initial build through the same updater so they can't drift.
             updateMicIcon(isOn: appState?.isMicOn == true)
             return item
         case Self.colorMenu:
@@ -341,8 +296,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 accessibilityLabel: L("Toggle stream stats overlay")
             )
             statsToolbarItem = item
-            // Reflect a degraded state that predates AppKit asking the
-            // delegate for this item (mirrors the tool-group's late bind).
             if let model = statsModel, model.stats.isDegraded {
                 updateStatsIcon(degraded: true)
             }
@@ -364,9 +317,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     // MARK: - Item builders
 
     private func makeToolGroup() -> NSToolbarItem {
-        // NSToolbarItemGroup with selectionMode = .selectOne gives radio
-        // behaviour — clicking one tool deselects the others. The selected
-        // index drives ViewerCommands.setTool().
         let labels = [L("Pen"), L("Line"), L("Arrow"), L("Rect"), L("Oval"), L("Click")]
         let symbols = [
             "pencil.tip",
@@ -376,9 +326,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             "circle",
             "scope"
         ]
-        // Spelled-out VoiceOver descriptions — "Rect" reads as
-        // "r-e-c-t" otherwise, and "Click" alone doesn't convey that
-        // it's a pointer/laser tool.
+        // Spelled out — "Rect" reads as "r-e-c-t" otherwise.
         let a11y = [
             L("Pen annotation tool"),
             L("Line annotation tool"),
@@ -387,9 +335,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             L("Oval annotation tool"),
             L("Pointer click tool")
         ]
-        // Tooltip text shown on hover. Mirrors a11y but appends the
-        // keyboard shortcut so the toolbar doubles as discovery for the
-        // 1–6 / ⌘1–⌘6 bindings.
         let tips = [
             L("Pen (1 or ⌘1)"),
             L("Line (2 or ⌘2)"),
@@ -408,9 +353,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             action: #selector(ViewerCommands.toolbarSelectedTool(_:))
         )
 
-        // Replace each subitem's image with the SF Symbol so the toolbar
-        // looks idiomatic. NSToolbarItemGroup does NOT pick up images via
-        // its initializer.
+        // NSToolbarItemGroup doesn't pick up images via its initializer.
         for (i, sym) in symbols.enumerated() where i < group.subitems.count {
             let sub = group.subitems[i]
             sub.image = NSImage(systemSymbolName: sym, accessibilityDescription: a11y[i])
@@ -419,23 +362,17 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         }
         toolGroupItem = group
         group.isEnabled = annotationsEnabled
-        // Reflect the canvas model's current tool if `bind(canvasModel:)`
-        // was called before AppKit asked the delegate for items.
         let initialTool = canvasModel?.currentTool ?? .pen
         group.selectedIndex = Self.toolOrder.firstIndex(of: initialTool) ?? 0
         return group
     }
 
-    /// Localized names for `Annotation.RGBA.palette`, index-aligned. Spoken
-    /// (menu row titles + the color item's VoiceOver label) so the current
-    /// color is never conveyed by the swatch alone.
     private static let paletteColorNames: [String] = [
         L("Red"), L("Blue"), L("Green"), L("Orange"),
         L("Purple"), L("Teal"), L("Pink"), L("Yellow")
     ]
 
-    /// Spoken name for a palette color; anything off-palette (a future
-    /// custom color) degrades to a generic name rather than lying.
+    /// Anything off-palette degrades to a generic name rather than lying.
     private static func paletteColorName(for color: Annotation.RGBA) -> String {
         guard let idx = Annotation.RGBA.palette.firstIndex(of: color),
             paletteColorNames.indices.contains(idx)
@@ -443,8 +380,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         return paletteColorNames[idx]
     }
 
-    /// Small filled circle rendering an annotation color, for the color
-    /// item's icon and the menu rows.
     private static func swatchImage(for color: Annotation.RGBA, diameter: CGFloat = 14) -> NSImage {
         NSImage(size: NSSize(width: diameter, height: diameter), flipped: false) { rect in
             let path = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
@@ -453,8 +388,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 blue: CGFloat(color.b), alpha: CGFloat(color.a)
             ).setFill()
             path.fill()
-            // Faint outline so light swatches (yellow) stay visible on a
-            // light toolbar.
+            // Faint outline so light swatches (yellow) stay visible.
             NSColor.black.withAlphaComponent(0.2).setStroke()
             path.lineWidth = 1
             path.stroke()
@@ -462,10 +396,6 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    /// Drawing-color menu: the preset per-author palette, with the user's
-    /// current color as the item's swatch. Per-stroke color rides the
-    /// annotation wire (`Annotation.color`), so a picked color reaches the
-    /// sharer and other viewers with no protocol change.
     private func makeColorMenu() -> NSToolbarItem {
         let item = NSMenuToolbarItem(itemIdentifier: Self.colorMenu)
         item.label = L("Color")
@@ -479,9 +409,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 action: #selector(ViewerCommands.selectAnnotationColor(_:)),
                 keyEquivalent: "")
             row.target = ViewerCommands.shared
-            // The tag indexes `Annotation.RGBA.palette`; validation reads
-            // it back to place the checkmark on the current color.
-            row.tag = idx
+            row.tag = idx  // indexes Annotation.RGBA.palette
             row.image = Self.swatchImage(for: color)
             menu.addItem(row)
         }
@@ -503,15 +431,9 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         let item = NSToolbarItem(itemIdentifier: id)
         item.label = label
         item.paletteLabel = label
-        // Tooltip includes the key equivalent so users can discover the
-        // shortcut by hovering; accessibilityLabel is the VoiceOver-only
-        // description and stays free of glyphs like "⌘" that screen
+        // accessibilityLabel stays free of glyphs like "⌘" that screen
         // readers spell out awkwardly.
         item.toolTip = toolTip ?? accessibilityLabel ?? label
-        // The SF Symbol's accessibilityDescription drives VoiceOver
-        // unless the toolbar item carries an explicit override — supply
-        // a richer label for the actionable items where the short tool
-        // label ("Mic", "Stats") would read ambiguously.
         item.image = NSImage(
             systemSymbolName: symbol,
             accessibilityDescription: accessibilityLabel ?? label
