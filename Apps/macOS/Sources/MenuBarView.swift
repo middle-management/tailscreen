@@ -14,6 +14,7 @@ struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
     @State private var viewID = UUID()
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
         // Errors surface via `AppState.presentError` driving an `NSAlert`
@@ -22,6 +23,12 @@ struct MenuBarView: View {
         // click, including the alert's own buttons, before the handler runs.
         mainView
             .id(viewID)
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+            } action: {
+                contentHeight = $0
+            }
+            .background(PanelHeightFitter(height: contentHeight))
             .onAppear {
                 // Second stash site for the main-window opener (see
                 // `MainWindowView.onAppear`).
@@ -76,6 +83,30 @@ struct MenuBarView: View {
             }
             .padding(.vertical, 6)
             .frame(width: 280)
+        }
+    }
+}
+
+/// `MenuBarExtra(.window)` grows its panel with the content but never shrinks
+/// it (e.g. after Share via Link is switched off), leaving blank bands above and
+/// below. Fit the panel to the content, keeping its top edge under the menu bar.
+private struct PanelHeightFitter: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let height = height
+        // Deferred: the view isn't in a window yet on the first pass, and
+        // resizing mid-update re-enters SwiftUI layout.
+        DispatchQueue.main.async {
+            guard height > 0, let window = view.window else { return }
+            var frame = window.frame
+            let delta = height - window.contentRect(forFrameRect: frame).height
+            guard abs(delta) > 0.5 else { return }
+            frame.origin.y -= delta
+            frame.size.height += delta
+            window.setFrame(frame, display: true)
         }
     }
 }
@@ -668,32 +699,17 @@ struct ShareViaLinkSection: View {
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(L("Share link token"))
-                HStack(spacing: 6) {
-                    Button(L("Copy Link")) {
-                        copyToPasteboard(ShareLinkFormat.link(token: token))
+                // One row where it fits (the hub window), two in the 280pt
+                // popover — never truncated labels.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        copyLinkButtons(token: token)
+                        tokenButtons(token: token)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                    .help(L("Copies a tailscreen: link that opens the join screen"))
-                    Button(L("Copy Web Link")) {
-                        copyToPasteboard(ShareLinkFormat.webLink(token: token))
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) { copyLinkButtons(token: token) }
+                        HStack(spacing: 6) { tokenButtons(token: token) }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .help(L("Copies an https: link that opens the share in a browser — no app needed"))
-                    Button(L("Copy Token")) {
-                        copyToPasteboard(token)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .help(L("Copies the bare token, for pasting into the join screen"))
-                    Button(L("New Link")) {
-                        appState.rotateShareLink()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .help(L("Replaces the link — the old one stops working and current guests are dropped"))
-                    Spacer(minLength: 0)
                 }
                 Text(verbatim: guestCountText)
                     .font(.caption)
@@ -715,6 +731,42 @@ struct ShareViaLinkSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    @ViewBuilder
+    private func copyLinkButtons(token: String) -> some View {
+        Button(L("Copy Link")) {
+            copyToPasteboard(ShareLinkFormat.link(token: token))
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.mini)
+        .fixedSize()
+        .help(L("Copies a tailscreen: link that opens the join screen"))
+        Button(L("Copy Web Link")) {
+            copyToPasteboard(ShareLinkFormat.webLink(token: token))
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .fixedSize()
+        .help(L("Copies an https: link that opens the share in a browser — no app needed"))
+    }
+
+    @ViewBuilder
+    private func tokenButtons(token: String) -> some View {
+        Button(L("Copy Token")) {
+            copyToPasteboard(token)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .fixedSize()
+        .help(L("Copies the bare token, for pasting into the join screen"))
+        Button(L("New Link")) {
+            appState.rotateShareLink()
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .fixedSize()
+        .help(L("Replaces the link — the old one stops working and current guests are dropped"))
     }
 
     private func copyToPasteboard(_ string: String) {
