@@ -4,15 +4,11 @@ import TailscreenSharer
 import XCTest
 
 /// `TailscaleScreenShareServer.transportSummaryFields` — the sharer's
-/// `transport.summary` row for one viewer and one sweep window.
-///
-/// The live sweep that records it cannot run here (it no-ops without a
-/// capture helper attached, the same reason `AdaptiveBitrateTests` exist),
-/// so the row itself is pinned as a pure function. The leg to read first is
-/// the receiver-report freshness pair: the summary was added because a
-/// share whose viewer's reports had quietly stopped arriving produced a
-/// bundle indistinguishable from a clean one — the sweep decays a stale
-/// report to "no loss" and the stats log line only fires on a nonzero count.
+/// `transport.summary` row for one viewer and one sweep window. Pinned as a
+/// pure function since the live sweep can't run here. Read the
+/// receiver-report freshness pair first: a viewer's stopped reports used to
+/// produce a bundle indistinguishable from a clean one, since the sweep
+/// decays a stale report to "no loss".
 final class SharerTransportSummaryTests: XCTestCase {
 
     private typealias Server = TailscaleScreenShareServer
@@ -30,11 +26,10 @@ final class SharerTransportSummaryTests: XCTestCase {
             window: Server.SummaryWindow(nowNs: nowNs, nominalNs: window, elapsedNs: elapsedNs ?? window))
     }
 
-    /// `window_ms` is the interval the row actually covers, not the sweep's
-    /// nominal window: the sweep sleeps for the window and then works, so
-    /// the counters it drains span more than the window. Freshness stays
-    /// judged against the nominal window, because that is what the sweep's
-    /// own decay uses — the two durations answer different questions.
+    /// `window_ms` is the interval actually covered, not the sweep's
+    /// nominal window (which sleeps then works, so counters span more).
+    /// Freshness stays judged against the nominal window, matching the
+    /// sweep's own decay.
     func testWindowIsMeasuredWhileFreshnessStaysNominal() {
         let now: UInt64 = 60_000_000_000
         let sample = Server.ViewerTransportSample(lastRRAtNs: now - window + 1)
@@ -44,9 +39,8 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(fields(sample, nowNs: now)["window_ms"], .int(5000))
     }
 
-    /// A viewer that never sent a receiver report says so — `rr_received`
-    /// false, `rr_fresh` false, and NO `rr_age_ms`, because an age of zero
-    /// would read as "just now", the opposite of the truth.
+    /// No `rr_age_ms` for a viewer that never reported — age zero would
+    /// read as "just now".
     func testNeverReportedViewerHasNoAgeAndIsNotFresh() {
         let row = fields(Server.ViewerTransportSample(lossFractionQ8: 0, lastRRAtNs: 0))
         XCTAssertEqual(row["rr_received"], .bool(false))
@@ -54,7 +48,6 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertNil(row["rr_age_ms"], "no report → no age, not age zero")
     }
 
-    /// A report inside the window is fresh and its age is exact.
     func testFreshReportCarriesItsAge() {
         let now: UInt64 = 60_000_000_000
         let row = fields(
@@ -65,11 +58,9 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(row["loss_q8"], .int(13), "the reported loss, undecayed")
     }
 
-    /// **The case the summary exists for.** A viewer whose reports stopped
-    /// arriving is still `rr_received` (it did report once) but no longer
-    /// `rr_fresh`, and its last loss reading is still in the row rather than
-    /// decayed to zero — the sweep's decay is the right input for the
-    /// congestion decision and the wrong thing to record.
+    /// A viewer whose reports stopped is still `rr_received` but no longer
+    /// `rr_fresh`, with its last loss reading intact rather than decayed —
+    /// the decay is right for the congestion decision, wrong to record.
     func testStaleReportIsRecordedAsStaleNotAsClean() {
         let now: UInt64 = 60_000_000_000
         let row = fields(
@@ -80,8 +71,7 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(row["loss_q8"], .int(40), "stale loss stays visible, not zeroed")
     }
 
-    /// Exactly one window old is stale, one nanosecond short of it is fresh —
-    /// the same `<` the sweep applies to its decay.
+    /// Exactly one window old is stale; one nanosecond short is fresh.
     func testFreshnessBoundaryMatchesTheSweep() {
         let now: UInt64 = 60_000_000_000
         XCTAssertEqual(
@@ -92,8 +82,8 @@ final class SharerTransportSummaryTests: XCTestCase {
             .bool(false))
     }
 
-    /// A report stamped after `now` (the sweep's clock read before the report
-    /// landed) is fresh with age zero rather than a wrapped enormous age.
+    /// A report stamped after `now` is fresh with age zero rather than a
+    /// wrapped enormous age.
     func testReportNewerThanNowIsFreshWithZeroAge() {
         let now: UInt64 = 60_000_000_000
         let row = fields(Server.ViewerTransportSample(lastRRAtNs: now + 5), nowNs: now)
@@ -101,10 +91,8 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(row["rr_age_ms"], .int(0))
     }
 
-    /// Raw loss is residual plus what FEC and NACK recovered, against the
-    /// viewer's own expected packet count — the number the FEC arm gates on.
-    /// 13 Q8 residual + 16 recovered of 256 planned (16 Q8) → 29 Q8 raw, the
-    /// same `fecRecoveredQ8` arithmetic the FEC arm applies.
+    /// Raw loss is residual plus recoveries against the viewer's own
+    /// expected packet count, the same arithmetic the FEC arm applies.
     func testRawLossAddsRecoveriesAgainstOwnDenominator() {
         let row = fields(
             Server.ViewerTransportSample(
@@ -119,22 +107,18 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(row["packets_sent"], .int(256))
     }
 
-    /// Raw loss saturates at 255 (100 %) rather than overflowing the Q8 range.
     func testRawLossClampsAtFull() {
         let row = fields(
             Server.ViewerTransportSample(lossFractionQ8: 250, lastRRAtNs: 1, fecRecovered: 100, packetsSent: 100))
         XCTAssertEqual(row["raw_loss_q8"], .int(255))
     }
 
-    /// The percentage is the Q8 value rendered for a reader, one decimal.
     func testLossPercentIsDerivedFromQ8() {
         XCTAssertEqual(fields(Server.ViewerTransportSample(lossFractionQ8: 0))["loss_pct"], .double(0))
         XCTAssertEqual(fields(Server.ViewerTransportSample(lossFractionQ8: 255))["loss_pct"], .double(100))
         XCTAssertEqual(fields(Server.ViewerTransportSample(lossFractionQ8: 26))["loss_pct"], .double(10.2))
     }
 
-    /// The share-wide state rides on every viewer's row, so one row explains
-    /// the tier the viewer was being served at without a second lookup.
     func testShareStateAndUnitsAreCarried() {
         let row = fields(
             Server.ViewerTransportSample(
@@ -155,10 +139,8 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(row["fec_group_size"], .int(8))
     }
 
-    /// Every value is a flat scalar and every key is a stable `snake_case`
-    /// identifier — the shape the bundle format and its readers depend on.
     /// A row on a clean window is exactly as complete as one on a bad
-    /// window, which is what makes the two distinguishable at all.
+    /// window — what makes the two distinguishable at all.
     func testRowIsCompleteOnACleanWindow() {
         let clean = fields(Server.ViewerTransportSample(lastRRAtNs: 59_000_000_000))
         let bad = fields(
@@ -175,9 +157,8 @@ final class SharerTransportSummaryTests: XCTestCase {
 
     // MARK: - Inbound audio
 
-    /// The upstream half. Every other field on this row describes what the
-    /// sharer SENT or what the viewer said about it, so "the sharer cannot
-    /// hear me" left no trace at all — which is what these two are for.
+    /// The upstream half: without these, "the sharer cannot hear me" left
+    /// no trace.
     func testInboundAudioIsCountedOnTheRow() {
         let row = fields(
             Server.ViewerTransportSample(audioPacketsReceived: 250, audioPacketsRejected: 0))
@@ -185,13 +166,9 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(row["audio_rejected_in"], .int(0))
     }
 
-    /// Rejected is its own number, not folded into the accepted one.
-    ///
-    /// The anti-spoof gate is the single case that looks like silence from
-    /// the sharer's seat while the viewer's own bundle shows it sending at a
-    /// steady 50 packets a second: the audio arrives and goes nowhere. Summing
-    /// the two, or reporting only the total, would restore exactly the
-    /// ambiguity the pair exists to remove.
+    /// Rejected is its own number, not folded into accepted — the anti-spoof
+    /// gate looks like silence from the sharer's seat while the viewer's own
+    /// bundle shows it sending steadily.
     func testRejectedAudioIsDistinguishableFromAcceptedAudio() {
         let spoofed = fields(
             Server.ViewerTransportSample(audioPacketsReceived: 0, audioPacketsRejected: 250))
@@ -205,8 +182,6 @@ final class SharerTransportSummaryTests: XCTestCase {
 
     // MARK: - Annotations
 
-    /// `annotation.summary` separates the three explanations of "I drew and
-    /// the sharer saw nothing" that were one symptom before it existed.
     func testAnnotationRowCarriesTheThreeOutcomes() {
         let row = Server.annotationSummaryFields(
             counters: Server.AnnotationCounters(applied: 7, dropped: 2, relayed: 5),
@@ -217,10 +192,8 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertEqual(row["window_ms"], .int(5000))
     }
 
-    /// The emptiness test the sweep gates on. Unlike `transport.summary`,
-    /// whose silence on a clean window is the failure it exists to break,
-    /// a window with no annotations in it means nobody drew — so an empty
-    /// window records nothing rather than a row of zeros.
+    /// Unlike `transport.summary`, a window with no annotations means
+    /// nobody drew, so it records nothing rather than a row of zeros.
     func testEmptyWindowIsRecognisedAsEmpty() {
         XCTAssertTrue(Server.AnnotationCounters().isEmpty)
         XCTAssertFalse(Server.AnnotationCounters(applied: 1).isEmpty)
@@ -228,9 +201,8 @@ final class SharerTransportSummaryTests: XCTestCase {
         XCTAssertFalse(Server.AnnotationCounters(relayed: 1).isEmpty)
     }
 
-    /// A dropped-only window is a row, not silence. It is the single most
-    /// diagnostic shape this event has — ops arriving and being refused —
-    /// and the once-per-share log line it replaces could say it only once.
+    /// A dropped-only window (ops arriving and being refused) is a row,
+    /// not silence.
     func testDroppedOnlyWindowStillRecords() {
         let counters = Server.AnnotationCounters(applied: 0, dropped: 4, relayed: 0)
         XCTAssertFalse(counters.isEmpty)

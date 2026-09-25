@@ -6,32 +6,22 @@ import TailscreenProtocol
 // inject a remote viewer's input.
 //
 // `TailscaleScreenShareServer` owns everything *between* them — admission,
-// fan-out, NACK/FEC/retransmit, congestion and fairness control, the idle
-// sweep, the grant gate — and none of that is platform-specific. These
-// protocols are the whole platform surface, and they're deliberately shaped
-// like ``CaptureHelperWire``'s `OutType`/`InType`, which is what the macOS
-// capture helper already speaks over its pipe. The seam isn't new; it was
-// designed years ago as an IPC wire and simply never named as a portability
-// boundary.
+// fan-out, NACK/FEC/retransmit, congestion/fairness, the idle sweep, the
+// grant gate — none of it platform-specific. These protocols are the whole
+// platform surface, shaped like ``CaptureHelperWire``'s `OutType`/`InType`
+// (the macOS capture helper's existing pipe wire).
 
 // MARK: - Capture + encode
 
 /// A source of encoded video (and optionally system audio) for one share
 /// session: the sharer's equivalent of the viewer's ``VideoDecoding``.
 ///
-/// The contract is deliberately the capture-helper command set — the
-/// porting plan's rule that "the congestion controller's contract is
-/// portable (set-bitrate, force-keyframe, set-frame-interval)". A backend
-/// that can honour those three levers and emit AVCC access units with
-/// in-band parameter sets is a complete implementation; how it captures
-/// (ScreenCaptureKit in a helper subprocess, PipeWire via the ScreenCast
-/// portal, X11/XCB, Windows.Graphics.Capture) and how it encodes
-/// (VideoToolbox, VA-API, x264) is entirely the backend's business.
+/// The contract is the congestion controller's three levers (set-bitrate,
+/// force-keyframe, set-frame-interval) plus AVCC access units with in-band
+/// parameter sets; how a backend captures/encodes is its own business.
 ///
-/// **Threading.** Callbacks fire on whatever thread the backend produces on —
-/// the macOS helper wrapper uses a dedicated reader thread — so the server
-/// treats every one of them as arbitrary-thread and locks accordingly.
-/// Implementations must not assume a serial queue or the main actor.
+/// **Threading.** Callbacks fire on whatever thread the backend produces on
+/// — implementations must not assume a serial queue or the main actor.
 public protocol CaptureEncoding: AnyObject, Sendable {
     /// An encoded access unit: `(avccData, isKeyframe)`. **AVCC**
     /// (length-prefixed NALs), not Annex-B — an FFmpeg-based backend converts
@@ -44,9 +34,8 @@ public protocol CaptureEncoding: AnyObject, Sendable {
     var onAudioAccessUnit: ((Data) -> Void)? { get set }
 
     /// Codec parameter sets, once per encoder configuration. Fires **before**
-    /// ``onEncoderResolution`` — the server caches the codec here and its
-    /// resolution handler reads that codec back to pick the bits-per-pixel
-    /// figure for the adaptive-bitrate anchor, so resolution-first would
+    /// ``onEncoderResolution`` — the server picks the adaptive-bitrate
+    /// bits-per-pixel figure from the cached codec, so resolution-first would
     /// anchor an H.264 session at HEVC's budget.
     var onParameterSets: ((CodecParameterSets) -> Void)? { get set }
 
@@ -60,10 +49,10 @@ public protocol CaptureEncoding: AnyObject, Sendable {
     /// host decodes at the point of display.
     var onPreviewImage: ((Data) -> Void)? { get set }
 
-    /// The backend died without being asked to stop. The string describes how
-    /// — the server classifies it via
+    /// The backend died without being asked to stop. The string describes
+    /// how — classified via
     /// ``TailscaleScreenShareServer/classifyHelperExit(reason:)`` into a
-    /// retryable crash, a permanent failure, or the *expected*
+    /// retryable crash, a permanent failure, or the expected
     /// shared-window-closed case.
     var onUnexpectedExit: ((String) -> Void)? { get set }
 
@@ -73,21 +62,18 @@ public protocol CaptureEncoding: AnyObject, Sendable {
     /// of respawning.
     var onUserStopped: (() -> Void)? { get set }
 
-    /// Fires on *every* message from the backend, including a periodic
-    /// heartbeat. The server's watchdog uses it as a liveness tick: a backend
-    /// that is alive but no longer producing (a wedged capture stream) stops
-    /// firing this, which process-death detection alone can't catch. A backend
-    /// with no independent heartbeat should fire it per delivered frame.
+    /// Fires on every message from the backend, including a periodic
+    /// heartbeat. The server's watchdog uses it as a liveness tick — a
+    /// wedged-but-alive capture stream stops firing this, which process-death
+    /// detection alone can't catch. Fire per delivered frame if no
+    /// independent heartbeat exists.
     var onActivity: (() -> Void)? { get set }
 
     /// Start capturing. `selectionData` is the JSON-encoded
-    /// ``PickerSelection`` describing what the user picked; the backend
-    /// resolves those IDs itself (the macOS helper does so in the child
-    /// process, where touching `SCShareableContent` is legal). `forceH264`
-    /// is the codec-fallback latch a viewer's CODEC_NO sets; `qualityEnv` is
-    /// ``QualitySettings/helperEnvironment()`` — a string map because the
-    /// macOS backend passes it as child-process environment, and any backend
-    /// may ignore keys it doesn't implement.
+    /// ``PickerSelection``; the backend resolves those IDs itself.
+    /// `forceH264` is the codec-fallback latch a viewer's CODEC_NO sets;
+    /// `qualityEnv` is ``QualitySettings/helperEnvironment()`` (a string map
+    /// — passed as child-process env on macOS; backends may ignore keys).
     func start(selectionData: Data, forceH264: Bool, qualityEnv: [String: String]) throws
 
     /// Stop capturing and release the platform's capture resources. Must be
@@ -116,16 +102,13 @@ public protocol CaptureEncoding: AnyObject, Sendable {
 /// Injects a granted viewer's input on the sharer's machine: `CGEvent` on
 /// macOS, `SendInput` on Windows, the RemoteDesktop portal on Linux.
 ///
-/// Supplying an injector to ``TailscaleScreenShareServer`` is what makes the
-/// sharer advertise ``ScreenShareCaps/remoteControl``, so a host that can't
-/// inject simply passes `nil` and viewers correctly hide their Request
-/// Control affordance instead of sending requests into a void. That's a
-/// behaviour the macOS-only server could hard-code and a portable one can't.
+/// Supplying an injector is what makes the sharer advertise
+/// ``ScreenShareCaps/remoteControl`` — passing `nil` makes viewers correctly
+/// hide their Request Control affordance.
 ///
 /// The server gates *which* events reach an injector
 /// (``RemoteControlPolicy/shouldInject(grantedConnectionID:eventConnectionID:)``
-/// plus a rate ceiling); the injector owns the platform half — permission,
-/// coordinate mapping, and the revoke seal.
+/// plus a rate ceiling); the injector owns the platform half.
 public protocol InputInjecting: AnyObject, Sendable {
     /// Whether this host currently permits injection (macOS Accessibility
     /// TCC; a portal session). A grant is refused rather than installed dead

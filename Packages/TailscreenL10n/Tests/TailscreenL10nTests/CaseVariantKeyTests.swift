@@ -3,45 +3,34 @@ import XCTest
 @testable import TailscreenL10n
 
 /// Fails when two base-catalog keys are the same sentence up to case and
-/// trailing punctuation — the pattern that quietly accumulates when one
-/// platform writes "Stop Sharing" and another writes "Stop sharing", and the
-/// same sentence gets translated twice (and, eventually, differently: the
-/// catalog really did carry "Filtrera efter tagg" AND "Filtrera på tagg").
+/// trailing punctuation — the pattern where "Stop Sharing" and "Stop sharing"
+/// both exist and get translated twice, eventually differently.
 ///
-/// Not every near-pair is a mistake — a menu item and a status line can
-/// legitimately carry the same words in each surface's casing, and a clause
-/// embedded after "Share failed: " needs its lowercase. Those live in the
-/// explicit allowlist below, each with the reason it is two keys on purpose.
-/// A new collision outside the allowlist fails: either merge the keys onto
-/// one variant (updating the call sites and every translation) or, if both
-/// are genuinely load-bearing, add the pair here WITH its justification.
+/// Not every near-pair is a mistake (a Title Case menu item vs. a
+/// sentence-case status line), so legitimate pairs live in the allowlist
+/// below with their reason. A new collision fails: merge the keys, or
+/// allowlist with a justification.
 final class CaseVariantKeyTests: XCTestCase {
     /// Pairs kept deliberately, as sets of the exact keys. Grouped by why.
     private static let allowlist: [Set<String>] = [
-        // macOS alert titles are uniformly Title Case ("Login Failed",
-        // "Request Failed", …); the sentence-case twin is a GTK/WinUI status
-        // or placard line among sentence-case siblings. Merging either way
-        // would break one surface's internal consistency.
+        // macOS alert titles are Title Case; the sentence-case twin is a
+        // GTK/WinUI status/placard line. Merging would break one surface's consistency.
         ["Connection Failed", "Connection failed"],
         ["Microphone Unavailable", "Microphone unavailable"],
-        // macOS menu-bar items are Title Case beside Title Case neighbors;
-        // the sentence-case twin is visible descriptive text (the shortcut
-        // cheat sheet's rows) or a tooltip whose chord-carrying sibling keys
-        // ("Mute microphone (%@)") must stay sentence case.
+        // macOS menu-bar items are Title Case; the sentence-case twin is
+        // descriptive text or a tooltip whose sibling keys must stay sentence case.
         ["Clear All Annotations", "Clear all annotations"],
         ["Release Remote Control", "Release remote control"],
         ["Mute Microphone", "Mute microphone"],
         ["Unmute Microphone", "Unmute microphone"],
-        // The Windows sharer's standalone detail sentence vs the Linux
-        // sharer's clause rendered after "Share failed: " — the lowercase is
-        // mid-sentence grammar, not styling drift.
+        // Windows' standalone detail sentence vs. Linux's mid-sentence clause
+        // after "Share failed: " — lowercase is grammar, not drift.
         [
             "Could not change the shared source: %@",
             "could not change the shared source: %@"
         ],
-        // Standalone status badge vs the lowercase interpolated into the
-        // "%@, %@" accessibility sentence — different grammatical positions,
-        // and languages that decline by position need them separate.
+        // Standalone status badge vs. lowercase interpolated into the
+        // accessibility sentence — different grammatical positions.
         ["Offline", "offline"],
         ["Online", "online"]
     ]
@@ -56,9 +45,8 @@ final class CaseVariantKeyTests: XCTestCase {
             .appendingPathComponent("en.lproj/Localizable.strings")
     }
 
-    /// Case-fold, and strip trailing whitespace, periods and ellipses (both
-    /// "…" and "..."), repeatedly — so "Change Source…" ~ "Change source…"
-    /// and "No screens match your filters." ~ its period-less twin.
+    /// Case-fold and strip trailing whitespace/periods/ellipses repeatedly, so
+    /// "Change Source…" ~ "Change source…".
     static func normalized(_ key: String) -> String {
         var text = Substring(key)
         while let last = text.last,
@@ -100,9 +88,8 @@ final class CaseVariantKeyTests: XCTestCase {
                 + offending.map { $0.joined(separator: "  |  ") }.joined(separator: "\n"))
     }
 
-    /// Every allowlist entry must still name real catalog keys that still
-    /// collide — otherwise it is a stale exemption that would silently cover
-    /// a future, different collision.
+    /// Every allowlist entry must still name real, colliding catalog keys —
+    /// otherwise it's a stale exemption that could cover a future collision.
     func testAllowlistEntriesAreLiveAndColliding() throws {
         guard FileManager.default.fileExists(atPath: baseCatalogURL.path) else {
             throw XCTSkip("source tree not available")
@@ -123,8 +110,7 @@ final class CaseVariantKeyTests: XCTestCase {
         }
     }
 
-    /// The detector cannot pass by always returning empty: a planted
-    /// collision must be found, and the same group allowlisted must not be.
+    /// Guards against the detector trivially always returning empty.
     func testDetectorFindsAPlantedCollision() {
         let keys = ["Stop Sharing", "Stop sharing…", "Viewer", "viewers"]
         let found = Self.collisions(in: keys, allowing: [])

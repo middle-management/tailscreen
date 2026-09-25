@@ -6,12 +6,10 @@ import XCTest
 /// The Linux injector's decisions, through the `onInjectForTesting` seam so no
 /// real `XTestFake*` runs and no cursor moves.
 ///
-/// Deliberately the same suite as `SendInputInjectorTests`, case for case,
-/// because the two injectors must agree about everything except how they talk
-/// to the OS: a revoke must not leave a button held, a modified key must press
-/// and unwind its modifiers, an unmappable usage must be dropped. Where a case
-/// has no Windows counterpart — scroll-as-buttons, the flush — it is because
-/// X11 genuinely differs, and those are the ones worth reading.
+/// Mirrors `SendInputInjectorTests` case-for-case where the two injectors must
+/// agree (revoke leaves no button held, modifiers unwind, unmappable usages
+/// dropped); cases with no Windows counterpart (scroll-as-buttons, flush) are
+/// where X11 genuinely differs.
 final class XTestInjectorTests: XCTestCase {
     private let region = XTestInjector.Region(x: 0, y: 0, width: 1920, height: 1080)
 
@@ -23,8 +21,7 @@ final class XTestInjectorTests: XCTestCase {
     }
 
     /// Actions arrive on the injector's serial queue, so the collector needs
-    /// its own lock — a plain array would be a data race the sanitizer finds
-    /// before any assertion does.
+    /// its own lock or the sanitizer flags a data race.
     private final class ActionBox: @unchecked Sendable {
         private let lock = NSLock()
         private var actions: [XTestInjector.InjectedAction] = []
@@ -64,9 +61,7 @@ final class XTestInjectorTests: XCTestCase {
         let (injector, drain) = makeInjector()
         injector.activate(region: region)
         injector.apply(.mouseMove(x: 0.1, y: 0.1))
-        // A second grant before the first's queue drained: those events belong
-        // to a viewer who no longer has control and must not be replayed under
-        // the new one.
+        // A second grant before the first's queue drained must not replay it.
         injector.activate(region: region)
         injector.drainSyncForTesting()
         let motions = drain().filter {
@@ -87,9 +82,7 @@ final class XTestInjectorTests: XCTestCase {
 
         injector.deactivate()
         injector.drainSyncForTesting()
-        // On X11 this matters more than anywhere else: a held button grabs the
-        // pointer, so a stuck one doesn't merely misbehave — it makes the
-        // sharer's whole desktop unusable.
+        // On X11 a held button grabs the pointer, freezing the whole desktop.
         XCTAssertTrue(
             drain().contains(.button(number: 1, down: false)),
             "a revoke mid-drag must synthesize the button-up")

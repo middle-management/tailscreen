@@ -11,28 +11,22 @@ import enum TailscreenProtocol.SharerNoticeText
 
 /// Posts the sharer's notifications, and routes their buttons back.
 ///
-/// The Windows twin of the GTK app's file of the same name, deliberately: the
-/// surface exists for the same reason on both, and every decision behind it is
-/// the same portable code. During a share this app's window is BEHIND the
-/// shared content, and raising it is itself visible to the viewers — so every
-/// mid-share ask costs an interruption they can see. Worse, "Require approval
-/// for new viewers" defaults on: a sharer who is not looking silently strands
-/// whoever tries to connect, with nothing on screen to notice.
+/// The Windows twin of the GTK app's file of the same name: same portable
+/// decisions, since this app's window sits BEHIND the shared content during a
+/// share, so raising it to prompt is itself visible to viewers.
 ///
 /// What to post, what to take back, and what it says is
 /// `SharerNoticeReconciler` / `SharerNoticeText` in `TailscreenProtocol`;
 /// delivery and the toast document are `WinNotifyKit`. What is left here is
 /// bookkeeping.
 ///
-/// **Two things differ from the GTK version, both because of the platform.**
-/// A press comes back through `AppInstance.Activated` rather than a callback
-/// on the notifier, so the host feeds it in through ``answer(activationID:)``
-/// — and because that carries one opaque string, the notice's own `id` is what
-/// rides along, with `SharerNotice.decodeID` reading it back. And there is no
-/// "the banner was dismissed" signal at all, so a toast the user swipes away
-/// stays in `posted` until the thing it is about ends. That is the harmless
-/// direction: withdrawing something already gone is a no-op, while forgetting
-/// a live banner would strand it on screen.
+/// Two platform differences from the GTK version: a press comes back through
+/// `AppInstance.Activated` rather than a notifier callback, fed in via
+/// ``answer(activationID:)`` with the notice's own `id` riding the one opaque
+/// activation string (`SharerNotice.decodeID` reads it back). And there is no
+/// "banner dismissed" signal, so a swiped-away toast stays in `posted` until
+/// the thing it's about ends — harmless, since withdrawing something already
+/// gone is a no-op.
 @MainActor
 final class SharerNotifications: NoticePosting {
     /// Nil when `Register()` was refused — no reachable Windows App Runtime,
@@ -99,19 +93,13 @@ final class SharerNotifications: NoticePosting {
 
     /// A toast was activated, and AppLifecycle woke the app with it.
     ///
-    /// `id` is the notice's own `id`, which the payload put in the activation
-    /// string precisely so this needs no table that could go stale between
-    /// posting and pressing. Nothing happens for a launch that was not ours,
-    /// or for a press about a peer who is no longer in any list — the host's
-    /// router matches against the live rows, so a stale answer lands nowhere
-    /// rather than on whoever is there now.
+    /// `id` is the notice's own `id`, put in the activation string so no
+    /// table can go stale between posting and pressing. Nothing happens for a
+    /// press about a peer no longer in any list.
     ///
-    /// **`action` is checked against the two answer keys, never treated as a
-    /// boolean.** Clicking the toast BODY activates the app too, with
-    /// `openActionKey`, and reading that as a deny would decide about a peer
-    /// because somebody looked at the notification. Anything that is not an
-    /// explicit approve or deny is a no-op here: the app comes forward and the
-    /// in-window prompt is still waiting.
+    /// `action` is checked against the two answer keys, never treated as a
+    /// boolean: clicking the toast BODY also activates the app, with
+    /// `openActionKey`, which must not be read as a deny.
     func answer(activationID id: String, action key: String) {
         let action = SharerNoticeText.action(forKey: key)
         guard action != .dismiss else { return }
@@ -128,15 +116,12 @@ final class SharerNotifications: NoticePosting {
 
     /// Take every toast back and forget everybody.
     ///
-    /// Called BEFORE the rosters are cleared, and that order is the whole
-    /// point: stopping a share expels every viewer at once, so reconciling
-    /// against the resulting empty list would fire one "stopped watching"
-    /// toast per viewer at the exact moment the sharer already decided to
-    /// stop. Clearing first makes the empty snapshot a no-op.
+    /// Called BEFORE the rosters are cleared: reconciling against the
+    /// resulting empty list would otherwise fire one "stopped watching" toast
+    /// per viewer at the moment the sharer decided to stop.
     func stop() {
-        // By group rather than tag by tag: one call, and it also collects any
-        // toast whose bookkeeping was lost — the swiped-away case this
-        // platform gives no signal for.
+        // By group rather than tag by tag: also collects any toast whose
+        // bookkeeping was lost (the swiped-away case this platform never signals).
         notifier?.withdrawAll()
         posted.removeAll()
         reconciler.reset()
@@ -146,24 +131,20 @@ final class SharerNotifications: NoticePosting {
 
     func post(_ notice: SharerNotice) {
         guard let notifier else { return }
-        // Windows renders both lines and always renders buttons, so neither of
-        // the two freedesktop capability gaps applies — but the text still
-        // comes from the shared renderer rather than being composed here, so
-        // the three platforms cannot drift into three sets of words.
+        // Windows renders both lines and buttons, but the text still comes
+        // from the shared renderer so the three platforms can't drift.
         let text = SharerNoticeText.render(notice, rendersBody: true, rendersActions: true)
         guard
             let tag = notifier.post(
                 summary: text.summary,
                 body: text.body,
                 buttons: text.buttons.map { .init(key: $0.key, label: $0.label) },
-                // The notice's own id, not its identity: it is what comes back
-                // through AppLifecycle, and it has to say which KIND was
-                // answered as well as about whom.
+                // The notice's own id, not its identity: it comes back through
+                // AppLifecycle and must say which KIND was answered too.
                 identity: notice.id,
-                // Only the two mid-share asks break through Focus Assist. The
-                // exemption is revoked per APP, so spending it on an
-                // invitation that arrives while the machine is idle is how it
-                // gets taken away from the ones where somebody is stuck.
+                // Only the two mid-share asks break through Focus Assist —
+                // the exemption is per-app, so it must be spent on ones where
+                // somebody is stuck, not idle-machine invitations.
                 blocksSomeone: notice.kind.blocksSomeone)
         else { return }
         posted[notice.id] = tag

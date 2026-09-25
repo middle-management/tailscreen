@@ -2,28 +2,20 @@ import Foundation
 import TailscreenProtocol
 import WinNotifyKit
 
-// winnotify-probe — the link check, and the manual gate this repository cannot
-// automate.
+// winnotify-probe — the link check, and the manual gate this repository
+// cannot automate.
 //
-//   winnotify-probe          register, report what the desktop can do, release.
-//                            The CI shape: it proves the binary LINKS and that
-//                            the notification platform answered. A machine
-//                            without a reachable Windows App Runtime reports
-//                            "no platform" and exits 0 — that is a NORMAL
-//                            answer, and making it a failure would turn the
-//                            zip build's honest degradation into a red gate.
-//   winnotify-probe --post   post a toast with two buttons and leave it up.
-//                            The only way to see what any of this LOOKS like,
-//                            and the only way to confirm a real button press
-//                            reaches the app — both need a person at a desk.
+//   winnotify-probe          register, report what the desktop can do,
+//                            release (the CI shape). No reachable Windows App
+//                            Runtime reports "no platform" and exits 0 — a
+//                            normal answer, not a failure.
+//   winnotify-probe --post   post a toast with two buttons and leave it up —
+//                            confirms a real button press reaches the app.
 //   winnotify-probe --withdraw
-//                            post, wait two seconds, withdraw. Confirms a
-//                            notice disappears when the thing it is about ends,
-//                            which is the half that is wrong-by-omission rather
-//                            than visibly broken.
+//                            post, wait two seconds, withdraw — confirms a
+//                            notice disappears when its subject ends.
 //
-// Off Windows every path reports SKIP and exits 0: this file exists there to be
-// typechecked, not to pass judgment on a platform it is not running on.
+// Off Windows every path reports SKIP and exits 0.
 
 let args = Array(CommandLine.arguments.dropFirst())
 
@@ -35,9 +27,8 @@ guard WindowsNotifier.isSupported else {
 }
 
 guard let notifier = WindowsNotifier(displayName: "Tailscreen") else {
-    // Not a failure. `AppNotificationManager` needs a Windows App Runtime the
-    // process can reach, and an unpackaged run without one legitimately lands
-    // here — which is the whole point of the runtime probe.
+    // Not a failure — an unpackaged run without a reachable runtime
+    // legitimately lands here.
     out("WINNOTIFY result=SKIP not registered: \(WindowsNotifier.openError ?? "unknown")")
     exit(0)
 }
@@ -49,9 +40,7 @@ out("urgent scenario supported: \(notifier.supportsUrgentScenario)")
 guard args.contains("--post") || args.contains("--withdraw") else { exit(0) }
 
 if !notifier.canBeSeen {
-    // Said rather than assumed: posting still SUCCEEDS with notifications off,
-    // so a probe that skipped this line would print PASS over a toast nobody
-    // could have seen.
+    // Posting still SUCCEEDS with notifications off, so say so explicitly.
     out("note: notifications are \(notifier.setting) — the post below will go nowhere")
 }
 

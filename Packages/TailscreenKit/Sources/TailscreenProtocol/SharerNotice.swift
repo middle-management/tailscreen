@@ -3,16 +3,12 @@ import Foundation
 /// The things a sharer needs to be interrupted about, and the rules for when
 /// to interrupt them.
 ///
-/// A sharer cannot poll. "Require approval for new viewers" defaults **on**,
-/// so a sharer who is not watching the app silently strands whoever tries to
-/// connect — there is nothing on screen to notice and no way to find out. A
-/// notification is the only surface that reaches someone whose attention is on
-/// the thing they are sharing.
-///
-/// *What* to say and *when* is pure logic, so it lives here rather than in
-/// three host-specific notification backends. Each host supplies only delivery:
-/// `UNUserNotificationCenter` on macOS, `org.freedesktop.Notifications` on
-/// Linux, `AppNotificationManager` on Windows.
+/// A sharer cannot poll: "Require approval for new viewers" defaults **on**,
+/// so a sharer not watching the app would silently strand whoever tries to
+/// connect. *What* to say and *when* is pure logic, living here rather than
+/// in three host-specific notification backends — each supplies only
+/// delivery (`UNUserNotificationCenter` on macOS, `org.freedesktop.Notifications`
+/// on Linux, `AppNotificationManager` on Windows).
 public enum SharerNoticeKind: String, Codable, Sendable, CaseIterable {
     /// A viewer is parked at the approval gate, waiting on Accept/Deny.
     case viewerPending
@@ -28,11 +24,8 @@ public enum SharerNoticeKind: String, Codable, Sendable, CaseIterable {
 }
 
 extension SharerNoticeKind {
-    /// Buttons this notice offers.
-    ///
-    /// Only the *asks* are actionable. The two reports describe something that
-    /// already happened, and a notification offering a choice with no
-    /// consequence trains people to ignore the ones that have one.
+    /// Buttons this notice offers. Only the *asks* are actionable — a choice
+    /// with no consequence trains people to ignore the ones that have one.
     public var actions: [NoticeAction] {
         switch self {
         case .viewerPending, .controlRequested, .requestToShare: [.approve, .deny]
@@ -41,22 +34,15 @@ extension SharerNoticeKind {
     }
 
     /// Whether missing this notice strands someone **inside a session that is
-    /// already running**.
+    /// already running**. Hosts map this onto their platform's
+    /// break-through-Do-Not-Disturb level (`UNNotificationInterruptionLevel.timeSensitive`
+    /// on macOS, urgency `1`/`2` on freedesktop, `Urgent` on Windows).
     ///
-    /// Hosts map this onto their platform's break-through-Do-Not-Disturb level
-    /// — `UNNotificationInterruptionLevel.timeSensitive` on macOS, urgency
-    /// `1`/`2` on freedesktop, `Urgent` on Windows.
-    ///
-    /// The bar is deliberately higher than "is actionable". `requestToShare` is
-    /// an ask and is *not* urgent: it arrives while this machine is idle,
-    /// nobody is mid-flow, and an invitation has a natural retry — the peer
-    /// asks again or messages you. The other two asks arrive while you are
-    /// already sharing, with a person watching a "waiting for approval" placard
-    /// or unable to click anything.
-    ///
-    /// Spending the exemption on the least urgent notice is also how you lose
-    /// it for the urgent ones: the user revokes Time Sensitive per *app*, not
-    /// per notification, so one over-eager kind disarms the whole set.
+    /// Higher bar than "is actionable": `requestToShare` is an ask but not
+    /// urgent (arrives while idle, has a natural retry), while the other two
+    /// arrive mid-share with someone unable to click anything. Spending the
+    /// exemption on the least urgent kind loses it for the urgent ones too —
+    /// users revoke Time Sensitive per *app*, not per notification.
     public var blocksSomeone: Bool {
         switch self {
         case .viewerPending, .controlRequested: true
@@ -67,28 +53,18 @@ extension SharerNoticeKind {
 
 /// What the user chose on a notice, normalized across platforms.
 ///
-/// **The raw values are the action keys**, and that is load-bearing rather than
-/// incidental. Every platform's notification button carries two strings — one
-/// the user reads, one that comes back when it is pressed — and only the second
-/// is ours. `UNNotificationAction(identifier:title:)`, freedesktop's
-/// `actions` array of (key, label) pairs and `AppNotificationButton`'s
-/// argument string are all the same shape.
-///
-/// Putting a *label* in the key slot is the failure this doc exists to prevent.
-/// It works perfectly in English and then a localized build hands back "Godkänn"
-/// where the router expects "approve", the lookup misses, and the button does
-/// nothing at all — no error, no log line, just a banner that swallows presses.
-/// So hosts localize the title and pass `rawValue` verbatim as the key, and
-/// route a press back through `NoticeAction(rawValue:)` — which returns nil for
-/// anything it did not mint, including a translated label.
+/// **The raw values are the action keys**, load-bearing: every platform's
+/// notification button carries a user-facing label and a separate key that
+/// comes back on press. Putting a *label* in the key slot works in English
+/// and then a localized build's "Godkänn" misses the `"approve"` lookup with
+/// no error — just a banner that swallows presses. Hosts localize the title
+/// and pass `rawValue` verbatim as the key.
 public enum NoticeAction: String, Codable, Sendable, CaseIterable {
     case approve
     case deny
-    /// Closed without choosing. Distinct from `deny` on purpose: dismissing a
-    /// banner must never be read as a decision about a peer.
-    ///
-    /// Never an offered button (see `SharerNoticeKind.actions`) — hosts
-    /// synthesize it from their platform's "user swiped it away" signal.
+    /// Closed without choosing. Distinct from `deny`: dismissing a banner
+    /// must never be read as a decision about a peer. Never an offered
+    /// button — hosts synthesize it from the "swiped away" signal.
     case dismiss
 }
 
@@ -103,13 +79,10 @@ public struct SharerNotice: Equatable, Sendable, Identifiable {
 
     /// Unique across kinds, so one host-side notified-set can serve all three
     /// without a peer's pending notice suppressing its later control request.
-    ///
-    /// Also the **posted notification's identifier**, which buys two things a
-    /// random UUID did not. A re-post of the same notice replaces the banner
-    /// in place instead of stacking a second one — every platform keys
-    /// replacement on this string. And it is the only thing that survives the
-    /// round trip out to the notification daemon and back, so it is how a
-    /// button press finds the peer it was about: see `decodeID`.
+    /// Also the **posted notification's identifier**: a re-post replaces the
+    /// banner in place (every platform keys on this string), and it's the
+    /// only thing surviving the round trip to the daemon and back — see
+    /// `decodeID`.
     public var id: String { "\(kind.rawValue):\(identity)" }
 
     public init(kind: SharerNoticeKind, identity: String, label: String) {
@@ -118,29 +91,19 @@ public struct SharerNotice: Equatable, Sendable, Identifiable {
         self.label = label
     }
 
-    /// Recover the `(kind, identity)` an `id` was minted from — the inverse of
-    /// `id`, and the only reason a press can find the peer it was about.
+    /// Recover the `(kind, identity)` an `id` was minted from — a pure
+    /// parse, since a press arrives as an opaque string with no live state
+    /// or notice object attached, possibly after the banner sat for an hour
+    /// or an app restart.
     ///
-    /// Every platform hands a press back as opaque strings and nothing else:
-    /// the notification identifier plus an action key on macOS and freedesktop,
-    /// a single activation argument on Windows. No live state and no notice
-    /// object comes with it, and the banner may have sat in a notification
-    /// centre for an hour, so this has to be a pure parse. Carrying both halves
-    /// in the id is what lets every host skip keeping a table that would have
-    /// to survive that hour — and an app restart.
+    /// **Splits on the first colon, never the last.** `identity` is
+    /// routinely full of colons (`ip:port`, IPv6), while no `rawValue`
+    /// contains one. A last-colon split works for IPv4 only and would
+    /// silently reroute between "let this person watch" and "let this
+    /// person control my machine".
     ///
-    /// **Splits on the first colon, never the last.** `identity` is routinely
-    /// full of colons — the roster and the gate key by `ip:port`, and an IPv6
-    /// literal is mostly colons — while no kind's `rawValue` contains one. A
-    /// last-colon split works on IPv4 for exactly as long as nobody shares over
-    /// IPv6, and what it silently reroutes between is "let this person watch"
-    /// and "let this person control my machine".
-    ///
-    /// Returns nil rather than guessing on anything it did not mint — an
-    /// unknown kind (an id from another build still sitting in notification
-    /// centre across an update), an empty identity, or an activation argument
-    /// from whatever else posted one. A wrong guess acts on the wrong peer,
-    /// which is strictly worse than a button that does nothing.
+    /// Returns nil rather than guessing on anything it did not mint — a
+    /// wrong guess acts on the wrong peer, strictly worse than a dead button.
     public static func decodeID(_ id: String) -> (kind: SharerNoticeKind, identity: String)? {
         guard let separator = id.firstIndex(of: ":") else { return nil }
         guard let kind = SharerNoticeKind(rawValue: String(id[id.startIndex..<separator])) else {
@@ -167,25 +130,21 @@ public struct NoticeCandidate: Equatable, Sendable {
 
 /// Pure decisions behind sharer notifications.
 public enum SharerNoticeDecision {
-    /// Which of `candidates` should fire a notification, given who has already
-    /// been notified — and the notified-set to carry into the next call.
+    /// Which of `candidates` should fire a notification, given who has
+    /// already been notified — and the notified-set to carry into the next
+    /// call.
     ///
-    /// **Forget-on-leave.** An identity absent from `candidates` is pruned, so
-    /// a peer that gives up and genuinely asks again is announced again, while
-    /// a snapshot re-emitted for an unrelated reason (a hostname finally
-    /// resolving, another row changing) announces nothing. Every host delivers
-    /// these as whole-list snapshots rather than deltas, which is what makes a
-    /// set-intersection the right shape.
+    /// **Forget-on-leave.** An identity absent from `candidates` is pruned,
+    /// so a peer that genuinely asks again is announced again, while a
+    /// snapshot re-emitted for an unrelated reason announces nothing (hosts
+    /// deliver whole-list snapshots, making set-intersection the right shape).
     ///
     /// **`identity` must be stable across reconnects at the level you want
-    /// deduped.** Keying on something per-connection is a spam vector: a peer
-    /// that drops and redials mints a fresh connection id every time and would
-    /// notify on every one. macOS learned this on the control path and keys by
-    /// viewer **IP**; its viewer-roster path keys by `ip:port` deliberately, so
-    /// a genuine rejoin does ping again. Both are correct — the choice belongs
-    /// to the caller, which is why this takes an opaque string.
+    /// deduped** — keying per-connection is a spam vector (a peer that
+    /// drops and redials mints a fresh id each time). The choice of key
+    /// belongs to the caller, hence the opaque string.
     ///
-    /// Order is preserved: hosts post in the order the platform received them.
+    /// Order is preserved.
     public static func noticesToPost(
         kind: SharerNoticeKind,
         candidates: [NoticeCandidate],
@@ -201,44 +160,29 @@ public enum SharerNoticeDecision {
         return (post, notified)
     }
 
-    /// Whether a notice may play a sound.
+    /// Whether a notice may play a sound. Rule: not while capturing. A
+    /// sharer capturing system audio captures the whole mix, and a
+    /// notification ding is played by the daemon (not our process), so it's
+    /// somebody else's audio that goes out on the wire with no way for the
+    /// sharer to know viewers heard it too. Gated on the whole share, not
+    /// "is system audio on", since that flag can flip between the decision
+    /// and the sound.
     ///
-    /// The rule is "not while we are capturing", and it exists because a
-    /// notification that *succeeds* is a notification on the screen being
-    /// shared. The audible half of that leak is the one that cannot be seen
-    /// coming: a sharer capturing system audio is capturing the system mix,
-    /// and the exclusion every platform offers drops only *our own* process's
-    /// audio — a notification ding is played by the notification daemon, so it
-    /// is somebody else's audio and it goes out on the wire. The sharer hears
-    /// their own ding and has no way to know the viewers heard it too.
-    ///
-    /// Gating on the whole share rather than on "is system audio on" is
-    /// deliberate. The narrower flag is togglable mid-share and mid-post, so
-    /// it can be true between the decision and the sound; and the thing it
-    /// would buy back is a ding for a person who is, by definition, sitting in
-    /// front of the machine presenting. The banner is the notification.
-    ///
-    /// Note this only ever changes anything for `requestToShare`: the other
-    /// four kinds exist only *during* a share, so they are silent under this
-    /// rule always. An invitation arriving at an idle machine is the one
-    /// notice with nothing to leak into and the best reason to be heard.
+    /// Only ever changes anything for `requestToShare` — the other four
+    /// kinds exist only *during* a share and are always silent under this
+    /// rule.
     public static func playsSound(isCapturing: Bool) -> Bool {
         !isCapturing
     }
 
     /// Which already-notified identities are no longer in `candidates`, and
     /// whose notifications should therefore be taken back off the screen.
-    ///
-    /// The exact set `noticesToPost` discards when it intersects, named and
-    /// returned so hosts do not each re-derive it — and so it is tested, which
-    /// matters because getting it wrong is invisible. A banner reading
-    /// "someone is waiting to be let in", with an Accept button, is actively
-    /// WRONG once they have been let in from the app window: pressing it does
-    /// nothing, and on a host that keys by IP rather than `ip:port` it could
-    /// land on whoever connects next.
+    /// Getting this wrong is invisible: a stale "waiting to be let in"
+    /// banner with a dead Accept button (or, on an IP-keyed host, one that
+    /// lands on whoever connects next).
     ///
     /// Call it BEFORE `noticesToPost` in the same pass, or with the same
-    /// `alreadyNotified` — afterwards the set has already been pruned and this
+    /// `alreadyNotified` — afterwards the set is already pruned and this
     /// returns nothing.
     public static func noticesToWithdraw(
         candidates: [NoticeCandidate], alreadyNotified: Set<String>
@@ -247,16 +191,14 @@ public enum SharerNoticeDecision {
     }
 
     /// Whether a snapshot carrying `generation` should be dropped because a
-    /// newer one was already applied.
+    /// newer one was already applied. The server stamps
+    /// `onControlGrantChanged` with a monotonic generation because every
+    /// GUI host hops that callback to its UI thread, and a hop can reorder
+    /// — applying a stale `nil` last would clear a grant that's actually
+    /// live (macOS: unregistering the panic hotkey mid-control).
     ///
-    /// The sharer server stamps `onControlGrantChanged` with a monotonic
-    /// generation because every GUI host hops that callback to its UI thread,
-    /// and a hop can reorder. Applying a stale `nil` snapshot last would clear
-    /// a grant that is actually live — on macOS that unregisters the ⌃⌥. panic
-    /// hotkey while a viewer is still controlling the machine.
-    ///
-    /// Equal generations are **not** stale: two racing notifies can legitimately
-    /// observe the same pair, and re-applying it is idempotent.
+    /// Equal generations are **not** stale: racing notifies can legitimately
+    /// observe the same pair, and re-applying is idempotent.
     public static func isStale(generation: UInt64, lastApplied: UInt64) -> Bool {
         generation < lastApplied
     }

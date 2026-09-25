@@ -1,27 +1,20 @@
 import Foundation
 import SwiftCrossUI
 
-// Targeted imports: pulling all of TailscreenProtocol collides with
-// SwiftCrossUI's own `Published` / `ObservableObject` shims, and this file
-// declares a conformance to one of them.
+// Targeted imports: importing all of TailscreenProtocol would collide with
+// SwiftCrossUI's own `Published`/`ObservableObject` shims, which this file
+// conforms to.
 import struct TailscreenProtocol.AccountProfile
 import struct TailscreenProtocol.AccountProfileLayout
 import class TailscreenProtocol.AccountProfileStore
 
 /// One viewer account — a distinct Tailscale identity backed by its own tsnet
-/// state directory. The type itself is portable now (the Windows app keeps the
-/// same registry against `%LOCALAPPDATA%`); the alias keeps this app's own
-/// vocabulary.
+/// state directory.
 typealias ViewerProfile = AccountProfile
 
-/// SwiftCrossUI-observable façade over the portable `AccountProfileStore`.
-///
-/// The registry — the JSON and the XDG root — lives in TailscreenProtocol and
-/// is unit-tested on Linux CI. What is left here is the one genuinely
-/// per-UI-framework part: republishing on change, so the header's account menu
-/// re-renders on switch/add/rename. It cannot live in the package, because the
-/// `ObservableObject` this app observes is SwiftCrossUI's and the one that
-/// module ships on Linux is its own.
+/// SwiftCrossUI-observable façade over the portable `AccountProfileStore`
+/// (which holds the registry and is unit-tested on Linux CI). Republishes on
+/// change so the header's account menu re-renders on switch/add/rename.
 @MainActor
 final class ProfileStore: ObservableObject {
     @Published private(set) var profiles: [ViewerProfile]

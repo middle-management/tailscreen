@@ -2,29 +2,20 @@ import Foundation
 
 /// Which capture backend a Linux share should use, and why.
 ///
-/// Two backends exist and they are not interchangeable. X11 root capture is
-/// instant and silent — no dialog, no consent, nothing on screen — but it can
-/// only ever see an X server, and only ever the whole root window. The
-/// ScreenCast portal can see a native Wayland desktop, a single window and a
-/// single application, but every share begins with a dialog the compositor
-/// draws and a person clicks.
+/// Two backends, not interchangeable. X11 root capture is instant and silent
+/// but only ever sees the whole X server root window. The ScreenCast portal
+/// can see a native Wayland desktop, a window or an app, but every share
+/// begins with a consent dialog.
 ///
-/// **The choice is not "Wayland → portal."** That framing is wrong in both
-/// directions: the portal is the better path on an X11 session too, because it
-/// is the only one that can share one window; and X11 capture on a *Wayland*
-/// session is not merely worse, it is actively misleading — see below.
-///
-/// So the input is what the person is trying to share, not just what session
-/// they happen to be running.
+/// The choice is not "Wayland → portal": the portal is the better path on X11
+/// too (only it can share one window), and X11 capture on a Wayland session
+/// is actively misleading (see below), not merely worse. So the input is what
+/// the person wants to share, not just what session they're running.
 public enum CaptureBackendSelection {
 
-    /// What kind of session this is.
-    ///
-    /// `unknown` is a real answer, not a placeholder: `XDG_SESSION_TYPE` is set
-    /// by the login manager and is simply absent under `startx`, in a
-    /// container, or over plain SSH with X forwarding. Treating absence as
-    /// "not X11" would break the sessions most likely to be running this
-    /// headlessly.
+    /// What kind of session this is. `unknown` is a real answer, not a
+    /// placeholder — `XDG_SESSION_TYPE` is simply absent under `startx`, in a
+    /// container, or over SSH with X forwarding.
     public enum SessionKind: String, Sendable, Equatable, CaseIterable {
         case x11
         case wayland
@@ -51,21 +42,16 @@ public enum CaptureBackendSelection {
         case unavailable(String)
     }
 
-    /// Inputs, grouped because there are four of them and swiftlint caps a
-    /// function at five parameters — but mostly because they are one
-    /// description of a machine, and passing them separately invites a caller
-    /// to answer one of them from somewhere else.
+    /// Inputs, grouped as one description of a machine rather than passed
+    /// separately.
     public struct Environment: Sendable, Equatable {
         public let session: SessionKind
         /// `$DISPLAY`, or nil/empty when there is no X server to talk to.
-        ///
-        /// **Set on Wayland too**, by XWayland, which is exactly why it cannot
-        /// be the only input — see `choose`.
+        /// Set on Wayland too, by XWayland — why it can't be the only input.
         public let x11Display: String?
-        /// Whether a ScreenCast portal answered. This must come from a
-        /// capability check that puts **nothing** on screen
-        /// (`PortalSession.connect()`), never from a negotiation: a check that
-        /// raises a consent dialog is not a check.
+        /// Whether a ScreenCast portal answered, from a capability check that
+        /// puts nothing on screen (`PortalSession.connect()`) — never a
+        /// negotiation that raises a consent dialog.
         public let portalAvailable: Bool
 
         public init(session: SessionKind, x11Display: String?, portalAvailable: Bool) {
@@ -83,14 +69,9 @@ public enum CaptureBackendSelection {
         }
     }
 
-    /// Read the session kind the way a desktop actually reports it.
-    ///
-    /// `XDG_SESSION_TYPE` first because it is the one the login manager sets
-    /// deliberately; `WAYLAND_DISPLAY` as the fallback, since a Wayland
-    /// compositor exports it even when nothing set the session type. `DISPLAY`
-    /// is deliberately NOT consulted here — it is set under XWayland, so
-    /// reading it as "this is X11" is the whole bug this type exists to
-    /// prevent.
+    /// Read the session kind. `XDG_SESSION_TYPE` first; `WAYLAND_DISPLAY` as
+    /// fallback. `DISPLAY` is deliberately not consulted — it's set under
+    /// XWayland, and reading it as "this is X11" is the bug this type prevents.
     public static func sessionKind(fromEnvironment environment: [String: String]) -> SessionKind {
         switch environment["XDG_SESSION_TYPE"]?.lowercased() {
         case "wayland": return .wayland
@@ -101,34 +82,19 @@ public enum CaptureBackendSelection {
         return .unknown
     }
 
-    /// Pick a backend.
+    /// Pick a backend. Rules, each pinned by `CaptureBackendSelectionTests`:
     ///
-    /// The rules, each pinned by `CaptureBackendSelectionTests`:
-    ///
-    ///   * **A window or app share is the portal or nothing.** X11 root capture
-    ///     cannot scope to a window, and quietly widening the request to the
-    ///     whole screen would be a privacy failure rather than a missing
-    ///     feature — the same rule `X11CaptureEncoder` and `WGCCaptureEncoder`
-    ///     already follow when they reject a selection kind they cannot serve.
-    ///
-    ///   * **A Wayland session never gets X11 capture, even though `$DISPLAY`
-    ///     is set.** XWayland sets it, so the obvious check passes and the
-    ///     share succeeds — capturing the XWayland root, which holds only the
-    ///     X11 apps that happen to be running and on many desktops is empty or
-    ///     a fragment. The sharer sees "Sharing"; viewers see a blank screen
-    ///     or somebody's one legacy app. Nothing errors. That is the failure
-    ///     this whole type is worth having for, and it is what the Linux app
-    ///     shipped before this existed.
-    ///
-    ///   * **An X11 session sharing the whole screen keeps X11 capture.** Both
-    ///     backends can serve it, and the portal would add a consent dialog to
-    ///     every single share for no capability the person asked for. The
-    ///     portal is *reachable* there — that is what `.windowOrApp` is for —
-    ///     but it is not imposed.
-    ///
-    ///   * **`unknown` is treated as X11 when there is a display to use.**
-    ///     `startx`, containers and forwarded SSH sessions all land here and
-    ///     all genuinely are X11.
+    ///   * A window or app share is the portal or nothing — widening it to
+    ///     the whole screen would be a privacy failure, not a missing feature.
+    ///   * A Wayland session never gets X11 capture even though `$DISPLAY` is
+    ///     set (XWayland sets it) — capturing the XWayland root shows a blank
+    ///     or fragmentary screen with nothing erroring, which is what the
+    ///     Linux app shipped before this existed.
+    ///   * An X11 session sharing the whole screen keeps X11 capture — both
+    ///     backends can serve it, and the portal would add an unasked-for
+    ///     consent dialog.
+    ///   * `unknown` is treated as X11 when there is a display to use
+    ///     (`startx`, containers, forwarded SSH all genuinely are X11).
     public static func choose(intent: Intent, environment: Environment) -> Choice {
         switch intent {
         case .windowOrApp:
@@ -143,9 +109,7 @@ public enum CaptureBackendSelection {
             switch environment.session {
             case .wayland:
                 guard environment.portalAvailable else {
-                    // Deliberately does NOT fall back to X11 even when
-                    // `$DISPLAY` is set. See the doc comment: that fallback is
-                    // a share that looks like it worked.
+                    // Does not fall back to X11 even with `$DISPLAY` set — see the doc comment.
                     return .unavailable(
                         "this is a Wayland session and it has no desktop portal, "
                             + "so there is no way to capture the screen")
@@ -165,11 +129,9 @@ public enum CaptureBackendSelection {
         }
     }
 
-    /// Whether this environment can share anything at all — the value a hub's
-    /// share button is enabled from.
-    ///
-    /// Derived from `choose` rather than reimplemented, so the button and the
-    /// share can never disagree about whether this machine can share.
+    /// Whether this environment can share anything at all — the value a
+    /// hub's share button is enabled from. Derived from `choose`, not
+    /// reimplemented, so the two can never disagree.
     public static func canShareAnything(environment: Environment) -> Bool {
         for intent in Intent.allCases {
             if case .unavailable = choose(intent: intent, environment: environment) { continue }

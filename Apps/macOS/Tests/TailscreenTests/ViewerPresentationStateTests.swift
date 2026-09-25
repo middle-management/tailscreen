@@ -57,13 +57,9 @@ final class ViewerPresentationStateTests: XCTestCase {
         XCTAssertFalse(state.isGuestSession)
     }
 
-    /// A failure is its own thing, not an end reason.
-    ///
-    /// This used to project `.connectionLost`, because the in-window pane had
-    /// no way to say anything else — so a dial that was refused, or a token
-    /// that had expired, told the person "The connection to X was lost",
-    /// describing a session they never had. `failureMessage` carries the real
-    /// sentence and `ending` stays nil.
+    /// A failure is its own thing, not an end reason: `failureMessage` carries
+    /// the real sentence (e.g. a refused dial or expired token) and `ending`
+    /// stays nil, rather than misreporting it as `.connectionLost`.
     func testFailureIsNotAnEndReason() {
         let state = ViewerPresentationState()
         let id = state.begin(target: target)
@@ -75,11 +71,9 @@ final class ViewerPresentationStateTests: XCTestCase {
         XCTAssertEqual(state.failureMessage, "dial failed")
     }
 
-    /// Both terminal phases keep the pane up, which is what the menu gates
-    /// and the window handling actually ask. Splitting `ending` from
-    /// `failureMessage` must not cost them that answer — testing
-    /// `ending != nil` would now be false for a failure and let ⌘W and the
-    /// reconnect path treat a failed session as if nothing were on screen.
+    /// Both terminal phases keep the pane up. Testing `ending != nil` would
+    /// be false for a failure and let ⌘W / reconnect treat it as if nothing
+    /// were on screen — use `isOver` instead.
     func testBothTerminalPhasesReadAsOver() {
         let ended = ViewerPresentationState()
         let endedID = ended.begin(target: target)
@@ -92,9 +86,7 @@ final class ViewerPresentationStateTests: XCTestCase {
         XCTAssertTrue(failed.isOver)
     }
 
-    /// The placard covers the two pre-video phases and nothing else. The
-    /// `connecting` half is new: it is the phase every session passes
-    /// through, and this app used to show nothing for it.
+    /// The placard covers the two pre-video phases and nothing else.
     func testPlacardCoversConnectingAndAwaitingApprovalOnly() {
         let state = ViewerPresentationState()
         let id = state.begin(target: target)

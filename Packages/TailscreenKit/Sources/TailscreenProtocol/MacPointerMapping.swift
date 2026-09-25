@@ -5,31 +5,19 @@ import Foundation
 /// `scrollWheelEvent2Source` wants — the macOS counterpart of
 /// ``X11PointerMapping``'s notch count and ``WindowsPointerMapping/wheelDelta(_:)``.
 ///
-/// **The one thing macOS does differently is that its scroll unit is an
-/// `Int32`.** X11 turns a delta into a repeat count with a `max(…, 1)` floor,
-/// and Windows multiplies by `WHEEL_DELTA` (120) before rounding, so on both
-/// of those a fraction of a line still moves something. `CGEventCreateScrollWheelEvent2`
-/// in `.line` units has no such headroom: a delta below half a line rounds to
-/// zero and the event scrolls nothing at all.
+/// Unlike X11 (`max(…, 1)` floor) or Windows (`WHEEL_DELTA` scaling before
+/// rounding), `CGEventCreateScrollWheelEvent2` in `.line` units rounds a
+/// delta below half a line to zero — and sub-line deltas are the common case
+/// (a trackpad's ~0.1–0.5-line stream, `RemoteControlInputView.scrollWheel`),
+/// so naive rounding made scrolling do nothing.
 ///
-/// That matters because sub-line deltas are the *common* case, not the exotic
-/// one. A trackpad viewer reports scroll in points and scales them to lines
-/// (`RemoteControlInputView.scrollWheel`), so an ordinary two-finger drag is a
-/// stream of ~0.1–0.5-line events — every one of which rounded away, which is
-/// what "scrolling does nothing on the sharer" looked like.
-///
-/// ``ScrollLineAccumulator`` fixes it by keeping the remainder instead of
-/// discarding it: the fractions add up across events until they make a whole
-/// line, so a slow gesture scrolls slowly rather than not at all, and the
-/// total distance scrolled matches the total delta sent.
+/// ``ScrollLineAccumulator`` keeps the remainder across events instead of
+/// discarding it, so a slow gesture scrolls slowly rather than not at all.
 public enum MacPointerMapping {
-    /// The most whole lines one injected event may carry.
-    ///
-    /// A ceiling, not a scale — the same role (and value) as
-    /// ``X11PointerMapping/maxNotchesPerEvent``. `CGEvent` will happily accept
-    /// `Int32.max` and scroll a document to its end, so an unclamped path is a
-    /// vandalism vector from a granted-but-hostile viewer, and a real gesture
-    /// never comes near 32 lines in a single event.
+    /// The most whole lines one injected event may carry. A ceiling, not a
+    /// scale (same role/value as ``X11PointerMapping/maxNotchesPerEvent``):
+    /// unclamped, a hostile viewer could scroll a document to its end via
+    /// `Int32.max`.
     public static let maxLinesPerEvent: Int32 = 32
 
     /// Carries the sub-line remainder of a scroll gesture across events.
@@ -43,26 +31,20 @@ public enum MacPointerMapping {
 
         public init() {}
 
-        /// True when both axes have nothing pending — the state a fresh
-        /// accumulator and a fully-delivered gesture share. Exposed so
-        /// `reset()`'s effect is assertable.
+        /// True when both axes have nothing pending. Exposed so `reset()`'s
+        /// effect is assertable.
         public var isEmpty: Bool { residualX == 0 && residualY == 0 }
 
-        /// Drop any pending fraction.
-        ///
-        /// Called when a grant ends: a half-line left over from the previous
-        /// controller must not ride along into the next one's first scroll.
+        /// Drop any pending fraction. Called on grant end, so a leftover
+        /// half-line doesn't ride into the next controller's first scroll.
         public mutating func reset() {
             residualX = 0
             residualY = 0
         }
 
         /// Fold one wire event's deltas in and take out whatever whole lines
-        /// have accumulated, keeping the remainder for next time.
-        ///
-        /// Returns `nil` when nothing whole came out, so the caller can skip
-        /// constructing a `CGEvent` that would scroll zero — a real no-op, and
-        /// the expected result for most events of a slow gesture.
+        /// have accumulated, keeping the remainder. Returns nil when nothing
+        /// whole came out, so the caller skips a zero-scroll `CGEvent`.
         public mutating func take(deltaX: Double, deltaY: Double) -> (wheelX: Int32, wheelY: Int32)? {
             let x = Self.step(&residualX, delta: deltaX)
             let y = Self.step(&residualY, delta: deltaY)
@@ -72,23 +54,20 @@ public enum MacPointerMapping {
 
         /// One axis: accumulate, split off the whole part, keep the fraction.
         private static func step(_ residual: inout Double, delta: Double) -> Int32 {
-            // Wire-supplied, so a non-finite delta contributes nothing rather
-            // than poisoning the residual into a permanent NaN — the same
-            // defensive rule every mapping in this family follows.
+            // Wire-supplied: a non-finite delta must not poison the residual
+            // into a permanent NaN.
             guard delta.isFinite else { return 0 }
             let total = residual + delta
             guard total.isFinite else {
                 residual = 0
                 return 0
             }
-            // Toward zero, not `.rounded()`: the fraction that is left must
-            // keep the sign of the movement, or a 0.6-line event would emit a
-            // whole line and then owe 0.4 back in the other direction.
+            // Toward zero, not `.rounded()`: the remainder must keep the
+            // movement's sign, or 0.6 lines would emit 1 and owe -0.4 back.
             let whole = total.rounded(.towardZero)
             if whole >= Double(MacPointerMapping.maxLinesPerEvent) {
-                // Saturating drops the excess instead of banking it, so an
-                // absurd delta is one clamped scroll rather than a clamped
-                // scroll every event from here on.
+                // Drop the excess rather than bank it, so an absurd delta
+                // clamps once instead of clamping every event after.
                 residual = 0
                 return MacPointerMapping.maxLinesPerEvent
             }

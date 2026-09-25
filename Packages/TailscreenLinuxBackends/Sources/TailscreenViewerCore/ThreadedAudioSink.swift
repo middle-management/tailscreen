@@ -2,11 +2,9 @@ import ALSAKit
 import Foundation
 import TailscreenViewer
 
-// `ThreadedAudioSink` itself moved to Packages/TailscreenKit's TailscreenViewer
-// target: it is thread + queue over the `AudioSink` protocol with nothing
-// Linux-specific in it, and the Windows viewer needs the identical wrapper for
-// the identical reason (a blocking device write on the UI thread freezes video).
-// What stays here is the one piece that genuinely names ALSA.
+// `ThreadedAudioSink` itself moved to TailscreenKit's TailscreenViewer target
+// (nothing Linux-specific; Windows needs the identical wrapper). What stays
+// here is the one piece that genuinely names ALSA.
 
 /// Build the Linux viewer's default audio sink: an `ALSAAudioSink` fronted by a
 /// `ThreadedAudioSink` so the blocking device write never runs on the caller's

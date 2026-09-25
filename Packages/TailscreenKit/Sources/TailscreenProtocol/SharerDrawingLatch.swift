@@ -10,13 +10,10 @@ public enum SharerDrawingRefusal: String, Sendable, Equatable, CaseIterable {
     /// geometry (Windows), no compositor (Linux), or the window could not be
     /// built.
     case noSurface
-    /// The surface exists, but could not take the keyboard.
-    ///
-    /// **This is a refusal, not a warning.** A drawing surface has to swallow
-    /// the pointer over the whole shared region — that is the feature — and the
-    /// only way back out from under it is a key. A surface that took the clicks
-    /// and not the key is a window the sharer cannot dismiss, sitting over the
-    /// button that would have dismissed it.
+    /// The surface exists, but could not take the keyboard. A refusal, not a
+    /// warning: the drawing surface swallows the pointer over the whole
+    /// shared region, and the only way out is a key — a surface that took
+    /// the clicks but not the key traps the sharer under it.
     case noKeyboard
 }
 
@@ -28,11 +25,10 @@ public enum SharerDrawingArmResult: Sendable, Equatable {
 
 /// What a host should do with its drawing surface for a given request.
 ///
-/// Separate from ``SharerDrawingLatch`` because it is about the *window's*
-/// lifetime rather than the tool's, and the two answer different questions on
-/// different hosts: the X11 sharer's overlay exists for the whole share and
-/// merely changes its input region, while the Windows one is created on arm and
-/// destroyed on disarm.
+/// Separate from ``SharerDrawingLatch`` because it's about the *window's*
+/// lifetime, not the tool's: X11's overlay exists for the whole share and
+/// merely changes its input region, while Windows creates/destroys on
+/// arm/disarm.
 public enum SharerDrawingSurfacePlan: Sendable, Equatable {
     /// Nothing armed — drop the surface if there is one.
     case release
@@ -45,15 +41,13 @@ public enum SharerDrawingSurfacePlan: Sendable, Equatable {
 
     /// - Parameters:
     ///   - hasSurface: whether a surface is up right now.
-    ///   - hasRegion: whether this share knows where its content is on screen.
-    ///     Windows resolves that from the capture item's size and can fail;
-    ///     without it a stroke has no coordinates to be normalized against.
+    ///   - hasRegion: whether this share knows where its content is on
+    ///     screen. Windows resolves that from the capture item's size and
+    ///     can fail; without it a stroke has no coordinates to normalize.
     ///
-    /// The `keep` case is the one worth having a name: rebuilding a surface
-    /// that is already up means dropping keyboard focus and asking for it
-    /// again, and asking is the step that is allowed to fail. A sharer who
-    /// switched from the pen to the arrow would find drawing had silently
-    /// ended, with a note about the keyboard they never touched.
+    /// `keep` matters because rebuilding a surface that's already up means
+    /// dropping keyboard focus and re-asking for it, and asking can fail —
+    /// switching pen to arrow would otherwise silently end drawing.
     public static func plan(
         tool: AnnotationTool?, hasSurface: Bool, hasRegion: Bool
     ) -> SharerDrawingSurfacePlan {
@@ -67,32 +61,25 @@ public enum SharerDrawingSurfacePlan: Sendable, Equatable {
 /// Which drawing tool a **sharer** has armed, and what to say when arming was
 /// refused.
 ///
-/// Small, and load-bearing out of proportion to its size. Arming hands the
-/// whole shared region to a window that eats every click on the sharer's own
-/// desktop; the hub window with the button that would turn it off is
-/// underneath it. So the sequencing below is a safety property, not
-/// bookkeeping, and it is identical on X11 (an override-redirect window the
-/// window manager will never focus) and on Win32 (a topmost popup that can lose
-/// focus to Alt-Tab). Both hosts run this rather than each writing the ordering
-/// out again — the second copy is where the two would disagree, and the
-/// disagreement is a desktop nobody can click.
+/// Load-bearing out of proportion to its size: arming hands the whole shared
+/// region to a window that eats every click, with the hub's off button
+/// underneath it. The sequencing below is a safety property, identical on
+/// X11 (override-redirect window) and Win32 (topmost popup that can lose
+/// focus to Alt-Tab) so the two can't disagree about a trapped desktop.
 ///
 /// The rules, each pinned by ``SharerDrawingLatchTests``:
 ///
 ///   * **Tapping the armed tool again disarms**, matching the viewer toolbar.
-///   * **A refusal disarms the surface anyway.** The host said no, but "no" can
-///     mean it got half way — took the clicks, missed the keyboard — and one
-///     extra no-op call is cheap next to a trapped desktop.
-///   * **Teardown disarms unconditionally**, even when this latch believes
-///     nothing is armed. If an arm ever half-succeeded, the conditional version
-///     is what leaves the surface up after the share ends.
-///   * **Switching tools mid-draw does not disarm first**, so the surface — and
-///     with it the sharer's keyboard focus — survives a change of pen.
+///   * **A refusal disarms the surface anyway** — "no" can mean it got
+///     half way (took the clicks, missed the keyboard).
+///   * **Teardown disarms unconditionally**, even if this latch believes
+///     nothing is armed, in case an arm ever half-succeeded.
+///   * **Switching tools mid-draw does not disarm first**, so the surface —
+///     and the sharer's keyboard focus — survives a change of pen.
 ///
 /// The surface is an injected closure returning ``SharerDrawingArmResult``,
-/// which is what lets every case above be tested on Linux with no window,
-/// no compositor and no message pump — the same seam `SendInputInjector` uses
-/// to test `SendInput` decisions where there is no `SendInput`.
+/// letting every case be tested with no window, no compositor, no message
+/// pump — the same seam `SendInputInjector` uses.
 public struct SharerDrawingLatch: Sendable, Equatable {
     /// Ask the host's surface to arm with `tool`, or to disarm when nil.
     /// A disarm's answer is ignored: there is no such thing as failing to stop.
@@ -109,9 +96,7 @@ public struct SharerDrawingLatch: Sendable, Equatable {
     /// A toolbar tap. Returns whether drawing is armed afterwards.
     @discardableResult
     public mutating func select(_ tool: AnnotationTool?, surface: Surface) -> Bool {
-        // Re-tapping the armed tool means "stop", the way it does on the
-        // viewer's toolbar. Without it a one-tool toolbar has no off switch
-        // except the key the sharer is being asked to trust.
+        // Re-tapping the armed tool means "stop", matching the viewer toolbar.
         let wanted = (tool == activeTool) ? nil : tool
         guard let wanted else {
             disarm(surface: surface)
@@ -119,11 +104,9 @@ public struct SharerDrawingLatch: Sendable, Equatable {
         }
         let result = surface(wanted)
         guard result == .armed else {
-            // Disarm on refusal, unconditionally. The host reported failure,
-            // but a host that got as far as showing a click-swallowing window
-            // and then failed to take the keyboard has left exactly the trap
-            // this type exists to prevent — and it cannot tell us how far it
-            // got. One redundant call is the price of not needing to know.
+            // Disarm on refusal unconditionally: the host can't tell us how
+            // far the failure got (took clicks but missed the keyboard?),
+            // so one redundant call is the price of not needing to know.
             _ = surface(nil)
             activeTool = nil
             if case .refused(let why) = result { refusal = why }
@@ -135,11 +118,9 @@ public struct SharerDrawingLatch: Sendable, Equatable {
     }
 
     /// The sharer asked to stop drawing from the surface itself — Escape, or
-    /// the surface reporting it lost the keyboard.
-    ///
-    /// Losing the keyboard has to end drawing, not merely be noticed: the
-    /// window is still swallowing every click over the shared region, and
-    /// Escape now goes to whatever took the focus.
+    /// the surface reporting it lost the keyboard. Losing the keyboard must
+    /// end drawing, not merely be noticed, since the window still swallows
+    /// every click over the region.
     public mutating func release(surface: Surface) {
         disarm(surface: surface)
     }

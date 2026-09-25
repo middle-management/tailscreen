@@ -40,10 +40,8 @@ func loadSuite(t *testing.T, file string) Suite {
 	return s
 }
 
-// normalize round-trips a value through JSON so that both sides of a
-// comparison use the same representation for every number (float64) and the
-// same spelling for absence (nil). Without it a uint16 result would never
-// compare equal to the float64 a vector decodes to.
+// normalize round-trips through JSON so both sides share one number
+// representation (float64) and spelling of absence (nil).
 func normalize(t *testing.T, v any) any {
 	t.Helper()
 	raw, err := json.Marshal(v)
@@ -116,9 +114,8 @@ func TestEveryCaseCitesARequirement(t *testing.T) {
 	}
 }
 
-// TestRequirementsExistInSpec catches a vector citing an identifier the
-// specification does not define — a typo, or a requirement that was renamed
-// without its vectors following.
+// TestRequirementsExistInSpec catches a vector citing an identifier the spec
+// doesn't define (typo, or a renamed requirement).
 func TestRequirementsExistInSpec(t *testing.T) {
 	spec, err := os.ReadFile("../../docs/spec.md")
 	if err != nil {
@@ -149,18 +146,15 @@ func TestRequirementsExistInSpec(t *testing.T) {
 	}
 }
 
-// TestVectorsCoverEveryWireValue is the registry leg: every assigned UDP
-// control byte AND every assigned TCP message type must be exercised by some
-// vector, so a new wire value cannot ship without one (TS-CNF-002).
+// TestVectorsCoverEveryWireValue: every assigned UDP control byte and TCP
+// message type must be exercised by some vector (TS-CNF-002).
 func TestVectorsCoverEveryWireValue(t *testing.T) {
 	seenControl := map[string]bool{}
 	seenTCP := map[int]bool{}
 
-	// The two multi-key JSON payload types (inputEvent, metadataResponse)
-	// cannot ride a frame.parse vector byte-identically — the Swift runner
-	// re-encodes payloads, and JSON object key order is not stable across
-	// implementations (see conformance/README.md) — so their payload-level
-	// ops stand in for their framing coverage.
+	// Multi-key JSON payloads can't ride a frame.parse vector
+	// byte-identically (key order isn't stable across implementations; see
+	// conformance/README.md), so payload-level ops stand in for framing coverage.
 	payloadOps := map[string]int{
 		"json.annotationOp.decode":   0x03,
 		"json.requestToShare.decode": 0x04,
@@ -207,12 +201,9 @@ func TestVectorsCoverEveryWireValue(t *testing.T) {
 	}
 }
 
-// TestVectorsCoverEveryCapabilityBit is the same registry leg for the other
-// half of the wire's assigned values — the capability bits of Appendix A.3,
-// which the control-byte sweep above cannot see because they ride inside a
-// HELLO's second byte rather than as a message of their own. Without it a new
-// bit can ship with no vector at all, which is exactly how tenBit (bit 5)
-// nearly did.
+// TestVectorsCoverEveryCapabilityBit is the same registry leg for the caps
+// bits of Appendix A.3, which the control-byte sweep above can't see since
+// they ride inside HELLO's second byte, not as a message of their own.
 func TestVectorsCoverEveryCapabilityBit(t *testing.T) {
 	var seen tailscreen.Caps
 	note := func(raw json.RawMessage) {

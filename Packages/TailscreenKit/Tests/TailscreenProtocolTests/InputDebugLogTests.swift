@@ -2,14 +2,9 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Coverage for `InputDebugLog.Sampler`, the 1 Hz windowing behind the
-/// `TAILSCREEN_DEBUG_INPUT=1` readout.
-///
-/// It is only a diagnostic, but a diagnostic that lies is worse than none:
-/// the whole reason it exists is to tell a stalled input path from a healthy
-/// one, and a window that never closes (or closes every event) hides exactly
-/// the difference somebody turned it on to see. Driven on an explicit clock,
-/// so none of this sleeps.
+/// `InputDebugLog.Sampler` — the 1 Hz windowing behind `TAILSCREEN_DEBUG_INPUT=1`.
+/// Must not lie: a window that never closes (or closes every event) hides the
+/// stalled-vs-healthy distinction it exists to show. Driven on an explicit clock.
 final class InputDebugLogTests: XCTestCase {
     private let second = InputDebugLog.Sampler.windowNs
 
@@ -27,8 +22,6 @@ final class InputDebugLogTests: XCTestCase {
         XCTAssertEqual(summary, "n=3 mean=4.0ms max=6.0ms")
     }
 
-    /// The window reopens on the next sample, so a long session prints one
-    /// line a second rather than one line and then silence.
     func testWindowRestartsAfterASummary() {
         var sampler = InputDebugLog.Sampler()
         XCTAssertNil(sampler.note(1_000_000, nowNs: 0))
@@ -38,25 +31,20 @@ final class InputDebugLogTests: XCTestCase {
             sampler.note(9_000_000, nowNs: 2 * second + 1), "n=2 mean=9.0ms max=9.0ms")
     }
 
-    /// The window opens on the FIRST sample, not at construction: a viewer
-    /// that holds a grant for a minute before touching the mouse must not have
-    /// its first burst averaged against that idle minute.
+    /// Window opens on the first sample, not at construction: a viewer holding
+    /// a grant idle for a minute must not have its first burst averaged against it.
     func testWindowOpensOnFirstSampleNotAtConstruction() {
         var sampler = InputDebugLog.Sampler()
-        // First sample arrives a full minute in; it opens the window rather
-        // than immediately closing one that started at zero.
         XCTAssertNil(sampler.note(1_000_000, nowNs: 60 * second))
         XCTAssertNil(sampler.note(1_000_000, nowNs: 60 * second + second / 2))
         XCTAssertNotNil(sampler.note(1_000_000, nowNs: 61 * second))
     }
 
-    /// A clock that appears to move backwards must not wrap into an enormous
-    /// elapsed — which would satisfy the window check forever, or never again.
+    /// A backward clock step must not wrap into a huge elapsed, satisfying the window check forever or never.
     func testBackwardsClockDoesNotWrapTheWindow() {
         var sampler = InputDebugLog.Sampler()
         XCTAssertNil(sampler.note(1_000_000, nowNs: 10 * second))
         XCTAssertNil(sampler.note(1_000_000, nowNs: 9 * second), "earlier `now` closes nothing")
-        // And the sampler still works once the clock is sane again.
         XCTAssertNotNil(sampler.note(1_000_000, nowNs: 11 * second))
     }
 

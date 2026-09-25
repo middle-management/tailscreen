@@ -122,10 +122,9 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertNil(d.fpsTier, "must not raise fps above the session cap")
     }
 
+    /// v1 reports 100% RR loss but 0 PLIs; v2/v3 healthy. v1 must be
+    /// isolated, and global inputs reflect only the healthy viewers.
     func testRRLossyViewerIsolatedNotGlobal() {
-        // v1 reports 100 % RR loss but 0 PLIs; v2/v3 healthy. v1 must be
-        // isolated (throttled) and the global inputs reflect only the healthy
-        // viewers — a single lying viewer can't tank the shared rate.
         let gci = TailscaleScreenShareServer.congestionInputs(
             pliCounts: ["v1": 0, "v2": 0, "v3": 0],
             lossQ8ByAddr: ["v1": 255, "v2": 2, "v3": 0],
@@ -143,9 +142,9 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertNil(d.fpsTier)
     }
 
+    /// No RR at all: widespread PLI loss must still drive the global cut —
+    /// folding RR in must not swallow the PLI path.
     func testLegacyPLIOnlyStillReachesGlobal() {
-        // No RR at all: a truly widespread PLI loss still drives the global cut
-        // (regression: folding RR in must not swallow the PLI path).
         let gci = TailscaleScreenShareServer.congestionInputs(
             pliCounts: ["v1": 5, "v2": 4],
             lossQ8ByAddr: [:],
@@ -155,9 +154,9 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertEqual(gci.lossQ8Input, 0)
     }
 
+    /// NACKs served this window already repaired the loss, so recovery
+    /// must still fire.
     func testRecoveryAllowedWithNACKsServed() {
-        // Low RR loss, 0 PLIs, but NACKs served this window — recovery must
-        // still fire (the retransmits already repaired the loss).
         let i = Inputs(
             lossFractionQ8: 2, pliCount: 0, nackServed: 12, current: 5_000_000, baseline: baseline,
             fpsTier: 60, fpsCap: 60, elapsedSinceChangeNs: 10 * s)
@@ -174,15 +173,12 @@ final class CongestionDecisionTests: XCTestCase {
 
     // MARK: - Missing receiver feedback
     //
-    // The sweep decays a stale RR's loss to 0 so a viewer that reported badly
-    // and went quiet can't pin the shared rate down. That leaves the decayed 0
-    // and a genuinely clean 0 indistinguishable here, so the recovery arm read
-    // a dead feedback path as a perfect link and kept climbing. `feedbackStale`
-    // is the missing third state.
+    // The sweep decays a stale RR's loss to 0, indistinguishable from a
+    // genuinely clean 0 — so the recovery arm read a dead feedback path as
+    // a perfect link. `feedbackStale` is the missing third state.
 
-    /// The regression, stated as an inequality between two runs that differ in
-    /// nothing else. Asserting only the stale case holds would pass against an
-    /// implementation that never raises at all.
+    /// Stated as an inequality between two runs differing in nothing else,
+    /// so an implementation that never raises can't pass by accident.
     func testMissingFeedbackSuppressesTheUpRamp() {
         var clean = inputs(current: 5_000_000, elapsed: 10 * s)
         XCTAssertEqual(decide(clean).bitrate, 5_500_000, "a clean window still recovers")
@@ -190,9 +186,8 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertEqual(decide(clean), .hold, "silence is not a clean window")
     }
 
-    /// Missing feedback must not CUT either. Nobody said the link is bad —
-    /// nobody said anything — and cutting on silence would punish a viewer
-    /// whose reports are merely late, every window, forever.
+    /// Missing feedback must not CUT either — cutting on silence would
+    /// punish a viewer whose reports are merely late, forever.
     func testMissingFeedbackDoesNotCut() {
         var i = inputs(current: 5_000_000, elapsed: 10 * s)
         i.feedbackStale = true
@@ -201,18 +196,16 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertNil(d.fpsTier)
     }
 
-    /// Real loss still cuts while feedback is stale: the flag only ever
-    /// subtracts from `clean`, and one viewer's silence must not shield
-    /// another viewer's reported loss from the cut arm.
+    /// One viewer's silence must not shield another's reported loss from
+    /// the cut arm.
     func testMissingFeedbackDoesNotBlockACutForReportedLoss() {
         var i = inputs(lossQ8: 30, current: baseline, elapsed: 5 * s)
         i.feedbackStale = true
         XCTAssertEqual(decide(i).bitrate, 7_500_000)
     }
 
-    /// The fps-recovery rung is gated on the same `clean`, so it must hold too
-    /// — otherwise a stale-feedback session would freeze its bitrate and go on
-    /// climbing frame rate, which costs the same bandwidth by another route.
+    /// The fps-recovery rung is gated on the same `clean`, or a
+    /// stale-feedback session would climb frame rate instead of bitrate.
     func testMissingFeedbackSuppressesTheFpsRecoveryRung() {
         var i = inputs(current: 8_000_000, fps: 30, elapsed: 10 * s)
         XCTAssertEqual(decide(i).fpsTier, 60, "a clean window restores fps first")
@@ -220,8 +213,7 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertEqual(decide(i), .hold)
     }
 
-    /// Default-false, so every legacy PLI-only caller is byte-identical to
-    /// before. `AdaptiveBitrateTests` depends on this.
+    /// Default-false so every legacy PLI-only caller is byte-identical.
     func testFeedbackStaleDefaultsToFalse() {
         let i = Inputs(
             lossFractionQ8: 0, pliCount: 0, nackServed: 0, current: 5_000_000,
@@ -240,29 +232,22 @@ final class CongestionDecisionTests: XCTestCase {
             sinceNs: UInt64(sinceWindows * 5_000_000_000), windowNs: 5 * s)
     }
 
-    /// The safety rail, and the leg to read first. A viewer that never
-    /// negotiated `.receiverReport` is silent BY DESIGN — legacy peers and
-    /// every stream-transport viewer, whose caps mask drops NACK and FEC and
-    /// which would otherwise be permanently stale. Reading their silence as
-    /// missing feedback freezes the rate for the whole session, on a share
-    /// where nothing is wrong.
+    /// A viewer that never negotiated `.receiverReport` is silent BY
+    /// DESIGN — legacy/stream-transport peers would otherwise be
+    /// permanently stale, freezing the rate on a share where nothing is wrong.
     func testAViewerThatNeverNegotiatedReportsIsNeverStale() {
         XCTAssertFalse(stale(expects: false, reported: false, sinceWindows: 100))
         XCTAssertFalse(stale(expects: false, reported: true, sinceWindows: 100))
     }
 
-    /// Reports are ~1 Hz against a ~5 s window, so one window of silence is
-    /// many missed reports rather than an unlucky drop.
     func testAReportingViewerGoesStaleOneWindowAfterItsLastReport() {
         XCTAssertFalse(stale(reported: true, sinceWindows: 0.9))
         XCTAssertTrue(stale(reported: true, sinceWindows: 1.0), "boundary is inclusive")
         XCTAssertTrue(stale(reported: true, sinceWindows: 4))
     }
 
-    /// A viewer that has never reported is measured from ADMISSION and gets
-    /// two windows of slack: it may legitimately not have sent its first
-    /// report yet, and treating a fresh join as stale would hold the rate
-    /// down at the start of every share.
+    /// A viewer that has never reported is measured from admission and
+    /// gets two windows of slack, or a fresh join would hold the rate down.
     func testAViewerThatHasNeverReportedGetsGraceFromAdmission() {
         XCTAssertFalse(stale(reported: false, sinceWindows: 1.5))
         XCTAssertTrue(stale(reported: false, sinceWindows: 2.0))
@@ -277,14 +262,8 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertTrue(gci.feedbackStale)
     }
 
-    /// Throttled viewers are excluded for the same reason — and against the
-    /// same set — as their loss and PLI counts: the viewers this sweep
-    /// decides to isolate, not the ones that happened to be isolated going
-    /// in. A viewer being isolated is having its own link taken out of the
-    /// shared decision, so its silence must not hold the rate everyone else
-    /// sees. (PLIs and receiver reports are different control bytes, so a
-    /// viewer can be losing loudly enough to isolate while its RRs have
-    /// stopped arriving — which is exactly this case.)
+    /// A viewer being isolated has its own link taken out of the shared
+    /// decision, so its silence must not hold the rate everyone else sees.
     func testCongestionInputsIgnoresAStaleViewerItIsIsolating() {
         let gci = TailscaleScreenShareServer.congestionInputs(
             pliCounts: ["v1": 0, "v2": 5], lossQ8ByAddr: [:], currentlyThrottled: [],
@@ -293,8 +272,6 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertFalse(gci.feedbackStale)
     }
 
-    /// The default argument, so every existing caller of `congestionInputs`
-    /// keeps reporting a live feedback path rather than an absent one.
     func testCongestionInputsIsNotStaleWithNobodyStale() {
         let gci = TailscaleScreenShareServer.congestionInputs(
             pliCounts: ["v1": 0], lossQ8ByAddr: [:], currentlyThrottled: [])

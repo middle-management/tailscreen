@@ -5,24 +5,10 @@ import Foundation
 @_exported import OpusKit
 
 /// Tailscreen's 48 kHz mono voice/audio codec, wrapping OpusKit (libopus).
-///
-/// This replaced the former AudioToolbox AAC-LC path. Opus is royalty-free,
-/// software-only (no hardware/OS codec), and portable to Linux and Windows —
-/// where AudioToolbox doesn't exist — which is why the Opus-only decision
-/// (see `plans/porting-plan.md`) exists. The public interface is deliberately
-/// the `[Float]` PCM one the old `AACEncoder` / `AACDecoder` had, so the
-/// `VoiceChannel` / `SystemAudioTap` call sites are unchanged; the
-/// Float32↔Int16 conversion libopus needs is confined here.
-///
-/// This is the portable audio tier of `TailscreenKit`: it depends
-/// only on Foundation + OpusKit (both build on Linux/Windows), so a future
-/// non-macOS client reuses the exact codec while supplying its own platform
-/// audio I/O. It is kept out of the `TailscreenProtocol` target so that tier
-/// stays dependency-free (Foundation/Synchronization only).
-///
-/// One Opus frame at 48 kHz mono is 20 ms = 960 samples. (AAC used
-/// 1024-sample AUs; 960 is the nearest valid Opus frame, and the whole audio
-/// pipeline — framing, RTP timestamp step, concealment — moved to it.)
+/// Opus is royalty-free, software-only, and portable to Linux/Windows, unlike
+/// the AudioToolbox AAC-LC path it replaced. One Opus frame at 48 kHz mono is
+/// 20 ms = 960 samples (AAC used 1024; framing, RTP timestamp step, and
+/// concealment all moved to the new size).
 
 /// Float32 [-1, 1] ↔ Int16 PCM. libopus's mono `opus_encode` / `opus_decode`
 /// take/produce interleaved 16-bit samples; the rest of Tailscreen's audio
@@ -43,8 +29,7 @@ public enum OpusPCM {
     }
 }
 
-/// Encodes 48 kHz mono Float32 PCM into Opus packets, one packet per 960-sample
-/// (20 ms) frame. Drop-in replacement for the former `AACEncoder`.
+/// Encodes 48 kHz mono Float32 PCM into Opus packets, one packet per 960-sample (20 ms) frame.
 public final class OpusVoiceEncoder {
     /// One Opus frame at 48 kHz mono: 20 ms = 960 samples. Callers pass
     /// exactly this many Float32 samples per `encode`.
@@ -64,18 +49,15 @@ public final class OpusVoiceEncoder {
     }
 
     /// Encode exactly `frameSamples` (960) Float32 samples ([-1, 1]) into one
-    /// Opus packet. Returns nil only on an empty result — kept optional for
-    /// source compatibility with the old buffered AAC encoder; Opus emits one
-    /// packet per frame with no priming latency. Throws if `pcm.count != 960`.
+    /// Opus packet. Returns nil only on an empty result. Throws if
+    /// `pcm.count != 960`.
     public func encode(pcm: [Float]) throws -> Data? {
         let packet = try encoder.encode(OpusPCM.floatToInt16(pcm), frameSize: .ms20)
         return packet.isEmpty ? nil : packet
     }
 }
 
-/// Decodes Opus packets back into 48 kHz mono Float32 PCM, 960 samples per
-/// 20 ms frame. Drop-in replacement for the former `AACDecoder` — and, unlike
-/// AAC via AudioToolbox, it needs no magic-cookie / AudioSpecificConfig priming.
+/// Decodes Opus packets back into 48 kHz mono Float32 PCM, 960 samples per 20 ms frame.
 public final class OpusVoiceDecoder {
     private let decoder: Opus.Decoder
 
@@ -88,12 +70,11 @@ public final class OpusVoiceDecoder {
         OpusPCM.int16ToFloat(try decoder.decode(au))
     }
 
-    /// Synthesize one 20 ms concealment frame via Opus's native packet-loss
-    /// concealment (`opus_decode` with a null packet): the decoder
-    /// extrapolates from its own history, which sounds far closer to the lost
-    /// speech than silence. Call once per missing frame, then decode the next
-    /// real packet normally — the decoder state stays continuous across the
-    /// gap. `VoiceDownlink` drives this on a sequence gap.
+    /// Synthesize one 20 ms concealment frame via Opus's native PLC
+    /// (`opus_decode` with a null packet) — extrapolates from decoder
+    /// history, closer to the lost speech than silence. Call once per
+    /// missing frame; decoder state stays continuous. `VoiceDownlink` drives
+    /// this on a sequence gap.
     public func conceal() throws -> [Float] {
         OpusPCM.int16ToFloat(try decoder.decode(nil, frameSize: .ms20))
     }

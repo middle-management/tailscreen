@@ -4,29 +4,16 @@ import XCTest
 
 @testable import TailscreenSharer
 
-/// Pins the sharer's annotation fan-out ordering.
+/// Pins the sharer's annotation fan-out ordering. `.undo(X)` only means
+/// anything to a peer already holding `.add(X)`, and `.clearAll` only clears
+/// what arrived before it — so a `Task { … }`-per-op fan-out (each reaching
+/// its await point in scheduler-chosen order) can invert a pair and leave an
+/// unremovable stroke on every viewer's canvas. Enqueueing through the outbox
+/// makes order a property of the code, not the scheduler.
 ///
-/// Annotation ops are a sequence about one stroke, not independent events:
-/// `.undo(X)` only means anything to a peer that already holds `.add(X)`, and
-/// `.clearAll` only clears what arrived before it. Every fan-out site used to
-/// spawn its own `Task { await broadcastAnnotation(…) }` — one per relayed
-/// viewer op, one per disconnect-cleanup undo, one per sharer stroke on each
-/// of the three hosts — and separately-created tasks reach a shared await
-/// point in whatever order the runtime picks.
-///
-/// That bug is worth a suite precisely because it does not reproduce on
-/// demand: most runs come out in order, and the one that doesn't leaves a
-/// stroke on every viewer's canvas for the rest of the share with nothing
-/// left that can remove it. Enqueueing through the outbox makes the order a
-/// property of the code rather than of the scheduler, so a reintroduced
-/// `Task { … }` fails here every time instead of once a fortnight in front of
-/// somebody.
-///
-/// No tsnet node: with no control listener the fan-out itself is a no-op, and
-/// what is under test is the sequence the drain takes items in.
+/// No tsnet node: fan-out is a no-op with no control listener; what's under
+/// test is the order the drain takes items in.
 final class AnnotationFanOutOrderTests: XCTestCase {
-    /// A server with no capture backend, no injector and no node — the
-    /// headless shape the network suites already use.
     private func makeServer() -> TailscaleScreenShareServer {
         TailscaleScreenShareServer(captureFactory: nil, inputInjector: nil)
     }
@@ -61,8 +48,6 @@ final class AnnotationFanOutOrderTests: XCTestCase {
         }
     }
 
-    /// The headline property: fan-out order IS enqueue order, for a run long
-    /// enough that a task-per-op implementation would have inverted a pair.
     func testFanOutOrderMatchesEnqueueOrder() {
         let server = makeServer()
         let recorder = Recorder()
@@ -77,9 +62,8 @@ final class AnnotationFanOutOrderTests: XCTestCase {
         XCTAssertEqual(recorder.all, ids.map { AnnotationOp.undo($0) })
     }
 
-    /// The pairing that actually breaks a canvas: an `.undo` reaching viewers
-    /// before the `.add` it refers to is dropped as an unknown id, and the
-    /// stroke can never be removed again.
+    /// An `.undo` reaching viewers before its `.add` is dropped as an unknown
+    /// id, and the stroke can never be removed again.
     func testUndoNeverOvertakesItsAdd() {
         let server = makeServer()
         let recorder = Recorder()
@@ -100,9 +84,8 @@ final class AnnotationFanOutOrderTests: XCTestCase {
         XCTAssertEqual(recorder.all, expected)
     }
 
-    /// The relay and the disconnect-cleanup undos share one outbox on purpose:
-    /// a departing viewer's last `.add` may still be queued when its cleanup
-    /// `.undo` is produced, and two queues would let the undo win.
+    /// Relay and disconnect-cleanup undos share one outbox: a departing
+    /// viewer's queued `.add` must not be overtaken by its cleanup `.undo`.
     func testExclusionTargetDoesNotSplitTheOrdering() {
         let server = makeServer()
         let recorder = Recorder()

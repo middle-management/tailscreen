@@ -2,10 +2,9 @@ import Foundation
 
 /// Where a viewer session's presentation is in its lifecycle.
 ///
-/// This is intentionally in the dependency-free protocol tier rather than in
-/// any UI package or transport. macOS, GTK and WinUI all render the same five
-/// states; keeping three enums gave them three opportunities to drift while
-/// describing one wire-level lifecycle.
+/// Dependency-free protocol tier, not a UI package or transport: macOS, GTK
+/// and WinUI all render the same five states from one enum instead of three
+/// that could drift.
 public enum ViewerSessionPhase: Equatable, Sendable {
     case connecting
     case awaitingApproval
@@ -33,11 +32,10 @@ public struct ViewerSessionID: Equatable, Hashable, Sendable {
 
 /// Everything a host needs to redial the current or most recent viewer.
 ///
-/// `identifier` is the hub row id when reconnect should resolve through a
-/// fresh peer list (WinUI); `host` is the address to dial directly (macOS and
-/// GTK). A guest has neither a meaningful row id nor host — its opaque token
-/// is the route. Keeping all three forms in one value removes the parallel
-/// `lastPeer` / `lastGuestToken` slots every host had to keep synchronized.
+/// `identifier` is the hub row id when reconnect resolves through a fresh
+/// peer list (WinUI); `host` is the address to dial directly (macOS, GTK). A
+/// guest has neither — its opaque token is the route. One value replaces the
+/// parallel `lastPeer`/`lastGuestToken` slots every host had to sync.
 public struct ViewerSessionTarget: Equatable, Sendable {
     public let identifier: String?
     public let host: String
@@ -133,8 +131,8 @@ public struct ViewerSessionLifecycle: Equatable, Sendable {
 
     /// Reconnect and Back both dismiss the current presentation. The target
     /// deliberately survives: Reconnect reads it immediately, and retaining
-    /// it after Back costs nothing while preserving the last-session context
-    /// macOS uses in notices and accessibility labels.
+    /// it after Back preserves the last-session context macOS uses in
+    /// notices and accessibility labels.
     public mutating func dismiss() {
         phase = nil
         sessionID = nil

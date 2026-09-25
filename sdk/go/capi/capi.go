@@ -1,40 +1,32 @@
 // Command capi builds libtailscreen.a: the Tailscreen wire protocol as a C
-// static library, for callers that are not Go.
-//
-// It is the same mechanism this repository already uses one floor down —
-// libtailscale.a is Go compiled with -buildmode=c-archive and consumed from
-// Swift through a systemLibrary target — so a C, C++, Swift, Rust or Zig
-// client links this the way TailscaleKit links that one:
+// static library, for callers that are not Go. Same mechanism as
+// libtailscale.a (Go, -buildmode=c-archive, consumed via a systemLibrary
+// target):
 //
 //	make libtailscreen                    # sdk/go/build/libtailscreen.{a,h}
 //	cc app.c sdk/go/build/libtailscreen.a -lpthread -o app
 //
 // # What it exposes
 //
-// Two layers. The codecs: pure functions over bytes — nothing opens a socket
-// or starts a goroutine, and nothing keeps state between calls. And the
-// stateful receive pipeline, as explicit handles: the TCP frame parser (a
-// frame arrives across segments), the reorder buffer, the depacketizers, the
-// NACK scheduler, the FEC group buffer and the receiver-report accounting —
-// each of which cannot be stateless because its whole job is remembering
-// what it has seen. Every handle carries its own lock, so calls on one
-// handle from different threads serialize rather than race; the library as a
-// whole is safe to call from any thread. Time-driven behaviour takes an
-// explicit now_ns argument — the library never reads a clock, so a caller
-// can replay a session deterministically.
+// Two layers: the codecs (pure functions over bytes, no I/O, no state
+// between calls), and the stateful receive pipeline as explicit handles
+// (frame parser, reorder buffer, depacketizers, NACK scheduler, FEC group
+// buffer, receiver-report accounting) since each must remember what it has
+// seen. Every handle carries its own lock, so calls on one handle from
+// different threads serialize; the library is safe to call from any thread.
+// Time-driven calls take an explicit now_ns — the library never reads a
+// clock, so a session replays deterministically.
 //
 // # Memory
 //
-// Every function that returns bytes returns memory allocated by C malloc,
-// which the CALLER frees with tailscreen_free. The Go garbage collector does
-// not know about it and will not reclaim it. A returned length of 0 with a
-// NULL pointer means the input was rejected; that is not an error condition
-// to be handled so much as the protocol's standard answer to a malformed
-// datagram, which is to discard it (TS-CTL-002, TS-GEN-022).
+// Bytes returned are C-malloc'd; the CALLER frees them with tailscreen_free
+// (the Go GC won't). Length 0 with a NULL pointer means the input was
+// rejected — the protocol's standard discard of a malformed datagram
+// (TS-CTL-002, TS-GEN-022), not an error to otherwise handle.
 //
 // The exception is the *_new / *_free handle pairs, whose values index
-// tables inside Go. Free every handle you create; a leaked handle keeps its
-// buffered bytes alive for the process's lifetime.
+// tables inside Go. Free every handle you create, or its buffers leak for
+// the process's lifetime.
 package main
 
 /*
@@ -517,16 +509,10 @@ func tailscreen_encode_frame(msgType C.uint8_t, payload *C.uint8_t, payloadLen C
 	return cBuf(tailscreen.EncodeFrame(tailscreen.MessageType(msgType), goBytes(payload, payloadLen)))
 }
 
-// The framed TCP channel — like the rest of the stateful pipeline below —
-// cannot be a pure function: a frame arrives across an arbitrary number of
-// segments, so the parser has to remember what it has seen. Handles rather
-// than pointers, because a Go pointer may not be held by C.
-//
-// Each handle carries its own lock: the table's mutex guards only the table,
-// and without a per-handle mutex a C caller feeding tailscreen_parser_append
-// from a socket-reader thread while another thread drains
-// tailscreen_parser_next would race on the parser's buffer — in a library
-// whose header promises thread safety.
+// Handles rather than pointers, because a Go pointer may not be held by C.
+// Each handle carries its own lock (the table's mutex guards only the table)
+// or a caller feeding tailscreen_parser_append from one thread while another
+// drains tailscreen_parser_next would race on the parser's buffer.
 type handle[T any] struct {
 	mu    sync.Mutex
 	value T
@@ -891,12 +877,10 @@ type nackState struct {
 var nackSchedulers = newHandleTable[nackState]()
 
 // Creates a NACK scheduler. Every tunable 0 selects that field's default
-// (Appendix B); see NACKSchedulerConfig for the meanings. An explicit zero
-// is therefore not expressible HERE — for the two tunables where zero is
-// meaningful (the reorder tolerances, whose zeros make every gap instantly
+// (Appendix B; see NACKSchedulerConfig). For the two tunables where zero is
+// meaningful (reorder tolerances — zero makes every gap instantly
 // NACK-eligible), call tailscreen_nack_set_reorder_tolerances after
-// construction: it takes its arguments literally. Free with
-// tailscreen_nack_free.
+// construction instead. Free with tailscreen_nack_free.
 //
 //export tailscreen_nack_new
 func tailscreen_nack_new(

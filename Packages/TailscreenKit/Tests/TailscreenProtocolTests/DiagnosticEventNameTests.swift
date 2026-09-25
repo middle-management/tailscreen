@@ -3,21 +3,13 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// `DiagnosticEventName` — the registry, pinned the way the wire bytes are
-/// pinned by `WireByteRegistryTests`.
-///
-/// A recorded event name is an interface to a reader outside this codebase: an
-/// agent matching `hello.ack.sent`, a saved filter on `action.`, the merge in
-/// `DiagnosticsMerge` pairing sends with receives. Renaming a case breaks all
-/// three, and **nothing at the call site would show it** — the code still
-/// compiles, still records, still reads correctly in English. So the names are
-/// asserted literally here: changing one means changing this file, which is
-/// the moment to ask whether old bundles just became unreadable.
+/// `DiagnosticEventName` — the registry, pinned the way wire bytes are pinned
+/// by `WireByteRegistryTests`. A rename compiles and records fine but silently
+/// breaks readers matching on the old string (saved filters, `DiagnosticsMerge`)
+/// and makes old bundles unreadable — hence literal assertion here.
 final class DiagnosticEventNameTests: XCTestCase {
 
-    /// The names the merge itself depends on. If one of these moves, cross-
-    /// side correlation silently stops working — bundles still parse, the
-    /// timeline still renders, and the clock correction quietly never applies.
+    /// Names the cross-side merge depends on; if one moves, correlation silently stops working.
     func testMergeCriticalNamesAreExact() {
         XCTAssertEqual(DiagnosticEventName.helloSent.rawValue, "hello.sent")
         XCTAssertEqual(DiagnosticEventName.helloReceived.rawValue, "hello.received")
@@ -25,21 +17,10 @@ final class DiagnosticEventNameTests: XCTestCase {
         XCTAssertEqual(DiagnosticEventName.helloAckReceived.rawValue, "hello.ack.received")
     }
 
-    /// **The registry itself**, as a literal list, exactly as
-    /// `WireByteRegistryTests` pins the wire bytes.
-    ///
-    /// Uniqueness alone does not pin anything — a duplicate raw value is
-    /// already a compile error, so a suite that only checks for duplicates
-    /// passes happily while a name is renamed or deleted underneath it. That
-    /// is the failure mode this contract exists to prevent: a rename still
-    /// compiles, still records, still reads correctly in English, and breaks
-    /// every saved query and every old bundle.
-    ///
-    /// So changing this list is the deliberate act. Adding a case means adding
-    /// a line here; a rename or a removal means editing one, which is the
-    /// moment to ask whether bundles already in the wild just became
-    /// unreadable. Retiring an event is fine — stop recording it, keep the
-    /// line.
+    /// The registry itself, as a literal list. Uniqueness alone doesn't pin
+    /// anything (a duplicate raw value is already a compile error) — this
+    /// catches a rename/removal, which still compiles and records fine but
+    /// breaks old bundles. Retiring an event: stop recording it, keep the line.
     func testRegistryContentsArePinned() {
         let expected: Set<String> = [
             "recording.started", "recording.stopped", "recording.exported",
@@ -96,8 +77,6 @@ final class DiagnosticEventNameTests: XCTestCase {
         XCTAssertEqual(DiagnosticEventName.allCases.count, expected.count)
     }
 
-    /// The shape a reader relies on when filtering by prefix: lowercase,
-    /// dot-separated, at least two segments, no whitespace.
     func testNamesFollowTheNamingRule() {
         for name in DiagnosticEventName.allCases {
             let raw = name.rawValue
@@ -110,10 +89,8 @@ final class DiagnosticEventNameTests: XCTestCase {
         }
     }
 
-    /// Every user action is reachable by the `action.` prefix filter, which is
-    /// the first thing anyone reading a bundle does — "what did the person
-    /// actually do?" An action event that does not carry the prefix is
-    /// invisible to that filter while looking perfectly fine in the file.
+    /// `.action` category and the `action.` prefix must agree, or a bundle
+    /// reader filtering by prefix misses events that look fine in the file.
     func testActionCategoryAndPrefixAgree() {
         for name in DiagnosticEventName.allCases {
             if name.category == .action {
@@ -129,10 +106,7 @@ final class DiagnosticEventNameTests: XCTestCase {
         }
     }
 
-    /// Every case resolves to a category and a severity. The `switch` in
-    /// `category` is exhaustive so this cannot regress silently, but a new
-    /// case added to a `default` arm by accident would land everything in one
-    /// bucket — this asserts the spread is real.
+    /// Guards against a new case landing in a `default` arm and collapsing everything into one bucket.
     func testEveryCategoryIsUsed() {
         let used = Set(DiagnosticEventName.allCases.map(\.category))
         for category in DiagnosticCategory.allCases {
@@ -140,8 +114,6 @@ final class DiagnosticEventNameTests: XCTestCase {
         }
     }
 
-    /// Failures default to `error` and are not left at `info`, where a reader
-    /// scanning for trouble would skip them.
     func testFailureEventsDefaultToError() {
         for name in [
             DiagnosticEventName.nodeBringUpFailed, .captureFailed, .micFailed,
@@ -151,8 +123,6 @@ final class DiagnosticEventNameTests: XCTestCase {
         }
     }
 
-    /// Severity ordering, which the export filter and any "errors only" view
-    /// depend on.
     func testSeverityOrders() {
         XCTAssertLessThan(DiagnosticSeverity.info, .warning)
         XCTAssertLessThan(DiagnosticSeverity.warning, .error)

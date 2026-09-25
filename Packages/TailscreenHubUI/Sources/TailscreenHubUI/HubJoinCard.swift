@@ -5,17 +5,14 @@ import TailscreenProtocol
 /// The viewer's way into a share-by-token session: a collapsed "Join a
 /// Share…" affordance that expands into a paste field + Join.
 ///
-/// Lives in the shared chrome because both swift-cross-ui hosts need the
-/// identical thing and neither has a sheet to put it in — the card sits in
-/// the hub column (and, on Windows, under the sign-in button: joining by
-/// token is exactly the path that needs no Tailscale account, so it must
-/// not hide behind sign-in).
+/// Shared because both swift-cross-ui hosts need it and neither has a sheet
+/// to put it in; on Windows it sits above sign-in, since joining by token
+/// needs no Tailscale account.
 ///
-/// Parsing happens here, via the same `ShareLinkFormat` every host's copy
-/// buttons produce links with — the host's `onJoin` closure receives a
-/// plausible bare token and nothing else. Real validation is the guest
-/// dial's; this only keeps obvious non-tokens out of a session attempt,
-/// with the inline "doesn't look like a link" line as the answer.
+/// Parsing happens here via `ShareLinkFormat`, the same parser every host's
+/// copy buttons produce links with — `onJoin` receives only a plausible bare
+/// token. Real validation is the guest dial's; this only screens out obvious
+/// non-tokens.
 public struct HubJoinCard: View {
     /// Called with the parsed token when Join is pressed on valid input.
     let onJoin: @MainActor @Sendable (String) -> Void
@@ -42,9 +39,7 @@ public struct HubJoinCard: View {
                     .padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 8).fill(HubStyle.searchFill))
                 if inputRejected {
-                    // secondaryText, matching every other failure note in this
-                    // chrome — there is no danger token, and inventing one for
-                    // a paste-validation line would out-shout real problems.
+                    // secondaryText, not a danger colour this chrome has none of.
                     Text(L("That doesn't look like a share link or token."))
                         .font(.caption)
                         .foregroundColor(HubStyle.secondaryText)
@@ -62,9 +57,7 @@ public struct HubJoinCard: View {
                             inputRejected = true
                             return
                         }
-                        // Collapse before handing over: the session UI takes
-                        // the window, and coming back should land on the
-                        // quiet affordance, not a half-filled form.
+                        // Collapse before handing over so returning doesn't land on a half-filled form.
                         expanded = false
                         input = ""
                         inputRejected = false

@@ -1,15 +1,12 @@
-// The sharer's link (share-by-token) half as one portable object: the
-// guest node's lifecycle, the attach/detach handshake with the server, New
-// Link rotation, and the deny→tunnel-evict mapping. All three hosts drive
-// this one — the macOS AppState grew the logic first (phase 4) and its copy
-// is gone; what stays host-side is the published mirrors each hub renders
-// from (a token, a peer map, a busy flag) and the one wire the session
-// cannot make for you, `server.onGuestViewerDenied` → `evict(ip:)`.
+// The sharer's link (share-by-token) half as one portable object: guest node
+// lifecycle, the attach/detach handshake with the server, New Link rotation,
+// and the deny→tunnel-evict mapping. All three hosts drive this one; each
+// host still publishes its own mirrors (token, peer map, busy flag) and
+// wires `server.onGuestViewerDenied` → `evict(ip:)`.
 //
-// An actor: every host calls it from async context (the guest node's DERP
-// bootstrap blocks for the network), and the hosts guard themselves
-// differently (@MainActor on two of them, a lock on Windows) — an actor is
-// the shape none of them has to adapt to.
+// An actor, since every host calls it from async context (the guest node's
+// DERP bootstrap blocks on the network) and hosts guard themselves
+// differently otherwise (@MainActor / a lock).
 
 import Foundation
 import TailscaleKit
@@ -19,48 +16,35 @@ import TailscreenTransport
 public enum SharerLinkError: Error, Sendable {
     /// The server refused the listener — the share stopped (or already has
     /// a guest listener) while the guest node was coming up. Nothing was
-    /// adopted; the session closed the socket and the node.
+    /// adopted; session closed the socket and node.
     case attachRefused
-    /// Another attempt claimed the session while this one was bootstrapping
-    /// — a stop and a fresh start inside the seconds a relay handshake
-    /// takes. Nothing of this attempt survives: its node is closed and the
-    /// server it was starting is stopped, so the winner's link is the only
-    /// one live. Callers that are themselves stale should swallow it.
+    /// Another attempt claimed the session while this one was bootstrapping.
+    /// Nothing of this attempt survives; callers that are themselves stale
+    /// should swallow it.
     case superseded
 }
 
 public actor SharerLinkSession {
     private var guestServer: (any GuestLinkNode)?
-    /// Tunnel IP → admitted guest peer, refreshed lazily. Supplies key
-    /// fingerprints and the eviction lookup (`onGuestViewerDenied` reports
-    /// an IP; `removePeer` wants the node key).
-    ///
-    /// Readable because a host that renders guest rows *synchronously* has
-    /// to mirror it — the macOS roster asks for a fingerprint from inside a
-    /// SwiftUI body, where an `await` is not available. `refreshPeers()`
-    /// first if you need it current; `fingerprint(forIP:)` is the async
-    /// path that does that for you.
+    /// Tunnel IP → admitted guest peer, refreshed lazily. Public because a
+    /// host that renders guest rows synchronously (e.g. from inside a
+    /// SwiftUI body) can't `await`; call `refreshPeers()` or
+    /// `fingerprint(forIP:)` for a current read.
     public private(set) var peersByIP: [String: GuestPeer] = [:]
     /// The live link's token — non-nil exactly while the guest node is up.
     public private(set) var token: String?
-    /// Who owns the session right now. Every mint takes the next claim
-    /// BEFORE its first await, and every teardown takes one too — which is
-    /// what invalidates a mint still in flight. An actor yields at each
-    /// await, so "is this session still unclaimed?" cannot be answered by
-    /// reading `guestServer`: that field is written last, and the whole
-    /// bootstrap runs in the gap.
+    /// Every mint takes the next claim before its first await, every
+    /// teardown too — this is what invalidates a mint still in flight, since
+    /// `guestServer` alone (written last) can't answer "still unclaimed?"
+    /// across an actor's suspension points.
     private var claim: UInt64 = 0
-    /// Which server the live link belongs to, and which owns the mint
-    /// currently in flight. A claim alone says "somebody is minting"; these
-    /// say WHO — which is what lets a stop invalidate its own attempt without
-    /// touching a replacement's, and what stops one share being handed the
-    /// token of another's link (see the head guards below).
+    /// Which server owns the live link, and which owns the in-flight mint —
+    /// lets a stop invalidate only its own attempt, not a replacement's.
     private var owner: ObjectIdentifier?
     private var claimOwner: ObjectIdentifier?
     private let logger: LogSink?
-    /// How a node is made. The default builds the real one; a test passes a
-    /// fake whose every call can be held open, which is the only way the
-    /// orderings below are observable — see `SharerLinkSessionTests`.
+    /// How a node is made. Tests pass a fake whose calls can be held open —
+    /// the only way to observe the orderings below (`SharerLinkSessionTests`).
     private let makeNode: @Sendable (String?, LogSink?) throws -> any GuestLinkNode
 
     public init(
@@ -82,12 +66,10 @@ public actor SharerLinkSession {
     ) async throws -> String {
         let id = ObjectIdentifier(server)
         if let token, guestServer != nil {
-            // Idempotent for the share that owns this link — and only for it.
-            // The engines publish their stopped state BEFORE their teardown
-            // task reaches this actor, so a replacement share can arrive here
-            // with the old link still stored: handing back that token would
-            // give it a link with no server behind it, which the delayed
-            // teardown then closes underneath it.
+            // Idempotent only for the share that owns this link — engines
+            // publish stopped state before their teardown reaches this actor,
+            // so a replacement share arriving here must not get handed a
+            // token whose server the delayed teardown is about to close.
             if owner == id { return token }
             await close()
         }
@@ -98,20 +80,15 @@ public actor SharerLinkSession {
         try await gs.startNode()
         let pl = try await gs.openPacketRoute(port: port)
         guard server.attachGuestPacket(pl) else {
-            // The share raced to a stop (or somehow already holds a guest
-            // listener): nothing adopted the socket, so close it here and
-            // leave no live token behind a share that isn't there.
+            // The share raced to a stop (or already holds a guest listener):
+            // close the socket rather than leave a live token with no share.
             await pl.close()
             await gs.closeNode()
             throw SharerLinkError.attachRefused
         }
-        // The tunnel's TCP side: the framed control channel that gives
-        // guests annotations and remote control. Fail-soft — a link whose
-        // TCP bind failed still carries video and voice, which is the core
-        // of a share; the loud log is the debugging trail for the dead
-        // affordances that would result. (In practice a node whose UDP
-        // listen just succeeded binds TCP too.) The server owns stopping
-        // it: detach and share-stop both close the adopted channel.
+        // TCP control channel for guest annotations/remote control.
+        // Fail-soft — video/voice still flow without it. Server owns
+        // stopping it (detach and share-stop both close the adopted channel).
         do {
             let control = try await gs.openControlRoute(port: port)
             if !server.attachGuestControl(control) {
@@ -122,10 +99,8 @@ public actor SharerLinkSession {
                 "Guest TCP control channel unavailable (\(error)) — link carries video/voice only")
         }
         let minted = try await gs.mintToken()
-        // The share can have stopped anywhere in the bootstrap above: the
-        // server's own stop closed the listener this attempt attached, and
-        // publishing now would leave a live guest node and a token on an
-        // idle app. The stop took a claim, so this one no longer holds it.
+        // The share may have stopped anywhere in the bootstrap above; the
+        // stop took a claim, so this one no longer holds it if so.
         guard claim == mine else {
             await gs.closeNode()
             throw SharerLinkError.superseded
@@ -139,19 +114,12 @@ public actor SharerLinkSession {
     }
 
     /// Mint a link for a share that has **no tsnet node at all** — the
-    /// signed-out, link-only share the macOS hub offers from its welcome
-    /// pane, now on the two swift-cross-ui hosts as well.
+    /// signed-out, link-only share.
     ///
-    /// The ordering is the mirror image of `enable`: there the server is
-    /// already running and the guest listener is attached to it, whereas
-    /// here the guest node IS the transport, so it has to exist before the
-    /// server starts — `startGuestOnly` takes the listeners as its only
-    /// sockets. Everything the guest half needs (eviction, rotation,
-    /// teardown) is the same afterwards, which is why it lives here rather
-    /// than being spelled out again in each engine.
-    ///
-    /// Throws with nothing left running: a half-started link-only share
-    /// must not leave a live token behind a share that never happened.
+    /// Mirror image of `enable`: here the guest node IS the transport, so it
+    /// must exist before the server starts (`startGuestOnly` takes the
+    /// listeners as its only sockets). Throws with nothing left running: a
+    /// half-started link-only share must not leave a live token behind.
     public func startLinkOnly(
         on server: any GuestLinkServer,
         filterData: Data?,
@@ -171,10 +139,8 @@ public actor SharerLinkSession {
         do {
             try await gs.startNode()
             let pl = try await gs.openPacketRoute(port: port)
-            // The tunnel's TCP side: annotations and remote control for
-            // guests. Fail-soft for the same reason as `enable` — a link
-            // whose TCP bind failed still carries the video and voice that
-            // are the substance of a share.
+            // TCP side for guest annotations/remote control; fail-soft as
+            // in `enable`.
             var control: (any GuestControlRoute)?
             do {
                 control = try await gs.openControlRoute(port: port)
@@ -189,12 +155,9 @@ public actor SharerLinkSession {
                 packet: pl,
                 control: control)
             let minted = try await gs.mintToken()
-            // The head guard was read before several awaits, and an actor
-            // yields at every one of them: a stop, or a stop and a fresh
-            // start, landing inside this bootstrap means somebody else owns
-            // the session now. Publishing here would overwrite their node —
-            // leaking a live tunnel nothing can close, behind a token that
-            // admits people to a server nobody references.
+            // The head guard was read before several awaits; a stop (or a
+            // stop-then-start) landing in that window means somebody else
+            // owns the session now, so publishing here would leak their node.
             guard claim == mine else { throw SharerLinkError.superseded }
             guestServer = gs
             token = minted
@@ -203,12 +166,10 @@ public actor SharerLinkSession {
             logger?.log("Link-only share active — the link is the only way in")
             return minted
         } catch {
-            // All-or-nothing, and the server is part of it: `startGuestOnly`
-            // marks itself running and installs its receive/sweep loops
-            // BEFORE the capture backend can fail, so a throw after that
-            // point leaves a live server the caller is about to drop its
-            // only reference to. Stopping a server that never started is a
-            // no-op, so this is safe on the early legs too.
+            // All-or-nothing including the server: `startGuestOnly` marks
+            // itself running before the capture backend can fail, so a throw
+            // after that leaves a live server nothing else references.
+            // Stopping a never-started server is a no-op, safe on early legs.
             await server.stopServer()
             await gs.closeNode()
             throw error
@@ -239,31 +200,21 @@ public actor SharerLinkSession {
     /// The share ended: the server's own stop already closed the listener
     /// and told every guest, so only the node is left to tear down.
     ///
-    /// `mintedToken` is how a *stale* attempt unwinds without collateral.
-    /// Pass what `enable`/`startLinkOnly` handed back and the node is closed
-    /// only if it is still the live one; a replacement share that minted its
-    /// own link in the meantime keeps it. Omit it for the ordinary stop,
-    /// where the caller is the current share by construction. Returns
-    /// whether anything was actually closed, so a caller can tell whether
-    /// the published token it is about to clear was still its own.
+    /// `mintedToken` lets a *stale* attempt unwind without collateral: the
+    /// node closes only if it's still the live one, so a replacement share
+    /// that minted its own link in the meantime keeps it. Omit for the
+    /// ordinary stop. Returns whether anything was actually closed.
     @discardableResult
     public func teardown(
         for server: (any GuestLinkServer)? = nil,
         mintedToken: String? = nil
     ) async -> Bool {
-        // First, and whether or not a token exists yet: a mint still in
-        // flight is invalidated, so a stop landing between `enable` attaching
-        // its listener and returning a token cannot end with a token
-        // published onto an idle app.
-        //
-        // With a server, that is scoped to the mint IT owns, so a stale
-        // share's stop cannot cancel a replacement's bootstrap. Without one,
-        // it is unconditional — the argument-less form means "I am the
-        // current share and I am ending", and there is nothing else to
-        // protect. Note this has to happen even when nothing is published
-        // yet: the early return below is exactly the case a mint in flight
-        // is in, and skipping the invalidation there is what let the mint
-        // publish onto a stopped share.
+        // Invalidate any mint still in flight first, even before a token
+        // exists — else a stop landing between `enable` attaching its
+        // listener and returning a token could still publish onto an idle
+        // app. With a server, scoped to the mint IT owns (a stale share's
+        // stop must not cancel a replacement's bootstrap); without one,
+        // unconditional.
         if let server {
             if claimOwner == ObjectIdentifier(server) {
                 claim &+= 1
@@ -320,13 +271,10 @@ public actor SharerLinkSession {
         return peersByIP[ip].map { ShareLinkFormat.keyFingerprint($0.key) }
     }
 
-    /// Order is the whole of it: take the claim and blank the state FIRST,
-    /// then await the node's close. Closing first leaves `token` and
-    /// `guestServer` readable across that suspension, and a `startLinkOnly`
-    /// that lands there takes the head guard's early return — handing a
-    /// replacement share the token of the link being destroyed, with no
-    /// node behind it. Taking the claim here is also what tells a mint
-    /// still in flight that it no longer owns the session.
+    /// Order matters: take the claim and blank state FIRST, then await the
+    /// node's close. Closing first would leave `token`/`guestServer` readable
+    /// across that suspension, letting a `startLinkOnly` landing there hand a
+    /// replacement share the dying link's token.
     private func close() async {
         claim &+= 1
         claimOwner = nil

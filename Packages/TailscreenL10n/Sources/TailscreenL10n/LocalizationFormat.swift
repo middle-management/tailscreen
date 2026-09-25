@@ -3,30 +3,16 @@ import Foundation
 /// Substitutes a key's interpolated arguments into a (possibly translated)
 /// format string.
 ///
-/// Written by hand rather than deferring to `String(format:)` for two reasons,
-/// both of which are about the translated side rather than the English one:
-///
-/// 1. **Reordering has to work.** A translation is free to move `%@` before
-///    `%lld` and say so with the positional forms (`%1$@`, `%2$lld`) — for
-///    several languages that is the only way to write a grammatical sentence.
-///    `String(format:)` supports positional specifiers on Darwin; on
-///    swift-corelibs-foundation that support is thinner, and a formatter that
-///    silently produces a different sentence on Linux is exactly the failure
-///    this package exists to avoid.
-/// 2. **A wrong translation must not be fatal.** `String(format:)` reads its
-///    arguments through a varargs list typed by the format string, so a
-///    translator who types `%d` where the key says `%@` gets a garbage pointer
-///    read. Here the argument list is the authority and the conversion
-///    character only says *which* argument to take, so the worst outcome is an
-///    oddly rendered word.
+/// Written by hand rather than using `String(format:)`: (1) positional
+/// specifiers (`%1$@`, `%2$lld`), which some translations need for
+/// grammatical word order, are thinly supported on swift-corelibs-foundation;
+/// (2) `String(format:)` reads varargs typed by the format string, so a
+/// translator's `%d` where the key says `%@` is a garbage pointer read — here
+/// the argument list is the authority, so the worst case is a misrendered word.
 enum LocalizationFormat {
     /// Render `format`, replacing recognized specifiers with `arguments`.
-    ///
-    /// Anything unrecognized — a bare `%` at the end of "Zoom to 50%", a
-    /// specifier past the end of the argument list — is copied through
-    /// literally. With no arguments the format is returned unchanged, which is
-    /// both the fast path and what keeps percent-bearing non-interpolated keys
-    /// exactly as their author wrote them.
+    /// Anything unrecognized (a bare `%`, a specifier past the argument list)
+    /// is copied through literally.
     static func render(_ format: String, _ arguments: [LocalizationKey.Argument]) -> String {
         guard !arguments.isEmpty else { return format }
 
@@ -54,9 +40,7 @@ enum LocalizationFormat {
                 continue
             }
             // Positional specifiers are 1-based; unpositioned ones consume the
-            // argument list in order. A format that mixes the two — which a
-            // half-updated translation can produce — is resolved by letting
-            // each unpositioned specifier take the next unconsumed slot.
+            // list in order (handles a half-updated translation mixing both).
             let argumentIndex: Int
             if let position = specifier.position {
                 argumentIndex = position - 1
@@ -65,9 +49,8 @@ enum LocalizationFormat {
                 nextArgument += 1
             }
             guard argumentIndex >= 0, argumentIndex < arguments.count else {
-                // More specifiers than arguments: emit the specifier verbatim
-                // so the mismatch is visible to whoever reads the screenshot,
-                // rather than silently dropping a word.
+                // More specifiers than arguments: emit verbatim so the
+                // mismatch is visible rather than silently dropping a word.
                 out.append(contentsOf: chars[index..<specifier.end])
                 index = specifier.end
                 continue
@@ -78,21 +61,14 @@ enum LocalizationFormat {
         return out
     }
 
-    /// Stand-in every specifier collapses to under `normalizeSpecifiers`. NUL
-    /// cannot occur in a real key, so it never collides with source text.
+    /// Stand-in every specifier collapses to. NUL cannot occur in a real key.
     static let specifierPlaceholder = "\u{0}ARG"
 
     /// Replace every specifier with `specifierPlaceholder`, leaving literal
-    /// text (including a bare `%`) alone.
-    ///
-    /// Two callers depend on this being one function. The catalog test matches
-    /// call-site keys against catalog keys through it, because a call site
-    /// writes `\(host)` where the catalog writes `%@`. The runtime uses it as a
-    /// SECOND lookup index, so a key whose specifier disagrees with the
-    /// catalog's — `%@` against a `%lld`, or a translator's `%d` against a
-    /// `%lld` — still finds its translation instead of silently falling back
-    /// to English. Rendering never reads the conversion character anyway: the
-    /// argument list already knows what each slot holds.
+    /// text alone. Used both by the catalog test (matching `\(host)` against
+    /// `%@`) and as a second runtime lookup index, so a specifier mismatch
+    /// (`%@` vs `%lld`) still finds its translation instead of falling back
+    /// to English.
     static func normalizeSpecifiers(_ format: String) -> String {
         var out = ""
         out.reserveCapacity(format.count)
@@ -126,12 +102,9 @@ enum LocalizationFormat {
         var isEscapedPercent = false
     }
 
-    /// Parse `%[n$][length]conversion` starting at `start` (which must be `%`).
-    ///
-    /// Length modifiers (`l`, `ll`, `z`, `h`, `hh`, `q`) are accepted and
-    /// ignored: the argument list already knows whether a slot is text or an
-    /// integer, so `%lld` and `%d` are the same instruction here. Returns nil
-    /// when the sequence is not a specifier at all.
+    /// Parse `%[n$][length]conversion` starting at `start` (must be `%`).
+    /// Length modifiers are accepted and ignored — `%lld` and `%d` are the
+    /// same instruction here. Returns nil if not a specifier.
     private static func parseSpecifier(_ chars: [Character], at start: Int) -> Specifier? {
         var index = start + 1
         guard index < chars.count else { return nil }

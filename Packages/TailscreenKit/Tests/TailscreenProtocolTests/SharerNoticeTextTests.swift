@@ -3,12 +3,9 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `SharerNoticeText` — the words, and the two ways a notification daemon
-/// quietly renders less than it was given.
-///
-/// Both gaps are silent: a daemon without `actions` DROPS the buttons rather
-/// than failing the call, and one without `body` shows only the summary. Each
-/// turns a working notification into one that looks fine and cannot be acted
-/// on, and neither produces an error anywhere.
+/// quietly renders less than it was given: without `actions` it DROPS the
+/// buttons rather than failing the call; without `body` it shows only the
+/// summary. Neither produces an error anywhere.
 final class SharerNoticeTextTests: XCTestCase {
 
     private func notice(_ kind: SharerNoticeKind, label: String = "kestrel") -> SharerNotice {
@@ -36,24 +33,21 @@ final class SharerNoticeTextTests: XCTestCase {
         XCTAssertFalse(rendered.summary.contains("kestrel"), "the summary should not stutter")
     }
 
-    /// A report is not an ask. Offering a choice with no consequence trains
-    /// people to ignore the notifications that have one.
     func testReportsCarryNoButtons() {
         XCTAssertTrue(render(.viewerJoined).buttons.isEmpty)
         XCTAssertTrue(render(.viewerLeft).buttons.isEmpty)
     }
 
-    /// The affirmative is worded per kind. "Accept" is right for a viewer at
-    /// the gate and wrong for an invitation to start sharing, where the answer
-    /// is an action rather than agreement.
+    /// "Accept" is right for a viewer at the gate and wrong for an
+    /// invitation, where the answer is an action rather than agreement.
     func testTheAffirmativeIsWordedPerKind() {
         XCTAssertEqual(render(.viewerPending).buttons.first?.label, "Accept")
         XCTAssertEqual(render(.controlRequested).buttons.first?.label, "Allow")
         XCTAssertEqual(render(.requestToShare).buttons.first?.label, "Share")
     }
 
-    /// Keys cross a process boundary and come back verbatim, so they must NOT
-    /// vary with the wording.
+    /// Keys cross a process boundary and come back verbatim, so must NOT
+    /// vary with wording.
     func testKeysAreStableAcrossKinds() {
         for kind in SharerNoticeKind.allCases where !kind.actions.isEmpty {
             let keys = SharerNoticeText.buttons(for: kind).map(\.key)
@@ -61,14 +55,8 @@ final class SharerNoticeTextTests: XCTestCase {
         }
     }
 
-    /// The two names for one string must stay one string.
-    ///
-    /// A host puts `approveKey` on a button and the daemon hands it back; the
-    /// way back is `NoticeAction(rawValue:)`. macOS reads its keys straight off
-    /// `NoticeAction.rawValue` and never touches this type — it localizes its
-    /// own labels — so if these two ever named different strings, freedesktop
-    /// buttons would post keys the router does not recognise and every press
-    /// would be dropped with no error anywhere.
+    /// If these two named different strings, freedesktop buttons would post
+    /// keys the router doesn't recognize, dropped with no error anywhere.
     func testTheActionKeysAreTheNoticeActionRawValues() {
         XCTAssertEqual(SharerNoticeText.approveKey, NoticeAction.approve.rawValue)
         XCTAssertEqual(SharerNoticeText.denyKey, NoticeAction.deny.rawValue)
@@ -78,9 +66,8 @@ final class SharerNoticeTextTests: XCTestCase {
 
     // MARK: No `actions` capability
 
-    /// The buttons go, and the notice must say where to answer — otherwise it
-    /// states a decision and offers no way to make it, and the person waits for
-    /// something that is not coming.
+    /// The buttons go, and the notice must say where to answer, or it states
+    /// a decision with no way to make it.
     func testWithoutActionsAnAskSaysWhereToAnswer() {
         let rendered = render(.viewerPending, actions: false)
         XCTAssertTrue(rendered.buttons.isEmpty)
@@ -89,22 +76,18 @@ final class SharerNoticeTextTests: XCTestCase {
             "an unanswerable ask must say where to answer: \(rendered.body)")
     }
 
+    /// Body-less AND action-less: the one line has to carry everything.
     func testWithoutActionsTheHintReachesTheSummaryToo() {
-        // Body-less AND action-less: the one line has to carry everything.
         let rendered = render(.viewerPending, body: false, actions: false)
         XCTAssertTrue(rendered.body.isEmpty)
         XCTAssertTrue(rendered.summary.contains(SharerNoticeText.answerInAppHint), rendered.summary)
     }
 
-    /// A report has nothing to answer. Telling somebody to go and answer it is
-    /// how a notification becomes noise.
     func testWithoutActionsAReportGainsNoHint() {
         let rendered = render(.viewerJoined, actions: false)
         XCTAssertFalse(rendered.body.contains(SharerNoticeText.answerInAppHint), rendered.body)
     }
 
-    /// A daemon that CAN render buttons must not also be told to go and answer
-    /// somewhere else — the buttons are right there.
     func testWithActionsThereIsNoHint() {
         let rendered = render(.viewerPending, actions: true)
         XCTAssertFalse(rendered.body.contains(SharerNoticeText.answerInAppHint), rendered.body)
@@ -112,9 +95,6 @@ final class SharerNoticeTextTests: XCTestCase {
 
     // MARK: No `body` capability
 
-    /// Every notice here names a person, and the name lives in the body — so a
-    /// summary-only daemon would otherwise show "Someone wants to watch" with
-    /// the someone missing.
     func testWithoutABodyTheNameFoldsIntoTheSummary() {
         let rendered = render(.viewerPending, body: false, label: "kestrel")
         XCTAssertTrue(rendered.body.isEmpty)
@@ -123,8 +103,8 @@ final class SharerNoticeTextTests: XCTestCase {
             "a summary-only daemon must still name the peer: \(rendered.summary)")
     }
 
-    /// The name goes first: a summary is truncated from the END, and the name
-    /// is the part that decides whether this is worth interrupting for.
+    /// A summary is truncated from the END; the name decides whether this
+    /// is worth interrupting for.
     func testWithoutABodyTheNameComesFirst() {
         let rendered = render(.viewerPending, body: false, label: "kestrel")
         XCTAssertTrue(rendered.summary.hasPrefix("kestrel"), rendered.summary)
@@ -140,10 +120,8 @@ final class SharerNoticeTextTests: XCTestCase {
 
     // MARK: Withdraw
 
-    /// A viewer admitted from the app window leaves the candidate list, and
-    /// their banner must come off the screen. Leaving it there offers an
-    /// Accept button that does nothing — or, on a host keyed by IP, one that
-    /// lands on whoever connects next.
+    /// A dropped banner would offer an Accept button that does nothing, or,
+    /// on a host keyed by IP, one that lands on whoever connects next.
     func testAnIdentityThatLeftIsWithdrawn() {
         let withdraw = SharerNoticeDecision.noticesToWithdraw(
             candidates: [NoticeCandidate(identity: "b", label: "b")],
@@ -161,9 +139,8 @@ final class SharerNoticeTextTests: XCTestCase {
         XCTAssertTrue(withdraw.isEmpty)
     }
 
-    /// The set that `noticesToPost` prunes is exactly the set this returns —
-    /// pinned together, because a host calls both and a drift between them is
-    /// either a stale banner or a withdrawn-then-reposted flicker.
+    /// Pinned together — a drift between `noticesToPost` and this is either
+    /// a stale banner or a withdrawn-then-reposted flicker.
     func testWithdrawAndPostAgreeOnWhatLeft() {
         let candidates = [NoticeCandidate(identity: "b", label: "b")]
         let notified: Set<String> = ["a", "b"]
@@ -181,10 +158,8 @@ final class SharerNoticeTextTests: XCTestCase {
         XCTAssertEqual(SharerNoticeText.action(forKey: SharerNoticeText.denyKey), .deny)
     }
 
-    /// The one that matters. Clicking a Windows toast's BODY activates the app
-    /// carrying `openActionKey`, and a freedesktop daemon can invoke a
-    /// `"default"` action nobody asked for. Reading either as a deny would
-    /// decide about a peer because somebody looked at the notification.
+    /// Reading a body-click or freedesktop `"default"` action as a deny
+    /// would decide about a peer because somebody merely looked.
     func testEverythingElseIsADismissalRatherThanADenial() {
         for key in [WindowsToastPayload.openActionKey, "default", "", "DENY", "approve "] {
             XCTAssertEqual(
@@ -193,8 +168,6 @@ final class SharerNoticeTextTests: XCTestCase {
         }
     }
 
-    /// The keys cross a process boundary — a daemon hands them back verbatim —
-    /// so a typo on either side is a button that silently does nothing.
     func testActionKeysAreDistinctFromTheOpenKey() {
         XCTAssertNotEqual(SharerNoticeText.approveKey, SharerNoticeText.denyKey)
         XCTAssertNotEqual(SharerNoticeText.approveKey, WindowsToastPayload.openActionKey)

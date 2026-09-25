@@ -3,18 +3,16 @@ import Foundation
 /// The Windows half of a sharer notice: the toast XML, the activation string a
 /// button press comes back as, and the tag a notice is later withdrawn by.
 ///
-/// This is `WinNotifyKit`'s equivalent of the `actions` array GNotifyKit hands
-/// to `Notify` — except that on Windows the whole notification is one XML
-/// document handed to `AppNotification`, so *composing that document correctly*
-/// is the delivery-shaped decision, and it is pure. It lives here, beside
-/// `WindowsHotkeyMapping` and `WindowsPointerMapping`, for the same reason
-/// those do: Linux CI can test it, and there is no Windows runner in the loop.
+/// On Windows the whole notification is one XML document handed to
+/// `AppNotification`, so composing it correctly is the delivery-shaped
+/// decision, and it's pure — lives here so Linux CI can test it with no
+/// Windows runner in the loop.
 ///
 /// What it deliberately does **not** know: the words. Those are
 /// `SharerNoticeText`'s, already rendered by the time they arrive here.
 ///
-/// **The three ways a toast quietly does nothing.** None of them produce an
-/// error, which is why each one is pinned by a test:
+/// **The three ways a toast quietly does nothing**, none producing an error,
+/// each pinned by a test:
 ///
 /// 1. **An unescaped `&` in a peer's name.** The payload is parsed as XML by
 ///    the platform, so a hostname carrying `&` or `<` makes `CreateInstance`
@@ -43,12 +41,10 @@ public enum WindowsToastPayload {
         }
     }
 
-    /// The `scenario` attribute, which is how a toast asks to outlive the few
-    /// seconds a banner normally gets.
-    ///
-    /// Windows spends this the way macOS spends `.timeSensitive` and
-    /// freedesktop spends `critical`: per *app*, revocable by the user. So the
-    /// mapping below is deliberately stingy — see `scenario(blocksSomeone:…)`.
+    /// The `scenario` attribute, how a toast asks to outlive the few seconds
+    /// a banner normally gets. Spent per *app*, revocable by the user (like
+    /// macOS's `.timeSensitive`), so the mapping below is deliberately
+    /// stingy — see `scenario(blocksSomeone:…)`.
     public enum Scenario: String, Sendable, CaseIterable {
         /// No attribute at all. A banner that comes and goes.
         case standard
@@ -69,11 +65,9 @@ public enum WindowsToastPayload {
     public static let maxTagLength = 64
 
     /// The action key for "the user clicked the toast itself, not a button".
-    ///
-    /// Distinct from every answer on purpose, and specifically distinct from
-    /// deny: clicking a notification to look at it must never be read as a
-    /// decision about a peer. It is the same rule `NoticeAction.dismiss`
-    /// encodes on the portable side.
+    /// Distinct from every answer, specifically deny: clicking to look at a
+    /// notification must never be read as a decision. Same rule
+    /// `NoticeAction.dismiss` encodes on the portable side.
     public static let openActionKey = "open"
 
     // MARK: - Scenario
@@ -92,10 +86,9 @@ public enum WindowsToastPayload {
         blocksSomeone: Bool, actionable: Bool, supportsUrgent: Bool
     ) -> Scenario {
         guard actionable else { return .standard }
-        // The Windows 10 fall-back is `reminder` rather than `standard`: the
-        // urgent half of the request is what gets lost, not the "wait for an
-        // answer" half, and losing both would be a worse notice than the one
-        // this platform can actually render.
+        // Windows 10 falls back to `reminder`, not `standard`: only the
+        // urgent half of the request is lost, not the "wait for an answer"
+        // half.
         if blocksSomeone { return supportsUrgent ? .urgent : .reminder }
         return .reminder
     }
@@ -105,20 +98,17 @@ public enum WindowsToastPayload {
     /// The string a press comes back as, through
     /// `ExtendedActivationKind.AppNotification`.
     ///
-    /// A query string rather than the notice's `id`, because the id alone
-    /// cannot say *which button* — and the two travel through the same single
-    /// opaque attribute. Both halves are percent-encoded: a peer's identity is
-    /// an IP or a hostname it chose itself, and one `&` in it would otherwise
-    /// split into a third field and take the identity with it.
+    /// A query string, not the notice's `id` alone, since the id can't say
+    /// *which button*, and both travel through one opaque attribute. Both
+    /// halves are percent-encoded so an `&` in a peer's self-chosen hostname
+    /// can't split into a third field.
     public static func arguments(action: String, identity: String) -> String {
         "action=\(percentEncoded(action))&id=\(percentEncoded(identity))"
     }
 
-    /// The inverse, for the host's activation handler.
-    ///
-    /// Returns nil for anything that is not one of ours — Windows delivers
-    /// activation arguments from whatever posted them, and a launch we did not
-    /// write must not be answered as if a viewer were waiting on it.
+    /// The inverse, for the host's activation handler. Returns nil for
+    /// anything that isn't ours — a launch we didn't write must not be
+    /// answered as if a viewer were waiting on it.
     public static func decodeArguments(_ raw: String) -> (action: String, identity: String)? {
         var action: String?
         var identity: String?
@@ -140,17 +130,14 @@ public enum WindowsToastPayload {
 
     // MARK: - Tag
 
-    /// The tag a notice is posted under, and later withdrawn by.
+    /// The tag a notice is posted under, and later withdrawn by. Reposting
+    /// under the same tag REPLACES the toast in place, so the tag must be a
+    /// pure function of the notice's identity.
     ///
-    /// Reposting under the same tag REPLACES the toast in place — the Windows
-    /// spelling of freedesktop's `replaces_id` — so the tag has to be a pure
-    /// function of the notice's identity and nothing else.
-    ///
-    /// Identities that are already short and safe are used verbatim, because a
-    /// readable tag is worth having when reading a trace. Everything else is
-    /// folded to a fixed 64 characters with a hash suffix that keeps two long
-    /// hostnames sharing a prefix apart — the case where a silent collision
-    /// would withdraw the wrong person's prompt.
+    /// Short, safe identities are used verbatim for a readable trace.
+    /// Everything else folds to 64 characters with a hash suffix, so two
+    /// long hostnames sharing a prefix don't collide and withdraw the wrong
+    /// person's prompt.
     public static func tag(for identity: String) -> String {
         if identity.count <= maxTagLength, !identity.isEmpty, identity.allSatisfy(isTagSafe) {
             return identity
@@ -166,11 +153,9 @@ public enum WindowsToastPayload {
             && (character.isLetter || character.isNumber || "-._:".contains(character))
     }
 
-    /// FNV-1a over the UTF-8 bytes.
-    ///
-    /// Hand-folded rather than `Hasher`, which is salted per launch: a tag that
-    /// changed between runs would post a second banner instead of replacing the
-    /// first, and would never withdraw the one left behind by the previous run.
+    /// FNV-1a over the UTF-8 bytes. Hand-folded, not `Hasher` (salted per
+    /// launch): a tag changing between runs would post a second banner
+    /// instead of replacing the first.
     private static func stableHash(_ value: String) -> UInt64 {
         var hash: UInt64 = 1469598103934665603
         for byte in value.utf8 {
@@ -184,16 +169,14 @@ public enum WindowsToastPayload {
 
     /// The complete toast XML for one notice.
     ///
-    /// `identity` is threaded into every activation string, so whichever button
-    /// is pressed — or the toast body itself — the host learns *who* it is
-    /// about without a lookup table that could go stale.
+    /// `identity` is threaded into every activation string, so whichever
+    /// button is pressed — or the toast body itself — the host learns *who*
+    /// it's about with no lookup table to go stale.
     ///
-    /// Silent by construction. macOS dropped `.default` on these same four
-    /// posts because with system-audio sharing on, `excludesCurrentProcessAudio`
-    /// drops only our *own* audio — so viewers hear every notification the
-    /// sharer gets. Windows has no system-audio capture yet, so this is
-    /// consistency ahead of the leak rather than a fix for one, and it costs a
-    /// sound nobody wanted on a sharer-facing prompt.
+    /// Silent by construction, matching macOS (which drops `.default` since
+    /// system-audio sharing would otherwise leak the ding to viewers).
+    /// Windows has no system-audio capture yet, so this is consistency ahead
+    /// of the leak.
     public static func xml(
         summary: String,
         body: String,
@@ -220,10 +203,9 @@ public enum WindowsToastPayload {
             toast += "<actions>"
             for button in buttons {
                 // `foreground` is the only activation type an unpackaged app
-                // gets: background activation needs a packaged background
-                // task. The app is *activated*; whether its window comes
-                // forward is then the host's call, which matters because
-                // raising it mid-share is itself visible to viewers.
+                // gets. The app is *activated*; whether its window comes
+                // forward is the host's call, since raising it mid-share is
+                // itself visible to viewers.
                 toast += "<action content=\"\(escaped(button.label))\""
                 toast += " arguments=\"\(escaped(arguments(action: button.key, identity: identity)))\""
                 toast += " activationType=\"foreground\"/>"
@@ -236,12 +218,10 @@ public enum WindowsToastPayload {
         return toast
     }
 
-    /// XML-escape for both text nodes and attribute values.
-    ///
-    /// Every one of the five, not the three that "obviously" matter: the
-    /// payload puts caller-supplied text inside double-quoted attributes, so a
-    /// quote in a peer's name closes the attribute and the document stops
-    /// parsing.
+    /// XML-escape for both text nodes and attribute values. All five
+    /// characters, not just the three that "obviously" matter: caller-supplied
+    /// text sits inside double-quoted attributes, so an unescaped quote in a
+    /// peer's name would close the attribute and break parsing.
     static func escaped(_ value: String) -> String {
         var out = ""
         out.reserveCapacity(value.count)
@@ -258,12 +238,10 @@ public enum WindowsToastPayload {
         return out
     }
 
-    /// Percent-encode everything outside an unreserved set.
-    ///
-    /// Hand-rolled rather than `addingPercentEncoding(withAllowedCharacters:)`
-    /// so the encoded form is identical on every platform this is tested and
-    /// run on, and so `=` and `&` are unconditionally encoded — the whole point
-    /// here, and both are allowed by several of Foundation's stock sets.
+    /// Percent-encode everything outside an unreserved set. Hand-rolled
+    /// rather than `addingPercentEncoding(withAllowedCharacters:)` so `=`
+    /// and `&` are unconditionally encoded — both are allowed by several of
+    /// Foundation's stock sets, which would defeat the whole point.
     static func percentEncoded(_ value: String) -> String {
         var out = ""
         for byte in value.utf8 {
@@ -281,9 +259,9 @@ public enum WindowsToastPayload {
         return out
     }
 
-    /// The inverse. Nil on a truncated or non-hex escape, rather than passing
-    /// the mangled bytes on: an identity that decoded to *something else* would
-    /// answer the wrong peer.
+    /// The inverse. Nil on a truncated or non-hex escape rather than passing
+    /// mangled bytes on — a wrongly decoded identity would answer the wrong
+    /// peer.
     static func percentDecoded(_ value: String) -> String? {
         let source = Array(value.utf8)
         var bytes: [UInt8] = []

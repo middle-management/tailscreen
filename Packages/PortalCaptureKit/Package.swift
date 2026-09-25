@@ -4,22 +4,17 @@ import PackageDescription
 // PortalCaptureKit — screen capture through `org.freedesktop.portal.ScreenCast`
 // and PipeWire, for the Linux sharer's `CaptureEncoding` backend.
 //
-// This is the Wayland-capable sibling of X11CaptureKit. X11 capture landed
-// first because it is the one capture path that runs headlessly under Xvfb;
-// the portal cannot, ever, because it is built around a consent dialog a
-// person has to click. See README.md for exactly what this package's CI leg
-// does and does not prove.
+// The Wayland-capable sibling of X11CaptureKit. X11 landed first because it
+// runs headlessly under Xvfb; the portal cannot, ever, since it's built
+// around a consent dialog a person has to click. See README.md for exactly
+// what this package's CI leg does and does not prove.
 //
-// Wrapped the way X11CaptureKit wraps libxcb: systemLibrary targets over the
-// two system libraries, a C shim that owns their boilerplate, and a
-// Foundation-only Swift wrapper.
+// Wrapped like X11CaptureKit wraps libxcb: systemLibrary targets over the two
+// system libraries, a C shim, a Foundation-only Swift wrapper.
 //
-// Deliberately dependency-free — no TailscreenKit, exactly like X11CaptureKit
-// and WGCCaptureKit. It hands back BGRA and does NO colour conversion; the
-// portable `BGRAToI420` in TailscreenProtocol owns that, and the
-// `CaptureEncoding` conformance that will consume this (in
-// TailscreenLinuxBackends) is where the two meet — the same split
-// WGCCaptureKit → TailscreenSharerWGC already uses on Windows.
+// Deliberately dependency-free, like X11CaptureKit and WGCCaptureKit. Hands
+// back BGRA with NO colour conversion — the portable `BGRAToI420` in
+// TailscreenProtocol owns that, the same split WGCCaptureKit uses on Windows.
 let package = Package(
     name: "PortalCaptureKit",
     products: [
@@ -40,30 +35,25 @@ let package = Package(
             providers: [.apt(["libpipewire-0.3-dev"])]
         ),
         // The shim. Two halves that never call each other: the D-Bus
-        // negotiation (which ends with a PipeWire fd and a node id) and the
-        // PipeWire stream (which starts from them). Keeping them separate is
-        // what lets the negotiation half be tested against a fake portal with
-        // no PipeWire daemon anywhere in the picture.
+        // negotiation (ends with a PipeWire fd + node id) and the PipeWire
+        // stream (starts from them) — separate, so negotiation can be tested
+        // against a fake portal with no PipeWire daemon in the picture.
         .target(
             name: "CPortalCapture",
             dependencies: ["CDBusSys", "CPipeWireSys"],
             path: "Sources/CPortalCapture"
         ),
         // A fake `org.freedesktop.portal.ScreenCast` service. NOT part of the
-        // library product — it is test scaffolding, and a capture library that
-        // shipped a way to impersonate the consent authority would be a poor
-        // thing to have on disk. Only `portal-probe` and the tests link it.
+        // library product — test scaffolding only, so only `portal-probe` and
+        // the tests link it.
         .target(
             name: "CPortalFakeBus",
             dependencies: ["CDBusSys"],
             path: "Sources/CPortalFakeBus"
         ),
-        // A synthetic PipeWire producer. Also NOT part of the library product,
-        // and for a second reason beyond CPortalFakeBus's: it is the only way
-        // anything here can be run without a compositor, so it is what turns
-        // the PipeWire half from "compiles and links" into "delivers the pixels
-        // we expect". See its header for the three things it still cannot
-        // cover.
+        // A synthetic PipeWire producer, also not shipped — the only way to
+        // run this without a compositor. See its header for what it still
+        // cannot cover.
         .target(
             name: "CPipeWireFakeSource",
             dependencies: ["CPipeWireSys"],

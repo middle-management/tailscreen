@@ -3,25 +3,20 @@ import TailscaleKit
 import XCTest
 
 /// The fork's `Ipn.Notify` Codable models against the JSON the pinned
-/// tailscale.com (`go.mod` in the libtailscale submodule) actually emits.
+/// tailscale.com actually emits.
 ///
 /// Swift's synthesized `Decodable` treats every non-optional stored property
-/// as a *required* key, defaults notwithstanding — so a field Go stops
-/// emitting (removed, or `omitzero`/`omitempty` and empty) fails the whole
-/// message, and `MessageProcessor` drops it with one log line. That is how
-/// the `.initialState` notify, the one message every subscription starts
-/// with, was silently lost for a release: `Prefs.AllowSingleHosts` had been
-/// gone from `ipn.Prefs` for years. These fixtures are the current Go field
-/// sets; a future bump that drops another key fails here rather than in a
-/// bundle.
+/// as required regardless of defaults, so a field Go stops emitting (removed,
+/// or `omitzero`/`omitempty` and empty) fails the whole message silently
+/// (`MessageProcessor` just logs and drops it — this is how `.initialState`
+/// was lost for a release when `Prefs.AllowSingleHosts` disappeared). These
+/// fixtures are the current Go field sets, so a future dropped key fails here.
 final class IPNNotifyDecodeTests: XCTestCase {
 
     private func decode(_ json: String) throws -> Ipn.Notify {
         try JSONDecoder().decode(Ipn.Notify.self, from: Data(json.utf8))
     }
 
-    /// The initial-state notify: `Prefs` in the v1.102.3 shape, which has no
-    /// `AllowSingleHosts`, alongside `State` and `Version`.
     func testInitialStateNotifyWithCurrentPrefsDecodes() throws {
         let notify = try decode(Self.initialStateJSON)
         let prefs = try XCTUnwrap(notify.Prefs)
@@ -35,8 +30,6 @@ final class IPNNotifyDecodeTests: XCTestCase {
         XCTAssertEqual(notify.Version, "1.102.3")
     }
 
-    /// A peer whose `Hostinfo`, `ComputedName` and `ComputedNameWithHost`
-    /// are all `omitzero`-elided must not fail the netmap.
     func testNodeWithOmittedZeroFieldsDecodes() throws {
         let notify = try decode(Self.sparseNetmapJSON)
         let peers = try XCTUnwrap(notify.NetMap?.Peers)
@@ -50,8 +43,6 @@ final class IPNNotifyDecodeTests: XCTestCase {
         XCTAssertNil(peer.Tags)
     }
 
-    /// The fully populated node still round-trips: the custom decoder reads
-    /// every key the synthesized one did.
     func testFullNodeDecodesEveryField() throws {
         let notify = try decode(Self.fullNetmapJSON)
         let peer = try XCTUnwrap(notify.NetMap?.Peers?.first)
@@ -76,8 +67,6 @@ final class IPNNotifyDecodeTests: XCTestCase {
         XCTAssertEqual(notify.NetMap?.currentUserProfile()?.LoginName, "a@example.com")
     }
 
-    /// Engine and browse-to-URL notifies, the other two payloads the watcher
-    /// subscribes to.
     func testEngineAndBrowseToURLNotifiesDecode() throws {
         let engine = try decode(
             #"""
@@ -94,9 +83,6 @@ final class IPNNotifyDecodeTests: XCTestCase {
 
     // MARK: Fixtures
 
-    /// `ipn.Prefs` as tailscale.com v1.102.3 marshals it (every field the
-    /// Swift model reads, plus the ones it ignores, minus the `omitempty`
-    /// ones that are empty).
     static let initialStateJSON = #"""
         {
           "Version": "1.102.3",

@@ -4,19 +4,13 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `ReleaseChannel` + `DiagnosticsPreference` — the "on by default in release
-/// candidates" rule.
-///
-/// This is the requirement the feature was asked for, so it is pinned
-/// directly rather than left to be inferred from the app's behaviour. Both
-/// wrong answers are quiet: a candidate that records nothing produces the
-/// "it didn't work" report the feature exists to prevent, and a stable release
-/// that records by default is collecting from people who never agreed to it.
+/// candidates" rule. Both wrong answers are silent: a candidate recording
+/// nothing, or a stable release recording without consent.
 final class DiagnosticsPolicyTests: XCTestCase {
 
     // MARK: - Channel classification
 
-    /// The same cases `scripts/test-release-version.sh` pins, so the Swift
-    /// rule and the bash rule cannot drift.
+    /// Mirrors `scripts/test-release-version.sh` so the Swift and bash rules can't drift.
     func testChannelMatchesTheReleaseScriptsRule() {
         XCTAssertEqual(ReleaseChannel.classify(version: "0.10.0"), .stable)
         XCTAssertEqual(ReleaseChannel.classify(version: "0.10.0-rc.1"), .releaseCandidate)
@@ -24,17 +18,13 @@ final class DiagnosticsPolicyTests: XCTestCase {
         XCTAssertEqual(ReleaseChannel.classify(version: "1.0.0-beta.1"), .releaseCandidate)
     }
 
-    /// A tag and a version must classify the same. CI thinks in `v0.10.0`,
-    /// the app reads `0.10.0`, and the difference has caused bugs elsewhere
-    /// in this repo.
+    /// CI thinks in `v0.10.0`, the app reads `0.10.0` — must classify the same.
     func testLeadingVIsTolerated() {
         XCTAssertEqual(ReleaseChannel.classify(version: "v0.10.0"), .stable)
         XCTAssertEqual(ReleaseChannel.classify(version: "v0.10.0-rc.2"), .releaseCandidate)
     }
 
-    /// Anything that is not a version is a development build — `dev` is what
-    /// `BuildInfo.commit` reads from a local `make build`, and an unstamped
-    /// Info.plist produces the same.
+    /// `dev` is what a local `make build` (or unstamped Info.plist) reads as its version.
     func testNonVersionsAreDevelopment() {
         for version in ["dev", "", "pr-1234", "main", "   "] {
             XCTAssertEqual(
@@ -45,7 +35,6 @@ final class DiagnosticsPolicyTests: XCTestCase {
 
     // MARK: - The default, per channel
 
-    /// The requirement, stated once: candidates record, releases do not.
     func testDefaultIsOnForCandidatesAndOffForReleases() {
         XCTAssertTrue(
             DiagnosticsPreference.resolve(stored: .unset, channel: .releaseCandidate),
@@ -58,10 +47,8 @@ final class DiagnosticsPolicyTests: XCTestCase {
             "a developer running their own build wants the record")
     }
 
-    /// An explicit choice survives a channel change in BOTH directions. A
-    /// tester who turned it off must stay off when the next candidate lands,
-    /// and a release user who turned it on must stay on. A plain
-    /// `bool(forKey:)` read cannot express the first case at all.
+    /// An explicit choice must survive a channel change in both directions —
+    /// a plain `bool(forKey:)` read can't express that.
     func testExplicitChoiceOutranksTheChannel() {
         XCTAssertFalse(
             DiagnosticsPreference.resolve(stored: .chosen(false), channel: .releaseCandidate))
@@ -71,8 +58,7 @@ final class DiagnosticsPolicyTests: XCTestCase {
 
     // MARK: - The environment override
 
-    /// The override outranks even an explicit choice, so a harness run is
-    /// reproducible regardless of what is stored on the machine running it.
+    /// Outranks even an explicit choice, so a harness run is reproducible regardless of local storage.
     func testEnvironmentOverrideOutranksEverything() {
         XCTAssertTrue(
             DiagnosticsPreference.resolve(
@@ -82,9 +68,7 @@ final class DiagnosticsPolicyTests: XCTestCase {
                 stored: .chosen(true), channel: .releaseCandidate, override: .forced(false)))
     }
 
-    /// Only the exact `"1"` and `"0"` count. An env var that quietly
-    /// reinterprets its value is how a safety default gets lost — the same
-    /// rule `ViewerApprovalPreference.openDoorForced` applies.
+    /// Only exact `"1"`/`"0"` count — same rule as `ViewerApprovalPreference.openDoorForced`.
     func testOverrideRequiresExactlyOneOrZero() {
         XCTAssertEqual(
             DiagnosticsPreference.forcedBy(["TAILSCREEN_DIAGNOSTICS": "1"]), .forced(true))
@@ -99,9 +83,6 @@ final class DiagnosticsPolicyTests: XCTestCase {
 
     // MARK: - Storage
 
-    /// Round-trip through an injected suite, including the unset case reading
-    /// the channel default off real storage rather than only off the pure
-    /// function.
     func testPersistenceRoundTrip() throws {
         let suiteName = "DiagnosticsPreferenceTests-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -124,8 +105,7 @@ final class DiagnosticsPolicyTests: XCTestCase {
             DiagnosticsPreference.load(defaults: suite, channel: .stable, environment: [:]))
     }
 
-    /// A harness run must not rewrite the user's preference: the override
-    /// applies at `load`, so the stored choice is still there afterwards.
+    /// The override applies at `load` and must not rewrite the stored preference.
     func testOverrideDoesNotClobberTheStoredChoice() throws {
         let suiteName = "DiagnosticsPreferenceTests-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))

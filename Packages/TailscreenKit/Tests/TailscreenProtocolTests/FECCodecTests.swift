@@ -2,15 +2,13 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Pure tests for the XOR single-parity codec: parity/recover round trips for
-/// every position in a group (the last packet carries the marker bit — its
-/// reconstruction is load-bearing, see the timestamp-change corruption path
-/// in the depacketizers), mixed packet lengths, HEVC payloads, sequence
-/// wrap-around, the group-packing rule, and malformed-input rejection.
+/// The XOR single-parity codec: round trips for every position in a group
+/// (the last packet carries the marker bit — reconstructing it is
+/// load-bearing, see the depacketizers' timestamp-change corruption path),
+/// mixed lengths, HEVC, sequence wrap-around, group packing, malformed input.
 final class FECCodecTests: XCTestCase {
 
-    /// Packetize one H.264 access unit of mixed-size NALs (so packet lengths
-    /// differ — the `len`-word truncation must recover each exactly).
+    /// Mixed-size NALs so packet lengths differ — `len`-word truncation must recover each exactly.
     private func h264Group(startSeq: UInt16 = 100, ssrc: UInt32 = 0xABCD, ts: UInt32 = 9000) -> [Data] {
         let packetizer = H264Packetizer()
         let nals = [
@@ -59,8 +57,7 @@ final class FECCodecTests: XCTestCase {
     }
 
     func testMarkerPacketSurvivesRecovery() {
-        // The AU's last packet carries the marker bit; a parity that omitted
-        // byte 1 would silently merge two AUs on recovery.
+        // A parity omitting byte 1 (the marker bit) would silently merge two AUs on recovery.
         let group = h264Group()
         let last = group.count - 1
         XCTAssertEqual(group[last][group[last].startIndex + 1] & 0x80, 0x80, "last packet must carry marker")
@@ -75,8 +72,7 @@ final class FECCodecTests: XCTestCase {
     }
 
     func testRecoveryAcrossSequenceWraparound() {
-        // Group spanning 0xFFFE…0x0002 — recovery stamps the missing seq the
-        // caller tracked, and the parity math is position-independent.
+        // Group spanning 0xFFFE…0x0002: parity math is position-independent, not seq-based.
         let group = h264Group(startSeq: 0xFFFE)
         XCTAssertEqual(seqOf(group[0]), 0xFFFE)
         for missing in group.indices {
@@ -85,8 +81,6 @@ final class FECCodecTests: XCTestCase {
     }
 
     func testRecoveredPacketFeedsDepacketizerIntact() {
-        // End-to-end sanity: drop one FU-A fragment, recover it, and the
-        // depacketizer still assembles the exact original access unit.
         let packetizer = H264Packetizer()
         let nal = Data([0x65] + (0..<3000).map { UInt8(($0 &* 5) & 0xFF) })
         let group = packetizer.packetize(nals: [nal], timestamp: 90, ssrc: 5, startSequence: 0)
@@ -164,10 +158,7 @@ final class FECCodecTests: XCTestCase {
     }
 
     func testRecoverRejectsGarbageBody() {
-        // An all-zero body solves to a recovered length of garbage (the XOR
-        // of the members' lengths), which lands outside the body's payload
-        // range or below the RTP header size — either way, nil, never a torn
-        // packet.
+        // An all-zero body solves to a garbage length outside the valid range — must be nil, never a torn packet.
         let group = h264Group()
         var members = group
         members.remove(at: 0)
@@ -176,10 +167,7 @@ final class FECCodecTests: XCTestCase {
     }
 
     func testRecoverRejectsMemberLongerThanParityRegion() {
-        // A member whose payload exceeds the parity's padded region can't
-        // have been covered by that parity — mis-matched parity must reject,
-        // never mis-solve. Parity from two genuinely tiny packets vs a
-        // full-MTU FU-A fragment as the claimed member.
+        // A member exceeding the parity's padded region can't have been covered by it — must reject, never mis-solve.
         let packetizer = H264Packetizer()
         let small = packetizer.packetize(
             nals: [Data([0x41, 0x01]), Data([0x41, 0x02, 0x03])],

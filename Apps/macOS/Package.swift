@@ -3,16 +3,11 @@ import PackageDescription
 
 let package = Package(
     name: "tailscreen-macos",
-    // No `defaultLocalization:` — the `.lproj` catalogs moved to
-    // Packages/TailscreenL10n when Linux and Windows started reading them
-    // too, so this package no longer ships a localized resource. What's left
-    // under Sources/Resources is the unlocalized PDF/SVG artwork.
+    // No `defaultLocalization:` — the `.lproj` catalogs live in
+    // Packages/TailscreenL10n; Sources/Resources is unlocalized PDF/SVG only.
     platforms: [
-        // 15.2 (Dec 2024) is the floor: SCContentFilter's
-        // `includedDisplays` / `includedWindows` /
-        // `includedApplications` getters were introduced there, and
-        // the picker-helper subprocess relies on them to extract the
-        // primitives it ships across processes.
+        // 15.2 floor: SCContentFilter's `includedDisplays`/`includedWindows`/
+        // `includedApplications` getters, which the picker-helper needs.
         .macOS("15.2")
     ],
     products: [
@@ -22,17 +17,11 @@ let package = Package(
         )
     ],
     dependencies: [
-        // TailscaleKit local package
         .package(path: "../../Packages/TailscaleKit"),
-        // The portable core: wire protocol + pure decision logic
-        // (TailscreenProtocol), the tsnet-facing transport tier
-        // (TailscreenTransport), the Opus codec tier (TailscreenAudio,
-        // which pulls in OpusKit/libopus), and the two host-agnostic data
-        // planes — TailscreenViewer and TailscreenSharer, whose platform
-        // backends this app supplies. All build on Linux — see its README.
+        // The portable core: protocol, tsnet transport, Opus audio, and the
+        // host-agnostic viewer/sharer data planes this app backs.
         .package(path: "../../Packages/TailscreenKit"),
-        // The string catalog, shared with the GTK and WinUI apps. Supplies
-        // `L(_:)` and the `.lproj`s behind it; re-exported through
+        // The string catalog shared with the GTK/WinUI apps, re-exported via
         // Sources/ProtocolReexports.swift so call sites stay bare `L("…")`.
         .package(path: "../../Packages/TailscreenL10n")
     ],
@@ -50,8 +39,8 @@ let package = Package(
             ],
             path: "Sources",
             resources: [
-                // Vector PDF used as the menubar template image (loaded
-                // via Bundle.module and rendered with isTemplate = true).
+                // Vector PDF for the menubar template image (Bundle.module,
+                // isTemplate = true).
                 .process("Resources")
             ],
             linkerSettings: [

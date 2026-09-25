@@ -21,10 +21,7 @@ final class KeyModifierTrackingTests: XCTestCase {
         XCTAssertEqual(KeyModifiers.heldModifier(forHIDUsage: 0xE7), .meta)
     }
 
-    /// The GTK viewer used to answer this with `(0xE0...0xE7).contains`. That
-    /// range and this switch must cover exactly the same usages, or the two
-    /// viewers disagree about which key events to forward — so assert the
-    /// equivalence rather than trusting that they were written to match.
+    /// Must cover exactly `(0xE0...0xE7)` — the GTK viewer's own check — or the two viewers disagree on what to forward.
     func testTheHeldModifierUsagesAreExactlyTheRange0xE0Through0xE7() {
         for usage in UInt16(0)...UInt16(0xFF) {
             XCTAssertEqual(
@@ -55,10 +52,8 @@ final class KeyModifierTrackingTests: XCTestCase {
         XCTAssertEqual(tracked, [])
     }
 
-    /// Releasing the OTHER side of a pair clears the role. Both physical keys
-    /// map to one wire bit, so there is no per-side bookkeeping to be had —
-    /// and the alternative (a bit that only the same side can clear) would
-    /// latch Shift forever for anyone who presses left and releases right.
+    /// Both physical keys map to one wire bit; clearing only on the same-side
+    /// release would latch Shift forever for press-left/release-right.
     func testEitherSideOfAPairReleasesTheRole() {
         var tracked: KeyModifiers = []
         _ = tracked.trackHIDKeyEvent(usage: 0xE1, down: true)
@@ -73,9 +68,7 @@ final class KeyModifierTrackingTests: XCTestCase {
         XCTAssertEqual(tracked, [.control, .shift])
     }
 
-    /// The toggle rule. Caps Lock's down-event means the state FLIPPED, and
-    /// there is no up-event to clear it — treat it as held and it latches on
-    /// forever, silently upper-casing everything typed on the other machine.
+    /// Caps Lock's down-event means the state flipped; treated as held it latches forever.
     func testCapsLockTogglesOnDownAndIgnoresUp() {
         var tracked: KeyModifiers = []
         XCTAssertTrue(
@@ -89,16 +82,13 @@ final class KeyModifierTrackingTests: XCTestCase {
         XCTAssertEqual(tracked, [], "the next press flips it back off")
     }
 
-    /// An ordinary key reports false and leaves the set alone, which is what
-    /// tells the caller to forward the event rather than swallow it.
+    /// `false` tells the caller to forward the event rather than swallow it.
     func testAnOrdinaryKeyIsNotClaimedAndChangesNothing() {
         var tracked: KeyModifiers = [.control]
         XCTAssertFalse(tracked.trackHIDKeyEvent(usage: 0x04, down: true))
         XCTAssertEqual(tracked, .control)
     }
 
-    /// Everything the tracker can set stays inside the protocol's vocabulary,
-    /// so nothing outside `allKnown` can reach an injector.
     func testTrackedSetNeverLeavesTheWireVocabulary() {
         var tracked: KeyModifiers = []
         for usage in UInt16(0)...UInt16(0xFF) {

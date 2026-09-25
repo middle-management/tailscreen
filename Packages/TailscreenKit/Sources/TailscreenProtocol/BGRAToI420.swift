@@ -2,20 +2,13 @@ import Foundation
 
 /// Converts captured BGRA8 frames to limited-range BT.709 I420 — what every
 /// encoder in this repo takes, and the exact inverse of the viewer's
-/// `I420Converter`.
+/// `I420Converter`. Portable pure arithmetic, like `I420Converter` and
+/// `MonoPCMConverter`, so any capture backend (DXGI, portal) gets an
+/// identical conversion.
 ///
-/// Portable on purpose, and for the same reason as `I420Converter` and
-/// `MonoPCMConverter`: it is pure arithmetic that every capture backend needs
-/// and that no capture backend can test. A DXGI or a portal backend supplies a
-/// BGRA buffer and a stride; the conversion is identical either side.
-///
-/// In `TailscreenProtocol` rather than `TailscreenSharer`, which is where a
-/// capture-side helper first looks like it belongs. TailscreenSharer links
-/// TailscaleKit, so a test target reaching it needs `libtailscale.a` at LINK
-/// time — and the `linux-protocol` job deliberately builds no Go archive,
-/// which is what makes it a cheap gate. Sitting in the dependency-free tier
-/// keeps this and its round-trip test inside that gate, next to the other pure
-/// shared logic there (`AnnotationGeometry`, `ViewerZoomMath`).
+/// Lives in `TailscreenProtocol`, not `TailscreenSharer`, so its round-trip
+/// test stays inside the `linux-protocol` job — `TailscreenSharer` links
+/// TailscaleKit, which needs `libtailscale.a` at link time.
 ///
 /// **This doc comment is the canonical list of who shares these constants.**
 /// The other four implementations point back here rather than at each other,
@@ -31,40 +24,27 @@ import Foundation
 /// | I420 → RGB | `CWinVideo`'s `ps_main` | HLSL | the WinUI viewer | either (`fullRange`) |
 /// | I420 → BGRA | `I420Converter` | Swift | the CPU blit + the X11 sharer's preview | either (`Source.range`) |
 ///
-/// **The three inverse implementations take a range; the two forward ones do
-/// not**, and that asymmetry is the design rather than an omission. A capture
-/// backend knows what it produces — these two produce limited — while a viewer
-/// receives whatever some other platform's sharer encoded, and the macOS one
-/// captures FULL-range 8-bit by default (`ColorInfo.bt709FullRange8`). So the
-/// decoders report the range (`VideoColorInfo`, carried on
-/// `DecodedVideoFrame`) and the three inverses honour it.
+/// The three inverse implementations take a range; the two forward ones do
+/// not — deliberate, since a capture backend knows what it produces (limited)
+/// while a viewer must honour whatever range the decoder reports
+/// (`VideoColorInfo`).
 ///
-/// Getting the range wrong does not fail loudly — it washes out or crushes
-/// every frame — so each is pinned rather than trusted. This one round-trips
-/// through `I420Converter`, which is the check neither converter can perform
-/// alone; the two shaders are gated against the shared `makeColorBarsFrame()`
-/// by `tailscreen --overlay-self-test` (GL, under Xvfb) and `winvideo-selftest`
-/// (HLSL, under WARP), which is why that frame lives in `TailscreenViewer` and
-/// not beside either renderer. Those two self-tests render the bars as LIMITED
-/// (what the fixture's 235/16 values are), so they gate the limited path only;
-/// the full-range arithmetic is pinned on the CPU side by
-/// `ColorBarsConversionTests`, which asserts the same planes read as full range
-/// land on their raw sample values instead.
+/// Getting the range wrong fails silently (washed-out or crushed frames), so
+/// each is pinned: this one round-trips through `I420Converter`; the shaders
+/// are gated against `makeColorBarsFrame()` via `tailscreen
+/// --overlay-self-test` and `winvideo-selftest`; full-range arithmetic is
+/// pinned by `ColorBarsConversionTests`.
 ///
-/// The C forward converter predates this one and is not folded into it;
-/// adopting this from `X11CaptureEncoder` would remove that duplication, and is
-/// queued rather than done because rewriting a working capture path was not
-/// what the Windows stage that added this should touch.
+/// The C forward converter predates this one and isn't folded into it —
+/// queued, not done, to avoid rewriting a working capture path.
 public enum BGRAToI420 {
     // Fixed point at 1/16384, matching CX11Capture exactly. Y_full uses the
     // BT.709 luma weights (0.2126, 0.7152, 0.0722); the scale to studio swing
     // and the chroma normalisation ((224/255)/1.8556 and (224/255)/1.5748) are
     // folded into the coefficients.
     private static let fx: Int32 = 14
-    /// Round-to-nearest rather than truncate. Without it white lands on 234
-    /// instead of the studio-swing ceiling of 235, and every level below is
-    /// biased dark by the same fraction — the same defect the viewer-side
-    /// converter had before its tests caught it.
+    /// Round-to-nearest, not truncate — without it white lands on 234 instead
+    /// of the studio-swing ceiling 235, biasing every level dark.
     private static let rounding: Int32 = 1 << (14 - 1)
     private static let cYR: Int32 = 3483
     private static let cYG: Int32 = 11718
@@ -76,10 +56,8 @@ public enum BGRAToI420 {
     /// A captured BGRA frame: where the pixels are and how they are laid out.
     public struct Source {
         public let bgra: UnsafePointer<UInt8>
-        /// Row pitch in BYTES, **not** derived from the width. Capture APIs pad
-        /// rows — DXGI reports its own pitch and it is routinely wider than
-        /// `width * 4` — and reading at `width * 4` skews the image
-        /// progressively further with every row.
+        /// Row pitch in bytes, not derived from the width — DXGI's pitch is
+        /// routinely wider than `width * 4`, and assuming otherwise skews the image row by row.
         public let stride: Int
         public let width: Int
         public let height: Int
@@ -114,12 +92,9 @@ public enum BGRAToI420 {
         (width * height, ((width + 1) / 2) * ((height + 1) / 2))
     }
 
-    /// Convert one BGRA frame into caller-provided I420 planes.
-    ///
-    /// The geometry and the destinations are grouped rather than passed as
-    /// seven arguments: swiftlint caps a function at five, and the two structs
-    /// read better at the call site anyway — a capture backend holds one
-    /// `Planes` for the life of a share and rebuilds `Source` per frame.
+    /// Convert one BGRA frame into caller-provided I420 planes. Geometry and
+    /// destinations are grouped, not seven arguments: a capture backend holds
+    /// one `Planes` for the share's life and rebuilds `Source` per frame.
     ///
     /// - Returns: false, without writing, if the geometry is unusable.
     @discardableResult
@@ -145,9 +120,7 @@ public enum BGRAToI420 {
             }
         }
 
-        // Chroma from the 2×2 block average rather than a point sample: cheap,
-        // and it avoids the shimmer point-sampling gives on text and thin
-        // lines, which is most of what a shared screen contains.
+        // 2×2 block average, not a point sample: avoids shimmer on text/thin lines.
         let chromaWidth = (width + 1) / 2
         var row = 0
         while row + 1 < height {

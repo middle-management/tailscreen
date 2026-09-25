@@ -1,17 +1,16 @@
 // Command localderp is the browser spike's stand-in for the Tailscale relay
 // fleet, so the end-to-end run needs no internet: one DERP server (TLS with a
-// throwaway self-signed certificate, WebSocket-upgradable because a browser
-// can reach DERP no other way), one STUN responder for the native side's
-// endpoint discovery, and a plain-HTTP /derpmap handing out a one-region map
-// that points back at itself with InsecureForTests set.
+// throwaway self-signed certificate, WebSocket-upgradable because that's the
+// only way a browser can reach DERP), one STUN responder for the native
+// side's endpoint discovery, and a plain-HTTP /derpmap handing out a
+// one-region map pointing back at itself with InsecureForTests set.
 //
-// InsecureForTests is what makes the self-signed certificate workable on
-// both ends: derphttp skips TLS verification for such a node, and the browser
-// is launched with certificate errors ignored (Playwright's
-// ignoreHTTPSErrors). The map endpoint itself is plain HTTP on purpose — the
-// guest package fetches it with a verifying net/http client. Nothing here is
-// production; a real deployment points at Tailscale's relays or a derper of
-// its own (docs/self-hosted.md).
+// InsecureForTests makes the self-signed cert workable on both ends:
+// derphttp skips TLS verification for such a node, and the browser launches
+// with certificate errors ignored (Playwright's ignoreHTTPSErrors). The map
+// endpoint is plain HTTP on purpose — the guest package fetches it with a
+// verifying net/http client. Nothing here is production; see
+// docs/self-hosted.md for a real deployment.
 package main
 
 import (

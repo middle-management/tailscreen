@@ -9,31 +9,18 @@ import XCTest
 /// coverage of five cases.
 final class NodeBringUpPhaseTests: XCTestCase {
     /// One representative of every case, for the totality legs below.
-    ///
-    /// Hand-written rather than `CaseIterable`, which the associated value on
-    /// `failed` rules out.
-    ///
-    /// **A case added to the enum without a line here is not detected by
-    /// anything in this file**, including the grouping leg below — that
-    /// iterates this same list, so an omission is invisible to it too. There
-    /// is no clever mitigation; the list is a manual obligation, and it is
-    /// noted here rather than papered over. What does apply pressure is the
-    /// type itself: every derived property switches exhaustively, so adding a
-    /// case fails the build until each has an answer, and arriving here is
-    /// then the remaining step.
+    /// Hand-written rather than `CaseIterable`, which `failed`'s associated
+    /// value rules out. A case added without a line here is invisible to
+    /// this file, but every derived property switches exhaustively, so
+    /// adding a case fails the build until each has an answer.
     private let allPhases: [NodeBringUpPhase] = [
         .signedOut, .startingNode, .discovering, .ready, .failed("boom")
     ]
 
     // MARK: - Signed out
 
-    /// The leg the whole type exists to settle.
-    ///
-    /// GTK reached this state by returning to `signedOut` and hanging a note
-    /// beside it; WinUI by admitting its own `failed` to `isSignedOut`. Both
-    /// meant "show the sign-in pane, relabel the button", and a shared enum
-    /// that dropped either reading would strand somebody on an empty screens
-    /// list with no way to retry.
+    /// A shared enum that dropped this reading would strand somebody on an
+    /// empty screens list with no way to retry.
     func testFailedIsSignedOutSoTheRetryButtonIsStillReachable() {
         XCTAssertTrue(NodeBringUpPhase.failed("could not start Tailscale").isSignedOut)
         XCTAssertTrue(NodeBringUpPhase.signedOut.isSignedOut)
@@ -47,10 +34,8 @@ final class NodeBringUpPhaseTests: XCTestCase {
 
     // MARK: - Spinner
 
-    /// A spinner is a claim that something is still happening. `failed` is the
-    /// one phase where that claim is false and looks true — the app has
-    /// stopped, and a spinner over it reads as a slow network rather than as
-    /// an error with a button under it.
+    /// A spinner over a stopped app reads as a slow network, not an error
+    /// with a button under it.
     func testFailedDoesNotSpin() {
         XCTAssertFalse(NodeBringUpPhase.failed("boom").isBringingUp)
     }
@@ -64,9 +49,8 @@ final class NodeBringUpPhaseTests: XCTestCase {
 
     // MARK: - Ready
 
-    /// `discovering` is emphatically not ready. Refresh, the filter menu and
-    /// account switching are all gated on `isReady`, and offering Refresh
-    /// against a list that is still being built restarts the very sweep the
+    /// Refresh, the filter menu and account switching are gated on
+    /// `isReady` — offering Refresh mid-discovery restarts the sweep the
     /// person is waiting on.
     func testDiscoveringIsNotReady() {
         XCTAssertFalse(NodeBringUpPhase.discovering.isReady)
@@ -94,10 +78,8 @@ final class NodeBringUpPhaseTests: XCTestCase {
         XCTAssertNil(NodeBringUpPhase.ready.failureReason)
     }
 
-    /// `hasFailed` is the replacement for the `== .failed` test that stopped
-    /// compiling once the reason rode inside the case. Asserted against
-    /// `failureReason` across every phase so the two can never disagree about
-    /// what "failed" means — one gating a button label, the other its text.
+    /// Asserted across every phase so `hasFailed` and `failureReason` can
+    /// never disagree about what "failed" means.
     func testHasFailedAgreesWithFailureReasonEverywhere() {
         for phase in allPhases {
             XCTAssertEqual(
@@ -106,14 +88,9 @@ final class NodeBringUpPhaseTests: XCTestCase {
         }
     }
 
-    /// Two different failures are two different values.
-    ///
-    /// Load-bearing because every host publishes this through an observable
-    /// slot, and several of them guard on `new != old` before republishing. If
-    /// the reason were not part of identity, a second bring-up failing for a
-    /// new reason would leave the first reason on screen — the stalest
-    /// possible error message, describing an attempt the person has already
-    /// retried past.
+    /// Load-bearing because hosts guard on `new != old` before republishing
+    /// — if the reason weren't part of identity, a second failure with a new
+    /// reason would leave the stale first reason on screen.
     func testTheReasonIsPartOfIdentity() {
         XCTAssertNotEqual(
             NodeBringUpPhase.failed("no route to control server"),
@@ -121,9 +98,8 @@ final class NodeBringUpPhaseTests: XCTestCase {
         XCTAssertEqual(NodeBringUpPhase.failed("same"), NodeBringUpPhase.failed("same"))
     }
 
-    /// A failed bring-up is NOT the signed-out state, even though both render
-    /// the same pane. Collapsing them is the shortcut that loses the reason,
-    /// and it is available: `isSignedOut` is true for both.
+    /// A failed bring-up is NOT the signed-out state, even though both
+    /// render the same pane and `isSignedOut` is true for both.
     func testFailedIsDistinctFromSignedOutDespiteRenderingTheSamePane() {
         XCTAssertNotEqual(NodeBringUpPhase.failed("boom"), .signedOut)
         XCTAssertEqual(
@@ -132,10 +108,9 @@ final class NodeBringUpPhaseTests: XCTestCase {
 
     // MARK: - Totality
 
-    /// Every phase belongs to exactly one of the three groups the hub chrome
-    /// branches on. A phase in none of them renders no pane at all; a phase in
-    /// two renders whichever branch is tested first, which is a difference
-    /// between hosts rather than a decision.
+    /// A phase in none of the three groups renders no pane; a phase in two
+    /// renders whichever branch is tested first — a difference between
+    /// hosts, not a decision.
     func testEveryPhaseIsExactlyOneOfSignedOutBringingUpOrReady() {
         for phase in allPhases {
             let groups = [phase.isSignedOut, phase.isBringingUp, phase.isReady]

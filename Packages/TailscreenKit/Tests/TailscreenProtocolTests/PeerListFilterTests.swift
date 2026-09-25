@@ -19,8 +19,7 @@ final class PeerListFilterTests: XCTestCase {
         XCTAssertTrue(filter.matches(isOnline: false, tags: []))
         XCTAssertTrue(filter.matches(isOnline: true, tags: ["tag:server"]))
         XCTAssertTrue(filter.matches(isOnline: false, tags: ["tag:server", "tag:ci"]))
-        // Sharing state is irrelevant while the axis is off — including
-        // unknown and explicitly-not-sharing.
+        // Sharing state is irrelevant while the axis is off.
         XCTAssertTrue(filter.matches(isOnline: true, tags: [], sharing: .unknown))
         XCTAssertTrue(filter.matches(isOnline: true, tags: [], sharing: .notSharing))
     }
@@ -45,8 +44,7 @@ final class PeerListFilterTests: XCTestCase {
         XCTAssertTrue(filter.isActive)
         XCTAssertTrue(filter.matches(isOnline: true, tags: [], sharing: .sharing))
         XCTAssertFalse(filter.matches(isOnline: true, tags: [], sharing: .notSharing))
-        // Unknown (no answer yet / legacy peer / offline) hides while the
-        // axis is on — the user asked for screens they can actually watch.
+        // Unknown (no answer yet / legacy peer) hides while the axis is on.
         XCTAssertFalse(filter.matches(isOnline: true, tags: [], sharing: .unknown))
     }
 
@@ -190,13 +188,10 @@ final class PeerListFilterTests: XCTestCase {
     }
 }
 
-/// The cache behind the sharing chip: what a metadata sweep's answers do to the
-/// per-peer status map.
-///
-/// Two lines of code in each hub, and every hub had written them slightly
-/// differently — which is exactly the shape of divergence nothing catches,
-/// because both spellings compile, both render a plausible list, and the wrong
-/// one only shows up as an invitation to connect to a share that already ended.
+/// The cache behind the sharing chip: what a metadata sweep's answers do to
+/// the per-peer status map. Each hub used to write this slightly differently
+/// — a divergence that compiles and renders fine but shows up as an
+/// invitation to connect to a share that already ended.
 final class PeerShareStatusMapTests: XCTestCase {
     private func metadata(isSharing: Bool) -> TailscreenMetadata {
         TailscreenMetadata(
@@ -211,11 +206,9 @@ final class PeerShareStatusMapTests: XCTestCase {
     }
 
     func testANoAnswerClearsAPreviousAnswer() {
-        // THE decision. `nil` is status-unknown — a timeout, an EOF, a legacy
-        // build dropping the unknown byte — and never evidence about what that
-        // machine is doing now. Keeping the last answer is stale-positive by
-        // construction: a peer that stops sharing and stops answering in the
-        // same window keeps saying "Sharing" until it answers again.
+        // `nil` is status-unknown (timeout/EOF/legacy build), never evidence
+        // the peer stopped sharing. Keeping the last answer is stale-positive
+        // by construction.
         let seeded = ["a": metadata(isSharing: true)]
         let map = PeerShareStatusMap.recording(nil, for: "a", in: seeded)
         XCTAssertNil(map["a"])
@@ -229,8 +222,7 @@ final class PeerShareStatusMapTests: XCTestCase {
     }
 
     func testPruningDropsPeersNoLongerPresent() {
-        // A departed peer keeping its last answer means the same id returning
-        // later shows a stale chip until its next probe lands.
+        // A departed peer keeping its last answer shows a stale chip if the same id returns later.
         let seeded = ["a": metadata(isSharing: true), "gone": metadata(isSharing: true)]
         let map = PeerShareStatusMap.pruned(seeded, toPresent: ["a"])
         XCTAssertEqual(map.keys.sorted(), ["a"])

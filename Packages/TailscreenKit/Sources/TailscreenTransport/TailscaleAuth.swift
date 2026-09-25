@@ -24,11 +24,9 @@ public class TailscaleAuth: ObservableObject {
     public init() {}
 
     private var localAPIClient: LocalAPIClient?
-    /// **Not teed into diagnostics** — this logger prints the signed-in
-    /// account's display name (below), and an exported bundle promises the
-    /// person sending it that it carries no sign-in details. The auth story
-    /// reaches a bundle as the structured `node.signin.*` events recorded
-    /// alongside these lines, which say what happened without saying who.
+    /// **Not teed into diagnostics** — prints the account's display name, and
+    /// an exported bundle promises no sign-in details. The auth story reaches
+    /// a bundle as structured `node.signin.*` events instead.
     private let logger = PrintLogSink(prefix: "Auth", capturesDiagnostics: false)
 
     /// Checks authentication status and fetches user profile
@@ -54,8 +52,8 @@ public class TailscaleAuth: ObservableObject {
                 self.isAuthenticated = true
                 logger.log("✓ Authenticated as \(profile.UserProfile.DisplayName)")
                 logger.log("✓ Set isAuthenticated = true, isLoading will be set to false")
-                // The fact, not the identity: a bundle needs to know the node
-                // was signed in, never as whom.
+                // The fact, not the identity — a bundle records that the
+                // node signed in, never as whom.
                 DiagnosticsCenter.shared.recorder?.record(.nodeSignInCompleted)
             } else {
                 // No user logged in
@@ -141,8 +139,8 @@ public class TailscaleAuth: ObservableObject {
         if !authURL.isEmpty {
             self.authURL = authURL
             logger.log("🔗 Auth URL: \(authURL)")
-            // That one was issued, never what it was: the URL is a bearer
-            // credential for the tailnet.
+            // Records that a URL was issued, never the URL itself — it's a
+            // bearer credential for the tailnet.
             DiagnosticsCenter.shared.recorder?.record(.nodeSignInURLIssued)
 
             // Hand the URL to the host app to open (browser policy is

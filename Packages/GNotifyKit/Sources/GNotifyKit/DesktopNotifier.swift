@@ -3,14 +3,8 @@ import Foundation
 
 /// Desktop notifications on Linux, over `org.freedesktop.Notifications`.
 ///
-/// The sharer surface that reaches somebody whose attention is on the thing
-/// they are sharing. "Require approval for new viewers" defaults **on**, so an
-/// unattended sharer strands whoever tries to connect — there is nothing on
-/// screen to notice and the app window is behind the shared content, where
-/// raising it is itself visible to viewers.
-///
-/// What to say and when is `SharerNoticeDecision` in `TailscreenProtocol`; this
-/// is delivery only, and deliberately knows nothing about viewers or shares.
+/// What to say and when is `SharerNoticeDecision` in `TailscreenProtocol`;
+/// this is delivery only, and knows nothing about viewers or shares.
 public final class DesktopNotifier: @unchecked Sendable {
     /// The freedesktop urgency hint.
     ///
@@ -67,16 +61,14 @@ public final class DesktopNotifier: @unchecked Sendable {
     /// half missing.
     public let supportsBody: Bool
 
-    /// Connect, or return nil when there is nowhere to post.
+    /// Connect, or return nil when there is nowhere to post. Nil is a normal
+    /// state (headless box, minimal session, no bus); `openError` is for the
+    /// log, not an alert.
     ///
-    /// Nil is a normal state — a headless box, a minimal session, a container
-    /// with no bus. The host keeps its in-window prompts and says nothing;
-    /// `openError` is for the log, not for an alert.
-    ///
-    /// **Construct this on the thread whose `GMainContext` is iterated.** GDBus
-    /// captures the thread-default context when it subscribes, so a notifier
-    /// built on a thread that never runs a main loop posts perfectly and never
-    /// reports a single button press. In the GTK app that is the main thread.
+    /// Construct this on the thread whose `GMainContext` is iterated: GDBus
+    /// captures the thread-default context at subscribe, so a notifier built
+    /// elsewhere posts perfectly and never reports a button press. In the GTK
+    /// app that's the main thread.
     public init?(appName: String = "Tailscreen", desktopEntry: String? = "tailscreen") {
         guard let handle = ts_gnotify_open(appName, desktopEntry) else { return nil }
         self.handle = handle

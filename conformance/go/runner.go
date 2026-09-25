@@ -1,10 +1,9 @@
 // Package conformance dispatches the language-neutral vectors in ../vectors
 // against the public Go implementation in ../../sdk/go/tailscreen.
 //
-// Each vector names an `op`, an `in` object and an expected `out` object.
-// The dispatcher below is the whole contract: to run these vectors against
-// an implementation in another language, port this file — the op names, the
-// shape of `in`, and the shape of `out` — and leave the vectors alone.
+// Each vector names an `op`, an `in` object and an expected `out` object. To
+// port these vectors to another language, port this file's op dispatch — the
+// op names and the shapes of `in`/`out` — and leave the vectors alone.
 package conformance
 
 import (

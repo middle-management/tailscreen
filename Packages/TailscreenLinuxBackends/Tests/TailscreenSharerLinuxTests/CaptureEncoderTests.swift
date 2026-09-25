@@ -6,11 +6,9 @@ import XCTest
 
 @testable import TailscreenSharerLinux
 
-/// Drives `X11CaptureEncoder` through the **real `CaptureEncoding` seam** —
-/// the same protocol the portable `TailscaleScreenShareServer` talks to — and
-/// decodes what comes out. This is the Linux sharer's counterpart to the
-/// viewer's `PipelineIntegrationTests`: proof that capture → encode → the wire
-/// format actually closes, rather than that the pieces compile.
+/// Drives `X11CaptureEncoder` through the real `CaptureEncoding` seam and
+/// decodes what comes out — proof that capture → encode → wire format
+/// actually closes, not just that the pieces compile.
 ///
 /// Needs an X display, so it self-skips without one and runs under Xvfb in CI.
 final class CaptureEncoderTests: XCTestCase {
@@ -81,14 +79,11 @@ final class CaptureEncoderTests: XCTestCase {
         XCTAssertTrue(aus[0].1, "first access unit must be a keyframe")
         XCTAssertGreaterThan(ticks, 0, "onActivity never fired — the watchdog would kill this share")
 
-        // The resolution the server anchors its bitrate on must be even (4:2:0)
-        // and must match what the decoder actually reports.
+        // Resolution must be even (4:2:0) and match the decoder's report.
         let res = try XCTUnwrap(resolution)
         XCTAssertEqual(res.0 % 2, 0)
         XCTAssertEqual(res.1 % 2, 0)
 
-        // Parameter sets are what the server caches the codec from, and the
-        // ordering contract says they arrive before the resolution.
         switch try XCTUnwrap(params) {
         case .h264(let sps, let pps):
             XCTAssertFalse(sps.isEmpty)
@@ -97,8 +92,7 @@ final class CaptureEncoderTests: XCTestCase {
             XCTFail("forceH264 was set but HEVC parameter sets were emitted")
         }
 
-        // The payload is what goes on the wire: decode it exactly as a viewer
-        // would, with no conversion in between.
+        // Decode exactly as a viewer would, with no conversion in between.
         let decoder = try FFmpeg.VideoDecoder(codec: .h264)
         var frames: [FFmpeg.Frame] = []
         for (data, _) in aus { frames += try decoder.decode(avcc: data) }
@@ -108,9 +102,8 @@ final class CaptureEncoderTests: XCTestCase {
         XCTAssertEqual(frames[0].height, res.1)
     }
 
-    /// A viewer PLI becomes `requestKeyframe()`. If that doesn't produce an
-    /// IDR promptly, a viewer that loses sync waits for the GOP backstop —
-    /// which is exactly the multi-second freeze the PLI path exists to avoid.
+    /// A viewer PLI becomes `requestKeyframe()`; without a prompt IDR a
+    /// desynced viewer waits for the GOP backstop instead.
     func testRequestKeyframeProducesAnIDR() throws {
         try skipWithoutDisplay()
         let (sink, backend) = try runCapture(seconds: 0.5)
@@ -133,9 +126,8 @@ final class CaptureEncoderTests: XCTestCase {
             "requestKeyframe() did not produce an IDR within four frames")
     }
 
-    /// Every keyframe must carry its parameter sets in-band — that's what lets
-    /// a viewer join mid-share. A backend that emitted them only once would
-    /// pass the callback assertion above and still leave late joiners black.
+    /// Every keyframe must carry its parameter sets in-band, or a late
+    /// joiner's screen stays black.
     func testEveryKeyframeCarriesParameterSetsInBand() throws {
         try skipWithoutDisplay()
         let (sink, backend) = try runCapture(seconds: 0.5)
@@ -158,9 +150,8 @@ final class CaptureEncoderTests: XCTestCase {
         }
     }
 
-    /// Window and application shares aren't implementable on plain X11 without
-    /// the compositor. Falling back to the whole screen would leak everything
-    /// the user didn't choose to share, so `start` must refuse.
+    /// Window/app shares need the compositor; falling back to the whole
+    /// screen would leak content the user didn't choose to share.
     func testNonDisplaySelectionsAreRefused() throws {
         try skipWithoutDisplay()
         let backend = X11CaptureEncoder()
@@ -186,9 +177,8 @@ final class CaptureEncoderTests: XCTestCase {
         }
     }
 
-    /// `stop()` must actually stop: the mac backend relies on process death,
-    /// this one doesn't have that safety net, so a leaked capture thread would
-    /// keep grabbing the screen after the share ended.
+    /// `stop()` must actually stop — unlike the mac backend, this has no
+    /// process-death safety net.
     func testStopHaltsProduction() throws {
         try skipWithoutDisplay()
         let (sink, backend) = try runCapture(seconds: 0.4)
@@ -205,8 +195,6 @@ final class CaptureEncoderTests: XCTestCase {
         XCTAssertEqual(atStop, later, "capture thread still running after stop()")
     }
 
-    /// Guards the whole point of the seam: this type is substitutable for the
-    /// macOS capture helper wherever the server expects a backend.
     func testConformsToCaptureEncoding() {
         let backend: any CaptureEncoding = X11CaptureEncoder()
         backend.setAudioEnabled(true)  // no-op here, must not trap

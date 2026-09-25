@@ -4,16 +4,9 @@ extension ScreenShareCaps {
     /// The negotiated capabilities as a stable, readable field value:
     /// `"nack|rr|fec"`, or `"none"` for a legacy capability-less peer.
     ///
-    /// Spelled out rather than recorded as the raw bitmask because the
-    /// capability set is the single most-consulted fact in a handshake
-    /// investigation — "was FEC on?", "why is Request Control hidden?" — and
-    /// `7` requires a reader to have the bit table in front of them while
-    /// `nack|rr|fec` does not. The short spellings are deliberate and stable:
-    /// they are part of the bundle format, so treat them like the names in
-    /// ``DiagnosticEventName`` and do not re-word them.
-    ///
-    /// Sorted by bit position, so the same set always renders the same string
-    /// and two bundles compare as text.
+    /// These short spellings are part of the bundle format, like
+    /// ``DiagnosticEventName`` — do not re-word them. Sorted by bit position
+    /// so the same set always renders the same string.
     public var diagnosticDescription: String {
         var parts: [String] = []
         if contains(.nack) { parts.append("nack") }
@@ -23,9 +16,8 @@ extension ScreenShareCaps {
         if contains(.annotations) { parts.append("annotations") }
         if contains(.tenBit) { parts.append("10bit") }
 
-        // Bits this build has never heard of are reported rather than dropped:
-        // a peer advertising something newer is exactly the case where a
-        // reader needs to know the set was not fully understood.
+        // Report unknown bits rather than drop them: a peer advertising
+        // something newer than this build needs to be visible, not silent.
         let known: ScreenShareCaps = [
             .nack, .receiverReport, .fec, .remoteControl, .annotations, .tenBit
         ]

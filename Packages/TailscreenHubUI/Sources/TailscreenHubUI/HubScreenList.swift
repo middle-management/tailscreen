@@ -2,21 +2,17 @@ import SwiftCrossUI
 import TailscreenL10n
 import TailscreenProtocol
 
-/// One machine in the Screens list.
-///
-/// A view model, not a transport type: `DiscoveredSharer` lives in
-/// `TailscreenViewerTsnet`, which pulls TailscaleKit and therefore libtailscale,
-/// and a package that only draws rectangles has no business needing a Go
-/// archive to compile. Each app maps its own discovery result into this.
+/// One machine in the Screens list. A view model, not a transport type —
+/// `DiscoveredSharer` lives in `TailscreenViewerTsnet`, which pulls
+/// libtailscale, and this package draws rectangles and needs no Go archive.
 public struct HubScreen: Identifiable, Sendable {
     public let id: String
     public let hostname: String
     public let tailscaleIP: String
     public let isOnline: Bool
-    /// The sharer's live share name, when it is actively sharing — the green
-    /// chip. Nil covers both "not sharing" and "we asked and got no answer",
-    /// which are deliberately drawn the same: claiming a machine is idle when
-    /// the truth is that it did not reply would be worse than saying nothing.
+    /// The sharer's live share name, when actively sharing — the green chip.
+    /// Nil covers both "not sharing" and "asked, no answer" — deliberately
+    /// drawn the same, since claiming idle when the truth is unknown is worse.
     public let sharingName: String?
     /// "robert's Screen · 1920 × 1080 · HEVC", for the expanded detail pane.
     public let sharingCaption: String?
@@ -28,26 +24,14 @@ public struct HubScreen: Identifiable, Sendable {
     /// Tailscale ACL tags, straight off the netmap.
     public let tags: [String]
 
-    /// The row's second line.
-    ///
-    /// Deliberately a STATUS and not the tailnet IP, which is what these rows
-    /// used to show while online. macOS puts a status word here and the address
-    /// in the expanded detail pane — which is the right split, because that is
-    /// where the address is actually actionable (selectable, next to the rest
-    /// of the connection facts). A bare `100.122.40.62` on the resting list
-    /// reads as debug output, and it is the one line that never changes when
-    /// the thing you are watching for — whether the machine is reachable — does.
-    ///
-    /// Sharing is not repeated here: it already has the green chip, and saying
-    /// it twice in one row costs a line and adds nothing.
+    /// The row's second line: a status, not the tailnet IP (which lives in the
+    /// expanded detail pane, where it's actually actionable). Sharing isn't
+    /// repeated here — it already has the green chip.
     public var statusLine: String { isOnline ? L("Online") : L("Offline") }
 
     /// The row's title: `hostname` without the `tailscreen-` marker every
-    /// installation registers under, for the same reason the Tags row drops
-    /// `tag:` — every row carries it and none of them are distinguished by it,
-    /// so it only pushes the distinguishing part out of a truncated row. The
-    /// detail pane's Host line keeps the real hostname, which is the one place
-    /// it is a fact rather than a decoration.
+    /// installation carries, so it doesn't push the distinguishing part out of
+    /// a truncated row. The detail pane's Host line keeps the real hostname.
     public var displayName: String {
         TailscreenInstance.displayName(fromHostname: hostname)
     }
@@ -69,11 +53,8 @@ public struct HubScreen: Identifiable, Sendable {
     }
 
     /// Build a row from a discovered machine plus whatever the metadata sweep
-    /// found out about it.
-    ///
-    /// The chip and caption are derived here rather than at each call site so
-    /// the two apps cannot disagree about what "sharing" looks like — the exact
-    /// drift this package exists to prevent.
+    /// found out about it. Chip and caption derived here so the two apps
+    /// can't disagree about what "sharing" looks like.
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
         metadata: TailscreenMetadata?,
@@ -98,19 +79,15 @@ public struct HubScreen: Identifiable, Sendable {
     }
 }
 
-/// One tailnet screen: a presence dot, the hostname over its IP (or "Offline"),
-/// and a disclosure chevron — the macOS hub's `PeerMenuRow` idiom. Tapping
-/// toggles the inline `SharerDetail` pane.
+/// One tailnet screen: a presence dot, the hostname over its IP (or
+/// "Offline"), and a disclosure chevron — the macOS hub's `PeerMenuRow` idiom.
+/// Tapping toggles the inline `SharerDetail` pane.
 ///
-/// The whole row is a tap target rather than a `Button` because swift-cross-ui's
-/// `Button` takes a String label and cannot host this layout. The primary
-/// action inside the detail pane IS a real button, which is what keyboard and
-/// screen-reader users reach — the same reason the macOS peer rows use
-/// always-visible controls instead of hover affordances.
+/// The whole row is a tap target, not a `Button` (which takes only a String
+/// label). The primary action is a real button inside the detail pane, for
+/// keyboard/screen-reader users.
 public struct SharerRow: View {
-    /// The machine's name as shown — `HubScreen.displayName`, i.e. the
-    /// hostname minus the `tailscreen-` marker. Not the hostname itself: the
-    /// raw one is a fact for the detail pane, not a row title.
+    /// `HubScreen.displayName` — hostname minus the `tailscreen-` marker.
     let name: String
     let subtitle: String
     let isOnline: Bool
@@ -171,42 +148,29 @@ public struct SharerRow: View {
 }
 
 /// The inline detail pane under an expanded `SharerRow` — the macOS hub's
-/// `PeerDetailView` idiom, pared to what a client knows about a discovered
-/// machine: the primary **View Screen** action plus its host and IP. Indented
-/// under the row's text column so it reads as the row's expansion.
+/// `PeerDetailView` idiom: the primary View Screen action plus host and IP.
+/// Indented under the row's text column so it reads as the row's expansion.
 public struct SharerDetail: View {
     let hostname: String
     let ip: String
     let isOnline: Bool
     let sharingCaption: String?
     let onView: @MainActor @Sendable () -> Void
-    /// The connection facts the macOS hub's peer-detail pane shows: which
-    /// path traffic takes, how far away it feels, and what the tailnet says
-    /// this machine is. Defaulted so a host that has not wired them yet — or
-    /// a preview — renders the pane exactly as before.
+    /// Connection facts shown in the macOS hub's peer-detail pane. Defaulted
+    /// so a host or preview that hasn't wired them renders as before.
     let route: PeerRoute
     let latencyMs: Int?
     let tags: [String]
-    /// Ask this peer to start sharing. Nil ⇒ the button is absent, never
-    /// present-and-inert — the same convention the roster row's optional
-    /// actions follow, and for the same reason: a control that is visible but
-    /// does nothing teaches people to distrust every control near it.
-    ///
-    /// Hosts pass nil while the local node is down (there is nothing to ask
-    /// through) or while this machine is already busy sharing or watching.
+    /// Ask this peer to start sharing. Nil ⇒ absent, never present-and-inert.
+    /// Hosts pass nil while the local node is down or this machine is already
+    /// busy sharing or watching.
     let onAskToShare: (@MainActor @Sendable () -> Void)?
-    /// Set while an ask to this peer is outstanding. The request parks for up
-    /// to two minutes waiting for a person to walk back to their desk, so
-    /// without this the button looks like it did nothing and gets pressed
-    /// again — which on the far side is a second banner row, not a faster
-    /// answer.
+    /// Set while an ask to this peer is outstanding — the request parks up to
+    /// two minutes, so without this the button looks inert and gets pressed again.
     let isAsking: Bool
-    /// How the last ask to this peer ended.
-    ///
-    /// Shown *beside* a live Ask button rather than instead of it: a decline
-    /// that silently reverted the row to its resting state is indistinguishable
-    /// from an ask that never left, and the honest answer — somebody said no —
-    /// is one a person deserves to see before deciding whether to ask again.
+    /// How the last ask to this peer ended. Shown beside a live Ask button,
+    /// not instead of it — a silent revert to resting state is
+    /// indistinguishable from an ask that never left.
     let askNote: String?
 
     public init(
@@ -250,10 +214,7 @@ public struct SharerDetail: View {
                 HStack(spacing: 8) {
                     Button(L("View Screen"), action: onView)
                     if isAsking {
-                        // A word, not a spinner: swift-cross-ui has no
-                        // indeterminate progress control on both backends, and
-                        // the fact that matters is "they have been asked", not
-                        // that something is animating.
+                        // A word, not a spinner — no indeterminate progress control on both backends.
                         Text(L("Asked — waiting for a reply"))
                             .font(.caption)
                             .foregroundColor(HubStyle.secondaryText)
@@ -275,8 +236,7 @@ public struct SharerDetail: View {
                     detailRow(label: L("Route"), value: routeLine)
                 }
                 if !tags.isEmpty {
-                    // Stripped of the `tag:` prefix, which every tag carries
-                    // and none of them distinguish.
+                    // Stripped of the `tag:` prefix, which every tag carries.
                     detailRow(
                         label: L("Tags"),
                         value: tags.map { $0.hasPrefix("tag:") ? String($0.dropFirst(4)) : $0 }
@@ -290,18 +250,10 @@ public struct SharerDetail: View {
         .padding(.leading, 20)
     }
 
-    /// The Route line: path first, then how far away it feels.
-    ///
-    /// Nil while nothing is known — which is a real state, not a placeholder.
-    /// The status seed may not have run, or this peer may never have been
-    /// contacted, and "Direct" printed on a guess would be worse than a line
-    /// that is not there.
-    ///
-    /// Latency is joined into the SAME line rather than given its own, and the
-    /// tier is spelled out in words beside the number. On macOS this is a
-    /// coloured dot, which is exactly the thing that page's accessibility rule
-    /// forbids on its own: status that reads as colour has to also be readable
-    /// as text, and swift-cross-ui has no tooltip to hide it in.
+    /// The Route line: path first, then how far away it feels. Nil is a real
+    /// state (unknown), not a placeholder — never guessed as "Direct".
+    /// Latency's tier is spelled out in words (macOS uses a coloured dot;
+    /// this package has no tooltip to hide colour-only status in).
     private var routeLine: String? {
         var parts: [String] = []
         switch route {

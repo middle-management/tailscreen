@@ -3,16 +3,11 @@ import XCTest
 
 @testable import WinNotifyKit
 
-/// `WindowsNotifier` — what gets handed to the notification platform.
-///
-/// **Read this before trusting the coverage.** There is no
-/// `AppNotificationManager` off Windows and nothing stands in for one, exactly
-/// as `WASAPIKit` documents for its own Linux leg. Nothing here posts a toast,
-/// sees a toast, or presses a button. What it does cover is the layer between
-/// the host and the shim — which scenario, which tag, which priority, and
-/// whether an unregistered notifier degrades quietly — through the
-/// `deliverForTesting` seam, because those are the decisions a Windows runner
-/// would not check either: a wrong tag and a right tag both post.
+/// `WindowsNotifier` — what gets handed to the notification platform. No
+/// `AppNotificationManager` off Windows and nothing stands in for one, so
+/// nothing here posts a toast or presses a button. What it covers is the
+/// layer between host and shim — scenario, tag, priority, quiet degradation
+/// — through `deliverForTesting`.
 ///
 /// The payload itself is pinned in `WindowsToastPayloadTests`, on the same CI.
 final class WindowsNotifierTests: XCTestCase {
@@ -46,8 +41,6 @@ final class WindowsNotifierTests: XCTestCase {
 
     // MARK: - Platform
 
-    /// Off Windows there is no platform, and the wrapper must say so rather
-    /// than pretend. Linux CI runs this leg; a Windows runner runs the other.
     func testPlatformSupportMatchesTheBuild() {
         #if os(Windows)
         XCTAssertTrue(WindowsNotifier.isSupported)
@@ -57,9 +50,8 @@ final class WindowsNotifierTests: XCTestCase {
         #endif
     }
 
-    /// The state this whole design turns on: a notifier that could not register
-    /// is not an error, it is a notifier that posts nothing. The host keeps its
-    /// in-window prompts.
+    /// A notifier that couldn't register is not an error — it posts nothing,
+    /// and the host keeps its in-window prompts.
     func testUnregisteredNotifierPostsNothingAndDoesNotCrash() {
         let notifier = WindowsNotifier(testingWith: true)
 
@@ -71,9 +63,8 @@ final class WindowsNotifierTests: XCTestCase {
         notifier.withdrawAll()
     }
 
-    /// `unknown` is not `unsupported`: one is "the query failed", the other is
-    /// the platform's own answer, and only the second is worth telling a user
-    /// about.
+    /// `unknown` ("the query failed") is not `unsupported` (the platform's own
+    /// answer, worth telling a user about).
     func testSettingEnumCoversThePlatformValues() {
         XCTAssertEqual(WindowsNotifier.Setting(rawValue: 0), .enabled)
         XCTAssertEqual(WindowsNotifier.Setting(rawValue: 5), .unsupported)
@@ -82,8 +73,6 @@ final class WindowsNotifierTests: XCTestCase {
         XCTAssertEqual(WindowsNotifier.Setting.allCases.count, 7)
     }
 
-    /// Only `enabled` means a toast will be seen. Every other value posts
-    /// successfully into nothing, which is why the share card has to say so.
     func testOnlyEnabledCountsAsVisible() {
         for setting in WindowsNotifier.Setting.allCases where setting != .enabled {
             XCTAssertNotEqual(setting, .enabled, "\(setting) must not read as visible")
@@ -108,18 +97,14 @@ final class WindowsNotifierTests: XCTestCase {
         XCTAssertTrue(box.value?.payload.contains("content=\"Accept\"") == true)
     }
 
-    /// A platform that refused the post must not hand back a tag: the caller
-    /// would store it and later withdraw a notification that never existed,
-    /// leaving the real one on screen forever.
+    /// A refused post must not hand back a tag, or the caller withdraws a
+    /// notification that never existed, leaving the real one on screen forever.
     func testRefusedPostReturnsNil() {
         let box = Box<Delivered?>(nil)
         XCTAssertNil(
             notifier(id: 0, into: box).post(summary: "s", body: "b", identity: "id"))
     }
 
-    /// The tag is a pure function of the identity, so a re-post replaces the
-    /// banner in place instead of stacking a second one — Windows' spelling of
-    /// `replaces_id`.
     func testRepostingTheSameIdentityReusesTheTag() {
         let box = Box<Delivered?>(nil)
         let notifier = notifier(into: box)
@@ -130,8 +115,7 @@ final class WindowsNotifierTests: XCTestCase {
         XCTAssertEqual(first, second)
     }
 
-    /// Two axes, spent on the same narrow set: `scenario` is about display and
-    /// `AppNotificationPriority` is about delivery under battery saver.
+    /// Two axes on the same narrow set: `scenario` is display, `AppNotificationPriority` is delivery.
     func testOnlyBlockingNoticesGetHighPriorityAndUrgentScenario() {
         let blocking = Box<Delivered?>(nil)
         _ = notifier(into: blocking).post(
@@ -148,9 +132,8 @@ final class WindowsNotifierTests: XCTestCase {
         XCTAssertTrue(invitation.value?.payload.contains("scenario=\"reminder\"") == true)
     }
 
-    /// The capability degradation that has no error attached to it: emitting
-    /// `urgent` on Windows 10 is a schema violation, so nothing would be posted
-    /// at all. `reminder` is what every build understands.
+    /// Emitting `urgent` on Windows 10 is a schema violation (nothing would
+    /// post); `reminder` is what every build understands.
     func testWindows10DowngradesRatherThanPostingNothing() {
         let box = Box<Delivered?>(nil)
         _ = notifier(supportsUrgent: false, into: box).post(
@@ -158,12 +141,10 @@ final class WindowsNotifierTests: XCTestCase {
 
         XCTAssertTrue(box.value?.payload.contains("scenario=\"reminder\"") == true)
         XCTAssertFalse(box.value?.payload.contains("urgent") == true)
-        // Still high priority: the delivery axis is not the one Windows 10 is
-        // missing, and dropping it too would degrade further than it has to.
+        // Still high priority — delivery isn't the axis Windows 10 is missing.
         XCTAssertEqual(box.value?.highPriority, true)
     }
 
-    /// A report has nothing to answer, so it expires like any other banner.
     func testInformationalNoticesGetNoScenario() {
         let box = Box<Delivered?>(nil)
         _ = notifier(into: box).post(
@@ -188,9 +169,6 @@ final class WindowsNotifierTests: XCTestCase {
         XCTAssertEqual(withdrawn.value?.1, WindowsToastPayload.group)
     }
 
-    /// Teardown clears the group rather than each tag: stopping a share expels
-    /// every viewer at once, and a prompt left behind is one somebody can still
-    /// press.
     func testWithdrawAllClearsTheGroup() {
         let withdrawn = Box<(String?, String)?>(nil)
         let notifier = WindowsNotifier(testingWith: true)
@@ -204,8 +182,6 @@ final class WindowsNotifierTests: XCTestCase {
 
     // MARK: - Activation
 
-    /// The half that does not come through this class at all: AppLifecycle
-    /// hands the host a string, and this is where it turns back into an answer.
     func testDecodesItsOwnActivationArguments() {
         let arguments = WindowsToastPayload.arguments(
             action: "approve", identity: "viewerPending:100.64.0.1")

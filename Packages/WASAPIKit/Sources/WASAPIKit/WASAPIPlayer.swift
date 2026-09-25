@@ -4,11 +4,10 @@ import Foundation
 import CWASAPI
 #endif
 
-/// Swift face of the WASAPI shared-mode render session.
-///
-/// Deliberately thin: the C shim owns the COM lifetime and this owns the Swift
-/// ergonomics — a throwing open, a typed error, and an array-shaped write. Same
-/// split as `ALSA.PCMPlayer` over libasound.
+/// Swift face of the WASAPI shared-mode render session. Deliberately thin:
+/// the C shim owns the COM lifetime, this owns the Swift ergonomics — a
+/// throwing open, a typed error, an array-shaped write. Same split as
+/// `ALSA.PCMPlayer` over libasound.
 public enum WASAPI {
     /// What the endpoint negotiated. Shared mode does not accept anything else,
     /// so the caller converts its PCM to match.
@@ -35,9 +34,8 @@ public enum WASAPI {
         /// reachable through `Recorder`, which sizes its own.
         case bufferTooSmall
         /// Windows refused the microphone: Settings → Privacy & security →
-        /// Microphone. Its own case rather than an opaque HRESULT because it is
-        /// the one failure here that the user can fix, and a message naming
-        /// 0x80070005 tells them nothing.
+        /// Microphone. Its own case since this is the one failure the user
+        /// can fix, and a message naming 0x80070005 tells them nothing.
         case accessDenied
         /// A COM failure, carrying its HRESULT so the log names the real cause.
         case hresult(Int32)
@@ -63,18 +61,14 @@ public enum WASAPI {
             }
         }
 
-        /// The HRESULT Windows returns when the microphone privacy setting is
-        /// off. Spelled as a bit pattern because `E_ACCESSDENIED` is an SDK
-        /// macro that does not exist off Windows, and this mapping has to be
-        /// testable where the tests run.
+        /// Spelled as a bit pattern because `E_ACCESSDENIED` is an SDK macro
+        /// that doesn't exist off Windows, and this mapping must be testable
+        /// where the tests run.
         static let accessDeniedHResult = Int32(bitPattern: 0x8007_0005)
 
-        /// Map the shim's return code. Zero is success and must be filtered by
-        /// the caller before this is consulted.
-        ///
-        /// Negative values are the shim's own; everything else is a raw HRESULT,
-        /// which keeps its identity all the way to the log line instead of
-        /// collapsing into "audio failed".
+        /// Map the shim's return code. Zero is success, filtered by the
+        /// caller first. Negative values are the shim's own; everything else
+        /// is a raw HRESULT, kept intact for the log line.
         static func from(code: Int32) -> Error {
             switch code {
             case -1: return .unsupportedFormat
@@ -89,10 +83,10 @@ public enum WASAPI {
 
     /// A started render session on the default output endpoint.
     ///
-    /// **Thread affinity:** create it and write to it from the SAME thread. COM
-    /// apartment state is per-thread and `init` initialises the calling thread's
-    /// apartment. Callers get this for free by constructing lazily inside
-    /// `ThreadedAudioSink`'s drain thread.
+    /// **Thread affinity:** create it and write to it from the SAME thread —
+    /// COM apartment state is per-thread and `init` initialises the calling
+    /// thread's apartment. Callers get this for free by constructing lazily
+    /// inside `ThreadedAudioSink`'s drain thread.
     public final class Player {
         public let format: Format
 
@@ -103,8 +97,7 @@ public enum WASAPI {
         public init() throws {
             #if os(Windows)
             // `ts_wasapi` is incomplete in the header, so Swift imports every
-            // `ts_wasapi *` as `OpaquePointer` — no rebinding, and no way to
-            // reach inside the struct from here, which is the point of it.
+            // `ts_wasapi *` as `OpaquePointer` — no way to reach inside from here.
             var pointer: OpaquePointer?
             var rate: UInt32 = 0
             var channels: UInt32 = 0

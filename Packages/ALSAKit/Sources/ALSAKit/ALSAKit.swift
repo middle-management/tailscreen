@@ -2,15 +2,9 @@ import CALSA
 import Foundation
 
 /// Thin Swift wrapper over ALSA (libasound) for the Linux viewer's audio
-/// output. The macOS viewer plays decoded audio through AVAudioEngine; on
-/// Linux this `ALSA.PCMPlayer` is the equivalent sink — it takes the exact
-/// samples Tailscreen's audio path already produces (mono, 48 kHz, Float32 in
-/// `[-1, 1]`, one 20 ms Opus frame = 960 samples) and writes them to a PCM
-/// device.
-///
-/// ALSA output also works on PipeWire/PulseAudio systems through their
-/// ALSA-compatibility PCM plugins, so it's a safe portable first backend
-/// before a dedicated PipeWire path.
+/// output. `ALSA.PCMPlayer` takes the exact samples Tailscreen's audio path
+/// already produces (mono, 48 kHz, Float32 in `[-1, 1]`, one 20 ms Opus frame
+/// = 960 samples) and writes them to a PCM device.
 ///
 /// Namespaced under `ALSA` so `ALSA.PCMPlayer` / `ALSA.Error` don't collide
 /// with libasound's own `snd_pcm_*` C surface.
@@ -30,11 +24,10 @@ public enum ALSA {
     /// A blocking PCM playback stream. One instance per output stream, driven
     /// from a single thread — libasound's PCM handle is not thread-safe.
     ///
-    /// Uses the interleaved little-endian Float32 format (`FLOAT_LE`) so a
-    /// Swift `[Float]` in `[-1, 1]` writes straight through with no conversion
-    /// on little-endian hosts (every platform Tailscreen targets). Soft
-    /// resampling is enabled so the stream still opens if the hardware can't do
-    /// 48 kHz natively.
+    /// Uses interleaved little-endian Float32 (`FLOAT_LE`) so a Swift
+    /// `[Float]` in `[-1, 1]` writes straight through on little-endian hosts.
+    /// Soft resampling is enabled so the stream still opens if the hardware
+    /// can't do 48 kHz natively.
     public final class PCMPlayer {
         private let pcm: OpaquePointer
         private let channels: UInt32

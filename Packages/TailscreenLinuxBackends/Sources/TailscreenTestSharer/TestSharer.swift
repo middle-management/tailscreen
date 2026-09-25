@@ -8,18 +8,12 @@ import TailscreenTransport
 //   tailscreen-test-sharer [--state-dir PATH] [--fps N] [--size WxH]
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
-// The real sharer is macOS-only (ScreenCaptureKit), which left the Linux viewer
-// end-to-end-untestable: everything past "the node comes up" could only be
-// compile-gated. This stands in for it — a second tsnet node that speaks the
-// sharer half of the wire protocol against a local headscale, so the whole
-// viewer path can actually be exercised on one Linux box:
-//
-//   discovery → metadata/sharing chip → HELLO/admission → RTP video → decode +
-//   GL render → annotations (both directions) → remote-control grant → input
-//
-// It serves REAL H.264 (libavcodec, moving test pattern), so the viewer's
-// FFmpeg decoder and GL renderer do genuine work. It is a development/test tool,
-// NOT a product sharer: it captures nothing, and every viewer is admitted.
+// Stands in for the macOS-only real sharer so the whole Linux viewer path
+// (discovery → HELLO/admission → RTP video → decode/render → annotations →
+// remote control) can be exercised end to end on one Linux box, against a
+// local headscale. Serves real H.264 (libavcodec test pattern) so the
+// viewer's decoder/renderer do genuine work. Test tool only: captures
+// nothing, admits every viewer.
 //
 // Pair with scripts/e2e-up-native.sh; see Packages/TailscreenLinuxBackends/README.md.
 
@@ -77,10 +71,9 @@ struct StderrLog: LogSink {
 let logger = StderrLog()
 func note(_ message: String) { logger.log(message) }
 
-/// Tracks the viewers that have said HELLO, keyed by their UDP source address.
-/// Every viewer is admitted immediately — this is a test tool, so there is no
-/// approval gate, allow/deny store, or SSRC anti-spoof (all of which the real
-/// macOS sharer implements and its own suites cover).
+/// Tracks the viewers that have said HELLO, keyed by their UDP source
+/// address. Every viewer is admitted immediately — no approval gate,
+/// allow/deny store, or SSRC anti-spoof (the real macOS sharer has those).
 actor ViewerRoster {
     private var addrs: Set<String> = []
     private var nextSSRC: UInt32 = RTPHeader.firstViewerSSRC
@@ -98,13 +91,9 @@ actor ViewerRoster {
 }
 
 /// A viewer PLI arrives on the UDP control loop; the encoder is driven by the
-/// video pump. This one flag is all that needs to cross between them.
-///
-/// It exists so the encoder has exactly ONE owner. Handing the encoder itself
-/// to both loops let `requestKeyframe()` write `frame.pointee.pict_type` while
-/// `encodeFrame` was inside `av_frame_make_writable` and writing that same
-/// frame's planes — two threads mutating one `AVFrame`. Swift 6.1 accepted it;
-/// 6.3's tightened `sending` check is what named it.
+/// video pump. This flag is all that crosses between them, so the encoder has
+/// exactly ONE owner — sharing it directly let two threads mutate one
+/// `AVFrame` simultaneously.
 actor KeyframeRequest {
     private var pending = false
 
@@ -121,13 +110,11 @@ actor KeyframeRequest {
 @main
 enum TestSharer {
     static func main() async {
-        // A LONG-LIVED sharer identity: discovery lists peers whose hostname
-        // starts with `tailscreen-` but NOT `tailscreen-client-`, so this must
-        // avoid the client/viewer prefixes to show up as a connectable screen.
+        // Discovery lists peers whose hostname starts with `tailscreen-` but
+        // NOT `tailscreen-client-` — avoid the viewer prefix to appear as a screen.
         let hostName = "\(TailscreenInstance.serverHostnamePrefix)test-sharer-\(UUID().uuidString.prefix(6))"
-        // Ephemeral + unbounded up(), as this tool has always run: a test
-        // node should vanish when it exits, and there is no timeout because
-        // an interactive login against a local headscale may be the operator.
+        // Ephemeral (vanishes on exit) + unbounded (an interactive login
+        // against local headscale may be the operator).
         let spec = TsnetNodeFactory.Spec(
             hostName: hostName,
             ephemeral: true,
@@ -187,15 +174,14 @@ enum TestSharer {
                 continue
             }
             guard let byte = data.first, let kind = ScreenShareControlMessage(rawValue: byte) else {
-                continue  // RTP or unknown — a sharer receives viewer audio here too
+                continue  // RTP or unknown — viewer audio also arrives here
             }
             switch kind {
             case .hello:
                 let caps = ScreenShareControlMessage.decodeHelloCaps(data)
                 let ssrc = await roster.admit(from)
-                // Advertise the two sharer-only bits so the viewer enables its
-                // Request-Control and annotation toolbars, plus the recovery
-                // caps it offered us.
+                // Advertise the sharer-only bits so the viewer enables its
+                // toolbars, plus the recovery caps it offered.
                 let serverCaps: ScreenShareCaps =
                     [.nack, .receiverReport, .fec, .remoteControl, .annotations]
                 let ack = ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc, caps: serverCaps)
@@ -243,8 +229,7 @@ enum TestSharer {
                 note("streaming to \(viewers.count) viewer(s)")
                 announced = true
             }
-            // Consume any PLI the UDP loop parked, so the IDR lands on this
-            // very frame rather than one later.
+            // Consume any parked PLI so the IDR lands on this frame.
             if await keyframe.take() { encoder.requestKeyframe() }
             for au in encoder.encodeFrame(index: index) {
                 let nals = H264TestEncoder.annexBToNALs(au)
@@ -299,8 +284,7 @@ enum TestSharer {
                         videoCodec: .h264)
                     try? await conn.send(ScreenShareMessage.metadataResponse(metadata).encode())
                 case .annotation(let op):
-                    // Prove BOTH directions: log the viewer's stroke, then relay
-                    // it back the way the real sharer fans out to other viewers.
+                    // Proves both directions: log then relay back.
                     note("annotation from \(peer): \(describe(op)) → relaying back")
                     try? await conn.send(ScreenShareMessage.annotation(op).encode())
                 case .controlRequest:

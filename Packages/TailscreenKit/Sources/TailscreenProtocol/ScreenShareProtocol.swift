@@ -4,10 +4,8 @@ import Foundation
 ///
 /// Video runs over UDP/RTP (see ``RTPPacket.swift``); the control channel
 /// runs over a separate TCP connection because its messages need reliable,
-/// ordered delivery — a dropped datagram would leave a visual gap in the
-/// middle of an annotation stroke, or silently swallow a request-to-share
-/// prompt. `TailscreenControlListener` accepts these connections on
-/// port 7447 and demultiplexes by message type.
+/// ordered delivery. `TailscreenControlListener` accepts these connections
+/// on port 7447 and demultiplexes by message type.
 ///
 /// Every message starts with a 5-byte header:
 ///
@@ -21,11 +19,9 @@ import Foundation
 ///         payload = JSON-encoded ``RequestToSharePayload``
 ///     .shareResponse  (0x05)  — request-to-share receiver→requester,
 ///         sent back on the SAME TCP connection the request arrived on
-///         (no dial-back, so the answer provably reaches the actual
-///         requester). payload = JSON-encoded ``TailscreenRequest``
-///         (`.acceptShare` / `.declineShare`). Old peers' parsers drop
-///         unknown type bytes, so this is backward compatible — a legacy
-///         requester just never sees an answer.
+///         (no dial-back). payload = JSON-encoded ``TailscreenRequest``
+///         (`.acceptShare` / `.declineShare`). Backward compatible: a
+///         legacy requester just never sees an answer.
 ///     .controlRequest (0x06)  — viewer→sharer
 ///         "please grant me remote control." Empty payload.
 ///     .controlGranted (0x07)  — sharer→viewer
@@ -40,14 +36,11 @@ import Foundation
 ///     .metadataRequest (0x0B) — peer→peer
 ///         "describe yourself" — drives the peer list's sharing-status
 ///         filter. Empty payload; answered with `.metadataResponse` on the
-///         SAME TCP connection (like `.shareResponse` — no dial-back). Old
-///         peers drop the unknown byte, so the requester just times out
-///         and the peer reads as status-unknown.
+///         SAME TCP connection. Old peers drop the unknown byte, so the
+///         requester times out and reads as status-unknown.
 ///     .metadataResponse (0x0C) — request receiver→requester
 ///         payload = JSON-encoded ``TailscreenMetadata`` (share name,
-///         resolution, `isSharing`). Exposes nothing the tailnet can't
-///         already see (the hostname is in the netmap) plus the share
-///         state a viewer would learn by connecting.
+///         resolution, `isSharing`).
 ///     .mediaDatagram  (0x0D)  — both directions
 ///         one raw UDP datagram carried over the stream (spec §2.2, the
 ///         reliable-transport profile for viewers without usable UDP).
@@ -69,13 +62,11 @@ public enum ScreenShareMessage {
 
     public static let headerSize = 5
 
-    /// Hard ceiling on a single frame's payload. Every legitimate payload
-    /// (annotation op, input event, request/response JSON) is well under a
-    /// kilobyte; the cap stops a hostile peer from advertising a 4 GiB length
-    /// and slow-streaming bytes to grow the parser's buffer without bound —
-    /// especially now that a privileged `.inputEvent` consumer rides this
-    /// channel. A frame declaring more than this poisons the parser (the
-    /// stream is unrecoverable) and the receive loop closes the connection.
+    /// Hard ceiling on a single frame's payload. Legitimate payloads are well
+    /// under a kilobyte; the cap stops a hostile peer advertising a 4GiB
+    /// length and slow-streaming bytes to grow the buffer unbounded. A frame
+    /// declaring more than this poisons the parser and the receive loop
+    /// closes the connection.
     public static let maxPayloadLength = 1 << 20  // 1 MiB
 
     /// `CaseIterable` so `WireByteRegistryTests` can enumerate the live cases
@@ -153,9 +144,8 @@ public struct ScreenShareMessageParser {
 
     private var buffer = Data()
     /// Set once a frame declares a payload longer than
-    /// ``ScreenShareMessage/maxPayloadLength`` — the stream is unrecoverable
-    /// (we can't know where the next frame starts), so ``next()`` returns nil
-    /// forever and the receive loop should close the connection.
+    /// ``ScreenShareMessage/maxPayloadLength`` — the stream is unrecoverable,
+    /// so ``next()`` returns nil forever and the receive loop closes it.
     private(set) public var isCorrupt = false
 
     public mutating func append(_ data: Data) {
@@ -166,12 +156,9 @@ public struct ScreenShareMessageParser {
     }
 
     public mutating func next() -> ScreenShareMessage? {
-        // A loop rather than early returns on decode failure: a frame whose
-        // payload fails to decode is discarded and parsing continues with the
-        // next frame (TS-TCP-008). Returning nil for a bad payload made every
-        // receive loop's `while let` drain treat "bad frame" as "need more
-        // bytes" — messages already buffered behind the bad frame sat
-        // undelivered until further traffic happened to arrive.
+        // A loop, not early returns: a frame whose payload fails to decode
+        // is discarded and parsing continues (TS-TCP-008) — returning nil
+        // would make `while let` drains treat it as "need more bytes".
         while true {
             guard !isCorrupt else { return nil }
             guard buffer.count >= ScreenShareMessage.headerSize else { return nil }
@@ -297,15 +284,11 @@ public struct ScreenShareMessageParser {
     }
 
     private func decodeInputEvent(_ payload: Data) -> ScreenShareMessage? {
-        // INVARIANT: the stock JSONDecoder's default
-        // `nonConformingFloatDecodingStrategy = .throw` is load-bearing here —
-        // it rejects `NaN` / `Infinity` / `-Infinity` tokens and out-of-range
-        // literals like `1e999` in the coordinate fields, which is the first
-        // line of defense against a NaN reaching the injector's coordinate
-        // math. Pinned by `ScreenShareProtocolTests`; don't "improve" this
-        // decoder with `.convertFromString` without reading those tests.
-        // (`RemoteControlMapping.globalPoint` also defends itself now, but
-        // rejecting the frame outright is still the right call.)
+        // INVARIANT: the stock decoder's default `.throw` for
+        // non-conforming floats rejects NaN/Infinity/1e999 in coordinate
+        // fields, the first defense against a NaN reaching the injector.
+        // Pinned by `ScreenShareProtocolTests`; don't switch to
+        // `.convertFromString` without reading those tests.
         guard let event = try? JSONDecoder().decode(InputEvent.self, from: Data(payload)) else {
             return nil
         }
@@ -328,8 +311,8 @@ public struct ControlRevokedPayload: Codable, Sendable {
 /// the message-type byte.
 public struct RequestToSharePayload: Codable, Sendable {
     /// Generous upper bound on a sensible hostname. RFC 1035 caps DNS
-    /// labels at 63 chars and FQDNs at 253; we render the hostname in a
-    /// 12 pt menubar row where anything past ~64 is already truncated.
+    /// labels at 63 chars and FQDNs at 253; rendered in a 12pt menubar row
+    /// where anything past ~64 is already truncated.
     public static let maxHostnameLength = 64
 
     public let fromHostname: String

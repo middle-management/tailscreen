@@ -32,36 +32,27 @@ final class VideoEncoder: @unchecked Sendable {
     private var session: VTCompressionSession?
     private var frameCount: Int64 = 0
     private var fps: Int32 = 60
-    /// Perceptual-quality target for `kVTCompressionPropertyKey_Quality`,
-    /// read by `createSession`. Set before `setup` to override the tuned
-    /// default; the capture-helper threads `QualitySettings.encoderQuality`
-    /// through here.
+    /// Set before `setup` to override the tuned default; the capture-helper
+    /// threads `QualitySettings.encoderQuality` through here.
     var encoderQuality: Double = EncoderTuning.quality
-    /// Color characteristics (primaries/transfer/matrix, bit depth, range)
-    /// the session is tagged with. Set before `setup` to override the shipped
-    /// BT.709 8-bit default; the capture-helper threads the display's
-    /// `ColorInfo` through here. Same set-a-property idiom as `encoderQuality`,
-    /// which keeps `setup` at ≤5 parameters. VideoToolbox writes these into
-    /// the SPS VUI so they reach the viewer in-band with no wire change.
+    /// Set-a-property idiom (like `encoderQuality`) keeps `setup` at <=5
+    /// parameters. VideoToolbox writes these into the SPS VUI, reaching the
+    /// viewer in-band with no wire change.
     var colorInfo: ColorInfo = .bt709FullRange8
     private var forceNextKeyframe = false
     private var lastParameterSets: CodecParameterSets?
     private var activeCodec: VideoCodec = .h264
-    /// Frames handed to VT that haven't come back through the output callback
-    /// yet. Capped so we don't build up seconds of encoder backlog on busy
-    /// pipelines (ScreenCaptureKit will happily deliver 60fps faster than VT
-    /// can encode Retina frames, which otherwise manifests as live-stream lag).
+    /// Capped so backlog doesn't build up on busy pipelines — SCK happily
+    /// delivers 60fps faster than VT can encode Retina frames.
     private var inFlight: Int = 0
     private var droppedAtInput: Int = 0
     private let maxInFlight = EncoderTuning.maxInFlight
-    /// Latch so property refusals from runtime `setBitrate` calls log once
-    /// per session instead of once per adaptive-sweep tick. Cleared on
-    /// `createSession`. Guarded by `lock`.
+    /// Latches runtime `setBitrate` property refusals to log once per
+    /// session, not once per adaptive-sweep tick. Guarded by `lock`.
     private var didLogRuntimePropertyFailures = false
     private let logger = TSLogger()
 
-    /// Codec the encoder is currently configured for. `.h264` until the
-    /// first successful `setup`.
+    /// `.h264` until the first successful `setup`.
     var codec: VideoCodec {
         lock.lock()
         defer { lock.unlock() }
@@ -69,23 +60,11 @@ final class VideoEncoder: @unchecked Sendable {
     }
 
     /// - Parameters:
-    ///   - width: pixel width
-    ///   - height: pixel height
-    ///   - fps: target frame rate
-    ///   - preferredCodec: codec to try first. We attempt that one and fall
-    ///     back to H.264 if VT refuses (e.g. an Intel Mac without HW HEVC).
-    ///   - bitsPerPixel: ceiling for the rate-control window. We drive the
-    ///     encoder primarily by `kVTCompressionPropertyKey_Quality` and use
-    ///     `bitsPerPixel × width × height × fps` as the upper bound enforced
-    ///     via `DataRateLimits`. HEVC's intra-prediction modes for screen
-    ///     content earn back ~30% efficiency vs H.264, so the HEVC default
-    ///     is lower; idle screens routinely settle far below the ceiling
-    ///     because Quality lets the encoder skip bits when nothing changed.
-    ///
-    /// The perceptual-quality target (`kVTCompressionPropertyKey_Quality`)
-    /// is taken from the `encoderQuality` property — set it before calling
-    /// `setup` to override the tuned default (the capture-helper threads the
-    /// user's `QualitySettings.encoderQuality` through that property).
+    ///   - preferredCodec: attempted first, falling back to H.264 if VT
+    ///     refuses (e.g. an Intel Mac without HW HEVC).
+    ///   - bitsPerPixel: ceiling for `bitsPerPixel x width x height x fps`,
+    ///     enforced via `DataRateLimits`. Rate control itself is primarily
+    ///     driven by `encoderQuality`.
     func setup(
         width: Int,
         height: Int,
@@ -121,21 +100,12 @@ final class VideoEncoder: @unchecked Sendable {
         throw VideoEncoderError.sessionCreationFailed(lastError)
     }
 
-    /// Whether the fallback ladder may end on an H.264 rung. `false` for
-    /// the explicit-HEVC codec preference: the user opted out of the
-    /// safety net, so an encoder that can't do HEVC fails the share
-    /// honestly instead of silently downgrading. A property (like
-    /// `colorInfo` / `encoderQuality`) rather than a `setup` parameter to
-    /// stay within the 5-parameter lint ceiling.
+    /// `false` for the explicit-HEVC preference: fail honestly rather than
+    /// silently downgrade.
     var allowsH264Fallback = true
 
-    /// Ordered (codec, colorInfo) attempts for the fallback ladder. HEVC
-    /// Main 10 falls back to HEVC 8-bit before H.264 (mirroring the shipped
-    /// HEVC→H.264 ladder), so a Mac that can't encode 10-bit still gets HEVC;
-    /// H.264 never carries 10-bit here. `allowH264Fallback: false` (the
-    /// explicit-HEVC preference) drops the trailing H.264 rung — but never
-    /// affects an H.264 *preference*, which is its own single-rung ladder.
-    /// Pure and CI-tested.
+    /// HEVC Main 10 falls back to HEVC 8-bit before H.264, so a Mac that
+    /// can't encode 10-bit still gets HEVC; H.264 never carries 10-bit here.
     static func sessionAttempts(
         preferredCodec: VideoCodec, colorInfo: ColorInfo, allowH264Fallback: Bool = true
     ) -> [(codec: VideoCodec, colorInfo: ColorInfo)] {
@@ -156,9 +126,8 @@ final class VideoEncoder: @unchecked Sendable {
         return attempts
     }
 
-    /// Bundle of per-session settings, kept as one value so `createSession`
-    /// stays within the 5-parameter lint ceiling as color characteristics
-    /// were threaded in.
+    /// Kept as one value so `createSession` stays within the 5-parameter
+    /// lint ceiling.
     private struct SessionConfig {
         let width: Int
         let height: Int
@@ -168,21 +137,14 @@ final class VideoEncoder: @unchecked Sendable {
         let colorInfo: ColorInfo
     }
 
-    /// Default `bitsPerPixel` ceiling for the given codec. HEVC encodes
-    /// screen content more efficiently so it gets a lower ceiling for the
-    /// same visual quality. Note this is now a ceiling, not an average —
-    /// idle steady-state bandwidth typically falls well below it because
-    /// `kVTCompressionPropertyKey_Quality` drives the actual rate.
+    /// A ceiling, not an average — idle steady-state bandwidth typically
+    /// falls well below it since `Quality` drives the actual rate.
     static func defaultBitsPerPixel(for codec: VideoCodec) -> Double {
-        // Single source of truth lives in the portable tuning layer.
         EncoderTuning.defaultBitsPerPixel(for: codec)
     }
 
-    /// `VTSessionSetProperty` wrapper that records a refused property (by
-    /// name and status) instead of discarding the OSStatus. Most of these
-    /// properties are best-effort tuning knobs, so a refusal isn't fatal —
-    /// but a silently ignored `DataRateLimits` means unbounded bitrate,
-    /// which is worth naming in the log once per session.
+    /// Records a refused property instead of discarding the OSStatus — a
+    /// silently ignored `DataRateLimits` means unbounded bitrate.
     private static func setProperty(
         _ session: VTCompressionSession,
         key: CFString,
@@ -223,17 +185,11 @@ final class VideoEncoder: @unchecked Sendable {
             throw VideoEncoderError.sessionCreationFailed(status)
         }
 
-        // Property refusals are collected here and logged once, by name,
-        // after the configuration block — VT support varies by hardware and
-        // OS, and a session that silently dropped e.g. DataRateLimits used
-        // to run unbounded-bitrate with no trace in the logs.
         var propertyFailures: [String] = []
 
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue,
             failures: &propertyFailures)
-        // Profile follows the codec + bit depth: HEVC Main 10 for 10-bit,
-        // Main for 8-bit HEVC, High for H.264 (never 10-bit here).
         let profileLevel = color.profileLevel(for: codec)
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel,
@@ -245,12 +201,8 @@ final class VideoEncoder: @unchecked Sendable {
             newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber,
             failures: &propertyFailures)
 
-        // Tag the bitstream with the captured color so decoders don't have to
-        // guess. Without these, players have been observed picking BT.601 on
-        // captured content and shifting reds noticeably. These come from the
-        // capture-helper's `ColorInfo` (BT.709 by default, Display P3 on
-        // wide-gamut displays, BT.2020 PQ/HLG for HDR); VideoToolbox writes
-        // them into the SPS VUI so the viewer reads them back in-band.
+        // Without these, players have been observed picking BT.601 on
+        // captured content and shifting reds noticeably.
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_ColorPrimaries,
             value: color.primaries.vtKey, failures: &propertyFailures)
@@ -261,11 +213,8 @@ final class VideoEncoder: @unchecked Sendable {
             newSession, key: kVTCompressionPropertyKey_YCbCrMatrix,
             value: color.matrix.vtKey, failures: &propertyFailures)
 
-        // Force the high-quality real-time path. RealTime=true alone leaves
-        // VT free to pick a cheaper trade-off; these flip the explicit
-        // tiebreakers toward quality. Both are best-effort — older or
-        // future VT versions may not honor them; a refusal is only named in
-        // the log, never fatal.
+        // RealTime=true alone leaves VT free to pick a cheaper trade-off;
+        // these flip the explicit tiebreakers toward quality. Best-effort.
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
             value: kCFBooleanFalse, failures: &propertyFailures)
@@ -273,22 +222,16 @@ final class VideoEncoder: @unchecked Sendable {
             newSession, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse,
             failures: &propertyFailures)
 
-        // HEVC: keep more reference frames around. Screen content has lots
-        // of recurring patterns (cursor blink, scrollback redraw, repeating
-        // UI chrome) that compress dramatically better with a deeper
-        // reference window. The decoder reads the new buffering depth from
-        // the SPS automatically.
+        // Screen content's recurring patterns (cursor blink, scrollback
+        // redraw) compress better with a deeper reference window.
         if codec == .hevc {
             Self.setProperty(
                 newSession, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: 4 as CFNumber,
                 failures: &propertyFailures)
         }
 
-        // Drive rate control by perceptual quality with a hard ceiling
-        // (DataRateLimits, set in applyBitrate). Idle screens then send
-        // near-zero bits while busy frames spend up to the ceiling — the
-        // right shape for screen sharing. If the encoder ignores Quality,
-        // the ceiling alone still bounds bandwidth.
+        // Idle screens send near-zero bits, busy frames spend up to the
+        // ceiling set in applyBitrate — the right shape for screen sharing.
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_Quality, value: encoderQuality as CFNumber,
             failures: &propertyFailures)
@@ -296,14 +239,12 @@ final class VideoEncoder: @unchecked Sendable {
         let bitrate = Self.computeBitrate(width: width, height: height, fps: Int(fps), bitsPerPixel: bitsPerPixel)
         Self.applyBitrate(bitrate, to: newSession, failures: &propertyFailures)
 
-        // Emit each frame as soon as it's encoded — no pipelining — so the
-        // wall-clock latency per frame stays predictable.
+        // No pipelining, so wall-clock latency per frame stays predictable.
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber,
             failures: &propertyFailures)
 
-        // IDRs are triggered on demand (new viewer, explicit refresh). This
-        // interval is a safety net, not a cadence.
+        // Safety net, not a cadence — IDRs are triggered on demand.
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
             value: (fps * EncoderTuning.keyframeIntervalMultiplier) as CFNumber,
@@ -326,26 +267,16 @@ final class VideoEncoder: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// The bitrate-ceiling formula (`w × h × bpp × fps`). Internal (not
-    /// private) because it's the single source of truth shared by three
-    /// call sites that must agree byte-for-byte: this encoder's session
-    /// setup, the capture-helper's user-ceiling clamp
-    /// (`CaptureHelperRunner.handleFrame`), and the server's
-    /// adaptive-bitrate baseline anchor (`onEncoderResolution`).
+    /// Internal (not private): three call sites must agree byte-for-byte —
+    /// this encoder's setup, the capture-helper's ceiling clamp, and the
+    /// server's adaptive-bitrate baseline anchor.
     static func computeBitrate(width: Int, height: Int, fps: Int, bitsPerPixel: Double) -> Int {
-        // Single source of truth lives in the portable tuning layer, beside
-        // `defaultBitsPerPixel` — the sharer data plane computes its anchor
-        // from there without depending on this VideoToolbox encoder.
         EncoderTuning.computeBitrate(width: width, height: height, fps: fps, bitsPerPixel: bitsPerPixel)
     }
 
-    /// Sets the bandwidth ceiling via `DataRateLimits`. We deliberately do
-    /// NOT set `AverageBitRate`: rate control runs primarily off
-    /// `kVTCompressionPropertyKey_Quality` (configured once in
-    /// `createSession`), and this function configures the upper bound the
-    /// encoder is allowed to peak to. We allow 1.75× the per-second budget
-    /// over a 500 ms window — generous enough for a single IDR burst but
-    /// tight enough to prevent burst tail latency.
+    /// Deliberately not `AverageBitRate`: rate control runs off `Quality`,
+    /// this only configures the peak the encoder may reach. 500ms window,
+    /// generous enough for a single IDR burst but tight against tail latency.
     private static func applyBitrate(_ bitrate: Int, to session: VTCompressionSession, failures: inout [String]) {
         let perSecondBytes = bitrate / 8
         let windowSeconds = EncoderTuning.dataRateWindowSeconds
@@ -356,11 +287,7 @@ final class VideoEncoder: @unchecked Sendable {
             failures: &failures)
     }
 
-    /// Update the encoder's bandwidth ceiling while it's running. Used by
-    /// the adaptive-bitrate sweep on the server: cut on sustained PLI
-    /// bursts, recover on clean stream. The encoder's actual rate is
-    /// driven by Quality and may sit well below this ceiling on idle
-    /// content. Safe to call from any thread.
+    /// Used by the server's adaptive-bitrate sweep. Safe from any thread.
     func setBitrate(_ bitrate: Int) {
         lock.lock()
         let s = session
@@ -369,9 +296,6 @@ final class VideoEncoder: @unchecked Sendable {
         var failures: [String] = []
         Self.applyBitrate(bitrate, to: s, failures: &failures)
         guard !failures.isEmpty else { return }
-        // The adaptive sweep calls this every few seconds; latch so a
-        // machine that refuses DataRateLimits logs once per session, not
-        // once per tick.
         lock.lock()
         let shouldLog = !didLogRuntimePropertyFailures
         didLogRuntimePropertyFailures = true
@@ -381,7 +305,7 @@ final class VideoEncoder: @unchecked Sendable {
         }
     }
 
-    /// Request that the next encoded frame be an IDR. Safe from any thread.
+    /// Safe from any thread.
     func requestKeyframe() {
         lock.lock()
         forceNextKeyframe = true
@@ -394,9 +318,8 @@ final class VideoEncoder: @unchecked Sendable {
             lock.unlock()
             return
         }
-        // Drop this frame if the encoder is already saturated. Without this
-        // the backlog grows unbounded and the stream ends up several seconds
-        // behind live.
+        // Without this the backlog grows unbounded and the stream ends up
+        // several seconds behind live.
         if inFlight >= maxInFlight && !forceNextKeyframe {
             droppedAtInput += 1
             if droppedAtInput == 1 || droppedAtInput % 60 == 0 {
@@ -434,8 +357,6 @@ final class VideoEncoder: @unchecked Sendable {
     }
 
     fileprivate func handleEncodedFrame(status: OSStatus, infoFlags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer?) {
-        // Always decrement inFlight regardless of success — VT has finished
-        // this frame one way or another.
         lock.lock()
         if inFlight > 0 { inFlight -= 1 }
         let codec = activeCodec

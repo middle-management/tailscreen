@@ -3,17 +3,12 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Unit tests for the shared peer-list projection — `PeerListFilter.narrow`
-/// and `knownTags(in:)`, the two derivations all three hubs used to write out
-/// by hand over their own peer type.
-///
-/// `PeerListFilterTests` covers the per-peer `matches` decision; this covers
-/// what the LIST does with it: how a missing sweep answer is projected, and
-/// which tags a filter menu is allowed to forget.
+/// The shared peer-list projection — `PeerListFilter.narrow` and
+/// `knownTags(in:)` — that all three hubs used to hand-write over their own
+/// peer type. `PeerListFilterTests` covers the per-peer `matches` decision;
+/// this covers what the list does with it.
 final class PeerListProjectionTests: XCTestCase {
-    /// A stand-in for the hosts' peer types. The protocol is exactly the three
-    /// fields the projection reads, so a fake here is not a simplification —
-    /// it is the whole surface.
+    /// The protocol is exactly the three fields the projection reads, so this fake is the whole surface.
     private struct Row: PeerListRow, Equatable {
         let id: String
         let isOnline: Bool
@@ -47,10 +42,7 @@ final class PeerListProjectionTests: XCTestCase {
         XCTAssertEqual(filter.narrow(rows).map(\.id), ["a", "c"])
     }
 
-    /// The reason this is one shared function: a peer the sweep has not
-    /// answered for is UNKNOWN, and `onlySharing` hides unknown rather than
-    /// treating it as "not sharing". A host that reached into the dictionary
-    /// itself could easily have written the other thing.
+    /// A peer with no sweep answer is unknown; `onlySharing` hides unknown rather than treating it as "not sharing".
     func testOnlySharingHidesPeersWithNoSweepAnswer() {
         var filter = PeerListFilter.default
         filter.onlySharing = true
@@ -70,8 +62,7 @@ final class PeerListProjectionTests: XCTestCase {
         XCTAssertEqual(filter.narrow(rows, shareInfo: shareInfo).map(\.id), ["live"])
     }
 
-    /// The sweep is keyed by `id`, so a dictionary populated under a different
-    /// key must read as no answer at all — not as somebody else's status.
+    /// A dictionary populated under a different key reads as no answer, not somebody else's status.
     func testSweepAnswersAreMatchedByRowIDNotByPosition() {
         var filter = PeerListFilter.default
         filter.onlySharing = true
@@ -100,8 +91,7 @@ final class PeerListProjectionTests: XCTestCase {
             PeerListFilter.default.knownTags(in: rows), ["tag:ci", "tag:studio"])
     }
 
-    /// Sorted, so a discovery sweep that reorders the peer list does not
-    /// reshuffle the menu under a cursor that is already moving toward a row.
+    /// Sorted, so a discovery sweep reordering peers doesn't reshuffle the menu under a moving cursor.
     func testKnownTagsOrderIsIndependentOfPeerOrder() {
         let forward = [Row("a", tags: ["tag:zulu"]), Row("b", tags: ["tag:alpha"])]
         let reversed = Array(forward.reversed())
@@ -110,10 +100,8 @@ final class PeerListProjectionTests: XCTestCase {
             PeerListFilter.default.knownTags(in: reversed))
     }
 
-    /// The leg the two swift-cross-ui hubs were missing: select a tag, then
-    /// have its last peer leave the tailnet. If the menu is derived from the
-    /// present peers alone, the row that would switch the filter back off is
-    /// gone — and the list stays empty with no way out.
+    /// If the menu were derived from present peers alone, a selected tag whose
+    /// last peer leaves would vanish from the menu, leaving no way to turn the filter back off.
     func testASelectedTagSurvivesItsLastPeerLeaving() {
         var filter = PeerListFilter.default
         filter.selectedTags = ["tag:studio"]

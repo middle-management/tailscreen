@@ -2,31 +2,22 @@ import SwiftCrossUI
 import TailscreenL10n
 import TailscreenProtocol
 
-/// Everything the header needs to draw the peer-list filter, in one value.
+/// Everything the header needs to draw the peer-list filter, in one value —
+/// bundled like `HubAction` rather than four more `ViewerHeader` parameters.
 ///
-/// Bundled rather than spread across four more `ViewerHeader` parameters, for
-/// the same reason `HubAction` exists: an optional struct says "this host has a
-/// filter" in one place, and a header that already takes nine arguments does not
-/// need four more that are only ever passed together.
-///
-/// Deliberately NOT a `Binding<PeerListFilter>`. Both hosts keep the filter on a
-/// main-actor model that also has to persist every change, and a binding would
-/// let the chrome write the field while the persistence sat somewhere else.
-/// A value in and a closure out keeps "who owns this" answerable.
+/// Deliberately not a `Binding<PeerListFilter>`: both hosts persist filter
+/// changes from a main-actor model, and a binding would let the chrome write
+/// the field while persistence sat elsewhere.
 public struct HubFilter: Sendable {
     /// The filter as it stands — drives the toggles' checkmarks and whether the
     /// menu reads as active.
     public var filter: PeerListFilter
-    /// Every ACL tag seen across the host's RAW (unfiltered) peer list. Empty ⇒
-    /// the tag section is omitted entirely; a tailnet with no tagged nodes
-    /// should not grow an empty submenu.
+    /// Every ACL tag seen across the host's raw (unfiltered) peer list. Empty
+    /// omits the tag section entirely.
     public var tags: [String]
-    /// Whether this host actually knows which peers are sharing.
-    ///
-    /// The sharing axis hides every peer whose state is `.unknown`, so on a host
-    /// with no metadata sweep the toggle would empty the list and look broken.
-    /// Withholding the row is the same conditional-capability move the viewer
-    /// makes with Request Control: do not offer what cannot be served.
+    /// Whether this host actually knows which peers are sharing. The sharing
+    /// axis hides every `.unknown`-state peer, so on a host with no metadata
+    /// sweep the toggle would empty the list and look broken.
     public var offersSharingAxis: Bool
     public var onChange: @MainActor @Sendable (PeerListFilter) -> Void
 
@@ -47,28 +38,19 @@ public struct HubFilter: Sendable {
 /// three axes — hide-offline, only-sharing, and any-of-selected-tags with its
 /// explicit untagged bucket.
 ///
-/// **A menu of `Toggle`s, not a popover**, on purpose. swift-cross-ui is a
-/// SwiftUI subset: `Menu` takes a `String` label and a `MenuItem` list, and the
-/// only things that list can hold are `Button`, `Toggle`, `Text`, `Divider` and
-/// submenus (`SwiftCrossUI.MenuItem`). There is no `.popover` modifier and no
-/// custom-view menu label, so the macOS hub's funnel-glyph button opening a
-/// panel of arbitrary content has no equivalent here. What DOES exist is
-/// checked menu rows on both backends we ship — `GtkBackend` maps `.toggle` to a
-/// stateful `GSimpleAction`, `WinUIBackend` to a `ToggleMenuFlyoutItem` — which
-/// is the same interaction the macOS `PeerFilterMenu` offers, and the header
-/// already proves `Menu` renders here (the account menu). Proven primitive over
-/// pretty one.
+/// A menu of `Toggle`s, not a popover: swift-cross-ui's `Menu` only holds
+/// `Button`/`Toggle`/`Text`/`Divider`/submenus, with no `.popover` and no
+/// custom-view label — so the macOS funnel-button-opens-a-panel design has no
+/// equivalent here. Checked menu rows (`GtkBackend`'s `GSimpleAction`,
+/// `WinUIBackend`'s `ToggleMenuFlyoutItem`) are the closest available.
 ///
-/// The label carries the active state as text (`Filter ●`) because a menu label
-/// is a String: the mac app's filled-vs-outline funnel glyph is an SF Symbol,
-/// and SF Symbols are exactly what this package cannot have.
+/// The label carries active state as text (`Filter ●`) since a menu label is
+/// a plain `String` — no SF Symbols here.
 struct HubFilterMenu: View {
     let model: HubFilter
 
     var body: some View {
-        // A dot rather than a count: the count of *active axes* is not what
-        // anyone wants to know, and the count of hidden rows is already printed
-        // under the list where the rows are missing from.
+        // A dot, not a count of active axes — hidden-row counts print under the list.
         Menu(model.filter.isActive ? L("Filter ●") : L("Filter")) {
             Toggle(L("Hide offline devices"), isOn: bind(\.hideOffline))
             if model.offersSharingAxis {
@@ -76,18 +58,13 @@ struct HubFilterMenu: View {
             }
             if !model.tags.isEmpty {
                 Divider()
-                // A `Text` row resolves to a menu item with no action — inert on
-                // both backends — which is the closest this subset gets to
-                // SwiftUI's `Section` header. There is no `Section` in a
-                // swift-cross-ui menu.
+                // An inert `Text` row stands in for `Section`, which swift-cross-ui's menu lacks.
                 Text(L("Filter by Tag"))
                 ForEach(model.tags, id: \.self) { tag in
                     Toggle(PeerListFilter.displayName(forTag: tag), isOn: bindTag(tag))
                 }
                 if !model.filter.selectedTags.isEmpty {
-                    // Only meaningful while a tag filter is active — with no
-                    // tags selected the tag axis is off and every peer passes
-                    // it, so an "Untagged" toggle would do nothing.
+                    // Only meaningful once a tag is selected — otherwise the axis is off.
                     Toggle(L("Untagged"), isOn: bind(\.includeUntagged))
                 }
             }
@@ -98,12 +75,8 @@ struct HubFilterMenu: View {
         }
     }
 
-    /// A binding onto one `Bool` axis that mutates a COPY and hands the whole
-    /// struct back, so the host's setter (and its persistence) fires exactly
-    /// once per toggle — the same shape as the macOS `PeerFilterMenu`'s helper.
-    ///
-    /// The closures are non-`Sendable` and formed in this main-actor `body`, so
-    /// they inherit its isolation and may call `onChange`.
+    /// A binding onto one `Bool` axis that mutates a copy and hands the whole
+    /// struct back, so `onChange` (and its persistence) fires once per toggle.
     private func bind(_ keyPath: WritableKeyPath<PeerListFilter, Bool>) -> Binding<Bool> {
         let model = self.model
         return Binding(

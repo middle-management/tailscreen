@@ -14,15 +14,13 @@ public enum NACKAction: Equatable {
 
 /// Pure, deterministic sequence-gap tracker driving NACK-based selective
 /// retransmission on the viewer. Fed one `(seq, nowNs)` per received video
-/// packet; it detects gaps, waits out a short reorder tolerance (so pure
-/// reordering produces **zero** NACKs, mirroring `RTPReorderBuffer`), then
-/// emits NACKs — re-NACKing on an RTT-derived cadence up to a small attempt
-/// cap — and finally converts an unrecoverable gap to a PLI.
+/// packet; detects gaps, waits out a short reorder tolerance (so pure
+/// reordering produces **zero** NACKs, mirroring `RTPReorderBuffer`), emits
+/// NACKs on an RTT-derived cadence up to a small attempt cap, then converts
+/// an unrecoverable gap to a PLI.
 ///
-/// No I/O and no wall clock: the caller injects `nowNs`, so every decision is
-/// reproducible in unit tests (the CI-testable core, per the extract-the-
-/// decision rule). It's a plain `Sendable` value type; the client owns one
-/// behind its own serialization.
+/// No I/O, no wall clock — caller injects `nowNs`. Value type; the client
+/// owns one behind its own serialization.
 public struct NACKScheduler: Sendable {
     /// A tracked missing sequence number.
     private struct Gap {
@@ -122,25 +120,20 @@ public struct NACKScheduler: Sendable {
 
         let forward = seq &- highest
         if forward == 0 || forward > UInt16(1 << 15) {
-            // Duplicate or an old straggler (possibly a served retransmit) —
-            // if it fills a tracked gap, clear it; otherwise ignore. A gap we
-            // NACKed that's now filled gives an RTT sample (NACK → retransmit
-            // round trip) that tunes the re-NACK cadence.
+            // Duplicate or old straggler (possibly a served retransmit) — if
+            // it fills a tracked gap, clear it and take an RTT sample; the
+            // fill also counts toward the FEC arm's raw loss.
             if let filled = gaps.removeValue(forKey: seq), filled.attempts > 0, filled.lastNackNs != 0 {
                 updateRTTSample(nowNs &- filled.lastNackNs)
-                // A gap we NACKed that's now filled = one link loss the
-                // retransmit repaired. Counts toward the FEC arm's raw loss.
                 nackRecoveredCount += 1
             }
             return evaluate(nowNs: nowNs)
         }
 
-        // A jump wider than `maxGaps` is a stream discontinuity (long stall /
-        // burst loss / resync), not selectively repairable. In NACK mode the
-        // depacketizer's own loss-PLI is suppressed, so we must emit the PLI
-        // here — otherwise a >256-packet gap yields neither NACK nor keyframe
-        // and the viewer can freeze until a natural IDR. Abandon tracked gaps
-        // and fall back to the keyframe path.
+        // A jump wider than `maxGaps` is a stream discontinuity, not
+        // selectively repairable. NACK mode suppresses the depacketizer's own
+        // loss-PLI, so emit one here or the viewer freezes with neither NACK
+        // nor keyframe.
         if Int(forward) > maxGaps {
             gaps.removeAll()
             highestSeq = seq
@@ -180,32 +173,26 @@ public struct NACKScheduler: Sendable {
     }
 
     /// Remove a tracked gap *without* the straggler path's RTT-sample side
-    /// effect. Used when FEC reconstructs the missing packet: an FEC recovery
-    /// after a NACK went out would otherwise inject "time since NACK"
-    /// (actually FEC latency, not a network round trip) into the RTT EMA and
-    /// corrupt the re-NACK cadence. No-op for an untracked seq.
+    /// effect. Used when FEC reconstructs the missing packet — otherwise
+    /// FEC latency would get mistaken for a network round trip and corrupt
+    /// the RTT EMA. No-op for an untracked seq.
     public mutating func cancelGap(seq: UInt16) {
         gaps.removeValue(forKey: seq)
     }
 
-    /// Account for one FEC-recovered packet: clear its gap (no RTT sample,
-    /// like `cancelGap`) and, when the recovered seq is AHEAD of the highest
-    /// wire packet, advance `highestSeq` past it — the tail-of-batch (marker)
-    /// case, where no wire packet ever carries that seq. Without the advance,
-    /// the NEXT batch's first packet would re-open a gap for the
-    /// already-recovered seq and burn a spurious NACK (possibly escalating
-    /// toward PLI on a lossy link). Any seqs genuinely skipped between the
-    /// old highest and the recovery still open gaps, and existing gaps see it
-    /// as a newer packet — exactly `observe`'s bookkeeping minus the RTT
-    /// sample and minus tracking the recovered seq itself.
+    /// Account for one FEC-recovered packet: clear its gap (no RTT sample)
+    /// and, when the recovered seq is AHEAD of the highest wire packet,
+    /// advance `highestSeq` past it (the tail-of-batch/marker case, where no
+    /// wire packet ever carries that seq) — otherwise the next batch would
+    /// re-open a gap for it and burn a spurious NACK. Otherwise identical to
+    /// `observe`'s bookkeeping.
     public mutating func noteRecovered(seq: UInt16, nowNs: UInt64) {
         gaps.removeValue(forKey: seq)
         guard let highest = highestSeq else { return }
         let forward = seq &- highest
-        guard forward != 0, forward <= UInt16(1 << 15) else { return }  // behind/duplicate — done
-        // A recovery is always adjacent to received members, so a jump wider
-        // than the gap budget can't be a real recovery — leave it to
-        // `observe`'s discontinuity path rather than mass-opening gaps.
+        guard forward != 0, forward <= UInt16(1 << 15) else { return }  // behind/duplicate
+        // A recovery is always adjacent to received members; a wider jump
+        // can't be real — leave it to `observe`'s discontinuity path.
         guard Int(forward) <= maxGaps else { return }
         var missing = highest &+ 1
         while missing != seq {
@@ -220,10 +207,9 @@ public struct NACKScheduler: Sendable {
         highestSeq = seq
     }
 
-    /// Switch the reorder tolerances in place — FEC arming (relaxed N+2/25 ms
-    /// so parity gets first shot at every gap) and disarming (phase-1
-    /// defaults once parity stops flowing) — WITHOUT dropping tracked gaps or
-    /// the adapted RTT estimate, which a scheduler rebuild would.
+    /// Switch the reorder tolerances in place (FEC arming/disarming) WITHOUT
+    /// dropping tracked gaps or the adapted RTT estimate, which a scheduler
+    /// rebuild would.
     public mutating func setReorderTolerances(toleranceNs: UInt64, packetTolerance: Int) {
         reorderToleranceNs = toleranceNs
         reorderPacketTolerance = packetTolerance
@@ -260,10 +246,8 @@ public struct NACKScheduler: Sendable {
 
         var actions: [NACKAction] = []
         if !toNack.isEmpty, rateAllows(nowNs: nowNs) {
-            // Only the seqs that actually fit in one capped NACK datagram
-            // (≤16 FCI entries) go on the wire — and only those count as
-            // attempted. Otherwise the tail beyond 16 groups would silently
-            // burn all 3 attempts without ever being sent → premature PLI.
+            // Only seqs that fit one capped datagram (≤16 FCI entries) count
+            // as attempted, or the tail beyond 16 burns all 3 attempts unsent.
             let onWire = Self.fciCappedSeqs(toNack)
             for seq in onWire {
                 gaps[seq]?.attempts += 1
@@ -278,10 +262,9 @@ public struct NACKScheduler: Sendable {
         return actions
     }
 
-    /// The subset of `seqs` that fits in `maxEntries` generic-NACK FCI groups —
-    /// exactly what one capped NACK datagram (see `encodeNACK`) carries. Greedy
-    /// over sorted seqs, mirroring `packFCI`, so the scheduler counts only
-    /// on-the-wire seqs as attempted.
+    /// The subset of `seqs` that fits in `maxEntries` generic-NACK FCI groups
+    /// (one capped NACK datagram, see `encodeNACK`). Mirrors `packFCI`'s
+    /// greedy grouping.
     public static func fciCappedSeqs(_ seqs: [UInt16], maxEntries: Int = 16) -> [UInt16] {
         let sorted = seqs.sorted()
         var covered: [UInt16] = []

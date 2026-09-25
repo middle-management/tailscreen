@@ -44,7 +44,6 @@ final class TailscaleConnectivityTests: XCTestCase {
             try? FileManager.default.removeItem(at: tmp)
         }
 
-        // Bring server node up.
         let serverNode = try TailscaleNode(
             config: Configuration(
                 hostName: "tailscreen-test-server-\(UUID().uuidString.prefix(6))",
@@ -63,7 +62,6 @@ final class TailscaleConnectivityTests: XCTestCase {
         }
         logger.log("server IP: \(serverIP)")
 
-        // Bring client node up.
         let clientNode = try TailscaleNode(
             config: Configuration(
                 hostName: "tailscreen-test-client-\(UUID().uuidString.prefix(6))",
@@ -76,7 +74,6 @@ final class TailscaleConnectivityTests: XCTestCase {
         )
         try await clientNode.up()
 
-        // Start listener on server.
         guard let serverHandle = await serverNode.tailscale else {
             XCTFail("Server has no Tailscale handle")
             return
@@ -89,13 +86,11 @@ final class TailscaleConnectivityTests: XCTestCase {
         )
         addTeardownBlock { [listener] in await listener.close() }
 
-        // Accept one connection in the background.
         let acceptTask = Task {
             try await listener.accept(timeout: 30.0)
         }
 
-        // Dial from client. Netmap propagation can take a moment after `up()`,
-        // so retry briefly if the first dial is refused.
+        // Netmap propagation can take a moment after `up()`; retry the dial.
         guard let clientHandle = await clientNode.tailscale else {
             XCTFail("Client has no Tailscale handle")
             return
@@ -125,30 +120,22 @@ final class TailscaleConnectivityTests: XCTestCase {
             return
         }
 
-        // Server accepted by now.
         let incoming = try await acceptTask.value
         let remote = await incoming.remoteAddress
         logger.log("server accepted from \(remote ?? "?")")
 
-        // Client → server.
         let payload = Data("hello from tailscreen test \(UUID().uuidString)".utf8)
         try await client.send(payload)
 
         let received = try await incoming.receive(maximumLength: 4096, timeout: 10_000)
         XCTAssertEqual(received, payload, "Server should receive exactly what client sent")
 
-        // Server → client (round-trip) via TailscaleKit's own send (patch 006
-        // gave IncomingConnection a write-until-complete loop).
         let reply = Data("ack".utf8)
         try await incoming.send(reply)
 
-        // Client-side send rides TailscaleKit too (patch 023 made
-        // OutgoingConnection.send short-write-safe). Just confirm the client
-        // can send without error after connect — the full bidirectional check
-        // is covered by the client→server leg above.
+        // Confirm the client can also send without error after connect.
         try await client.send(Data("bye".utf8))
 
-        // Cleanup.
         await client.close()
         await incoming.close()
         await listener.close()
@@ -181,9 +168,7 @@ final class TailscaleConnectivityTests: XCTestCase {
             try? FileManager.default.removeItem(at: tmp)
         }
 
-        // This E2E test exercises only the audio-relay path; the
-        // capture-helper isn't needed. Pass `nil` for `filterData`
-        // so the server skips the helper-capture spawn entirely.
+        // filterData: nil skips the helper-capture spawn — only the audio-relay path is exercised.
         try await server.start(
             hostname: serverHostname,
             authKey: authKey,
@@ -199,7 +184,6 @@ final class TailscaleConnectivityTests: XCTestCase {
             return
         }
 
-        // Build a viewer-side client.
         let renderer = await MainActor.run { MetalViewerRenderer() }
         let client = TailscaleScreenShareClient(renderer: renderer)
 
@@ -220,7 +204,6 @@ final class TailscaleConnectivityTests: XCTestCase {
             return
         }
 
-        // Send 10 frames of synthetic PCM audio from the viewer.
         let voice = try VoiceChannel(localSSRC: assignedSSRC) { packet in
             client.sendAudioRTP(packet)
         }
@@ -228,13 +211,11 @@ final class TailscaleConnectivityTests: XCTestCase {
         let pcm = (0..<960).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
         for _ in 0..<10 { voice.processOutboundFrame(pcm) }
 
-        // Wait for packets to flow through real tsnet transport.
         try await Task.sleep(nanoseconds: 1_500_000_000)
 
         let count = receivedAudioPackets.withLock { $0 }
         XCTAssertGreaterThan(count, 0, "server should receive audio RTP from viewer")
 
-        // Cleanup.
         await client.disconnect()
         await server.stop()
     }

@@ -4,27 +4,16 @@ import Foundation
 /// usage IDs — the platform-neutral keycode vocabulary ``InputEvent`` carries
 /// on the wire.
 ///
-/// The Windows counterpart of ``MacKeyCodeMapping``, and portable for the same
-/// reason: its *values* are Windows-specific, but every peer needs the table to
-/// interoperate with a Windows endpoint, and keeping it here means Linux CI
-/// tests it. Neither endpoint ever puts a native keycode on the wire — a mac
-/// sharer receiving from a Windows viewer translates HID → kVK, a Windows
-/// sharer receiving from a mac viewer translates HID → VK, and the wire carries
-/// HID either way.
+/// The Windows counterpart of ``MacKeyCodeMapping``, portable for the same
+/// reason: values are Windows-specific but every peer needs the table, so
+/// keeping it here means Linux CI tests it. Neither endpoint ever puts a
+/// native keycode on the wire — only HID.
 public enum WindowsKeyCodeMapping {
-    /// A Windows key identity: a virtual-key code **and** the extended-key bit.
-    ///
-    /// The pair, not the code alone, because Windows genuinely identifies keys
-    /// that way. Keypad Enter and Return share `VK_RETURN` and are told apart
-    /// only by the extended bit; so do Home and keypad-7, Right Alt and Left
-    /// Alt. Modelling the bit as a separate lookaside list — which the first
-    /// version of this file did — makes the map non-injective the moment
-    /// keypad Enter is added, and leaves two things that must agree and can
-    /// drift.
-    ///
-    /// Omitting the bit does not fail loudly: it injects the *other* key. Home
-    /// arrives as keypad-7 whenever NumLock is off, which reads as "the arrow
-    /// keys are broken" rather than as a missing flag.
+    /// A Windows key identity: a virtual-key code **and** the extended-key
+    /// bit. The pair, not the code alone: Keypad Enter and Return share
+    /// `VK_RETURN` and are told apart only by the extended bit; so do Home
+    /// and keypad-7. Omitting the bit doesn't fail loudly — it silently
+    /// injects the other key.
     public struct WindowsKey: Hashable, Sendable {
         public let virtualKey: UInt16
         public let isExtended: Bool
@@ -35,12 +24,9 @@ public enum WindowsKeyCodeMapping {
         }
     }
 
-    /// HID keyboard-page usage ID → Windows key.
-    ///
-    /// Letters and digits are folded in programmatically because Windows
-    /// defines them as their ASCII values (`VK_A` == 0x41, `VK_0` == 0x30) with
-    /// no symbolic constant, and both sequences are contiguous — writing 36
-    /// rows by hand would be 36 chances to typo a value that fails silently.
+    /// HID keyboard-page usage ID → Windows key. Letters and digits are
+    /// folded in programmatically since Windows defines them as ASCII values
+    /// with no symbolic constant, and both sequences are contiguous.
     public static let windowsKeyByHIDUsage: [UInt16: WindowsKey] = {
         var table: [UInt16: WindowsKey] = [:]
 
@@ -144,29 +130,21 @@ public enum WindowsKeyCodeMapping {
         return table
     }()
 
-    /// Windows key → HID keyboard-page usage ID.
-    ///
-    /// Derived by inverting the forward table rather than written out, so the
-    /// two directions cannot disagree — the same construction
-    /// ``MacKeyCodeMapping`` uses, and what makes its bijectivity test mean
-    /// something.
+    /// Windows key → HID keyboard-page usage ID. Derived by inverting the
+    /// forward table so the two directions can't disagree, same as
+    /// ``MacKeyCodeMapping``.
     public static let hidUsageByWindowsKey: [WindowsKey: UInt16] = Dictionary(
         windowsKeyByHIDUsage.map { ($0.value, $0.key) },
         uniquingKeysWith: { existing, _ in existing })
 
     /// HID usages a peer may legitimately send that this platform does not
-    /// inject, with the reason each is out.
+    /// inject, with the reason each is out. Named, not merely absent, so a
+    /// test can assert the set exactly and adding one is a deliberate act.
     ///
-    /// Named rather than merely absent so that "we chose not to map this" is
-    /// distinguishable from "we forgot", and so a test can assert the set
-    /// exactly — adding one later becomes a deliberate act instead of a silent
-    /// widening.
-    ///
-    /// All six are keyboard-layout- or IME-dependent on Windows: their virtual
-    /// key depends on the active layout rather than on the physical key, so a
-    /// fixed table would inject the wrong character on most layouts. Dropping
-    /// the keystroke is the lesser failure — a key that does nothing is
-    /// noticed and understood; a key that types something else is not.
+    /// All six are keyboard-layout- or IME-dependent on Windows: their
+    /// virtual key depends on the active layout, so a fixed table would
+    /// inject the wrong character on most layouts. Dropping the keystroke is
+    /// the lesser failure.
     public static let deliberatelyUnmapped: Set<UInt16> = [
         0x67,  // Keypad = — VK_OEM_NEC_EQUAL only on NEC layouts
         0x85,  // Keypad , — VK_ABNT_C2 on ABNT, VK_SEPARATOR elsewhere

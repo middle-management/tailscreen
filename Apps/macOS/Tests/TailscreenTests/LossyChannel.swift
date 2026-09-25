@@ -20,17 +20,11 @@ struct SeededRNG: RandomNumberGenerator {
     }
 }
 
-/// Deterministic packet-impairment transform that models the WAN / DERP
-/// failure modes loopback and local-headscale never produce — packet **loss**,
-/// **reordering**, and **duplication**.
-///
-/// Feed it packets in send order; it returns them in the (mis)order a receiver
-/// would observe, with some dropped and some duplicated. Because it's pure and
-/// reproducible (seeded PRNG; no root, no network, no tsnet) it runs in CI —
-/// unlike `scripts/net-impair.sh`, which impairs the live tsnet transport and
-/// is therefore local-only. This is the CI-able way to exercise the
-/// depacketizer's reorder/loss-recovery paths end-to-end with the real
-/// packetizer.
+/// Deterministic packet-impairment transform modeling WAN/DERP failure modes
+/// (loss, reordering, duplication) that loopback/local-headscale never
+/// produce. Pure and seeded, so it's the CI-able stand-in for
+/// `scripts/net-impair.sh` (which impairs the live tsnet transport and is
+/// local-only) when exercising the depacketizer's recovery paths.
 struct LossyChannel {
     /// Probability in `0...1` that a given packet is dropped.
     var lossRate: Double

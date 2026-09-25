@@ -1,22 +1,19 @@
 import SwiftCrossUI
 import TailscreenL10n
 
-/// Shared design tokens.
-///
-/// Translucent grays rather than opaque colors, so cards and rows read as
-/// subtle overlays on whatever the platform paints behind them — GTK's theme,
-/// WinUI's Mica — and stay legible in both light and dark. Primary text is left
-/// uncolored on purpose so it follows the host's own foreground color; the only
-/// hard-coded hues are the ones that carry meaning (presence, the sharing chip)
-/// and would be a lie in any other color.
+/// Shared design tokens. Translucent grays, not opaque colors, so cards and
+/// rows overlay whatever the platform paints behind them (GTK theme, WinUI
+/// Mica) and stay legible in light and dark. Primary text is uncolored, so it
+/// follows the host's foreground; only meaning-carrying hues (presence, the
+/// sharing chip) are hard-coded.
 public enum HubStyle {
     /// The header's height, standing in for a title bar.
     public static let headerHeight = 52
     /// The annotation toolbar's height. Also read by video views that need to
     /// subtract the chrome from their own geometry.
     public static let toolbarHeight = 44
-    /// The hub is one column, like the macOS window. Wider than this and the
-    /// rows stretch into unreadable ribbons on a maximized window.
+    /// The hub is one column, like the macOS window; wider and rows stretch
+    /// into unreadable ribbons on a maximized window.
     public static let contentMaxWidth = 460.0
     public static let cardRadius = 12.0
     public static let rowRadius = 10.0
@@ -34,42 +31,29 @@ public enum HubStyle {
     public static let offline = Color(white: 0.5, opacity: 0.55)
     public static let chipFill = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.18)
     public static let chipText = Color(red: 0.13, green: 0.55, blue: 0.27)
-    /// The share card's fill while a share is LIVE — the macOS sharer card's
-    /// `Color.green.opacity(0.12)`, in this package's green.
-    ///
-    /// The card changing colour is the strongest "your screen is going out"
-    /// signal either hub has, and it is deliberately the same hue as the
-    /// sharing chip in the screen list: one green means one thing everywhere.
-    /// Never the only carrier of that state — the dot, the headline and the
-    /// viewer pill all say it too, per this repo's colour-alone rule.
+    /// The share card's fill while live — the macOS sharer card's
+    /// `Color.green.opacity(0.12)`, same hue as the sharing chip. Never the
+    /// only carrier of state — the dot, headline and viewer pill say it too.
     public static let sharingCardFill = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.12)
     public static let sharingCardStroke = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.30)
-    /// The viewer-count pill: solid green behind white, like the macOS card's
-    /// `Capsule().fill(Color.green)`. Opaque on purpose — it is a count, read
-    /// at a glance, and a translucent badge over a translucent card is mush.
+    /// The viewer-count pill: opaque solid green, since it is a count read at
+    /// a glance and a translucent badge over a translucent card is mush.
     public static let countPillFill = Color(red: 0.16, green: 0.62, blue: 0.30)
-    /// The bed the "Capturing…" placeholder sits on while a share has started
-    /// but no thumbnail has arrived — the macOS card's dimmed preview well.
-    /// The live preview needs no mat: it is opaque and rounds itself.
+    /// The "Capturing…" placeholder's bed before the first thumbnail lands.
     public static let previewWell = Color(white: 0.5, opacity: 0.14)
-    /// A row that is WAITING ON YOU — the macOS pending-viewer list's
-    /// `Color.orange.opacity(0.12)`. Its whole job is to not look like the
-    /// rows that need nothing: a viewer parked at the gate is stuck on a
-    /// placard with nothing on screen, and an approval that reads like a
-    /// status line is one nobody answers.
+    /// A row waiting on you — the macOS pending-viewer list's orange, so it
+    /// doesn't read like a row that needs nothing.
     public static let attentionFill = Color(red: 0.95, green: 0.6, blue: 0.1, opacity: 0.14)
-    /// Viewer-health dots, matching the macOS roster: green / yellow / orange.
-    /// Never alone — the row spells the health out beside them.
+    /// Viewer-health dots, matching the macOS roster. Never alone — the row spells health out beside them.
     public static let healthDegraded = Color(red: 0.9, green: 0.72, blue: 0.1)
     public static let healthThrottled = Color(red: 0.95, green: 0.55, blue: 0.1)
-    /// The guest badge, matching the macOS roster's purple capsule: a
-    /// share-by-token viewer, identified by node key rather than a machine
-    /// name. Purple so it reads as identity-kind, not health or attention.
+    /// The guest badge, matching the macOS roster's purple capsule — a
+    /// share-by-token viewer, identified by node key. Purple reads as
+    /// identity-kind, not health or attention.
     public static let guestChipFill = Color(red: 0.55, green: 0.35, blue: 0.85, opacity: 0.18)
     public static let guestChipText = Color(red: 0.45, green: 0.28, blue: 0.75)
-    /// The "you are controlling" state — the same orange the macOS viewer
-    /// frames the video with while a grant is live, as a translucent tint so
-    /// it reads on both light and dark like the sharing chip does.
+    /// The "you are controlling" state — same orange macOS frames the video
+    /// with, as a translucent tint.
     public static let controlActiveFill = Color(red: 1.0, green: 0.62, blue: 0.04, opacity: 0.18)
     public static let controlActiveText = Color(red: 0.75, green: 0.46, blue: 0.02)
 }
@@ -78,17 +62,11 @@ extension View {
     /// The rounded, faintly-tinted, hairline-bordered card the hub uses for its
     /// status/login modules. Apply *after* the content's own padding.
     ///
-    /// The hairline border is a *background* layer (stacked over the fill,
-    /// under the content) — deliberately NOT an `.overlay`. On the WinUI
-    /// backend an overlaid shape is hit-testable across its whole interior even
-    /// when stroked with a clear fill: `renderPath` always assigns the
-    /// `WinUI.Path` a fill brush (a transparent `SolidColorBrush` for
-    /// `Color.clear`), and XAML hit-testing keys on brush *presence*, not
-    /// alpha. An overlay sized to the card therefore sat over every control in
-    /// it and swallowed all mouse clicks — the login card's button worked by
-    /// keyboard (focus traversal bypasses hit-testing) and never by mouse.
-    /// Content is padded well off the card edge, so drawing the stroke under
-    /// it instead is visually identical.
+    /// The border is a background layer, not an `.overlay`: on WinUI,
+    /// `renderPath` always gives `WinUI.Path` a fill brush (a transparent one
+    /// for `Color.clear`), and XAML hit-testing keys on brush presence, not
+    /// alpha — an overlaid stroke swallowed every mouse click in the card,
+    /// leaving buttons reachable only by keyboard.
     public func hubCard(radius: Double = HubStyle.cardRadius) -> some View {
         hubCard(radius: radius, fill: HubStyle.cardFill, stroke: HubStyle.cardStroke)
     }
@@ -108,12 +86,10 @@ extension View {
     }
 }
 
-/// A labelled action, for the places the chrome offers a button whose meaning
-/// is the host's to decide — "Take back control", "Stop sharing".
-///
-/// A struct rather than two parameters because these travel in optionals and
-/// arrays, where a label with no action (or the reverse) would be a state the
-/// caller could construct and the view could not render.
+/// A labelled action whose meaning is the host's to decide — "Take back
+/// control", "Stop sharing". A struct, not two parameters, since these travel
+/// in optionals/arrays where a mismatched label/action pair would be
+/// unrenderable.
 public struct HubAction: Sendable {
     public let label: String
     public let perform: @MainActor @Sendable () -> Void
@@ -124,20 +100,13 @@ public struct HubAction: Sendable {
     }
 }
 
-/// A labelled on/off setting the chrome renders and the host owns.
+/// A labelled on/off setting the chrome renders and the host owns. Plain
+/// value + closure, not a `Binding`: this package must not know where the
+/// setting is stored, and both apps rebuild `ShareCard` from a computed
+/// property with no view-local state to bind to.
 ///
-/// Plain value + closure rather than a `Binding`, for the same reason
-/// `HubAction` is a struct: this package must not know where the setting is
-/// stored. The host reads it from wherever it persists (or does not), and the
-/// card turns the pair back into the `Binding` SwiftCrossUI's `Toggle` wants.
-/// A `Binding` in the public API would have made the card's caller reach for
-/// `@State` it does not own — both apps rebuild their `ShareCard` from a
-/// computed property on every model change, so there is no view-local state to
-/// bind to.
-///
-/// `caption` carries what the setting means when the label alone is a noun
-/// phrase. Turning a security gate off is the kind of thing that should say
-/// what it will do before it does it.
+/// `caption` says what the setting does when the label alone is a noun
+/// phrase — turning a security gate off should say what it will do.
 public struct HubToggle: Sendable {
     public let label: String
     public let caption: String?
@@ -155,41 +124,30 @@ public struct HubToggle: Sendable {
     }
 }
 
-/// The share-by-token half of a live share, as the card renders it: the
-/// Share via Link toggle, the link itself (selectable text — a URL you can
-/// select and paste always works, the `HubLoginCard` lesson; copy buttons
-/// are a host affordance these toolkits don't have), New Link, and the
-/// guest count. Nil on `ShareCard` renders nothing — a host whose engine
-/// has no link sharing shows no dead switch.
+/// The share-by-token half of a live share: the Share via Link toggle, the
+/// link as selectable text (these toolkits have no clipboard affordance),
+/// New Link, and guest count. Nil on `ShareCard` renders nothing.
 public struct HubLinkSharing: Sendable {
-    /// The live link's token; nil = link off (which is what the toggle
-    /// shows). The card renders it as the full `tailscreen:` link.
+    /// The live link's token; nil = link off (what the toggle shows).
     public let token: String?
-    /// True while the link is being created or rotated (the relay
-    /// bootstrap blocks for the network) — the card shows progress copy
-    /// and the host ignores toggle flips meanwhile.
+    /// True while the link is being created or rotated (network-bound) — the
+    /// card shows progress copy and ignores toggle flips meanwhile.
     public let busy: Bool
     /// Connected + pending guests, for the count line under the link.
     public let guestCount: Int
-    /// This share has no tailnet listener at all — it was started signed
-    /// out, so the link is the only way in. The card states that instead of
-    /// drawing a toggle, because the off position would be a switch that
-    /// refuses to flip: the only way to end a link-only share is to stop it.
-    /// The macOS menubar's `ShareViaLinkSection` makes the same split.
+    /// No tailnet listener at all — started signed out, so the link is the
+    /// only way in. States that instead of a toggle, since the off position
+    /// would refuse to flip (only Stop ends a link-only share).
     public let isOnlyWayIn: Bool
     public let onToggle: @MainActor @Sendable (Bool) -> Void
     /// New Link rotation (the old link dies, guests drop). Nil hides it.
     public let onNewLink: (@MainActor @Sendable () -> Void)?
     /// Put the given text on the system clipboard — the host's seam, since
-    /// neither swift-cross-ui nor this package can reach a clipboard.
+    /// neither swift-cross-ui nor this package can reach one.
     ///
-    /// Nil is a real state and renders the link as full selectable text
-    /// instead of Copy buttons: a host with no clipboard must still be able
-    /// to hand the link over, and select-and-paste always works (the
-    /// `HubLoginCard` lesson). Non-nil gets the macOS card's three buttons
-    /// over ONE truncated line, because a link you can copy in a click does
-    /// not also need to be readable character by character — and the token
-    /// is 120 characters that otherwise wrap over three lines, twice.
+    /// Nil renders the link as full selectable text instead of Copy buttons.
+    /// Non-nil gets the macOS card's three buttons over one truncated line —
+    /// the token is 120 characters that would otherwise wrap over three, twice.
     public let onCopy: (@MainActor @Sendable (String) -> Void)?
 
     public init(
@@ -211,51 +169,32 @@ public struct HubLinkSharing: Sendable {
     }
 }
 
-/// Something asking the person at this machine for a yes or a no.
+/// Something asking the person at this machine for a yes or a no. One type
+/// for two features — a viewer waiting to be admitted, and one asking for
+/// control — since both are the same sentence-plus-two-buttons interaction.
 ///
-/// One type for what were two features: a viewer waiting to be admitted, and a
-/// viewer asking for control. They are the same interaction — a sentence and
-/// two buttons — and the sharer should not have to learn two shapes of prompt
-/// depending on which one arrived.
-/// Somebody currently watching this screen, and what the sharer can do about
-/// them.
+/// Somebody currently watching this screen, and what the sharer can do about them.
 ///
-/// The row that closes the alignment plan's worst gap: before this, Linux and
-/// Windows could admit a viewer and then had **no way to change their mind** —
-/// the roster was a list of IP strings in `ShareCard.notes`.
+/// Actions are three separate optionals, not a list: `onKick` is a one-time
+/// disconnect, `onAlwaysAllow`/`onDenyAndBlock` are decisions about the
+/// *person* that outlive the share. A host that can't do one passes nil.
 ///
-/// Actions are three separate optionals rather than a list, because they are
-/// not interchangeable and the difference matters at a glance: `onKick` is a
-/// one-time disconnect that remembers nothing, `onAlwaysAllow` and
-/// `onDenyAndBlock` are decisions about the *person* that outlive the share.
-/// A host that cannot do one of them passes nil and the button is absent —
-/// never present-and-inert.
-///
-/// `rememberIsDeferred` is what the row says when a decision has been made
-/// but the peer's Tailscale identity has not resolved yet. The store is keyed
-/// by StableNodeID and nothing else is safe to key on, so there genuinely is
-/// a wait — and a button that appears to do nothing for a second is worse than
-/// one that says it is waiting. See `ViewerRosterDecision`.
+/// `rememberIsDeferred`: a decision was made but the peer's Tailscale
+/// identity hasn't resolved yet — the store is StableNodeID-keyed, so there's
+/// a real wait. See `ViewerRosterDecision`.
 public struct HubViewerRow: Identifiable, Sendable {
     /// Opaque to the chrome; handed back verbatim. The server's `"ip:port"`
-    /// viewer key on both hosts — never the bare IP, which matches nothing.
+    /// viewer key, never the bare IP.
     public let id: String
     /// Hostname once the netmap lookup lands, the IP until then.
     public let label: String
-    /// How this viewer's connection is doing. The row derives BOTH its dot
-    /// colour and the sentence beside it from this, so the two cannot
-    /// disagree — and so the wording is written (and translated) once for
-    /// both hosts.
-    ///
-    /// A chrome-owned enum rather than the server's `ViewerHealth`, and a
-    /// plain word rather than the host's pre-rendered string: this package
-    /// must not import the sharer tier to draw a dot (the same
-    /// import-direction rule `hubPhase` follows), and both hosts used to
-    /// interpolate the raw enum — so a degraded viewer read as a lowercase
-    /// `degraded` beside their hostname, in English, on every platform.
+    /// How this viewer's connection is doing. The row derives both the dot
+    /// colour and the sentence from this, so they can't disagree. A
+    /// chrome-owned enum, not the server's `ViewerHealth` — this package must
+    /// not import the sharer tier.
     public let health: HubViewerHealth
-    /// What is remembered about this peer right now, so the row can show the
-    /// standing decision instead of offering to make it again.
+    /// What is remembered about this peer, so the row shows the standing
+    /// decision instead of offering to make it again.
     public let remembered: HubViewerMemory
     /// True when a remember-decision is queued behind identity resolution.
     public let rememberIsDeferred: Bool
@@ -263,11 +202,9 @@ public struct HubViewerRow: Identifiable, Sendable {
     public let onAlwaysAllow: (@MainActor @Sendable () -> Void)?
     public let onDenyAndBlock: (@MainActor @Sendable () -> Void)?
     public let onForget: (@MainActor @Sendable () -> Void)?
-    /// A share-by-token guest: badged so the sharer can tell at a glance
-    /// which kind of viewer they are deciding about. Hosts pass the
-    /// remember-actions as nil for guests — those persist under a Tailscale
-    /// StableNodeID, which a guest never has (Deny already denylists the
-    /// guest's node key at the tunnel for the link's life).
+    /// A share-by-token guest: badged so the sharer can tell at a glance.
+    /// Hosts pass the remember-actions as nil for guests, who have no
+    /// StableNodeID (Deny already denylists the guest's node key at the tunnel).
     public let isGuest: Bool
 
     public init(
@@ -296,23 +233,18 @@ public struct HubViewerRow: Identifiable, Sendable {
 }
 
 /// How a connected viewer's link is doing, as the chrome needs it — the
-/// server's `ViewerHealth` case for case, mapped by each host for the same
-/// import-direction reason `hubPhase` exists.
-///
-/// The wording matches the macOS roster's, and reuses its catalog keys, so a
-/// degraded viewer is described identically on all three platforms.
+/// server's `ViewerHealth` case for case, mapped by each host so wording
+/// stays identical on all three platforms.
 public enum HubViewerHealth: Sendable, Equatable {
-    /// No meaningful loss. The row says nothing — a healthy viewer needs no
-    /// sentence, and one for every row would bury the one that matters.
+    /// No meaningful loss. The row says nothing — a sentence on every row would bury the one that matters.
     case good
     /// Over the loss threshold, but still getting full frames.
     case degraded
     /// Keyframe-only: this viewer's link is isolating the session.
     case throttled
 
-    /// The sentence beside the dot, or nil when there is nothing to say.
-    /// Non-nil for everything but `.good`, which is what keeps the dot from
-    /// being the only carrier of a problem.
+    /// The sentence beside the dot, non-nil for everything but `.good` — the
+    /// dot must not be the only carrier of a problem.
     public var note: String? {
         switch self {
         case .good: return nil
@@ -330,11 +262,8 @@ public enum HubViewerHealth: Sendable, Equatable {
     }
 }
 
-/// What the sharer has decided about a peer, if anything.
-///
-/// Three states rather than a `Bool?` for the same reason `PeerSharingState`
-/// is an enum: "nothing decided" is a real answer with its own affordances
-/// (offer both), not the absence of one.
+/// What the sharer has decided about a peer, if anything. Three states, not
+/// `Bool?`: "nothing decided" is a real answer with its own affordances.
 public enum HubViewerMemory: Sendable, Equatable {
     case none
     case allowed
@@ -348,9 +277,8 @@ public struct HubPrompt: Identifiable, Sendable {
     public let message: String
     public let acceptLabel: String
     public let declineLabel: String
-    /// A share-by-token guest knocking — badged, because the answer admits
-    /// someone from outside the tailnet and the sharer should know that at
-    /// the moment of deciding.
+    /// A share-by-token guest knocking — badged, since this admits someone
+    /// outside the tailnet.
     public let isGuest: Bool
 
     public init(
@@ -365,14 +293,10 @@ public struct HubPrompt: Identifiable, Sendable {
     }
 }
 
-/// The header's signed-in line, decided once so both hubs say the same thing.
-///
-/// Prefers the TAILNET over the login, which is the macOS hub's choice and the
-/// more useful of the two here: the login answers "who am I", but the screen
-/// list below is scoped to a tailnet, so the tailnet is what explains an
-/// expected machine being absent. The login is the fallback because some
-/// control planes (headscale commonly) report no tailnet name at all, and a
-/// blank header is worse than a less-specific one.
+/// The header's signed-in line. Prefers the tailnet over the login, matching
+/// the macOS hub — the screen list is scoped to a tailnet, so that's what
+/// explains an expected machine being absent. Login is the fallback since
+/// some control planes (headscale) report no tailnet name at all.
 public func hubSignedInSubtitle(tailnet: String?, account: String?) -> String {
     if let tailnet, !tailnet.isEmpty { return tailnet }
     if let account, !account.isEmpty { return account }

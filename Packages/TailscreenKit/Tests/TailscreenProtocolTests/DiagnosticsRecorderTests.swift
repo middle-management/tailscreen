@@ -3,15 +3,10 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// `DiagnosticsRecorder` — the buffer, the switch, and the redaction that runs
-/// on the way in.
-///
-/// The buffer's behaviour under pressure is the part worth pinning, because
-/// every wrong answer is silent: a recorder that drops the wrong events still
-/// produces a plausible file, and the loss is only discovered by the person
-/// who needed the missing part. The prologue/ring split exists precisely to
-/// keep the handshake, and nothing about a file full of events would reveal
-/// that it had been thrown away.
+/// `DiagnosticsRecorder`: the buffer, the switch, and the redaction that runs
+/// on the way in. The buffer's behavior under pressure matters because a
+/// recorder that drops the wrong events produces a plausible file with a
+/// silent loss — the prologue/ring split exists to keep the handshake.
 final class DiagnosticsRecorderTests: XCTestCase {
 
     private func makeRecorder(
@@ -29,7 +24,6 @@ final class DiagnosticsRecorderTests: XCTestCase {
 
     // MARK: - The switch
 
-    /// A disabled recorder keeps nothing. The whole opt-out promise.
     func testDisabledRecorderKeepsNothing() {
         let recorder = makeRecorder(enabled: false)
         recorder.record(.helloSent)
@@ -37,10 +31,9 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertFalse(recorder.isRecording)
     }
 
-    /// A disabled recorder must not even *build* the fields. This is the whole
-    /// reason `fields` is an `@autoclosure` — these call sites sit on
-    /// per-frame paths, and a stable release has recording off by default, so
-    /// the disabled path is the one almost every user runs.
+    /// A disabled recorder must not even build the fields — why `fields` is
+    /// an `@autoclosure`, since these sit on per-frame paths most users run
+    /// disabled.
     func testDisabledRecorderDoesNotEvaluateFields() {
         let recorder = makeRecorder(enabled: false)
         nonisolated(unsafe) var built = false
@@ -53,9 +46,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertFalse(built, "fields were evaluated for a disabled recorder")
     }
 
-    /// Turning recording off keeps what was already recorded. Someone flips
-    /// the switch *after* the thing went wrong, and a switch that also erased
-    /// the evidence would be a trap.
+    /// Turning recording off keeps what was already recorded — the switch is
+    /// flipped after the thing went wrong.
     func testStoppingKeepsWhatWasAlreadyRecorded() {
         let recorder = makeRecorder()
         recorder.record(.helloSent)
@@ -67,9 +59,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(events.first?.name, DiagnosticEventName.helloSent.rawValue)
     }
 
-    /// `clear` is the explicit discard, and it resets the numbering with it —
-    /// two bundles sharing a device and a numbering but not a session would
-    /// merge into nonsense.
+    /// `clear` resets the numbering too — two bundles sharing a device and
+    /// numbering but not a session would merge into nonsense.
     func testClearResetsSequenceNumbering() {
         let recorder = makeRecorder()
         recorder.record(.helloSent)
@@ -86,9 +77,7 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(events.first?.seq, 1, "numbering must restart with the session")
     }
 
-    /// The elapsed clock restarts with `clear` too. Otherwise the first event
-    /// of the new session would carry the old session's elapsed time and read
-    /// as though the app had been running for hours before it started.
+    /// The elapsed clock restarts with `clear` too.
     func testClearResetsTheElapsedClock() {
         let recorder = makeRecorder()
         recorder.record(.helloSent, nowNs: 1_000_000_000)
@@ -100,12 +89,10 @@ final class DiagnosticsRecorderTests: XCTestCase {
 
     // MARK: - The prologue / ring split
 
-    /// The point of the whole design: the handshake survives an hour of
-    /// traffic. A plain ring would have evicted the first events, which are
-    /// the ones that answer "what did the two sides agree on".
+    /// The handshake survives an hour of traffic — a plain ring would have
+    /// evicted the first events.
     func testPrologueSurvivesRingOverflow() {
         let recorder = makeRecorder(prologue: 3, ring: 3)
-        // Three prologue events, then far more than the ring can hold.
         recorder.record(.helloSent)
         recorder.record(.helloReceived)
         recorder.record(.helloAckSent)
@@ -123,8 +110,7 @@ final class DiagnosticsRecorderTests: XCTestCase {
             "the handshake must not be evicted by later traffic")
     }
 
-    /// The ring keeps the NEWEST events, not the oldest — the symptom is at
-    /// the end of the session.
+    /// The ring keeps the newest events, not the oldest.
     func testRingKeepsTheNewestEvents() {
         let recorder = makeRecorder(prologue: 0, ring: 3)
         for _ in 0..<10 { recorder.record(.transportSummary) }
@@ -133,9 +119,9 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(seqs, [8, 9, 10])
     }
 
-    /// Ring order stays chronological after it has wrapped. Getting this wrong
-    /// is the classic circular-buffer bug and it produces a file that looks
-    /// completely fine while reading out of order.
+    /// Ring order stays chronological after wrapping — the classic
+    /// circular-buffer bug produces a file that looks fine but reads out
+    /// of order.
     func testRingReadsInOrderAcrossTheWrap() {
         let recorder = makeRecorder(prologue: 1, ring: 4)
         for _ in 0..<12 { recorder.record(.transportSummary) }
@@ -145,9 +131,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(seqs, seqs.sorted(), "wrapped ring read out of order")
     }
 
-    /// Drops are counted and reported. A reader that cannot see the gap will
-    /// read the prologue and the ring as adjacent and infer a causal link
-    /// across however long is missing.
+    /// Drops are counted and reported, or a reader would read the prologue
+    /// and ring as adjacent and infer a false causal link.
     func testDropsAreCountedNotSwallowed() {
         let recorder = makeRecorder(prologue: 2, ring: 2)
         for _ in 0..<10 { recorder.record(.transportSummary) }
@@ -157,9 +142,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(snapshot.droppedCount, 6)
     }
 
-    /// Nothing is dropped while the buffers are merely full-to-capacity —
-    /// an off-by-one here would report loss that never happened, which costs
-    /// a reader's trust in every other number in the header.
+    /// Nothing is dropped while buffers are merely full-to-capacity — an
+    /// off-by-one here would report loss that never happened.
     func testNoDropsReportedUntilTheRingActuallyWraps() {
         let recorder = makeRecorder(prologue: 2, ring: 2)
         for _ in 0..<4 { recorder.record(.transportSummary) }
@@ -169,12 +153,9 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().droppedCount, 1)
     }
 
-    /// **A no-op transition writes nothing.** The marker describes a
-    /// transition, and under `TAILSCREEN_DIAGNOSTICS=0` there is never one:
-    /// every toggle resolves back to `false` and arrives here while already
-    /// disabled, so each flip used to append another `recording.stopped` —
-    /// and `export` then saw a non-empty recorder for a run that was forced to
-    /// record nothing at all.
+    /// A no-op transition writes nothing: under `TAILSCREEN_DIAGNOSTICS=0`
+    /// every toggle resolves back to `false` while already disabled, and
+    /// without this guard each flip appends another `recording.stopped`.
     func testSameStateSetRecordingWritesNoMarker() {
         let recorder = makeRecorder(enabled: false)
         for _ in 0..<5 {
@@ -183,16 +164,15 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertTrue(recorder.events().isEmpty, "a forced-off run accumulated markers")
     }
 
-    /// The same both ways: an already-recording recorder told to record does
-    /// not re-open the session it is already in.
+    /// Same both ways: an already-recording recorder told to record does not
+    /// re-open the session it's already in.
     func testSameStateSetRecordingOnWritesNoMarker() {
         let recorder = makeRecorder(enabled: true)
         recorder.setRecording(true, markerName: .recordingStarted)
         XCTAssertTrue(recorder.events().isEmpty)
     }
 
-    /// A REAL transition still writes its marker — the guard must not swallow
-    /// the one event it exists to place correctly.
+    /// A real transition still writes its marker.
     func testRealTransitionStillWritesItsMarker() {
         let recorder = makeRecorder(enabled: true)
         recorder.record(.helloSent)
@@ -206,17 +186,12 @@ final class DiagnosticsRecorderTests: XCTestCase {
             ])
     }
 
-    /// **An off→on cycle during a record must not swallow the event into the
-    /// NEW session.** Fields are scrubbed outside the lock on purpose, so a
-    /// writer can read the switch, be stopped and restarted while it scrubs,
-    /// then take the lock and see `enabled == true` again. Re-checking only the
-    /// flag appended an event from the previous session after the
-    /// `recording.started` that opened the next one, carrying a timestamp from
-    /// before it — the recorder lying about its own lifetime.
+    /// An off→on cycle during a record must not swallow the event into the
+    /// NEW session. Fields are scrubbed outside the lock, so a writer can
+    /// read the switch, be stopped/restarted mid-scrub, then take the lock
+    /// and see `enabled == true` again for the wrong session.
     func testEventStraddlingAnOffOnCycleIsDropped() {
         let recorder = makeRecorder(prologue: 16, ring: 16)
-        // The cycle happens while `fields` is being evaluated, which is exactly
-        // where the real scrubbing happens.
         recorder.record(
             .transportSummary,
             fields: {
@@ -234,9 +209,6 @@ final class DiagnosticsRecorderTests: XCTestCase {
             "an event from the closed session landed in the new one")
     }
 
-    /// The ordinary case still records. A generation check that rejected
-    /// everything would be invisible in the suite above and catastrophic in
-    /// use, so it is worth stating separately.
     func testAnUninterruptedRecordStillAppends() {
         let recorder = makeRecorder()
         recorder.record(.transportSummary, fields: ["k": 1])
@@ -245,12 +217,9 @@ final class DiagnosticsRecorderTests: XCTestCase {
 
     // MARK: - One prologue per session
 
-    /// The reason this stopped being "the first N events of the process": a
-    /// SECOND share's handshake has to be protected exactly as the first
-    /// one's was. With a single process-wide prologue, filling it once meant
-    /// every later session's HELLO landed in the evictable ring — so using
-    /// the app twice was enough to export a bundle missing the events
-    /// ``DiagnosticsMerge`` pairs the two sides on.
+    /// A second share's handshake must be protected as the first one's was —
+    /// a single process-wide prologue would put every later session's HELLO
+    /// in the evictable ring.
     func testSecondSessionsHandshakeSurvivesRingPressure() {
         let recorder = makeRecorder(prologue: 2, ring: 3)
         recorder.record(.helloReceived)
@@ -268,12 +237,9 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(acks.count, 2, "the second session's HELLO_ACK was evicted")
     }
 
-    /// Order across the two containers is by sequence, not by container. Once
-    /// a second prologue exists the prologues and the ring INTERLEAVE in time
-    /// — session one's tail is in the ring, session two's opening events are
-    /// in a prologue recorded after it — so concatenating them would print the
-    /// second handshake before the first session's last events. That is the
-    /// plausible-looking reordering this whole feature exists to avoid.
+    /// Order across containers is by sequence, not by container: session
+    /// one's tail is in the ring, session two's opening events are in a
+    /// later prologue, so naive concatenation would misorder them.
     func testEventsStayOrderedAcrossInterleavedProloguesAndRing() {
         let recorder = makeRecorder(prologue: 2, ring: 4)
         recorder.record(.helloSent)
@@ -288,10 +254,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().droppedCount, 0)
     }
 
-    /// Two `beginSession` calls with nothing in between are one session. Hosts
-    /// call it from paths that can run back to back — a share that fails to
-    /// start, then the retry — and stacking empty segments would evict a real
-    /// prologue to make room for nothing.
+    /// Two `beginSession` calls with nothing between them are one session —
+    /// a failed-then-retried share shouldn't stack an empty prologue.
     func testRepeatedBeginSessionDoesNotStackEmptyPrologues() {
         let recorder = makeRecorder(prologue: 2, ring: 4)
         recorder.record(.helloSent)
@@ -304,9 +268,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().droppedCount, 0)
     }
 
-    /// Retention is bounded, and releasing the oldest session's prologue is an
-    /// eviction like any other: it is counted, so a reader still sees that the
-    /// stream has a hole rather than reading two distant sessions as adjacent.
+    /// Releasing the oldest session's prologue is an eviction like any
+    /// other: it's counted, so a reader sees the hole.
     func testOldestSessionPrologueIsReleasedAndCounted() {
         let recorder = DiagnosticsRecorder(
             defaultRole: .sharer,
@@ -326,9 +289,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(snapshot.droppedCount, 1)
     }
 
-    /// `clear` collapses back to a single session, so a recorder reused after
-    /// an explicit discard starts out like a fresh one instead of carrying
-    /// empty segments that count against retention.
+    /// `clear` collapses back to a single session — a reused recorder starts
+    /// fresh instead of carrying empty segments against retention.
     func testClearCollapsesToOneSession() {
         let recorder = makeRecorder(prologue: 1, ring: 4)
         recorder.record(.helloSent)
@@ -342,10 +304,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.snapshot().droppedCount, 0)
     }
 
-    /// Events carry the session they belong to, and `beginSession` advances
-    /// it. Without this the exported stream is one undifferentiated run: a
-    /// reader cannot tell where the share that went wrong began, and the merge
-    /// has nothing to scope a handshake pairing to.
+    /// Events carry the session they belong to; `beginSession` advances it,
+    /// giving the merge something to scope a handshake pairing to.
     func testEventsCarryTheirSession() {
         let recorder = makeRecorder(prologue: 8, ring: 8)
         recorder.record(.helloSent)
@@ -357,9 +317,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.events().map(\.session), [0, 1, 2])
     }
 
-    /// The ordinal survives the retention cap rather than being renumbered
-    /// down. A bundle whose lowest session is 2 is saying two sessions were
-    /// released — renumbering to 0 would erase that, and quietly.
+    /// The ordinal survives the retention cap rather than renumbering down —
+    /// a bundle starting at session 2 says two sessions were released.
     func testSessionOrdinalsSurviveTheRetentionCap() {
         let recorder = DiagnosticsRecorder(
             defaultRole: .sharer,
@@ -374,14 +333,11 @@ final class DiagnosticsRecorderTests: XCTestCase {
         }
         recorder.record(.helloSent)
 
-        // Sessions 0 and 1 were released by the cap; what is left is numbered
-        // 2 and 3, NOT renumbered down to 0 and 1.
+        // Sessions 0 and 1 were released; the rest keep numbers 2 and 3.
         XCTAssertEqual(recorder.events().map(\.session), [2, 3])
         XCTAssertEqual(recorder.snapshot().droppedCount, 2)
     }
 
-    /// A repeated `beginSession` with nothing in between does not advance it
-    /// either — same rule as the prologue it rides on.
     func testRepeatedBeginSessionDoesNotAdvanceTheOrdinal() {
         let recorder = makeRecorder()
         recorder.record(.helloSent)
@@ -394,10 +350,9 @@ final class DiagnosticsRecorderTests: XCTestCase {
 
     // MARK: - Staging the export marker
 
-    /// The marker is staged into the SNAPSHOT and never committed. A write
-    /// that fails — a full disk, an undeletable directory — must not leave
-    /// `recording.exported` behind for the next bundle that DOES succeed to
-    /// claim as its own.
+    /// The marker is staged into the snapshot and never committed — a
+    /// failed write must not leave `recording.exported` for the next
+    /// successful export to claim.
     func testStagedMarkerIsNotCommittedToTheRecorder() {
         let recorder = makeRecorder()
         recorder.record(.helloSent)
@@ -408,10 +363,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.events().count, 1, "the marker must not reach the buffer")
     }
 
-    /// The marker carries the elapsed time of the EXPORT, not of the last
-    /// event before it. The merge renders every event at `anchor + elapsed`,
-    /// so a marker borrowing its predecessor's elapsed puts an export done
-    /// minutes later back at that event's moment.
+    /// The marker carries the elapsed time of the export, not of the
+    /// preceding event — the merge renders every event at `anchor + elapsed`.
     func testStagedMarkerCarriesTheCurrentElapsedNotThePreviousEvents() {
         let recorder = makeRecorder()
         recorder.record(.helloSent, nowNs: 1_000_000_000)
@@ -421,9 +374,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(staged.events.last?.monotonicNs, 59_000_000_000)
     }
 
-    /// Its sequence number continues the stream. The merge breaks ties on
-    /// `seq`, so a marker repeating the previous number would sort arbitrarily
-    /// against the event it must follow.
+    /// Its sequence number continues the stream — the merge breaks ties on
+    /// `seq`.
     func testStagedMarkerContinuesTheSequence() {
         let recorder = makeRecorder()
         recorder.record(.helloSent)
@@ -433,9 +385,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
 
     // MARK: - Stamping
 
-    /// The first event reads zero elapsed and the rest are relative to it.
-    /// A reader's eye runs down that column; starting it at a raw uptime
-    /// (some arbitrary number of hours since boot) makes it useless.
+    /// The first event reads zero elapsed; the rest are relative to it,
+    /// not to raw uptime.
     func testElapsedIsRelativeToTheFirstEvent() {
         let recorder = makeRecorder()
         recorder.record(.helloSent, nowNs: 5_000_000_000)
@@ -446,9 +397,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(events[1].monotonicNs, 250_000_000)
     }
 
-    /// A clock that appears to step backwards must not wrap into an enormous
-    /// elapsed. `&-` on unsigned nanoseconds would turn a 1 ms backward step
-    /// into roughly 585 years.
+    /// A backward clock step must not wrap into an enormous elapsed — `&-`
+    /// on unsigned nanoseconds would turn 1ms backward into ~585 years.
     func testBackwardClockDoesNotWrapElapsed() {
         let recorder = makeRecorder()
         recorder.record(.helloSent, nowNs: 5_000_000_000)
@@ -457,8 +407,6 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.events()[1].monotonicNs, 0)
     }
 
-    /// Category and severity come from the registry, so two call sites cannot
-    /// disagree about what an event is.
     func testCategoryAndSeverityComeFromTheRegistry() {
         let recorder = makeRecorder()
         recorder.record(.helloAckSent)
@@ -471,9 +419,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
         XCTAssertEqual(events[1].severity, .error)
     }
 
-    /// The override exists for events whose weight depends on the outcome —
-    /// a share phase moving to `failed` against the same event moving to
-    /// `sharing`.
+    /// The override exists for events whose weight depends on outcome — a
+    /// share phase moving to `failed` vs. `sharing`.
     func testSeverityOverrideWins() {
         let recorder = makeRecorder()
         recorder.record(.sharePhaseChanged, severity: .error)
@@ -482,8 +429,8 @@ final class DiagnosticsRecorderTests: XCTestCase {
 
     // MARK: - Redaction on the way in
 
-    /// Secrets are removed at record time, not at export time: an unredacted
-    /// recorder is one forgotten export path away from a leak.
+    /// Secrets are removed at record time, not export time, or an
+    /// unredacted recorder is one forgotten export path away from a leak.
     func testSecretsAreRedactedBeforeTheyReachTheBuffer() {
         let recorder = makeRecorder()
         recorder.record(
@@ -499,10 +446,9 @@ final class DiagnosticsRecorderTests: XCTestCase {
 
     // MARK: - Concurrency
 
-    /// The recorder is called from the capture thread, the receive loops, the
-    /// UI thread and the sweep timers at once. Under TSan this is the test
-    /// that would catch an unguarded buffer; without it, it still catches a
-    /// lost or duplicated sequence number.
+    /// Called from the capture thread, receive loops, UI thread, and sweep
+    /// timers at once — catches an unguarded buffer under TSan, or a lost/
+    /// duplicated sequence number otherwise.
     func testConcurrentRecordingKeepsSequenceNumbersUniqueAndDense() {
         let recorder = DiagnosticsRecorder(
             defaultRole: .sharer,

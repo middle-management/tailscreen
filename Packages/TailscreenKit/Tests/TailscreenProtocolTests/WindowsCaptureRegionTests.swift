@@ -3,13 +3,10 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// Tests for `WindowsCaptureRegion` — recovering which monitor a WGC capture
-/// item refers to, since the item itself does not say.
-///
-/// The case that matters most is the one that returns nothing: two monitors of
-/// the same resolution. It is a common desk, it is genuinely unresolvable from
-/// the item's size, and the wrong answer sends a viewer's clicks to a screen
-/// they cannot see. So "declines when ambiguous" is the property under test,
-/// not an edge case appended to it.
+/// item refers to, since the item itself does not say. The key property:
+/// two monitors of the same resolution are genuinely unresolvable from size
+/// alone, so it must decline rather than guess (sending clicks to the wrong
+/// screen).
 final class WindowsCaptureRegionTests: XCTestCase {
     private let primary = WindowsPointerMapping.ScreenRect(
         x: 0, y: 0, width: 1920, height: 1080)
@@ -32,8 +29,6 @@ final class WindowsCaptureRegionTests: XCTestCase {
     }
 
     func testTwoIdenticalMonitorsDecline() {
-        // The common dual-1080p desk. Both monitors match, and nothing in the
-        // item says which — so this must NOT pick one.
         let second = WindowsPointerMapping.ScreenRect(
             x: 1920, y: 0, width: 1920, height: 1080)
         let result = WindowsCaptureRegion.resolve(
@@ -59,9 +54,8 @@ final class WindowsCaptureRegionTests: XCTestCase {
     }
 
     func testAFullscreenWindowResolvesToItsMonitorAndThatIsFine() {
-        // A fullscreen window's size equals its monitor's, so this reports a
-        // display match. Not a defect: the rect is the same either way, so the
-        // coordinate mapping is correct regardless of which it "really" was.
+        // Fullscreen window size == monitor size, reports as a display match;
+        // the rect is identical either way so this is fine.
         let result = WindowsCaptureRegion.resolve(
             itemWidth: 1920, itemHeight: 1080, monitors: [primary, leftFourK])
         guard case .success(let rect) = result else { return XCTFail("expected a match") }
@@ -75,8 +69,8 @@ final class WindowsCaptureRegionTests: XCTestCase {
     }
 
     func testZeroSizedItemIsUnknownGeometry() {
-        // `WGC.CaptureItem.size` reports (0, 0) when the shim call fails, and
-        // zero must not be matched against a monitor of any size.
+        // `WGC.CaptureItem.size` reports (0, 0) on shim failure; must not
+        // match any monitor size.
         XCTAssertEqual(
             WindowsCaptureRegion.resolve(itemWidth: 0, itemHeight: 0, monitors: [primary]),
             .failure(.unknownGeometry))
@@ -86,8 +80,7 @@ final class WindowsCaptureRegionTests: XCTestCase {
     }
 
     func testFailuresExplainThemselves() {
-        // These strings reach the sharer's UI: "Request Control is missing"
-        // with no reason is a support ticket.
+        // Strings reach the sharer's UI, so they must state a reason.
         XCTAssertTrue(
             WindowsCaptureRegion.Failure.notADisplay.description.contains("window share"))
         XCTAssertTrue(

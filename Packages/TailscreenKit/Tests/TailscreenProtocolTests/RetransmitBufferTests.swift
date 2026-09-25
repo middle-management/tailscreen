@@ -76,12 +76,9 @@ final class RetransmitBufferTests: XCTestCase {
         XCTAssertNotNil(buf.template(addr: "v1", seq: 1))
     }
 
+    /// `has()` must verify the batch still exists AND the index is in
+    /// bounds, exactly like `template()` — a range can outlive its batch.
     func testHasAgreesWithTemplateAfterEviction() {
-        // Regression: `has()` must verify the batch still exists AND the index
-        // is in bounds, exactly like `template()`. Per-viewer ranges outlive
-        // batches, so a range can point at an evicted batch — if `has()` said
-        // "yes" there, the budget would serve a seq that then fails to send
-        // with no PLI fallback.
         let buf = RetransmitBuffer(windowNs: .max, byteCap: .max, maxBatches: 1)
         let b0 = buf.record(templates: templates([0]), nowNs: 0)
         buf.recordViewerRange(addr: "v1", startSeq: 0, count: 1, batchID: b0)
@@ -148,24 +145,11 @@ final class RetransmitBufferTests: XCTestCase {
 
     // MARK: - Concurrency
 
-    /// Record from several threads while others look up, which is how the
-    /// server actually uses this: `record` / `recordViewerRange` run on the
-    /// broadcast site and `template` / `has` on the NACK-service path, both
-    /// off the cooperative pool.
-    ///
-    /// Like the buffer-pool case, this exists so the `linux-tsan` job has a
-    /// concurrent execution to observe — the type's `@unchecked Sendable`
-    /// rests entirely on its lock, and a lock nothing exercises concurrently
-    /// is a claim the sanitiser never gets to check. (And it is on `Guarded`
-    /// rather than `Synchronization.Mutex` so that the sanitiser can see the
-    /// lock at all; see `Guarded.swift`.)
-    ///
-    /// The load-bearing assertion is **wholeness**: every template that comes
-    /// back must be one of the exact 4-byte values that were recorded. A
-    /// retransmit is supposed to be byte-identical to the original, so a torn
-    /// or partially-published entry here would put malformed RTP on the wire
-    /// — a failure that is invisible on the sharer and looks like link
-    /// corruption to the viewer.
+    /// `record`/`recordViewerRange` run on the broadcast site,
+    /// `template`/`has` on the NACK-service path — both off the cooperative
+    /// pool. The load-bearing assertion is wholeness: a retransmit must be
+    /// byte-identical to the original, so a torn entry would put malformed
+    /// RTP on the wire.
     func testConcurrentRecordAndLookupNeverYieldsATornTemplate() {
         let buf = RetransmitBuffer(
             windowNs: 10 * s,
@@ -179,8 +163,7 @@ final class RetransmitBufferTests: XCTestCase {
         DispatchQueue.concurrentPerform(iterations: 8) { thread in
             let addr = "v\(thread)"
             for round in 0..<200 {
-                // Inlined rather than calling the `templates` helper: this
-                // closure is `@Sendable`, and an XCTestCase is not.
+                // Inlined: this closure is `@Sendable`, an XCTestCase is not.
                 let batch = buf.record(
                     templates: (0..<4).map { Data([UInt8((thread &* 4 &+ $0) % 256), 0, 0, 0]) },
                     nowNs: UInt64(round) * 1_000_000
@@ -192,15 +175,13 @@ final class RetransmitBufferTests: XCTestCase {
                     batchID: batch
                 )
 
-                // Read back our own range, and one belonging to a neighbour —
-                // so lookups genuinely cross threads rather than each thread
-                // only ever reading what it just wrote.
+                // Read back our own range and a neighbour's, so lookups
+                // genuinely cross threads.
                 for peer in [addr, "v\((thread &+ 1) % 8)"] {
                     for offset in 0..<4 {
                         let seq = UInt16(truncatingIfNeeded: round &* 4 &+ offset)
                         guard let template = buf.template(addr: peer, seq: seq) else { continue }
                         resolved.withLock { $0 += 1 }
-                        // Every recorded template is exactly `[id, 0, 0, 0]`.
                         if template.count != 4 || template.dropFirst() != Data([0, 0, 0]) {
                             torn.withLock { $0 += 1 }
                         }

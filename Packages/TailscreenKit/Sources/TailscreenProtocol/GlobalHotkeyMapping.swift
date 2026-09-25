@@ -1,43 +1,28 @@
 import Foundation
 
-// Turning a `ShortcutCatalog` row into something an OS will accept as a
-// SYSTEM-WIDE hotkey.
+// Turns a `ShortcutCatalog` chord into a SYSTEM-WIDE hotkey registration: X11
+// wants a keysym-derived keycode + modifier bitmask, Win32 a virtual-key code
+// + its own bitmask. Pure arithmetic, kept here (not the C shims) so Linux CI
+// can test it.
 //
-// `ShortcutCatalog` describes a chord for a human — "⌃⌥M" / "Ctrl+Alt+M" — and
-// deliberately stops there. Registering one with the OS needs a different
-// vocabulary per platform: X11 wants a keycode (derived from a keysym) plus a
-// modifier bitmask, Win32 wants a virtual-key code plus its own bitmask. Both
-// translations are pure arithmetic over tables this package already has and
-// tests, so both live here rather than in the two C shims, where Linux CI could
-// not see them and where a wrong constant would be a key that silently does
-// nothing on somebody else's desk.
-//
-// One rule is shared and is the reason both entry points are failable rather
-// than total: **a chord with no modifiers is refused.** A bare key registered
-// system-wide is taken away from every other app on the machine, and the OS
-// will happily grant it.
+// Shared rule, why both entry points are failable: **a chord with no
+// modifiers is refused** — the OS would grant it, taking that bare key from
+// every other app on the machine.
 
 extension ShortcutKey {
     /// This key as a USB HID keyboard-page (0x07) usage ID — the vocabulary
     /// ``X11KeyCodeMapping`` and ``WindowsKeyCodeMapping`` are keyed by.
-    ///
-    /// Going through HID rather than writing a third `ShortcutKey` → native
-    /// table is the whole point: those two tables are already audited against
-    /// Xlib's own keysym names (`xtest-probe --audit-keysyms`) and pinned by
-    /// unit tests, so a hotkey inherits that coverage instead of adding a
-    /// fourth hand-written list of hex constants to keep in agreement.
+    /// Going through HID reuses those already-audited tables instead of a
+    /// third hand-written list.
     ///
     /// `nil` for anything that is not a physical key. `"+"` is the live case:
-    /// the catalog spells the zoom-in shortcut that way because it is what a
-    /// person reads, but on a US layout there is no `+` key — it is Shift and
-    /// the `=` key. Registering a global hotkey on `=` because the label said
-    /// `+` would fire on the wrong keystroke, so this returns nil and the
-    /// caller declines rather than guessing.
+    /// on a US layout there is no `+` key, only Shift+`=`, so mapping it to
+    /// `=` would fire the wrong keystroke — return nil and let the caller
+    /// decline rather than guess.
     public var hidUsage: UInt16? {
         switch self {
         case .escape: return 0x29
-        // ⌫ is Backspace, HID 0x2A. (HID 0x4C is forward Delete, a different
-        // key; the catalog's glyph names the one above Return.)
+        // ⌫ = Backspace (HID 0x2A), not forward Delete (0x4C).
         case .delete: return 0x2A
         case .character(let raw):
             let value = raw.lowercased()
@@ -72,31 +57,20 @@ extension ShortcutKey {
     ]
 }
 
-/// Why a host cannot hold a system-wide hotkey.
+/// Why a host cannot hold a system-wide hotkey — reports "unavailable" rather
+/// than pretending, since a mute hotkey that silently never registered looks
+/// identical to a working one until someone presses it.
 ///
-/// A capability that reports "unavailable" rather than pretending, in the same
-/// family as `XTestInjector.isTrusted()` and `ts_gtk_overlay_supported()`. The
-/// failure it prevents is specific and nasty: a mute hotkey that was never
-/// registered looks exactly like a mute hotkey that works, right up to the
-/// moment somebody presses it believing they have gone quiet.
-///
-/// Shared across platforms because the *reasons* are: both `XGrabKey` and
-/// `RegisterHotKey` refuse a chord another application already owns, and both
-/// hosts have to say so the same way.
-/// `Error` so a host that models "held or not" as a `Result` can carry the
-/// reason directly; the X11 side returns it as a plain optional instead,
-/// because there its grab is a step after opening rather than the whole
-/// operation.
+/// `Error` so a host modeling "held or not" as a `Result` can carry the
+/// reason directly; the X11 side returns it as a plain optional since its
+/// grab is a step after opening rather than the whole operation.
 public enum GlobalHotkeyUnavailability: Error, Equatable, Sendable {
     /// No X display to open — a headless run, or `$DISPLAY` unset.
     case noDisplay
-    /// A Wayland session. `XGrabKey` still *succeeds* against XWayland, which
-    /// is the trap: the grab is real but XWayland only ever sees keystrokes
-    /// routed to X11 clients, so the chord fires while an X11 app is focused
-    /// and does nothing while a native Wayland app is — which is most of the
-    /// time, and is worse than not having it, because it works often enough to
-    /// be trusted. Wayland's answer is the GlobalShortcuts portal, which is a
-    /// separate piece of work (see the ScreenCast portal for the shape of it).
+    /// A Wayland session. `XGrabKey` still *succeeds* against XWayland, but
+    /// only fires while an X11 app is focused — worse than unavailable,
+    /// because it works often enough to be trusted. Wayland's answer is the
+    /// GlobalShortcuts portal (separate work).
     case waylandSession
     /// The chord cannot be expressed as a registration: an unmappable key, or
     /// one with no modifiers, which would take that key from every other app.
@@ -124,13 +98,9 @@ public enum GlobalHotkeyUnavailability: Error, Equatable, Sendable {
 
 /// A `ShortcutChord` expressed as an `XGrabKey` request.
 public enum X11HotkeyMapping {
-    /// A keysym plus the modifier mask to grab it under.
-    ///
-    /// A keysym, not a keycode, for the same reason ``X11KeyCodeMapping`` is:
-    /// a keycode names a physical key on whichever machine is running the X
-    /// server and is meaningless until a live `Display *` resolves it. The
-    /// `XKeysymToKeycode` hop belongs to the C shim; everything above it is
-    /// here.
+    /// A keysym plus the modifier mask to grab it under. A keysym, not a
+    /// keycode: a keycode is meaningless until a live `Display *` resolves
+    /// it, which the C shim's `XKeysymToKeycode` hop handles.
     public struct Grab: Equatable, Sendable {
         public let keysym: UInt32
         public let modifierMask: UInt32
@@ -154,12 +124,8 @@ public enum X11HotkeyMapping {
     /// Scroll Lock on the layouts that bind it at all.
     public static let mod5Mask: UInt32 = 1 << 7
 
-    /// The keysym + mask for `chord`, or nil if it cannot be grabbed.
-    ///
-    /// Nil in two cases, both deliberate: an unmappable key (see
-    /// ``ShortcutKey/hidUsage``) and a chord with **no modifiers**, which
-    /// `XGrabKey` would accept and which would then swallow that key for every
-    /// other client on the display.
+    /// The keysym + mask for `chord`, or nil for an unmappable key or a
+    /// chord with no modifiers (see ``ShortcutKey/hidUsage``).
     public static func grab(for chord: ShortcutChord) -> Grab? {
         guard !chord.modifiers.isEmpty else { return nil }
         guard let usage = chord.key.hidUsage,
@@ -168,12 +134,8 @@ public enum X11HotkeyMapping {
         return Grab(keysym: keysym, modifierMask: modifierMask(chord.modifiers))
     }
 
-    /// Role modifiers → X11 mask.
-    ///
-    /// `primary` is Ctrl off macOS, so it and `.control` fold onto the same
-    /// bit. That collapse is exactly what `ShortcutCatalog.collisions(.words)`
-    /// exists to police, and it is harmless here: the mask is a set, so naming
-    /// the bit twice sets it once.
+    /// Role modifiers → X11 mask. `.primary` (Ctrl off macOS) and `.control`
+    /// fold onto the same bit; harmless since the mask is a set.
     public static func modifierMask(_ modifiers: ShortcutModifiers) -> UInt32 {
         var mask: UInt32 = 0
         if modifiers.contains(.control) || modifiers.contains(.primary) { mask |= controlMask }
@@ -184,17 +146,10 @@ public enum X11HotkeyMapping {
 
     /// Every mask the grab must actually be installed under.
     ///
-    /// `XGrabKey` matches the modifier state **exactly**. Grab `Ctrl+Alt+M`
-    /// and the hotkey works — until the user presses Num Lock, at which point
-    /// the state carries `Mod2Mask` as well, no longer matches, and the key
-    /// does nothing with no error anywhere. Caps Lock and Scroll Lock do the
-    /// same. The universal X11 idiom is to grab the base mask once per subset
-    /// of the "don't care" locks, which is what this enumerates: 2³ = 8 masks,
-    /// in a stable order so a failure names a reproducible one.
-    ///
-    /// This is the single most likely way for the Linux half to look broken
-    /// while every unit test passes, which is why it is a list rather than a
-    /// comment.
+    /// `XGrabKey` matches the modifier state **exactly** — Num/Caps/Scroll
+    /// Lock being on adds a bit and silently breaks the grab otherwise. Grab
+    /// the base mask once per subset of these "don't care" locks: 2³ = 8
+    /// masks, stable order.
     public static func grabMasks(base: UInt32) -> [UInt32] {
         let ignored = [lockMask, mod2Mask, mod5Mask]
         var masks: [UInt32] = []
@@ -227,21 +182,14 @@ public enum WindowsHotkeyMapping {
     public static let modControl: UInt32 = 0x0002
     public static let modShift: UInt32 = 0x0004
     public static let modWin: UInt32 = 0x0008
-    /// Suppress the WM_HOTKEY storm a held-down chord would otherwise produce.
-    ///
-    /// Not an optimisation. Without it, holding the mute chord flips the mute
-    /// latch at the keyboard's auto-repeat rate, so whether the microphone
-    /// ends up on or off depends on how long a finger rested on a key — which
-    /// is the worst possible property for a mute control. Windows gives this
-    /// for free; the X11 side has to build the equivalent out of
+    /// Suppress the WM_HOTKEY storm a held-down chord would otherwise
+    /// produce — without it, holding the mute chord flips the latch at the
+    /// keyboard's auto-repeat rate. X11 has no equivalent; see
     /// ``GlobalHotkeyRepeatFilter``.
     public static let modNoRepeat: UInt32 = 0x4000
 
-    /// The registration for `chord`, or nil if it cannot be registered.
-    ///
-    /// Same two refusals as the X11 side: an unmappable key, and a chord with
-    /// no modifiers (`RegisterHotKey` would take it and no other app on the
-    /// machine would see that key again).
+    /// The registration for `chord`, or nil for an unmappable key or a chord
+    /// with no modifiers (same refusals as the X11 side).
     public static func registration(for chord: ShortcutChord) -> Registration? {
         guard !chord.modifiers.isEmpty else { return nil }
         guard let usage = chord.key.hidUsage,
@@ -261,21 +209,14 @@ public enum WindowsHotkeyMapping {
     }
 }
 
-/// Collapses an X11 key-repeat burst into the one press a person made.
+/// Collapses an X11 key-repeat burst into the one press a person made. X11
+/// has no `MOD_NOREPEAT`; feeding repeated `KeyPress` straight to a toggle
+/// would make the mic's final state depend on how long a finger rested.
 ///
-/// X11 has no `MOD_NOREPEAT`. Holding the chord delivers a stream of
-/// `KeyPress` events, and feeding those straight to a *toggle* means the
-/// microphone's final state is decided by how long a finger rested on the key.
-///
-/// The filter is a latch, not a debounce, on purpose: a debounce would also
-/// swallow a deliberate fast double-tap (mute, glance, unmute), which people do.
-/// A latch swallows only what is definitionally a repeat — a press with no
-/// release in between.
-///
-/// It relies on the shim asking for `XkbSetDetectableAutoRepeat`, without which
-/// a held key delivers release/press pairs that no latch can tell from real
-/// ones. That request is reported rather than assumed, so a server that refuses
-/// it says so instead of quietly machine-gunning the mute.
+/// A latch, not a debounce — a debounce would also swallow a deliberate fast
+/// double-tap. Relies on the shim requesting `XkbSetDetectableAutoRepeat`
+/// (reported, not assumed), without which a held key can't be told from
+/// real repeated presses.
 public struct GlobalHotkeyRepeatFilter: Sendable {
     public enum Event: Sendable, Equatable {
         case press
@@ -299,8 +240,8 @@ public struct GlobalHotkeyRepeatFilter: Sendable {
         }
     }
 
-    /// Forget any held state — for a re-grab, where the release that would
-    /// have cleared the latch was delivered to whoever held the grab before.
+    /// Forget any held state, for a re-grab whose clearing release went to
+    /// the previous holder.
     public mutating func reset() {
         isDown = false
     }

@@ -3,8 +3,8 @@ import XCTest
 @testable import TailscreenViewer
 
 /// The CPU audio conversion every non-48 kHz / non-mono device output goes
-/// through. Pure arithmetic, so it is verified here rather than by listening to
-/// a Windows machine — which is the point of keeping it in the portable tier.
+/// through. Pure arithmetic, verified here rather than by listening to a
+/// Windows machine.
 final class MonoPCMConverterTests: XCTestCase {
     private func ramp(_ count: Int) -> [Float] {
         (0..<count).map { Float($0) }
@@ -12,9 +12,8 @@ final class MonoPCMConverterTests: XCTestCase {
 
     // MARK: - The common path
 
-    /// A 48 kHz mono endpoint must pass through bit-exact. This is the case that
-    /// actually runs on most machines, so "no resampling" has to mean no
-    /// arithmetic at all, not arithmetic that happens to round-trip.
+    /// "No resampling" must mean no arithmetic at all, not arithmetic that
+    /// happens to round-trip.
     func testMonoAtNativeRateIsBitExact() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 48_000, channelCount: 1))
@@ -22,15 +21,14 @@ final class MonoPCMConverterTests: XCTestCase {
         XCTAssertEqual(converter.convert(input), input)
     }
 
-    /// The next most common case: 48 kHz stereo. Mono goes to both channels.
     func testStereoDuplicatesIntoBothChannels() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 48_000, channelCount: 2))
         XCTAssertEqual(converter.convert([0.5, -0.25]), [0.5, 0.5, -0.25, -0.25])
     }
 
-    /// On a 5.1 endpoint the voice belongs in front left/right. Duplicating into
-    /// all six would drive the LFE and surrounds with full-range speech.
+    /// Duplicating into all six would drive the LFE and surrounds with
+    /// full-range speech; voice belongs in front left/right only.
     func testMultichannelLeavesNonFrontChannelsSilent() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 48_000, channelCount: 6))
@@ -39,7 +37,6 @@ final class MonoPCMConverterTests: XCTestCase {
 
     // MARK: - Resampling
 
-    /// Halving the rate: 48 k → 24 k consumes two input samples per output.
     func testDownsampleHalvesTheFrameCount() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 24_000, channelCount: 1))
@@ -48,7 +45,6 @@ final class MonoPCMConverterTests: XCTestCase {
         XCTAssertEqual(Double(out.count), 50, accuracy: 1)
     }
 
-    /// Doubling the rate: 48 k → 96 k emits two output samples per input.
     func testUpsampleDoublesTheFrameCount() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 96_000, channelCount: 1))
@@ -56,9 +52,8 @@ final class MonoPCMConverterTests: XCTestCase {
         XCTAssertEqual(Double(out.count), 200, accuracy: 2)
     }
 
-    /// The real-world odd rate. 960 samples of 20 ms at 48 k becomes ~882 at
-    /// 44.1 k, and the count must not drift over successive buffers — a
-    /// half-sample lost per call is 25 samples a second.
+    /// Count must not drift over successive buffers — a half-sample lost per
+    /// call is 25 samples a second.
     func testFortyFourOneKeepsRateOverManyBuffers() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 44_100, channelCount: 2))
@@ -70,9 +65,6 @@ final class MonoPCMConverterTests: XCTestCase {
         XCTAssertEqual(Double(frames), 44_100, accuracy: 5)
     }
 
-    /// A resampled constant signal must stay constant. Interpolating between two
-    /// equal neighbours can only produce that value, so any deviation means the
-    /// neighbours were picked wrong.
     func testConstantSignalSurvivesResampling() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 44_100, channelCount: 1))
@@ -84,9 +76,8 @@ final class MonoPCMConverterTests: XCTestCase {
         }
     }
 
-    /// A ramp that continues across a buffer boundary must come out monotonic.
-    /// This is the click test: if `previous` were dropped, the first output of
-    /// the second buffer would interpolate from silence and dip.
+    /// If `previous` were dropped, the second buffer's first output would
+    /// interpolate from silence and dip (the click test).
     func testBufferBoundaryDoesNotDiscontinue() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 44_100, channelCount: 1))
@@ -101,8 +92,6 @@ final class MonoPCMConverterTests: XCTestCase {
         }
     }
 
-    /// `reset()` drops the carried neighbour so a new session cannot inherit the
-    /// tail of the previous one.
     func testResetClearsCarriedState() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 44_100, channelCount: 1))
@@ -122,9 +111,8 @@ final class MonoPCMConverterTests: XCTestCase {
         XCTAssertTrue(converter.convert([]).isEmpty)
     }
 
-    /// A single-sample buffer has no right-hand neighbour of its own, so it may
-    /// legitimately emit nothing — but it must still advance the state rather
-    /// than trapping or losing the sample.
+    /// May legitimately emit nothing, but must advance state rather than
+    /// trapping or losing the sample.
     func testSingleSampleBufferIsSafe() {
         let converter = MonoPCMConverter(
             destination: AudioOutputFormat(sampleRate: 44_100, channelCount: 1))
@@ -136,16 +124,13 @@ final class MonoPCMConverterTests: XCTestCase {
         }
     }
 
-    /// A device reporting a zero rate or zero channels is nonsense; the format
-    /// clamps rather than dividing by zero downstream.
     func testDegenerateFormatIsClamped() {
         let format = AudioOutputFormat(sampleRate: 0, channelCount: 0)
         XCTAssertEqual(format.sampleRate, 1)
         XCTAssertEqual(format.channelCount, 1)
     }
 
-    /// The output is always a whole number of interleaved frames — a partial
-    /// frame handed to a device would desynchronise every channel after it.
+    /// A partial frame handed to a device desynchronises every channel after it.
     func testOutputIsAlwaysWholeFrames() {
         for channels in 1...6 {
             let converter = MonoPCMConverter(

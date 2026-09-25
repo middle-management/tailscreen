@@ -103,14 +103,10 @@ final class ViewerSessionTests: XCTestCase {
 
     // MARK: - HELLO retry
     //
-    // A HELLO is one UDP datagram and `start()` used to send exactly one. Lose
-    // it and the session still came up — the sharer registers the address from
-    // a later KEEPALIVE or PLI — but with NO capabilities, because it only
-    // records them where a HELLO is parsed. It then answers with the legacy
-    // 5-byte ack, and for the rest of that session the viewer's annotation
-    // toolbar and Request Control are hidden, its NACKs are answered with
-    // nothing, no RTT ping is sent and FEC can never arm. Retrying until the
-    // sharer answers is what closes that window.
+    // A lost HELLO still lets the session come up (the sharer registers the
+    // address from a later KEEPALIVE/PLI) but with no capabilities recorded,
+    // silently downgrading the whole session to legacy PLI-only behavior.
+    // Retrying until the sharer answers closes that window.
 
     /// `decodeHelloCaps` is non-optional and answers `[]` for anything that is
     /// not a HELLO, so it cannot be used to *identify* one. Count by kind.
@@ -122,9 +118,6 @@ final class ViewerSessionTests: XCTestCase {
             .map { ScreenShareControlMessage.decodeHelloCaps($0) }
     }
 
-    /// The regression. An unanswered HELLO is sent again once the interval has
-    /// elapsed, carrying the same capabilities — those are the whole point of
-    /// re-sending it.
     func testUnansweredHelloIsResentWithTheSameCaps() {
         let control = ControlCollector()
         let session = ViewerSession(
@@ -148,10 +141,8 @@ final class ViewerSessionTests: XCTestCase {
             helloCaps(control).last, fullCaps, "the retry must carry the caps, not a bare HELLO")
     }
 
-    /// HELLO_PENDING stops it. The sharer only sends one from the path that
-    /// parses a HELLO, so receiving it is proof our caps landed — as good a
-    /// stop as the ack, and what keeps somebody parked at the approval prompt
-    /// from re-sending for the length of the wait.
+    /// HELLO_PENDING stops the retries, same as the ack — keeps a viewer
+    /// parked at the approval prompt from re-sending for the whole wait.
     func testHelloPendingStopsTheRetries() {
         let control = ControlCollector()
         let session = ViewerSession(
@@ -181,8 +172,6 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(helloCount(control), 1, "an admitted viewer stops asking")
     }
 
-    /// The bound. A sharer that never answers at all must not be sent HELLOs
-    /// for the life of the process.
     func testRetriesStopAtTheAttemptLimit() {
         let control = ControlCollector()
         let session = ViewerSession(
@@ -275,9 +264,6 @@ final class ViewerSessionTests: XCTestCase {
 
     // MARK: - Observation hooks (stats overlay)
 
-    /// The optional `onPLISent` hook fires whenever the session emits a PLI —
-    /// here via a decode failure — so a host stats overlay can count keyframe
-    /// requests without re-parsing the outbound control bytes.
     func testOnPLISentHookFiresOnDecodeFailure() {
         let decoder = StubDecoder()
         decoder.shouldThrow = true
@@ -300,8 +286,6 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertGreaterThan(plis, 0)
     }
 
-    /// `onNACKSent` fires alongside every emitted NACK; a real gap surfaces at
-    /// least one of a NACK or a PLI, and whichever fires is mirrored by its hook.
     func testOnNACKSentHookFiresWithNack() {
         let decoder = StubDecoder()
         let sink = StubVideoSink()
@@ -334,8 +318,6 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertGreaterThan(nacks + plis, 0)
     }
 
-    /// `onFECRecovered` fires once per FEC-recovered packet, so the overlay's
-    /// recovery counter tracks the same events the extended RR reports.
     func testOnFECRecoveredHookFiresOnRecovery() {
         let decoder = StubDecoder()
         let sink = StubVideoSink()
@@ -354,9 +336,8 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(recovered, 1, "one FEC recovery should fire onFECRecovered exactly once")
     }
 
-    /// An async decoder delivers frames out-of-band (after `decode` returns) —
-    /// the session presents whatever `onDecodedFrame` hands it, whenever it
-    /// arrives, so a VideoToolbox-style backend works through the same seam.
+    /// A VideoToolbox-style async decoder delivers frames after `decode`
+    /// returns; the session presents them whenever `onDecodedFrame` fires.
     func testAsyncDecoderDeliversFramesOutOfBand() {
         let decoder = AsyncStubDecoder()
         let sink = StubVideoSink()
@@ -409,9 +390,7 @@ final class ViewerSessionTests: XCTestCase {
             audioSink: nil, onControlToSend: control.send)
         let serverCaps: ScreenShareCaps = serverFEC ? fullCaps : [.nack, .receiverReport]
         session.receiveRTP(ScreenShareControlMessage.encodeHelloAck(ssrc: 5, caps: serverCaps))
-        // FEC suites drive P-frame-only streams and assert on recovered frame
-        // counts; open the pre-keyframe gate so the mechanics under test stay
-        // observable.
+        // Open the pre-keyframe gate so P-frame-only FEC recovery is observable.
         session.markKeyframeSeenForTesting()
         return session
     }
@@ -545,9 +524,8 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(audioSink.pcm.first?.count, OpusVoiceEncoder.frameSamples)
     }
 
-    /// With an `onAudioDatagram` passthrough, inbound audio RTP is forwarded
-    /// verbatim and the built-in Opus path is skipped — the seam a host with
-    /// its own audio pipeline (macOS's VoiceChannel) uses.
+    /// `onAudioDatagram` forwards inbound audio RTP verbatim, skipping the
+    /// built-in Opus path — the seam a host with its own pipeline (mac's VoiceChannel) uses.
     func testAudioPassthroughForwardsRawDatagram() throws {
         var forwarded: [Data] = []
         let audioSink = StubAudioSink()
@@ -608,11 +586,8 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertTrue(session.serverCaps.contains(.fec))
     }
 
-    /// A legacy sharer (no cap support) replies with the plain 5-byte HELLO_ACK
-    /// `[0x04][ssrc:4]`. The tolerant `decodeHelloAckCaps` parser must still
-    /// learn the SSRC (so audio relay + admission proceed) with empty
-    /// serverCaps, so the whole loss-recovery matrix degrades to PLI-only — the
-    /// viewer never advertises NACK/FEC behavior a legacy sharer can't honor.
+    /// A legacy sharer replies with the plain 5-byte HELLO_ACK `[0x04][ssrc:4]`
+    /// — SSRC must still be learned, with empty serverCaps (PLI-only degrade).
     func testLegacyHelloAckLearnsSsrcWithoutCaps() {
         let decoder = StubDecoder()
         let sink = StubVideoSink()
@@ -695,8 +670,7 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertFalse(session.wasDenied, "an ordinary stop is not a deny")
     }
 
-    /// HELLO_DENY (0x08) — the sharer declining (or kicking) this viewer. The
-    /// deny protocol is HELLO_DENY followed by SERVER_BYE, and the trailing
+    /// HELLO_DENY (0x08) is followed by SERVER_BYE, and the trailing
     /// bye must NOT relabel the deny as an ordinary sharer stop: first cause
     /// wins, or every declined viewer reads "the sharer stopped sharing".
     func testHelloDenyMarksDeniedAndSurvivesTheTrailingServerBye() {
@@ -708,14 +682,11 @@ final class ViewerSessionTests: XCTestCase {
             audioSink: nil, onControlToSend: control.send
         )
 
-        // The deny control byte, constructed exactly as the session parses it
-        // (a bare `[0x08]` — HELLO_DENY carries no payload).
         session.receiveRTP(ScreenShareControlMessage.encode(.helloDenied))
         XCTAssertTrue(session.wasDenied)
         XCTAssertTrue(session.isStopped, "a denied viewer is a stopped viewer")
         XCTAssertEqual(session.closeReason, .deniedOrKicked)
 
-        // The SERVER_BYE the server chases the deny with.
         session.receiveRTP(ScreenShareControlMessage.encode(.serverBye))
         XCTAssertEqual(
             session.closeReason, .deniedOrKicked,
@@ -723,10 +694,7 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertTrue(session.wasDenied)
     }
 
-    /// The legacy flags are untouched by the close-reason addition: a denied
-    /// session still reads exactly as it did to callers of `wasDenied` /
-    /// `isStopped`, and admission state is unaffected by a deny that arrives
-    /// while parked pending.
+    /// Admission state is unaffected by a deny that arrives while parked pending.
     func testHelloDenyAfterPendingLeavesAdmissionStateUnassigned() {
         let decoder = StubDecoder()
         let sink = StubVideoSink()
@@ -794,10 +762,9 @@ final class ViewerSessionTests: XCTestCase {
 
     // MARK: - Keyframe request while blank
 
-    /// The sharer forces a keyframe on admission, but only once. A live
-    /// Mac→Windows session lost that IDR and stayed blank for the whole session
-    /// on a clean link: 112 access units in three seconds, every one a P-frame,
-    /// nothing left to ask again. These cover the retry that closes it.
+    /// The sharer forces a keyframe on admission, but only once; a lost IDR
+    /// could otherwise leave the viewer blank for the whole session. These
+    /// cover the retry that closes it.
     private func makeAdmittedSession(
         _ decoder: StubDecoder, _ sink: StubVideoSink, _ control: ControlCollector
     ) -> ViewerSession {
@@ -831,8 +798,7 @@ final class ViewerSessionTests: XCTestCase {
             audioSink: nil, onControlToSend: control.send
         )
 
-        // No HELLO_ACK: nothing has admitted us, so there is nobody to serve a
-        // keyframe and a viewer parked at the approval prompt must stay quiet.
+        // No HELLO_ACK: a viewer parked at the approval prompt must stay quiet.
         session.tick(nowNs: 1_000)
         session.tick(nowNs: 5 * ViewerSession.keyframeRequestIntervalNs)
         XCTAssertEqual(control.count(of: .pli), 0)
@@ -844,8 +810,8 @@ final class ViewerSessionTests: XCTestCase {
         session.tick(nowNs: 1_000)
         XCTAssertEqual(control.count(of: .pli), 1)
 
-        // Exactly the observed failure: an access unit assembles cleanly and is
-        // dropped by the pre-keyframe gate. That must not read as progress.
+        // An access unit that assembles cleanly and is dropped by the
+        // pre-keyframe gate must not read as progress.
         let packetizer = H264Packetizer()
         let pFrame = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
         for pkt in packetizer.packetize(nals: pFrame, timestamp: 9000, ssrc: 7, startSequence: 0) {
@@ -859,16 +825,15 @@ final class ViewerSessionTests: XCTestCase {
 
     // MARK: - Diagnostics that separate look-alike faults
 
-    /// The distinction the socket-drain hunt had to infer from arrival rates:
-    /// an access unit that assembles and is thrown away as torn must not look
-    /// like an access unit that never assembled.
+    /// An access unit that assembles and is thrown away as torn must not
+    /// look like one that never assembled.
     func testTornAccessUnitIsCountedSeparatelyFromOneThatNeverAssembles() {
         let control = ControlCollector()
         let session = makeAdmittedSession(StubDecoder(), StubVideoSink(), control)
         session.markKeyframeSeenForTesting()
 
-        // Feed a fragmented AU with its first packet missing, then a marker
-        // packet, so the AU completes torn rather than never completing.
+        // Fragmented AU with its first packet missing, then a marker packet,
+        // so it completes torn rather than never completing.
         let packetizer = H264Packetizer()
         let nals = AVCCParser.nalUnits(from: makeAVCC())
         let packets = packetizer.packetize(nals: nals, timestamp: 9000, ssrc: 7, startSequence: 0)
@@ -944,10 +909,8 @@ final class ViewerSessionTests: XCTestCase {
         return seq
     }
 
-    /// With NEITHER ladder callback installed the session keeps the historical
-    /// flat path: exactly one PLI per decode failure, no escalation. This is
-    /// the behavior pin for hosts that don't opt in (including the macOS
-    /// client, whose adapter never reports per-frame failures here at all).
+    /// With neither ladder callback installed, one PLI per decode failure —
+    /// the behavior pin for hosts that don't opt in.
     func testNoLadderCallbacksKeepsFlatPLIPerFailure() {
         let decoder = StubDecoder()
         decoder.shouldThrow = true
@@ -966,8 +929,8 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(session.diagnostics.decodeFailures, 10)
     }
 
-    /// Ladder-mode assembly: a failing session with both callbacks installed,
-    /// plus counters for every observable output.
+    /// A failing session with both ladder callbacks installed, plus counters
+    /// for every observable output.
     private struct LadderHarness {
         let session: ViewerSession
         let decoder: StubDecoder
@@ -996,9 +959,6 @@ final class ViewerSessionTests: XCTestCase {
             session: session, decoder: decoder, control: control, resets: resets, fatals: fatals)
     }
 
-    /// With the callbacks installed, failures escalate instead of spamming
-    /// PLIs: nothing below the first rung, one PLI at the keyframe rung, and
-    /// nothing more until the next rung.
     func testLadderFiresKeyframeRungOnceAtThreshold() {
         let harness = makeLadderHarness()
 
@@ -1017,8 +977,6 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(harness.fatals.value, 0)
     }
 
-    /// The reset rung fires `onDecoderResetNeeded` exactly once, with the PLI
-    /// that asks for the keyframe the rebuilt decoder needs.
     func testLadderFiresResetRungOnceWithKeyframeRequest() {
         let harness = makeLadderHarness()
 
@@ -1034,9 +992,6 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(harness.control.count(of: .pli), 2)
     }
 
-    /// The terminal rung fires `onDecodeFatal` exactly once, after the reset
-    /// rung already had its chance, and stays latched however long the
-    /// failures continue.
     func testLadderFiresFatalRungOnceAtTerminalThreshold() {
         let harness = makeLadderHarness()
 
@@ -1052,9 +1007,8 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(harness.control.count(of: .pli), 2)
     }
 
-    /// A successful decode resets the consecutive counter — a fresh failing
-    /// run needs the full threshold again — and clears the per-episode
-    /// latches, so a NEW episode walks the rungs again.
+    /// A successful decode resets the consecutive counter and clears the
+    /// per-episode latches, so a new episode walks the rungs again.
     func testSuccessfulDecodeResetsLadderCounterAndLatches() {
         let harness = makeLadderHarness()
 

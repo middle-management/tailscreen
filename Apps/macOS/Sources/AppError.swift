@@ -1,39 +1,29 @@
 import AppKit
 import Foundation
 
-/// User-facing error model. Surfaced via the menubar's alert sheet
-/// with an optional in-line action button (e.g. "Open System Settings",
-/// "Retry") and a copy-details affordance so bug reports come with
-/// reproducible context. Codes (`TS-SCREEN-001`, `TS-NET-002`, …) are
-/// stable identifiers callers can paste into issue trackers without
-/// pasting full stack traces — the human-readable title + message
-/// describe the symptom, the code disambiguates the exact path.
+/// User-facing error model. Surfaced via the menubar's alert sheet with an
+/// optional inline action button and a copy-details affordance. Codes
+/// (`TS-SCREEN-001`, …) are stable identifiers for bug reports.
 struct AppError: Identifiable, Equatable, Sendable {
     let id = UUID()
-    /// Stable identifier suitable for logs / bug reports. Format
-    /// `TS-<DOMAIN>-<NNN>` — domains so far: SCREEN, NET, VOICE,
-    /// AUTH, GENERIC.
+    /// `TS-<DOMAIN>-<NNN>` — domains so far: SCREEN, NET, VOICE, AUTH,
+    /// GENERIC.
     let code: String
     /// Short title shown as the alert's heading. ~6 words.
     let title: String
     /// Detailed message body. Plain prose; users see this verbatim.
     let message: String
-    /// Optional underlying `Error` description rolled into the copy-
-    /// details payload. Not rendered in the alert body so the UI
-    /// stays focused, but the user can paste full details when
-    /// reporting.
+    /// Optional underlying `Error` description, in copy-details only (not
+    /// the alert body).
     let underlying: String?
-    /// Optional inline action button. `title` becomes the button
-    /// label; `handler` runs on the main actor.
+    /// Optional inline action button; `handler` runs on the main actor.
     let action: AppErrorAction?
 
     static func == (lhs: AppError, rhs: AppError) -> Bool {
         lhs.id == rhs.id
     }
 
-    /// Tab-separated single-string dump for the alert's Copy Details
-    /// button. Includes everything that's safe to share publicly —
-    /// code, title, message, underlying error.
+    /// Dump for the alert's Copy Details button.
     func copyableDetails() -> String {
         var lines: [String] = []
         lines.append("Code: \(code)")
@@ -46,10 +36,8 @@ struct AppError: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Inline action attached to an `AppError`. Kept Sendable-friendly
-/// (the handler is `@MainActor` because actions ultimately touch UI
-/// state — NSWorkspace, AppState methods, retry closures wrapping
-/// async work).
+/// Inline action attached to an `AppError`. `handler` is `@MainActor`
+/// because it ultimately touches UI state.
 struct AppErrorAction: Sendable {
     let title: String
     let handler: @MainActor @Sendable () -> Void

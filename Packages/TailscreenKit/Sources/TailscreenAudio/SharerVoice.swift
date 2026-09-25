@@ -2,31 +2,17 @@ import Foundation
 import TailscreenProtocol
 
 /// The sharer's end of the voice call: speak to every viewer, and hear them.
+/// A pairing — `VoiceUplink` at the reserved sharer SSRC plus a
+/// `VoiceDownlink` for viewers' relayed voices — so the two hosts that need
+/// it agree on the SSRC, muted-start, and device-release-on-stop details.
 ///
-/// A pairing, not new machinery — `VoiceUplink` at the reserved sharer SSRC
-/// plus a `VoiceDownlink` for the viewers' relayed voices. It exists as a named
-/// type because the two hosts that need it would otherwise each assemble the
-/// pair themselves, and the parts that must agree are exactly the parts that
-/// are easy to get subtly different: which SSRC the sharer speaks under, that
-/// the microphone starts muted, and that stopping a share releases the device
-/// rather than leaving it open until the process exits.
+/// Not symmetric with the viewer, whose downlink lives inside
+/// `ViewerSession`: a sharer's inbound audio arrives through the server's
+/// `onAudioReceived` after its anti-spoof gate has vetted the sender's SSRC.
 ///
-/// The host supplies both platform ends — a `MicrophoneCapturing` backend, and
-/// somewhere to play what arrives — so this stays portable and CI-testable.
-///
-/// Deliberately NOT symmetric with the viewer, which gets its downlink inside
-/// `ViewerSession` (it already owns the RTP demux). A sharer's inbound audio
-/// arrives through the server's `onAudioReceived` callback instead, after the
-/// server's anti-spoof gate has vetted the sender's SSRC — so by the time a
-/// packet reaches `receive` it is a packet from an admitted viewer speaking
-/// under the SSRC that viewer was assigned.
-///
-/// `@unchecked Sendable`, and it has to be: `receive` runs on the server's
-/// receive thread while `stop()` runs on whichever thread tore the share down,
-/// and the server's callback contract ("assign before `start()`, leave alone
-/// until after `stop()` returns") means no host can detach `onAudioReceived`
-/// first to drain it. Both halves own their own lock — `VoiceUplink`'s, and
-/// `VoiceDownlink`'s.
+/// `@unchecked Sendable`: `receive` runs on the server's receive thread while
+/// `stop()` runs on whatever thread tore the share down, and neither halt can
+/// detach `onAudioReceived` first to drain it. Both halves own their own lock.
 public final class SharerVoice: @unchecked Sendable {
     private let uplink: VoiceUplink
     private let downlink = VoiceDownlink()
@@ -57,12 +43,9 @@ public final class SharerVoice: @unchecked Sendable {
         send: @escaping (Data) -> Void
     ) {
         uplink = VoiceUplink(microphone: microphone, encoder: encoder, send: send)
-        // Fixed, and set here rather than by a host: a sharer speaks under the
-        // protocol's reserved voice SSRC, and viewers' Opus decoders are keyed
-        // on it. There is no correct second answer, so there is no parameter.
+        // Fixed here, not by a host: viewers' Opus decoders key on the protocol's reserved sharer SSRC.
         uplink.setSSRC(VoiceUplink.sharerSSRC)
-        // Starting a share must not put somebody on the air — the same rule the
-        // viewer follows, and the same default as the macOS app.
+        // Starting a share must not put somebody on the air.
         uplink.isMuted = true
     }
 
@@ -80,16 +63,11 @@ public final class SharerVoice: @unchecked Sendable {
         try uplink.start()
     }
 
-    /// Release the device and forget every viewer's decoder.
-    ///
-    /// Called on share teardown, not left to `deinit`: an open capture device
-    /// after Stop Sharing keeps the OS microphone indicator lit, which reads to
-    /// everyone in the room as "still recording".
-    ///
-    /// Safe to call while inbound audio is still arriving — which it always
-    /// is, since both hosts stop voice before the server. `VoiceUplink.stop`
-    /// waits for an in-flight delivery and `VoiceDownlink.reset` takes the
-    /// downlink's lock, so neither drops state through the middle of a packet.
+    /// Release the device and forget every viewer's decoder. Called on share
+    /// teardown, not left to `deinit` — an open device after Stop Sharing
+    /// keeps the OS mic indicator lit. Safe while inbound audio is still
+    /// arriving: `VoiceUplink.stop` waits for an in-flight delivery and
+    /// `VoiceDownlink.reset` takes its own lock.
     public func stop() {
         uplink.stop()
         downlink.reset()
@@ -100,9 +78,7 @@ public final class SharerVoice: @unchecked Sendable {
     /// dropped.
     ///
     /// - Parameter nowNs: optional monotonic clock for the downlink's
-    ///   loss-resilience decisions (gap concealment, decoder cooldown, idle
-    ///   eviction). Hosts that pass nothing — both shipped sharer hosts call
-    ///   this straight off the receive thread — get the uptime clock.
+    ///   loss-resilience decisions. Hosts that pass nothing get the uptime clock.
     public func receive(_ packet: Data, nowNs: UInt64? = nil) {
         downlink.ingest(packet, nowNs: nowNs)
     }

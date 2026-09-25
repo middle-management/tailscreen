@@ -6,9 +6,7 @@ import SwiftUI
 /// surfaces, a strong heading, generous spacing), so this file only holds
 /// the few identity decisions that should not be re-derived per view.
 enum TSTheme {
-    /// Deterministic per-name hue for monogram avatars, so a peer or
-    /// account keeps its color across launches. Uses a djb2 hash over the
-    /// UTF-8 bytes — Swift's `hashValue` is seeded per process and would
+    /// djb2 hash, not `hashValue` — Swift's is per-process seeded and would
     /// reshuffle colors every launch.
     static func monogramColor(for name: String) -> Color {
         let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green, .cyan]
@@ -29,9 +27,7 @@ final class AvatarStore: ObservableObject {
     @Published private(set) var images: [String: NSImage] = [:]
     private var inFlight: Set<String> = []
 
-    /// Cached avatar for `urlString`, kicking a background fetch on the
-    /// first miss. Publishes when the fetch lands so observing views
-    /// re-render with the real picture.
+    /// Kicks a background fetch on the first miss.
     func avatar(for urlString: String?) -> NSImage? {
         guard let urlString, !urlString.isEmpty else { return nil }
         if let cached = images[urlString] { return cached }
@@ -52,8 +48,7 @@ final class AvatarStore: ObservableObject {
         }
     }
 
-    /// Aspect-fill `image` into a circle of `size` points — for
-    /// `NSMenuItem.image`, which can't be clipped by SwiftUI.
+    /// For `NSMenuItem.image`, which can't be clipped by SwiftUI.
     nonisolated static func circular(_ image: NSImage, size: CGFloat) -> NSImage {
         NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let source = image.size
@@ -69,9 +64,7 @@ final class AvatarStore: ObservableObject {
     }
 }
 
-/// Account avatar: the fetched profile picture when available, else the
-/// deterministic monogram. Observing the store means the monogram swaps
-/// to the real picture the moment its fetch lands.
+/// Fetched profile picture when available, else the deterministic monogram.
 struct AccountAvatar: View {
     @ObservedObject private var store = AvatarStore.shared
     let name: String
@@ -92,9 +85,6 @@ struct AccountAvatar: View {
     }
 }
 
-/// Circular monogram avatar — first character of the display name over the
-/// name's deterministic color. Used by the main window's toolbar account
-/// menu; sized by the caller.
 struct MonogramAvatar: View {
     let name: String
     var size: CGFloat = 24
@@ -115,9 +105,7 @@ struct MonogramAvatar: View {
         name.first.map { String($0).uppercased() } ?? "?"
     }
 
-    /// AppKit rendering of the same avatar, for `NSMenuItem.image` — the
-    /// account menu is a real `NSMenu` (SwiftUI `Menu` flattens custom row
-    /// labels to plain text, so Tailscale-style two-line rows need AppKit).
+    /// For `NSMenuItem.image` — SwiftUI `Menu` flattens custom row labels.
     static func nsImage(name: String, size: CGFloat) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             NSColor(TSTheme.monogramColor(for: name)).setFill()

@@ -29,16 +29,10 @@ extension DiagnosticEvent: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(seq, forKey: .seq)
-        // Always written, even for the common single-session bundle. This is a
-        // key a reader FILTERS on — "show me only the share that failed" — and
-        // a key that is absent until it matters is one nobody discovers.
+        // Always written, even for a single-session bundle, so a reader can filter on it.
         try container.encode(session, forKey: .session)
-        // Milliseconds with one decimal, not raw nanoseconds. This is the
-        // column a reader's eye actually runs down — "how long after the start
-        // did this happen" — and 1841.2 answers it at a glance where
-        // 1841203847 does not. The same choice `InputDebugLog.ms` makes, for
-        // the same reason. Full precision is not lost that matters: ordering
-        // within a side is `seq`, which is exact.
+        // Milliseconds with one decimal, not raw nanoseconds — legible at a
+        // glance, like `InputDebugLog.ms`. `seq` still orders exactly within a side.
         let ms = (Double(monotonicNs) / 1_000_000).rounded(toPlaces: 1)
         try container.encode(ms, forKey: .elapsedMs)
         try container.encode(wallClock, forKey: .at)
@@ -46,8 +40,7 @@ extension DiagnosticEvent: Codable {
         try container.encode(category, forKey: .category)
         try container.encode(name, forKey: .event)
         try container.encode(severity, forKey: .severity)
-        // Omitted when empty rather than written as `{}` — most events carry
-        // no fields and the noise is the majority of the file otherwise.
+        // Omitted when empty, not written as `{}` — most events carry no fields.
         if !fields.isEmpty {
             try container.encode(fields, forKey: .fields)
         }
@@ -56,23 +49,17 @@ extension DiagnosticEvent: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         seq = try container.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
-        // Absent in bundles written before sessions were stamped, which read
-        // correctly as the one session they in fact describe.
+        // Absent in bundles written before sessions were stamped — reads
+        // correctly as the one session they describe.
         session = try container.decodeIfPresent(UInt32.self, forKey: .session) ?? 0
-        // Clamped, not converted directly. `UInt64(someDouble)` TRAPS for NaN,
-        // infinity, and anything past `UInt64.max` — and `"elapsed_ms":1e300`
-        // is valid JSON that reaches here, so a bundle from a corrupt writer or
-        // a hostile one would crash its reader. That is the opposite of what
-        // this decoder promises: every other malformation in a line is
-        // tolerated or skipped, and a crash is the one failure a person
-        // chasing a bug cannot work around.
+        // Clamped, not converted directly — `UInt64(someDouble)` traps on
+        // NaN/infinity/overflow, and a hostile `"elapsed_ms":1e300` must not
+        // crash the reader.
         let ms = try container.decodeIfPresent(Double.self, forKey: .elapsedMs) ?? 0
         monotonicNs = DiagnosticEvent.nanoseconds(fromMilliseconds: ms)
         wallClock = try container.decode(Date.self, forKey: .at)
-        // Unknown roles, categories and severities fall back rather than
-        // throwing: a bundle from a newer build must stay readable, and an
-        // event whose category this build has never heard of is still an event
-        // worth showing. Same tolerance rule as the wire's HELLO_ACK decode.
+        // Unknown roles/categories/severities fall back rather than throwing,
+        // so a newer build's bundle stays readable.
         role =
             (try? container.decode(DiagnosticRole.self, forKey: .role)) ?? .app
         category =
@@ -98,10 +85,8 @@ extension DiagnosticValue: Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        // Order matters: `Bool` first because JSON `true` would otherwise
-        // decode as the integer 1 on some platforms, and `Int64` before
-        // `Double` so a whole number survives as a whole number rather than
-        // coming back as `42.0`.
+        // Order matters: `Bool` first (JSON `true` could otherwise decode as
+        // 1), `Int64` before `Double` so whole numbers survive as such.
         if let value = try? container.decode(Bool.self) {
             self = .bool(value)
         } else if let value = try? container.decode(Int64.self) {
@@ -115,14 +100,10 @@ extension DiagnosticValue: Codable {
 }
 
 extension DiagnosticEvent {
-    /// Milliseconds → nanoseconds, saturating instead of trapping.
-    ///
-    /// Not finite (NaN, ±infinity) or not positive becomes **0**; a finite
-    /// value genuinely past `UInt64` saturates to the maximum. The split is
-    /// deliberate: garbage deserves the honest 0 rather than `.max`, which
-    /// would sort the event to the very end of the session and assert
-    /// something the data does not support. Either way the process survives a
-    /// line it was asked to be tolerant about.
+    /// Milliseconds → nanoseconds, saturating instead of trapping. Not
+    /// finite or not positive becomes 0 (garbage deserves an honest 0, not
+    /// `.max`, which would falsely sort it last); a genuinely too-large
+    /// finite value saturates to `.max`.
     static func nanoseconds(fromMilliseconds ms: Double) -> UInt64 {
         guard ms.isFinite, ms > 0 else { return 0 }
         let ns = ms * 1_000_000

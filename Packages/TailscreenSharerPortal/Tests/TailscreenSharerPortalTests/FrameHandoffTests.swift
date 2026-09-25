@@ -4,39 +4,28 @@ import XCTest
 @testable import TailscreenSharerPortal
 
 /// `FrameHandoff` — the buffer hand-off between PipeWire's thread and the
-/// encode thread.
-///
-/// The portal backend cannot be gated end to end (a share starts with a
-/// consent dialog a person clicks), so this suite is deliberately the *real*
-/// thing rather than a model of it: actual threads, actual contention, and an
-/// assertion that would fail on a torn frame. That is affordable precisely
-/// because the type was pulled out of the encoder — it needs no portal, no
-/// PipeWire, no encoder and nobody at a keyboard.
+/// encode thread. The portal backend can't be gated end to end (a share
+/// starts with a consent dialog), so this suite uses real threads and real
+/// contention instead — affordable because this type needs no portal,
+/// PipeWire, encoder or person at a keyboard.
 final class FrameHandoffTests: XCTestCase {
 
     // MARK: The invariant
 
-    /// The reason this type exists: **the encoder must never read a buffer the
-    /// converter is writing.**
-    ///
-    /// Driven deterministically rather than by racing two threads and hoping.
-    /// The window is genuinely narrow — it opens only when a conversion begins
-    /// while the previous frame is still unpublished — and a stress loop misses
-    /// it almost every time, which is exactly how a test like this passes
-    /// against the bug. (It did: an earlier probabilistic version of this test
-    /// scored 0 hits in 3000 iterations against a `publish` with the `writing`
-    /// check deleted.)
-    ///
-    /// So the conversion is stopped in its tracks, mid-write, and `publish` is
-    /// called from another thread at precisely that moment.
+    /// The reason this type exists: **the encoder must never read a buffer
+    /// the converter is writing.** Driven deterministically rather than by
+    /// racing two threads and hoping — the window is narrow enough that a
+    /// stress loop scored 0 hits in 3000 iterations against a `publish` with
+    /// the `writing` check deleted. So the conversion is stopped mid-write
+    /// and `publish` is called from another thread at precisely that moment.
     ///
     /// Verified to catch it: deleting `!writing` from `publish`'s guard makes
     /// this fail.
     func testPublishRefusesToSwapABufferThatIsBeingWritten() {
         let handoff = FrameHandoff(width: 320, height: 180)
 
-        // A completed frame, so `backDirty` is set going into the next write —
-        // without this there is nothing for `publish` to be tempted to swap.
+        // Sets `backDirty` going into the next write — otherwise nothing for
+        // `publish` to be tempted to swap.
         handoff.write { planes in
             fill(planes, with: 1)
             return true
@@ -68,9 +57,9 @@ final class FrameHandoffTests: XCTestCase {
         XCTAssertTrue(result.uniform, "the encoder was handed a torn frame")
     }
 
-    /// The other half: once the write finishes, the frame must actually become
-    /// publishable. A `publish` that simply never swapped would satisfy the
-    /// test above and starve the encoder forever.
+    /// The other half: once the write finishes, the frame must become
+    /// publishable — a `publish` that never swapped would pass the test
+    /// above and starve the encoder forever.
     func testTheFrameBecomesPublishableOnceTheWriteCompletes() {
         let handoff = FrameHandoff(width: 64, height: 64)
         handoff.write { planes in
@@ -82,10 +71,8 @@ final class FrameHandoffTests: XCTestCase {
         XCTAssertEqual(planes.y.first, 9)
     }
 
-    /// A stress pass, kept as a smoke test rather than as the gate: it runs the
-    /// two threads flat out and asserts nothing tears. It is documented as
-    /// weak on purpose — see the deterministic test above for why a green here
-    /// proves much less than it looks like it does.
+    /// A stress smoke test (not the gate — see the deterministic test above
+    /// for why green here proves less than it looks like).
     func testConcurrentWritingAndPublishingDoesNotTearOrDeadlock() {
         let handoff = FrameHandoff(width: 320, height: 180)
         let iterations = 2000
@@ -135,17 +122,15 @@ final class FrameHandoffTests: XCTestCase {
         XCTAssertEqual(first.planes.y.first, 42)
         XCTAssertTrue(handoff.hasFrame)
 
-        // Nothing new since — but the planes still come back, because a
-        // keyframe owed while the screen is still has to be answered from the
-        // last picture rather than not at all.
+        // Nothing new since, but the planes still come back — a keyframe
+        // owed on a still screen must be answered from the last picture.
         let second = handoff.publish()
         XCTAssertFalse(second.isNew)
         XCTAssertEqual(second.planes.y.first, 42)
     }
 
-    /// Latest-wins. Two frames converted before the encoder gets round to
-    /// either must yield the NEWER one — a screen share that published the
-    /// older one would be showing a picture it knows to be stale.
+    /// Latest-wins: two frames converted before the encoder gets to either
+    /// must yield the newer one.
     func testAnUnpublishedFrameIsOverwrittenByANewerOne() {
         let handoff = FrameHandoff(width: 64, height: 64)
         handoff.write { planes in
@@ -161,10 +146,8 @@ final class FrameHandoffTests: XCTestCase {
         XCTAssertEqual(published.planes.y.first, 2)
     }
 
-    /// A conversion that failed must not be published. `BGRAToI420.convert`
-    /// returns false without writing when the geometry is unusable, and
-    /// publishing that buffer would send whatever it held before — the
-    /// previous frame, or the initial grey.
+    /// A conversion that failed must not be published — the buffer still
+    /// holds whatever it had before (the previous frame, or the initial grey).
     func testAFailedConversionIsNotPublished() {
         let handoff = FrameHandoff(width: 64, height: 64)
         handoff.write { _ in false }
@@ -172,10 +155,8 @@ final class FrameHandoffTests: XCTestCase {
         XCTAssertFalse(handoff.hasFrame)
     }
 
-    /// The two buffers must genuinely alternate. If `publish` handed back the
-    /// same object the writer keeps filling, every "published" frame would be
-    /// whatever the writer happened to be doing at read time — which is the
-    /// torn-frame bug wearing a different hat.
+    /// The two buffers must genuinely alternate, or `publish` handing back
+    /// the buffer the writer keeps filling is the torn-frame bug again.
     func testPublishingAlternatesBetweenTwoDistinctBuffers() {
         let handoff = FrameHandoff(width: 64, height: 64)
         var seen: [ObjectIdentifier] = []
@@ -193,10 +174,8 @@ final class FrameHandoffTests: XCTestCase {
 
     // MARK: Resize
 
-    /// A resize must re-make both buffers. Keeping the old front would leave
-    /// the encoder reading planes sized for the previous resolution on its
-    /// very next pass — which is a crash or a garbage frame, not a smaller
-    /// picture.
+    /// A resize must re-make both buffers, or the encoder reads planes sized
+    /// for the previous resolution on its next pass.
     func testResizeReplacesBothBuffersAndDropsWhatWasInThem() {
         let handoff = FrameHandoff(width: 64, height: 64)
         handoff.write { planes in
@@ -226,11 +205,9 @@ final class FrameHandoffTests: XCTestCase {
     }
 }
 
-/// Fill every plane with one byte, so a torn frame is detectable: any buffer
-/// containing two different values was read while being written.
-///
-/// File scope rather than a method: the writer and reader run on real
-/// `Thread`s, and a method would capture the non-Sendable `XCTestCase`.
+/// Fill every plane with one byte, so a torn frame (two different values) is
+/// detectable. File scope, not a method, so it doesn't capture the
+/// non-Sendable `XCTestCase` across real `Thread`s.
 private func fill(_ planes: FrameHandoff.Planes, with value: UInt8) {
     for index in planes.y.indices { planes.y[index] = value }
     for index in planes.u.indices { planes.u[index] = value }
@@ -251,9 +228,8 @@ private final class PublishResult: @unchecked Sendable {
     var uniform: Bool { lock.withLock { stored.uniform } }
 }
 
-/// A counter the two threads share. `@unchecked Sendable` around a lock rather
-/// than an actor, so the test threads stay real threads and the contention
-/// being asserted on is real contention.
+/// A counter the two threads share. `@unchecked Sendable` around a lock
+/// rather than an actor, so the contention being asserted on stays real.
 private final class TornCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0

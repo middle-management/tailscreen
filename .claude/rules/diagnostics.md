@@ -11,593 +11,170 @@ The recorder, the bundle format, and the cross-side merge. All portable —
 `Packages/TailscreenKit/Sources/TailscreenProtocol/Diagnostics/`, tier 1, so
 Linux CI runs every test.
 
-## What it is for
+## Why it exists
 
-One side's log answers "what did my machine do". The pair answers "what
-happened", which is the question anybody actually has. A viewer that waited
-thirty seconds and gave up and a sharer that never saw a HELLO are the same
-bundle pair as a viewer that waited and a sharer that saw the HELLO and parked
-it on an approval prompt nobody was looking at — completely different bugs,
-indistinguishable from either side alone. The merge is the feature; the
-recorder is what makes it possible.
+One side's log answers "what did my machine do"; the pair answers "what
+happened". A viewer that gave up waiting and a sharer that never saw the
+HELLO look identical, from one side, to a sharer that parked it on an unread
+approval prompt — different bugs, same single-side symptom. The merge is the
+feature; the recorder makes it possible.
 
 ## The pieces
 
 | File | What it owns |
 |------|--------------|
-| `DiagnosticEvent.swift` | The event value type, `DiagnosticRole` / `Category` / `Severity` / `Value` |
-| `DiagnosticEventName.swift` | **The registry.** Every event name, and the category + default severity each one carries |
+| `DiagnosticEvent.swift` | The event value type, `DiagnosticRole`/`Category`/`Severity`/`Value` |
+| `DiagnosticEventName.swift` | **The registry** — every event name, its category + default severity |
 | `DiagnosticsRecorder.swift` | The buffer (prologue + ring), the switch, thread safety |
 | `DiagnosticsRedaction.swift` | What never reaches a bundle, applied on the way IN |
 | `DiagnosticsBundle.swift` | The JSONL file format, header, tolerant parse |
-| `DiagnosticEvent+Codable.swift` | The on-disk shape of one event line |
-| `DiagnosticsMerge.swift` | Interleaving two sides, and the clock-skew correction |
+| `DiagnosticEvent+Codable.swift` | On-disk shape of one event line |
+| `DiagnosticsMerge.swift` | Interleaving two sides + clock-skew correction |
 | `DiagnosticsExport.swift` | Filenames, the write, the rendered timeline |
-| `AudioDeviceDiagnostics.swift` | Which audio devices existed and which was selected, and when that changed |
-| `DiagnosticsPreference.swift` / `ReleaseChannel.swift` | The on-by-default-in-RC rule |
-| `DiagnosticsCenter.swift` / `DiagnosticsHost.swift` | The process recorder, bring-up, the switch, export |
+| `AudioDeviceDiagnostics.swift` | Which audio devices existed / were selected, and when that changed |
+| `DiagnosticsPreference.swift` / `ReleaseChannel.swift` | On-by-default-in-RC rule |
+| `DiagnosticsCenter.swift` / `DiagnosticsHost.swift` | Process recorder, bring-up, switch, export |
 
-## Rules
+## Hard rules
 
-**Event names are a registry, like the wire bytes.** Add a case in the same
-commit as the code that records it; never rename or reuse a shipped one.
-`DiagnosticEventNameTests` pins the set, so a rename fails CI rather than
-failing a reader six months later. Retiring an event is fine — stop recording
-it, keep the case. Its meaning is spent; the string still has to mean what old
-bundles say it meant.
+- **Event names are a registry, like wire bytes.** Add a case in the same commit as the code recording it; never rename or reuse a shipped one (`DiagnosticEventNameTests` pins the set). Retire by no longer recording, not by deleting the case.
+- **Category/severity come from the name, not the call site** — two call sites recording one event under different categories breaks any filter on it. Severity override on `record` is only for events whose weight genuinely depends on outcome.
+- **Record decisions, not packets.** Handshakes, admission, user actions, view changes, failures — things you'd mention describing what happened. Per-packet traffic is summarized by counters instead (see `transport.summary` below).
+- **Fields are flat scalars, no nesting** — greppable, joinable across sides, and keeps a Chrome-Trace/OTLP exporter additive later.
+- **Never record a secret at the call site; `DiagnosticsRedaction` is the second line**, scrubbing every string value on the way in (free-text fields come from code with no idea it's feeding a recorder). Tailnet IPs and device names ARE recorded deliberately — that's what merges bundles and makes them legible; the bundle header discloses this. The scrubber's three transforms (share token, login-URL path, auth key) run in **sequence**, never first-match-wins — one value can carry two credentials. The URL step keeps the sign-in URL's **origin** (real, non-secret info) but still lets an origin-only/exempted URL fall through to the auth-key scan. It measures the path with anything an earlier step already redacted **subtracted out**, so a share-link fingerprint survives while a token embedded in a login URL doesn't.
+- **Never `Synchronization.Mutex`** (repo-wide rule, see CLAUDE.md) — these types hold a bare `NSLock` as the sanctioned carve-out, not an exception, because `DiagnosticsRecorder` releases its lock early inside `record` and `DiagnosticsBundle` guards two separate statics, neither of which fits one scoped `withLock`.
 
-**Category and severity come from the name, not the call site.** Two call
-sites recording one event under different categories is real, invisible, and
-breaks the filter that was supposed to find them. The severity override on
-`record` is only for events whose weight genuinely depends on the outcome (a
-share phase moving to `failed` versus to `sharing`).
+## Record availability, not just selection
 
-**Record decisions, not packets.** Handshakes, admission, user actions, view
-changes, failures. The rule of thumb is that an event should be something you
-would mention when describing what happened. `receiveRTP` runs hundreds of
-times a second; the counters in `ViewerSession.diagnostics` already summarize
-that traffic.
+"They couldn't hear me" splits into "wrong device selected" vs. "right device
+never appeared in the list" (driver/permission/hot-plug — unfixable in-app).
+`audio.devices.changed` carries both device lists, both counts, and both
+selections, and fires on **change** (lists compared as ordered, since a
+reorder means the system default moved), not on every enumeration. `selected_*`
+(user's choice, possibly "system default") and `effective_*` (what that
+resolves to) are both recorded, because the interesting case is exactly when
+they diverge; the system default is part of the change-detected snapshot
+because macOS moves it on its own (headset plug-in, System Settings change).
+Turning recording **on** must clear the cached snapshot and re-baseline, or a
+cache warmed while recording was off makes every later enumeration compare
+equal and nothing is ever recorded. The mic toggle enumerates before recording
+`mic.attached`/`mic.failed`; a viewer toggling mic from the viewer window opens
+neither the Settings nor sharer-tool picker, so it must also enumerate, or that
+bundle carries no device inventory at all (`device=unknown`, 0.10.0-rc.14).
+Devices are recorded **by name**, never `AudioDeviceID` (reboot-local handle,
+meaningless to a reader).
 
-**Fields are flat scalars.** No nesting, ever. A flat event is one row in a
-table, greppable with `name=value` and joinable across sides on a bare key.
-This is also what keeps an exporter to Chrome Trace Event Format or OTLP a
-purely additive change later (see *Formats*, below).
+## Media quality: milestones + one summary per window
 
-**Never record a secret; scrubbing is the second line, not the first.** No
-call site passes a token or an auth key. `DiagnosticsRedaction` then scrubs
-every string value on the way in anyway, because free-text fields — a caught
-error, a log line through the tee — are written by code that has no idea it
-is feeding a recorder. Tailnet IPs and device names ARE recorded, deliberately:
-they are what makes a bundle legible and what the two sides merge on. What the
-feature owes the user there is disclosure, not redaction, and the bundle header
-carries it.
+**Record milestones in the portable `ViewerSession`, not per host,** so mac/GTK/WinUI say the same things through one suite (`ViewerSessionDiagnosticsTests`): `decode.first_frame` (with `ms_since_ack`), `render.size.changed`, `decode.failed`, `decode.recovery.action` per rung, `video.stalled` at the terminal rung. Exception: the mac ladder runs inside `VideoDecoder` off-session, so `TailscaleScreenShareClient` records its own rungs with identical names/fields, funneling per-frame failures through `noteHostDecodeFailure` (counting-only) so `decode_failures` still comes from one place.
 
-The scrubber's three transforms — share token, login-URL path, auth key — run
-in **sequence** over one value, never first-match-wins. One value can carry two
-credentials (`token=tc…&authKey=tskey-auth-…`), and returning on the first left
-the second verbatim: the guarantee is about the value, not about whichever
-credential happened to appear first. The URL step keeps the **origin** of a
-sign-in URL (which control server was used is a real answer, and it is not the
-secret) and exempts the app's own docs links, but an exempted or origin-only URL
-still reaches the auth-key scan — `https://tailscreen.dev/install?authKey=tskey-auth-…`
-is why "removed wherever embedded" can have no exception.
+**Frame decode callbacks write a mailbox; the receive side drains it.** `VTVideoDecoderAdapter` decodes off-queue from the receive task, so `noteDecodedFrame`/`noteHostDecodeFailure` only touch a `Guarded` mailbox, and `drainFrameMailbox` (called from every receive-side entry point) applies the batch — a decoder callback must never touch session state directly, or it's a data race.
 
-One subtlety in that sequence: the URL step measures the path with anything an
-earlier step already redacted **subtracted out**. A share link's path
-(`…/view/#tc:9f21…`) is long only because the fingerprint is sitting in it, and
-replacing the path wholesale would throw away the one value that lets two
-bundles show they used the same link; a login URL that also carried a token has
-an opaque `/a/<secret>` left after the subtraction and is still redacted.
+**`transport.summary`: one event per ~5s sampler window, on both sides, always** — even an all-zero window, because a silently-vanished feedback path used to look identical to a clean one when only "something nonzero" got logged. Sharer side is the pure `TailscaleScreenShareServer.transportSummaryFields` (`SharerTransportSummaryTests`); carries `rr_received`/`rr_age_ms`/`rr_fresh` **undecayed** (the congestion sweep decays a stale report to "no loss" for its own purposes — the record must not inherit that lie). `window_ms` is measured, never assumed nominal, on both sides. Sampling starts only after admission (an SSRC exists) so a viewer parked on approval doesn't pre-fill rows of zeros.
 
-**Never `Synchronization.Mutex`** — and that is a repo-wide rule now, not a
-`Diagnostics/` one. TSan learns happens-before from
-the pthread primitives it interposes on, not from `Mutex`'s futex, so it reads
-every `withLock` body as an unsynchronised access and reports a race on correct
-code; the cost that matters is that a `Mutex`-guarded type cannot be checked by
-the sanitiser **at all**, which is exactly wrong for a recorder written to from
-the capture callbacks, both UDP receive loops, the sweep timers and the UI
-thread. `Guarded` (tier 1) packages an `NSLock` behind `Mutex`'s
-`withLock { $0 … }` shape and is the default; `Guarded.swift` carries the full
-argument and `.claude/rules/testing.md` the reproduction. The types here hold a
-bare `NSLock` instead, which is the carve-out rather than an exception to the
-rule: `DiagnosticsRecorder` releases its lock early in `record` and
-`DiagnosticsBundle` guards two separate statics, and neither shape fits a
-single scoped `withLock`. Both are still NSLock-backed, so both are visible to
-the gate — which is the whole point.
+**`audio.summary`** mirrors it one release later, from the pure `VoiceStats.audioSummaryFields` (`AudioSummaryTests`), on mac `VoiceChannel` and portable `VoiceDownlink`. Carries what was playing (`voice_streams` per-window, not sticky; `system_audio`, `mic_on`, `jitter_target`, `output_device`) because zero counters mean nothing without knowing what should have produced sound; separates system-audio clipping from voice clipping; **omits** (never zeros) `overruns`/`underruns` on a host with no playback queue — a false zero reads as "nothing dropped" instead of "nobody counted". Row recorded for every window audio is running, whether or not a counter moved — but a window with no audio activity at all records nothing (the lifecycle events already say audio should be running). Sharer's row also carries `audio_packets_in`/`audio_rejected_in` (inbound viewer audio) since every other field describes outbound-only traffic.
 
-## Record availability, not just the selection
+**`annotation.summary` inverts the clean-window rule on purpose**: recorded only for a window where an annotation actually crossed the wire (`applied`/`dropped`/`relayed`), because annotations are discrete acts — a silent window means nobody drew, and a row per empty window would flood the ring for a rarely-used feature.
 
-"They couldn't hear me" has two causes that look identical from outside: the
-right device was in the list and the wrong one was selected, or the right
-device was **never in the list** and could not have been selected. The second
-is a driver, permission or hot-plug problem that no amount of clicking in
-Tailscreen would have fixed, and recording only the selection is silent about
-it. So `audio.devices.changed` carries both lists, both counts, and both
-selections.
+**`decode.failed` fires once per episode** (first failure after a decoded frame; total in `failures_total`); `decode.recovery.action` bounded by the ladder's own latch (4 rungs, each once).
 
-It fires on **change**, not on enumeration: the host enumerates whenever a
-picker is about to render, many times a session and almost always with the same
-answer. Change is also the more informative trigger — a Bluetooth headset
-dropping out mid-session is invisible to the user beyond "it stopped working",
-and the line saying the device left is the whole diagnosis. Lists compare as
-ordered, not as sets, because a reorder means the system default moved, which
-changes what an unselected pick resolves to.
+## Buffer & ordering internals
 
-`selected_*` and `effective_*` are both recorded and answer different
-questions: `selected` is the user's choice (possibly "system default", meaning
-they chose nothing), `effective` is the device that choice resolves to. The
-expensive case is `selected` reading "system default" while `effective` is not
-the device the person assumed, which neither field answers alone. The system
-default is part of the `Snapshot` — and therefore of change detection —
-because **macOS moves it on its own**: plugging a headset in, or a change in
-System Settings, shifts what an unselected pick uses with the device lists
-completely unchanged.
+- **Two buffers, not one ring.** A plain ring evicting oldest-first deletes the handshake and keeps the symptom. A **prologue** (first 256 events, never evicted) + a **ring** (most recent 4096); drop count is exported and rendered as a marker at the hole (`DiagnosticsMerge` finds it from a discontinuity in `seq`, which is dense by construction).
+- **One prologue per SESSION, not per process** — a process-wide prologue fills on the first share and every later session's HELLO lands in the evictable ring. Hosts call `recorder.beginSession()` at share start/connect; last 4 sessions retained, and calling it twice back-to-back (failed start + retry) is one session.
+- **Every event carries its session ordinal**, exported, never renumbered on eviction (a bundle starting at session 2 says so rather than erasing it). Scoped to one bundle only — cross-machine pairing is still the handshake SSRC.
+- **`events()` sorts by `seq`, never concatenates prologue+ring** — once a second prologue exists, they interleave in time.
+- **`DiagnosticsCenter.recorder` is never nil'd** — turning recording off flips a Boolean inside the (single, process-lifetime) recorder instance, so every holder of the reference stays consistent both ways.
 
-Turning recording **on** clears the cached device snapshot and re-records a
-baseline. Without that, the commonest flow loses the inventory entirely:
-Settings opens (enumerating and warming the cache) while recording is off, the
-event is dropped, the user turns recording on right there, and every later
-enumeration compares equal and records nothing.
+## Switch semantics (easy to get wrong)
 
-The mic toggle enumerates too, before it records `mic.attached` / `mic.failed`.
-The lists are otherwise filled only by the pickers' `onAppear` (Settings and
-the sharer tool), and a **viewer** who toggles the mic from the viewer window
-opens neither — so their bundle carried no inventory at all, and a default
-resolved through the empty cache read `device=unknown` while the sharing side
-of the same session named its headset (a 0.10.0-rc.14 bundle pair). The change
-guard still applies, so a repeat toggle records nothing new. And the default's
-name no longer stops at the cache: `AudioDevices.name(of:in:hal:)` reads the
-list first and the HAL when the list lacks the device (never enumerated, or
-arrived since), pinned by `AudioDeviceNameResolutionTests` in the app target.
+- `recordLifecycle` bypasses the enabled-switch for exactly two events: `recording.stopped` (must outlive the stop) and `recording.exported` (export-while-stopped is the documented reproduce→stop→export workflow).
+- `record` re-checks the enabled flag **and a generation counter together, under the append lock** — checking the flag alone leaves a race where scrubbing (done outside the lock, since it's expensive) spans a stop/restart and an event from the closed session lands after the next session's `recording.started`.
+- **No-op transitions write nothing** — `setRecording` returns early when state already matches, or `TAILSCREEN_DIAGNOSTICS=0` spams `recording.stopped` on every already-disabled toggle and defeats the emptiness check in `export`.
+- Marker + switch flip in **one lock acquisition** (`setRecording(_:markerName:markerFields:)`) — as two calls, another thread's event can land before `recording.started` or after `recording.stopped`. Enable writes the marker after the flag; disable writes it before.
+- `export` builds the marker into the **outgoing snapshot** (carries the export's own elapsed time, not a borrowed one) and commits it to the live recorder only after the write succeeds, and tests emptiness **before** writing the marker (or the marker itself defeats the "nothing recorded" check).
+- `DiagnosticsEnvironment.channel` is **stored, not re-derived from the version string** — a macOS PR artifact's numeric-only plist version classifies as stable by any re-derivation.
+- `TAILSCREEN_DIAGNOSTICS` pins the **live** value for the whole run (checked by `setRecording`, not just at `start`) so a harness's env var can't be countermanded by a mid-run UI toggle.
 
-Devices are recorded **by name**, never by `AudioDeviceID`: the ID is a
-machine-local CoreAudio handle that changes across reboots and means nothing to
-a reader, while the name is what the person saw in the picker and what they
-will say when describing the problem.
+## Surfaces
 
-## Media quality: milestones, and one summary per window
-
-Until 0.10.0-rc.14 a bundle pair was structurally blind to the picture. The
-registry had `decode.first_frame`, `video.stalled`, `transport.summary`,
-`encode.bitrate.changed` and the rest from the start, and nothing recorded
-them: the sharer's sweep computed per-viewer PLI counts, RR loss, RTT and
-FEC/NACK recovery every five seconds and only *logged* a line when something
-was nonzero, so a bundle from a share whose receiver reports had quietly
-stopped arriving was byte-for-byte the bundle of a clean share; and the mac
-viewer's log sink was a bare `print`, so its decode-failure and stall lines
-never became `log.line` events at all. Two rules came out of closing that.
-
-**Record the milestones in the portable session, not per host.**
-`ViewerSession` records `decode.first_frame` (with `ms_since_ack`, the drops
-and requests the wait was spent on), `render.size.changed`, `decode.failed`,
-each `decode.recovery.action` rung and `video.stalled` at the terminal rung —
-so a macOS, GTK and WinUI viewer bundle say the same things and there is one
-suite (`ViewerSessionDiagnosticsTests`) pinning it. The one exception is
-forced: the mac ladder runs inside `VideoDecoder`, off the session's
-`onDecodeFailure` seam, so `TailscaleScreenShareClient` records its own rungs
-with the same names and field spellings; its per-frame failures still reach
-the session through `noteHostDecodeFailure`, the counting-only entry that
-runs no ladder, so its `decode.failed` and its `decode_failures` column come
-from the same place as everyone else's.
-
-**The frame side writes a mailbox; the receive side drains it.** The
-session's contract is that the host serializes every call, decoder callbacks
-included, and the mac host does not honour it for frames:
-`VTVideoDecoderAdapter` hops decoded frames onto its own queue while `tick`
-and `receiveRTP` run on the receive task. That was harmless while nothing on
-the receive side read what the frame side wrote, and recording the first
-frame and a per-window frame count from the receive side made it a data
-race. So `noteDecodedFrame` and `noteHostDecodeFailure` are the session's two
-thread-safe entry points — they touch nothing but a `Guarded` mailbox — and
-`drainFrameMailbox` applies the batch (counters, the ladder reset a frame
-implies, the once-per-run `decode.failed` latch, first frame, size changes)
-at every receive-side entry point. For the synchronous FFmpeg decoders the
-drain runs inside the same call on the same thread, so nothing observable
-changed there; on the mac host a frame is accounted for within a packet or a
-tick, which is the granularity `ms_since_ack` has there. On the
-sharer, `encode.codec.selected` rides the encoder anchor (which already
-fires only on a real configuration change, not on every IDR),
-`encode.bitrate.changed` / `encode.frame_interval.changed` the two adaptive
-appliers, `fec.armed` / `fec.disarmed` the *effective* group-size
-transition, and `viewer.disconnected` both ways out of the admitted set that
-are not an expulsion (`reason=bye`, `reason=idle_timeout`).
-
-**Per window, never per packet — and a clean window is still a row.**
-`transport.summary` is one event per ``DiagnosticsTransportSampler`` window
-(five seconds, the sharer's sweep cadence, so one sharer row per viewer lines
-up with one viewer row) on each side: the viewer's from `tick`, once
-admitted, carrying that window's *deltas* of `ViewerSession.Diagnostics`
-(packets, frames, torn AUs, PLIs, NACKs, FEC recoveries) and the gauges (RTT,
-its last reported loss, codec, FEC state); the sharer's from the adaptive
-sweep, one per connected viewer, from the pure
-`TailscaleScreenShareServer.transportSummaryFields` (`SharerTransportSummaryTests`).
-The sharer row's load-bearing fields are `rr_received` / `rr_age_ms` /
-`rr_fresh`: the sweep decays a stale report to "no loss" — right for the
-congestion decision, wrong for the record — so the row carries the last
-report's loss *undecayed* beside how old it is and whether the sweep still
-believed it. A window in which nothing happened records the same row with
-zeros in it; the silence of the old log line was the bug. `window_ms` is
-**measured** on both sides, never the nominal five seconds: the sharer's
-sweep sleeps for the window and then works, so what it drains spans the
-window plus the work, and the viewer's sampler reports the window it
-actually closed — a row that claimed 5000 ms over a longer interval would
-understate every rate a reader derived from it. At one viewer the
-ring holds roughly five and a half hours of them, which is what it was sized
-for. Before admission nothing is summarized — the sampler is only ticked once
-there is an SSRC — because a viewer parked on the approval prompt for a
-minute would otherwise put twelve rows of zeros ahead of the handshake.
-
-**The audio path gets the same treatment, one release later, for the same
-reason.** `audio.summary` is one event per sampler window carrying the voice
-receive path's `concealed` / `discontinuities` / `overruns` / `underruns` /
-`clamped` / `sys_clamped` deltas and its jitter, from the pure
-`VoiceStats.audioSummaryFields` (`AudioSummaryTests`) — the mac
-`VoiceChannel` and the portable `VoiceDownlink` both record it, so all three
-hosts say the same things. Those counters existed long before the event and
-reached a bundle only through a log line gated on "at most once a minute, and
-only when a counter moved", which is the `Viewer stats` mistake in the audio
-path: a 0.10.0-rc.15 pair from a call both ends described as crackly carries
-not one such line, and a reader cannot tell that from a call with no voice in
-it. Three things make the row mean something. It carries **what was playing**
-— `voice_streams` (SSRCs that delivered in THIS window, so a stream that
-stops reads as 0 rather than holding its last count), `system_audio`,
-`mic_on`, `jitter_target` and `output_device` — because "concealed 0, clamped
-0" is equally true of a clean call and of one distorting somewhere the voice
-path never looks, and on macOS one such place is `mainMixerNode`, where a
-remote voice and the sharer's shared system audio are summed with no headroom
-of ours. It counts system-audio clipping **apart** from voice clipping, since
-voice alone says one stream arrived hot while both together say the mix is
-the problem. And a host with no playback queue of its own **omits**
-`overruns` / `underruns` rather than reporting zero, on the same principle as
-`rr_age_ms` being absent when no report has ever arrived: a zero there reads
-as "nothing was dropped", which is the opposite of "nobody was counting".
-
-The gate is different from `transport.summary`'s and deliberately so. A row
-is recorded for every window in which audio is running **whether or not a
-counter moved** — that half is the same, and is the whole point. But a window
-with no voice, no system audio and no live microphone records nothing,
-because the lifecycle events (`mic.attached`, `system_audio.started`,
-`voice.ssrc.assigned`) already say whether audio should have been running, so
-an absent row reads as "there was none" rather than as "nobody looked".
-
-**The sharer's row carries the upstream half too.** `audio_packets_in` and
-`audio_rejected_in` are inbound viewer audio, accepted and refused, per
-viewer per window. Every other field on that row describes what the sharer
-sent or what the viewer said about it, so "the sharer cannot hear me" left
-nothing behind at all: a muted microphone, a viewer whose audio never reached
-the wire, and audio arriving and being refused by the source-SSRC anti-spoof
-gate all produced an identical row. The two are separate numbers because only
-the third looks like silence from the sharer's seat while the viewer's own
-bundle shows it sending at a steady fifty packets a second.
-
-**`annotation.summary` inverts the clean-window rule, and that is not a
-regression.** It is recorded only for a window in which a viewer annotation
-actually crossed the framed control channel, carrying `applied` / `dropped` /
-`relayed`. A transport row's silence on a clean window is the failure that
-summary exists to break, because the transport is always running and "nothing
-to report" and "nothing measured" look alike. Annotations are discrete acts:
-a window with none means nobody drew, which is the answer rather than the
-absence of one, and a row per empty window would crowd the ring for a feature
-most sessions never use. The three numbers separate the three explanations of
-"I drew and the sharer saw nothing" that were one symptom before it existed —
-`applied` climbing moves the question to what is on screen, `dropped`
-climbing names the admitted-viewer gate, and no row at all points back at the
-viewer or the channel. The viewer's half is deliberately not an event: the
-mac client and `ViewerBackChannel` each log one line the first time an
-annotation reaches the wire and one the first time the back-channel is not
-open to take it, which is enough to tell viewer-never-sent from
-sharer-never-got and costs no row per stroke.
-
-**`decode.failed` is once per episode.** A wedged decoder fails at frame
-rate; the event is recorded on the first failure after a decoded frame and
-the total rides along in `failures_total`. `decode.recovery.action` is
-bounded by the ladder's own latch (four rungs per episode, each once).
-
-## Two things that look like bugs and are not
-
-**The buffer is two buffers.** A plain ring keeps the most recent N events and
-drops the oldest, which here deletes the answer and keeps the complaint — the
-handshake is in the first two seconds and the symptom arrives an hour later. So
-a **prologue** (first 256 events, never evicted) sits in front of a **ring**
-(most recent 4096), with the drop count between them exported rather than
-swallowed — and rendered, which is a separate thing and was the part missing.
-`DiagnosticsMerge` finds each hole from a **discontinuity in `seq`** (dense by
-construction, so a jump says not just how many events are gone but *where*,
-including the leading case of a whole released prologue) and
-`renderTimeline` prints a marker in place, immediately before the first
-surviving event. A total in a header nobody reads does not stop a reader
-drawing a causal line straight across the hole, which is the one failure the
-counter exists to prevent.
-
-There is **one prologue per session**, not one per process, and the last four
-are retained. A single process-wide prologue quietly stopped protecting
-anything the moment the app was used twice: it filled during the first share,
-so every later session's HELLO landed in the evictable ring, and a long-running
-app could export a bundle missing exactly the events the merge pairs the two
-sides on. Hosts open one with `recorder.beginSession()` — mac `AppState` at
-share start and at connect, `LinuxShareSession`, `WindowsShareSession`,
-`TsnetTransport` — and calling it twice with nothing in between is one session,
-because the start paths can run back to back on a failed start and a retry.
-A released prologue's events are counted into `droppedCount` like any other
-eviction.
-
-**Every event carries its session ordinal**, and it is exported. Without it the
-stream is one undifferentiated run: a reader cannot tell where the share that
-went wrong began — and "easy to follow" is the whole point of the format. The
-ordinal survives the retention cap rather than being renumbered down, so a
-bundle whose lowest session is 2 says two sessions were released instead of
-erasing that. It scopes to ONE bundle: the two sides number their sessions
-independently, and what joins them across machines is still the SSRC in the
-handshake. `renderTimeline` marks each boundary, per device and only on a
-change, so a single-session bundle says nothing about sessions at all.
-
-That split is also why `events()` **sorts by `seq`** rather than concatenating
-the two containers. Once a second prologue exists they interleave in time —
-session one's tail is in the ring, session two's opening events are in a
-prologue recorded after it — and concatenation would print the second
-handshake before the first session's last events.
-
-**`DiagnosticsCenter.recorder` is never set back to nil.** Turning recording
-off moves a Boolean *inside* the recorder instead. The sharer server and the
-viewer session copy that reference when they are constructed; nil'ing it would
-leave them holding a stale copy and still recording, while turning it back on
-would install a reference nothing already built would ever see. One object for
-the life of the process, a Boolean inside it, and both directions work
-everywhere at once.
-
-## Two events bypass the switch
-
-`recordLifecycle` appends even while recording is off, and exactly two events
-use it: `recording.stopped`, which has to outlive the stop it reports, and
-`recording.exported`, because **exporting while stopped is the documented
-workflow** — reproduce, stop, hand the file over. An ordinary `record` no-ops
-when disabled, so that workflow produced a bundle with no record of its own
-export. It is deliberately not implemented by flipping the switch on and back:
-that would open a window for every other writer in the process to land an event
-the user asked not to be recorded. `export` also tests emptiness BEFORE writing
-the marker, or the marker is what makes the bundle non-empty and the
-"nothing recorded" guard can never fire.
-
-`record` reads the switch **and a generation counter** together, and requires
-both to still hold when it takes the append lock. Re-checking `enabled` alone
-does not close the off→on race: fields are scrubbed outside the lock on purpose
-(scrubbing a long log line is the expensive part), so a writer can be stopped
-and restarted while it scrubs, then see `enabled == true` again and append an
-event from the closed session after the `recording.started` that opened the next
-one — carrying a timestamp from before it.
-
-A **no-op transition writes nothing**: the marker describes a transition, and
-`setRecording` returns before appending when the state already matches. Under
-`TAILSCREEN_DIAGNOSTICS=0` there is never a transition — every toggle resolves
-back to `false` and arrives while already disabled — so without the guard each
-flip appended another `recording.stopped`, and `export` then saw a non-empty
-recorder for a run that was forced to record nothing. The session-opening marker
-is unaffected: `start` writes it through `recordLifecycle`.
-
-The marker and the switch move in **one** lock acquisition
-(`setRecording(_:markerName:markerFields:)`). As two calls, a transport or
-logging thread can append in between — landing an event before the
-`recording.started` that claims to open the session, or after the
-`recording.stopped` that claims to close it. Enabling writes the marker after
-the flag, disabling before it.
-
-`export` builds the marker into the **outgoing snapshot** (via
-`recorder.snapshotStaging(_:)`, so it carries the elapsed time of the *export*
-rather than borrowing the previous event's — the merge renders every event at
-`anchor + elapsed`, which would otherwise put an export done minutes later back
-at that event's moment) and commits it to the live recorder only after the write
-succeeds; otherwise a failed write leaves
-`recording.exported` behind and the next bundle that does succeed claims an
-export that never happened. The filename is uniquified against the directory
-too — the stamp has one-second resolution, and a double-click on Export would
-otherwise overwrite the first bundle.
-
-`DiagnosticsEnvironment.channel` is **stored, not re-derived from the version**.
-A macOS PR artifact is stamped `0.0.<PR>` (the plist demands numeric), which
-classifies as a stable release, so a host told by CI "this is a candidate" needs
-somewhere to put that. Re-deriving discarded it and left the recorder off while
-the Settings toggle, reading the host's own answer, said on.
-
-`TAILSCREEN_DIAGNOSTICS` pins the **live** value for a whole run, not just the
-starting one: `setRecording` persists the user's choice but resolves the live
-recorder against the override. Applying it only at `start` left a UI toggle able
-to countermand a harness mid-run.
-
-## Surfaces: counted or present, never both
-
-`DiagnosticSurfaceTracker` has two entry points and they are not
-interchangeable. `shown`/`hidden` **count**, because a SwiftUI surface genuinely
-exists twice — while a share is live the whole sharing view renders in the main
-window *and* the menubar, so `PendingViewersList` is mounted twice and the first
-to disappear must not report the surface gone. `setVisible` is **idempotent**,
-for the viewer's `NSWindow`, which is one thing whose visibility is set:
-`orderFrontRegardless` runs on every connect and every re-focus while `orderOut`
-runs once, so a count there would climb and never return to zero. The window
-also reports at those real transitions rather than at construction — it is owned
-for the process lifetime and reused, so a marker at construction fires once ever.
-
-The table is kept whether or not anything is being recorded — it has to be, or
-the counts would not survive the toggle — so turning recording **on** replays it
-(`replayVisible()`, from `AppState.setRecordDiagnostics`). Without that, a
-surface that appeared while recording was off is in the table with no
-`view.shown` behind it: nothing calls `onAppear` again just because a switch
-moved, so the record's first word about Settings — the pane the user is standing
-in — would be a `view.hidden` with nothing to match, and the bundle would never
-say what was on screen at the moment recording started. It is the same shape as
-the audio-device baseline one section up, and it is fixed in the same place.
+`DiagnosticSurfaceTracker`: `shown`/`hidden` **count** (a share renders the sharing view in both the main window and menubar simultaneously — the first to disappear must not report the surface gone); `setVisible` is **idempotent**, for the one-of-a-kind viewer `NSWindow` (repeated `orderFrontRegardless` on refocus must not accumulate). The table persists across the recording toggle, and turning recording **on** must replay it (`replayVisible()`) — nothing re-fires `onAppear` just because a switch moved, so without the replay the first surface on screen when recording starts is invisible to the bundle.
 
 ## The clock problem
 
-Two machines' wall clocks disagree. Sorting two bundles on raw timestamps
-produces a plausible-looking lie — an ack before the message it acknowledges —
-and a reader will read causality out of the order, because that is what an
-ordered list is for.
+Two machines' wall clocks disagree; sorting raw timestamps can show an ack
+before its message. `tailscreen-diagnostics-merge` (`make merge-diagnostics
+FILES="a.jsonl b.jsonl"`, built from `TailscreenProtocol` alone — no
+`libtailscale.a`/Go/libopus, so triage needs no build prerequisites) is the
+tool; behavior is pinned by `DiagnosticsBundleTests`/`DiagnosticsExportTests`.
 
-**`tailscreen-diagnostics-merge` is how you actually run it** — an
-executable target in this package (`make merge-diagnostics FILES="a.jsonl
-b.jsonl"`). It takes `TailscreenProtocol` alone, so it builds with a bare
-Swift toolchain: no `libtailscale.a`, no Go, no libopus, which is what lets
-somebody triaging a pair of bundles build it without the rest of the repo's
-prerequisites. The tool is deliberately thin — argument handling and naming
-the file that failed — because every decision below belongs to the library
-and is pinned by `DiagnosticsBundleTests` / `DiagnosticsExportTests`. It
-exists because the merge shipped complete, tested, and callable from nothing
-but its own suites: two sides could be recorded and exported, and never read
-together, which is the only reason to record two sides.
+`DiagnosticsMerge` solves the offset via the NTP formula `((t2-t1)+(t3-t4))/2`
+using the four HELLO/HELLO_ACK timestamps, paired on the **SSRC the sharer
+assigns in HELLO_ACK** (already on the wire, nothing added). Always reported
+in `clockNotes`, never silently applied. Things it must get right:
 
-A handshake is exactly the four-timestamp exchange NTP uses, so
-`DiagnosticsMerge` solves for the offset with
-`((t2 - t1) + (t3 - t4)) / 2` and pairs the two sides on the **SSRC the sharer
-assigns in the HELLO_ACK** — a value both ends already know, so nothing had to
-be added to the wire. The estimate is always reported in `clockNotes`, never
-silently applied: an offset a reader cannot see is as misleading as the skew.
+- **One ack per join.** `registerOrRefresh` proactively acks a re-registering (KEEPALIVE) viewer, but a fresh HELLO join gets a second ack from the HELLO handler too — idempotent for the viewer, not for the record (viewer stamps off whichever ack arrives first, sharer stamps the second), which can make round-trip negative. Proactive ack is gated on `!isNew`.
+- **Scope pairing to the ack's own session** — `last(where: seq <= ack)` must not walk past a session boundary into a stale HELLO from a previous share. Refusing to align beats a confidently wrong offset.
+- **Pair the sharer's HELLO by `addr`, not just recency** — with several viewers joining at once, the latest `hello.received` before an ack is often a different viewer's retry.
+- **Replay each side from one anchor + its own `monotonicNs`**, never per-event wall clock — an NTP step mid-session must not reorder one machine's own events against each other.
+- **Compare `seq`, not wall clocks, for within-bundle "which HELLO preceded this ack"** — a backward wall-clock step between `hello.received` and `hello.ack.sent` would wrongly exclude the legitimate HELLO. Only the four formula timestamps stay wall-clock (the offset is a statement about wall clocks); selection must not be.
+- **Anchor replay at the handshake, not `startedAt`** — the offset already accounts for any clock step before the handshake; anchoring earlier reintroduces the discontinuity. `startedAt` is the fallback only when no handshake completed.
 
-Two things the merge has to get right and can get wrong silently:
-
-- **One ack per join.** `registerOrRefresh` proactively acks a viewer it
-  newly added, which is what a NAT/DERP rebind (re-registering via KEEPALIVE,
-  not a fresh HELLO) needs to learn its new SSRC — but on the HELLO path the
-  handler sends its own ack straight afterwards, so a normal join put two on
-  the wire. Idempotent for the viewer, which ignores an ack matching its
-  current SSRC; **not** idempotent for the record, because the viewer stamps
-  `hello.ack.received` off whichever arrived first while the sharer stamps
-  `hello.ack.sent` for the second. That is `t3` and `t4` describing different
-  datagrams, and it can make the round trip come out negative and have the
-  alignment refuse a perfectly good handshake. The proactive ack is gated on
-  `!isNew`.
-- **Scope the pairing to the ack's own session.** A session whose HELLO was
-  evicted still has its ACK, and `last(where: seq <= ack)` walks straight back
-  past the boundary and pairs it with an hour-old HELLO from the previous
-  share — an offset out by the whole gap. Refusing to align is right there: a
-  confidently wrong correction is worse than none. Note what this does NOT
-  fix — sessions are per bundle, so an SSRC that repeats across the two sides'
-  independently-numbered sessions is still ambiguous across bundles. Closing
-  that needs an identifier on the wire, which is the OTLP trace-context
-  endgame under *Formats* and deliberately not today's answer.
-- **Pair the sharer's HELLO by `addr`, not just by time.** A share with several
-  people joining at once has many `hello.received` interleaved, and the latest
-  one before the ack is frequently a different viewer's retry — giving an offset
-  that looks plausible and is wrong.
-- **Replay each side from one anchor plus its own `monotonicNs`**, never from
-  each event's recorded wall clock. A clock can step mid-session (NTP correcting
-  a drifting machine is routine), which would reorder one device's own events
-  against each other — a causal inversion inside a single machine's story, which
-  is the one thing a timeline must never invent. This is what `monotonicNs` is
-  recorded for.
-- **Compare `seq`, not wall clocks, for the WITHIN-bundle "which HELLO came
-  before this ack" tests.** Sequence is exact, local and monotonic by
-  construction; the wall clock is the very thing that steps. A backward step on
-  the sharer between `hello.received` and `hello.ack.sent` made the legitimate
-  HELLO compare later than the ack, so it was excluded and the pairing
-  abandoned — on exactly the bundles whose clocks most needed aligning. The
-  four timestamps in the formula stay wall clocks, because the offset is a
-  statement about wall clocks; only the SELECTION must not be. (The viewer-side
-  version of that step is rejected anyway by the negative-round-trip guard, and
-  rightly: a `t1` and `t4` on two clock bases make the formula invalid.)
-- **Take that anchor from the handshake, not from the session start**
-  (`DiagnosticsMerge.anchor(for:)`). The offset is estimated from handshake
-  timestamps, so it already contains any clock step that happened before them;
-  anchoring at `startedAt` — a reading taken before the step — replays the side
-  from a pre-step origin while correcting it by a post-step offset, leaving the
-  whole timeline shifted by exactly that discontinuity. `startedAt` stays the
-  fallback for a bundle that never completed a handshake.
-
-The pairing is derived from **events, not header roles**. One process can be
-sharer and viewer at once (a Mac sharing to one person while watching another),
-so the header's role is a default, not a fact about the session.
+Pairing derives from **events, not header roles** — one process can be sharer and viewer at once, so the header's role is a default, not a fact.
 
 ## Host wiring
 
-`DiagnosticsHost.start(environment:)` once at start-up; `setRecording(_:)` from
-the settings toggle; `export(to:)` from the export button; `merge(with:into:)`
-from **Merge With…** beside it. **All three hosts call `start`; only macOS calls
-`setRecording`, `export` and `merge` today** — Linux and Windows have no settings
-pane or file picker yet and switch via `TAILSCREEN_DIAGNOSTICS`
-(`docs/platform-support.md` has the matrix); until they do,
-`tailscreen-diagnostics-merge` is the way in on those platforms.
+`DiagnosticsHost.start(environment:)` at startup (all three hosts);
+`setRecording`/`export`/`merge` (macOS only today — Linux/Windows have no
+settings pane yet, switch via `TAILSCREEN_DIAGNOSTICS`, see
+`docs/platform-support.md`). `merge` lives in the portable host (not the mac
+app) because it's not mac-specific and is pinned by `linux-protocol` on every
+PR; it records nothing itself (derives a file, writes no marker) and skips the
+local recording when it has no events.
 
-`merge` sits in the host rather than in the mac app for the same reason the
-others do — it is not mac-specific, and the swift-cross-ui apps inherit it the
-day either grows a picker — and, more immediately, because a decision in
-`Apps/macOS` is only compiled and tested on the macOS CI leg, whereas one here
-is pinned by `linux-protocol` on every PR. Two rules of its own: it records
-**nothing** (a merge derives a file from bundles it does not change, so it needs
-no marker and no new registry name — exporting is the operation that writes its
-own), and it includes the local recording only when that recording has events,
-because "somebody sent me both files and this machine was never in the session"
-is a real way to arrive rather than a misuse. The ordering inside these is
-load-bearing (`recording.stopped` before
-the switch moves or the event is itself dropped; `recording.exported` before
-the snapshot or a bundle never records its own export), which is why it is
-written once rather than three times.
+App-level events (`action.*`, `view.*`, `fault.surfaced`) are **macOS-only** —
+`AppState`/`SettingsView`/the surface modifier have no GTK/WinUI equivalent, so
+non-mac bundles explain the connection but not the person.
 
-The app-level events (`action.*`, `view.*`, `fault.surfaced`) are macOS-only so
-far: they are recorded from `AppState`, `SettingsView` and the surface modifier,
-and the GTK and WinUI apps have no equivalent call sites. So a Linux or Windows
-bundle explains what the connection did but not what the person did.
+Per-host wiring is `recorder.beginSession()` + wiring the recorder into the
+server/client at construction (`LinuxShareSession`, `WindowsShareSession`, mac
+`AppState`, `TsnetTransport`) — skipping `beginSession` still records, it just
+loses eviction protection for that session's handshake, silently.
 
-Per-host wiring is two lines each at construction — `recorder.beginSession()`,
-then `server.recorder = DiagnosticsCenter.shared.recorder` in
-`LinuxShareSession`, `WindowsShareSession` and mac `AppState`;
-`pipeline.session.recorder = …` in `TsnetTransport`; mac's client forwards its
-own into `ViewerSession`. A new host that wires up a recorder and forgets
-`beginSession` still records — it just loses the eviction protection on that
-session's handshake, silently.
+`PrintLogSink` tees every package log line as `log.line` for free (~35 call
+sites, untouched). `TsnetTransport.StderrLogger` tees separately because
+viewer executables reserve stdout for the data path — without it, GTK/WinUI
+viewers had no package log lines at all. These are prose, a safety net
+**under** the named registry events, never a substitute — promote a
+load-bearing log line to a registry event instead of relying on it.
 
-`PrintLogSink` tees every existing package log line into the recorder, which is
-where most of the coverage comes from for free (~35 call sites across the
-transport and sharer tiers, none of them touched). `TsnetTransport.StderrLogger`
-tees too, and has to: it is a second sink only because viewer executables
-reserve stdout for the data path, and the GTK and WinUI **viewers** reach tsnet
-through it rather than through the print sink — so before it teed, a Linux or
-Windows viewer bundle carried no package log lines at all. Those are prose and
-therefore the weakest kind of event — a safety net **under** the named
-registry events, never a substitute. When a log line turns out to be
-load-bearing in an investigation, give it a registry case.
+**The app's own `TSLogger`s tee individually, most still don't.** Only
+`TailscaleScreenShareClient`'s and `VoiceChannel`'s tee; `VideoDecoder`,
+`VideoEncoder`, `HelperScreenCapture`, `ViewerApproval`, `GlobalHotkey` are
+stdout-only. Tee one when a bundle needs it, don't sweep.
 
-**The app's own `TSLogger`s are a separate, per-file decision, and most of them still only print.** There are seven private `TSLogger`s in the macOS app and each tees or does not on its own; only `TailscaleScreenShareClient`'s and `VoiceChannel`'s do. The voice one was added after a 0.10.0-rc.15 pair from a call both ends called crackly could rule out audio loss (a steady 250 packets per five-second window, exactly one 20 ms frame per 20 ms) and rule out link saturation (video at roughly one packet per frame, about half a megabit against a 4.4 Mbps anchor) and then had nothing further to say — because `VoiceChannel`'s once-a-minute `stats concealed=… discontinuities=… overruns=… underruns=… clamped=… jitter=…ms`, and every `MicCapture:` engine line (playback started, VPIO engaged or refused, tap reinstalled after a configuration change, a device bind that failed), went to stdout and nowhere else. `VideoDecoder`, `VideoEncoder`, `HelperScreenCapture`, `ViewerApproval` and `GlobalHotkey` are still stdout-only; tee one when a bundle needs it rather than as a sweep, and prefer a registry event for anything that turns out to be load-bearing.
-
-**Two places keep an identity out of the tee, and they use different
-mechanisms because the shape of the problem differs.**
-`PrintLogSink(prefix: "Auth", capturesDiagnostics: false)` in `TailscaleAuth`
-opts the whole sink out — everything it logs is auth prose. That is not
-available in `TsnetTransport`, where one `StderrLogger` writes both the
-`Connected as <login>` line and the node bring-up lines a viewer bundle needs,
-so the exception is per-CALL: `logWithoutCapture` for the identity half, an
-ordinary `log` for the tailnet-and-node half. A new log line that names an
-account needs one or the other; which one depends on whether its sink logs
-anything else worth keeping.
-
-Why either is needed: that sink logs the signed-in account's name in prose.
-Redaction cannot help there — it deliberately keeps names, and nothing in free
-text distinguishes an account name from a device name — and the bundle header
-promises the sender it carries no sign-in details. The auth story is recorded
-as `node.signin.*` registry events instead, which carry the state without the
-identity. Any new sink that logs an identity the header disclaims needs the
-same flag.
+**Identity must never reach the tee.** `PrintLogSink(prefix: "Auth",
+capturesDiagnostics: false)` opts the whole `TailscaleAuth` sink out (it only
+ever logs account names in prose, which redaction can't distinguish from a
+device name). `TsnetTransport`'s single `StderrLogger` mixes an identity line
+with node-bring-up lines a bundle needs, so it's gated **per call**
+(`logWithoutCapture` vs. ordinary `log`) instead. Auth state is recorded via
+`node.signin.*` registry events instead, which carry state without identity.
+Any new sink logging an identity the bundle header disclaims needs the same
+treatment.
 
 ## Formats
 
-The bundle is JSON Lines because it greps, streams, truncates safely, diffs,
-and is legible to a person deciding whether to send it.
+JSON Lines: greps, streams, truncates safely, diffs, human-legible. Parser is
+tolerant of everything except schema — unknown event names/categories/corrupt
+lines are skipped (a reader rejecting a newer build's bundle fails exactly
+when needed); `Header.currentSchema` above the reader's own is refused
+(`unsupportedSchema`), older schemas stay readable.
 
-The parser is **tolerant of everything except the schema**. Unknown event names,
-unknown categories and corrupt lines are skipped, because a reader that rejects
-a newer build's bundle fails exactly when it is needed — the person with the
-problem is the one running the newer build. `Header.currentSchema` is the
-opposite case by definition: it moves only when an older reader would produce
-the *wrong* answer, so a schema above this build's is refused
-(`unsupportedSchema`) rather than guessed at. Older schemas stay readable.
-
-Two standard formats would fit and are worth knowing about if this grows:
-**Chrome Trace Event Format** (read by Perfetto; its cross-process *flow
-events* would draw the HELLO/HELLO_ACK as an arrow between two swimlanes) and
-**OpenTelemetry/OTLP**, which solves the correlation problem properly via W3C
-Trace Context — a trace ID propagated on the wire. OTLP is the better endgame
-and is deliberately not today's answer: a trace ID on the wire is a wire change,
-and in this repo that means a registry row, a spec appendix entry and a
-conformance vector. Wireshark is the wrong target — it is packet-oriented and
-has no notion of "the user clicked Stop Sharing"; the useful Wireshark idea
-here is a separate one, a port-7447 dissector built from `docs/spec.md`.
-
-Flat scalar fields keep an exporter to either format additive.
+If this grows: Chrome Trace Event Format (Perfetto, cross-process flow
+events) or OpenTelemetry/OTLP (proper correlation via W3C Trace Context) both
+fit — OTLP is the better endgame but needs a trace ID on the wire, i.e. a
+registry row + spec appendix + conformance vector, deliberately not done yet.
+A Wireshark dissector from `docs/spec.md` is a separate, valid idea but solves
+a different problem (packet-level, no "user clicked Stop Sharing"). Flat
+scalar fields keep either exporter additive.

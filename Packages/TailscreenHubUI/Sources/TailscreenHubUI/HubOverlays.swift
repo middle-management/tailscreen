@@ -11,43 +11,17 @@ import TailscreenProtocol
 /// viewer window, and stacked inside the sharer's share card, where the window
 /// is far narrower than a video.
 ///
-/// Differences from the macOS toolbar, and why:
-///   • Unicode geometric glyphs instead of SF Symbols (Apple-only). GTK's own
-///     named icon theme was the first choice — swift-cross-ui's `Gtk.Button`
-///     even takes an `iconName` — but it is an app-chrome set with no line /
-///     rectangle / oval / pointer icons, so half the tool group would have
-///     fallen back anyway, and nothing equivalent exists on Windows. These
-///     glyphs render from the system font on both.
-///
-///     They do not match each other especially well, and that is inherent:
-///     the six come from four Unicode blocks (box-drawing `╱`, geometric
-///     shapes `▭ ◯`, dingbats `✎ ✕`, arrows `↗ ↶`), drawn at different
-///     weights and optical sizes by their designers. Two ways out were
-///     costed and both are currently worse:
-///       - SVG assets: swift-cross-ui's `Image` decodes png/jpg/webp or raw
-///         RGBA only. There is no SVG decoder in the graph.
-///       - Vector icons drawn natively: entirely possible — the public
-///         `Shape`/`Path` API has béziers, arcs and stroke caps/joins, and
-///         both backends render it. But `Button` takes a `String` label and
-///         nothing else ("a temporary solution until arbitrary labels are
-///         supported", says its own doc), there are no button styles to
-///         make one transparent, and an overlaid shape swallows clicks on
-///         WinUI (see `hubCard`). So an icon tool would have to be a bare
-///         `Shape` + `onTapGesture` — and GTK's tap target is a
-///         `GestureClick` controller on the child widget, which is not
-///         focusable. That trades every tool button's keyboard and
-///         screen-reader access for looks, on a toolbar whose armed state
-///         takes over the screen and whose way out is a keypress.
-///     Revisit when swift-cross-ui supports arbitrary button labels; the
-///     icons become free then, with nothing given up.
-///   • The armed tool is bracketed rather than highlighted: swift-cross-ui has
-///     no segmented control, so radio selection has to be spelled in the label.
+/// Differences from the macOS toolbar:
+///   • Unicode geometric glyphs instead of SF Symbols (Apple-only) — neither
+///     GTK's icon theme nor Windows has a matching set, and `Button` here
+///     takes only a `String` label (no room for a `Shape`-drawn vector icon
+///     without losing GTK's keyboard/screen-reader tap target). Revisit if
+///     swift-cross-ui ever supports arbitrary button labels.
+///   • The armed tool is bracketed, not highlighted: no segmented control here.
 ///   • The color picker is a `Menu` of named rows with the current color
-///     checked, beside a swatch showing it: a swift-cross-ui menu label is a
-///     String, so the macOS toolbar's swatch-icon menu (`makeColorMenu`)
-///     becomes name-plus-checkmark here. Identity still seeds the DEFAULT
-///     color; a pick overrides it, and per-stroke color rides the annotation
-///     wire (`Annotation.color`) exactly as on macOS.
+///     checked, since a menu label is a plain String (no swatch icon like
+///     macOS's `makeColorMenu`). Identity seeds the default color; a pick
+///     overrides it, and per-stroke color rides `Annotation.color` as on macOS.
 public struct AnnotationToolbar: View {
     /// Tool order — matches the macOS `ViewerToolbar.toolOrder` exactly.
     /// Glyphs: pencil, diagonal, arrow, rectangle, ellipse, target.
@@ -70,18 +44,11 @@ public struct AnnotationToolbar: View {
         zip(paletteColorNames, Annotation.RGBA.palette).map { (name: $0.0, color: $0.1) }
     }
 
-    /// How the controls are laid out.
-    ///
-    /// `.singleRow` is the over-video bar this toolbar was born as: one
-    /// full-width strip at a fixed height, viable because a video window is
-    /// as wide as the video. `.twoRows` exists for the share card, whose
-    /// window is hub-narrow (460 pt by default): a single row of ten buttons
-    /// is wider than that window, and a child wider than the window does not
-    /// merely clip — swift-cross-ui's GTK layout squeezes every *other* label
-    /// in the card to make room, so the whole card renders with its text cut
-    /// off at the left. Tools on the first row, color/undo/clear on the
-    /// second, and the row hugs its content instead of claiming the bar
-    /// height.
+    /// How the controls are laid out. `.singleRow`: the over-video bar, a
+    /// full-width strip since a video window is as wide as the video.
+    /// `.twoRows`: for the share card, whose hub-narrow window would clip a
+    /// single row of ten buttons and squeeze every other label in the card
+    /// to make room. Tools on row one, color/undo/clear on row two.
     public enum Arrangement: Sendable {
         case singleRow
         case twoRows
@@ -94,11 +61,9 @@ public struct AnnotationToolbar: View {
     let inkColor: Annotation.RGBA
     let arrangement: Arrangement
     let statsShown: Bool
-    /// Whether to offer the stats toggle at all.
-    ///
-    /// False on the SHARER, which reuses this toolbar to draw on its own
-    /// screen: there is no decoded video on that side and therefore no
-    /// resolution or fps to show, so the button would open an empty HUD.
+    /// Whether to offer the stats toggle at all. False on the sharer, which
+    /// reuses this toolbar to draw on its own screen: no decoded video, no
+    /// resolution/fps to show.
     let showsStats: Bool
     let onSelectTool: @MainActor @Sendable (AnnotationTool) -> Void
     /// Pick a drawing color from the palette menu. Nil renders the swatch
@@ -139,16 +104,13 @@ public struct AnnotationToolbar: View {
             Button(isActive ? "[\(item.element.glyph)]" : " \(item.element.glyph) ") {
                 onSelectTool(item.element.tool)
             }
-            // The name the mac toolbar shows as a label; here it is the
-            // hover answer to six otherwise-unlabelled marks.
+            // The mac toolbar's label, here the hover answer to an unlabelled glyph.
             .help(item.element.name)
         }
     }
 
     /// The swatch says which color this viewer draws in; the menu beside it
-    /// changes it. Split in two because a swift-cross-ui menu label is a
-    /// String — the current color cannot ride the label the way the macOS
-    /// item's swatch icon does.
+    /// changes it — split because a menu label can't carry a swatch icon here.
     private var colorSwatch: some View {
         Circle()
             .fill(
@@ -162,11 +124,8 @@ public struct AnnotationToolbar: View {
     @ViewBuilder private var colorMenu: some View {
         if let onSelectColor {
             Menu(L("Color")) {
-                // Checked rows over `Toggle`, the proven mapping the
-                // header's filter menu uses (GTK: stateful GSimpleAction,
-                // WinUI: ToggleMenuFlyoutItem). Re-picking the current
-                // color is ignored rather than treated as "no color" —
-                // the palette is a radio group, not a bank of switches.
+                // Checked `Toggle` rows, like the header's filter menu. The
+                // palette is a radio group: re-picking the current color is ignored.
                 ForEach(Array(Self.paletteRows.enumerated()), id: \.offset) { row in
                     Toggle(
                         row.element.name,
@@ -182,23 +141,15 @@ public struct AnnotationToolbar: View {
 
     public var body: some View {
         if arrangement == .twoRows {
-            // The share card's block: tools on one row, color/undo/clear on
-            // the next, hugging content. No bar background or fixed height —
-            // inside a card these sit like any other control cluster, and the
-            // whole point of the split is that neither row outgrows a
-            // hub-narrow window.
+            // No bar background or fixed height: rows hug content so neither outgrows the card.
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     toolButtons
                     Spacer()
                 }
                 HStack(spacing: 6) {
-                    // Chipped, unlike the single-row bar's bare dot: there the
-                    // swatch sits against a "Color" menu that gives it a
-                    // reason to be round and small. Here the sharer's ink is
-                    // fixed, so the swatch is on its own — and a lone dot
-                    // beside two buttons reads as a stray mark rather than
-                    // "this is the colour you draw in".
+                    // Chipped, unlike the single-row bar's bare dot: a lone dot
+                    // beside two buttons would read as a stray mark.
                     colorSwatch
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
@@ -225,21 +176,14 @@ public struct AnnotationToolbar: View {
                 Button("↶", action: onUndo)
                 Button("✕", action: onClear)
                 if showsStats {
-                    // Worded, not a glyph, and behind a divider. As `▤` at the
-                    // end of a row of drawing glyphs it read as a seventh
-                    // drawing tool and was reported as a missing feature by
-                    // someone looking straight at it. The no-annotations
-                    // fallback in the Windows app has always spelled it out;
-                    // these now match.
+                    // Worded, not a glyph: as `▤` it read as a seventh drawing tool.
                     Divider()
                     Button(statsShown ? L("Hide stats") : L("Stats"), action: onToggleStats)
                 }
                 Spacer()
             }
             .padding(.horizontal, 12)
-            // Fixed height so the row hugs its buttons; without it the
-            // enclosing VStack hands the toolbar an equal share of the window
-            // and squeezes the video.
+            // Fixed height, else the enclosing VStack gives the toolbar an equal share and squeezes the video.
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
@@ -253,10 +197,8 @@ public struct StatsHUD: View {
     let height: Int
     let fps: Int
     /// The stream's colour encoding, already formatted (`VideoColorInfo`'s
-    /// `shortLabel` — "BT.709 · limited"). Empty prints no line at all: the
-    /// value is only known once a frame has been decoded, and an empty colour
-    /// line reads as "this stream has no colour information" rather than "not
-    /// measured yet".
+    /// `shortLabel` — "BT.709 · limited"). Empty prints no line: unknown
+    /// until a frame decodes.
     let colorLabel: String
 
     public init(width: Int, height: Int, fps: Int, colorLabel: String = "") {
@@ -267,19 +209,14 @@ public struct StatsHUD: View {
     }
 
     public var body: some View {
-        // The text modifiers sit on each `Text` rather than on the stack:
-        // `.padding`/`.background` are applied to containers elsewhere in this
-        // file, `.font`/`.foregroundColor` never are.
         VStack(alignment: .leading, spacing: 2) {
             Text(L("\(width)×\(height) · \(fps) fps"))
                 .font(.caption)
                 .foregroundColor(.white)
             if !colorLabel.isEmpty {
-                // Standards names ("BT.709", "limited") — deliberately NOT
-                // through `L(_:)`, the same unlocalized class as the codec
-                // names: a catalog key nobody could translate usefully, and
-                // `LocalizationCatalogTests` scans for `L("…")` literals, which
-                // a runtime-built string could never satisfy anyway.
+                // Standards names ("BT.709", "limited") — not through `L(_:)`,
+                // like codec names: unlocalizable, and a runtime-built string
+                // can't satisfy `LocalizationCatalogTests`'s literal scan anyway.
                 Text(colorLabel)
                     .font(.caption)
                     .foregroundColor(.white)
@@ -298,10 +235,9 @@ public struct StatsHUD: View {
 public struct RemoteControlBar: View {
     let buttonLabel: String
     let declinedReason: String?
-    /// True while THIS viewer holds the control grant. Renders the tinted
-    /// state line beside Release: the button label alone says what pressing
-    /// does, not what is happening, and a live grant is the one state worth
-    /// announcing — the macOS viewer frames the whole video orange for it.
+    /// True while this viewer holds the control grant — renders the tinted
+    /// state line beside Release, since the button label alone says what
+    /// pressing does, not what is happening.
     let isControlling: Bool
     /// The sharer's name for the state line, when the host knows it. Nil
     /// falls back to the generic sentence rather than printing a blank.
@@ -351,34 +287,22 @@ public struct RemoteControlBar: View {
 /// The microphone control: talk, or don't. Over live video as a floating pill
 /// for the viewer, and plain inside the sharer's card (see `floating`).
 ///
-/// **Absent, not disabled, when there is no microphone.** A host builds this
-/// only when it actually opened a capture device, the same capability-not-
-/// configuration rule the annotation toolbar and Request Control follow. A mute
-/// button that cannot unmute teaches somebody their microphone is broken when
-/// what is broken is the app.
+/// Absent, not disabled, when there is no microphone — a host builds this
+/// only when it actually opened a capture device.
 ///
-/// The label says what the microphone IS, not what pressing does. Both readings
-/// are defensible in isolation and only one can be right on a control that also
-/// has to communicate state at a glance — and "Mute"/"Unmute" on a button that
-/// looks identical either way is how people end up talking to a muted room.
+/// The label says what the microphone IS, not what pressing does: "Mute" on a
+/// button that looks the same either way is how people end up talking to a
+/// muted room.
 public struct MicrophoneButton: View {
     let isOn: Bool
-    /// Set once the capture device has failed — the mic is gone for this
-    /// session and saying so beats a control that silently stops working.
+    /// Set once the capture device has failed — mic is gone for this session.
     let failureNote: String?
-    /// The system-wide mute chord's spelling ("Ctrl+Alt+M"), when the host
-    /// actually holds it — folded into the tooltip so the shortcut is
-    /// discoverable from the control it drives, like the macOS mic item's
-    /// parenthetical. Nil hides the hint rather than advertising a chord
-    /// that does nothing.
+    /// The system-wide mute chord's spelling ("Ctrl+Alt+M"), folded into the
+    /// tooltip. Nil hides the hint rather than advertising a dead chord.
     let chordHint: String?
-    /// Whether to draw the floating-pill chrome (padding + hubCard).
-    ///
-    /// True for the over-video control this button was born as, where it
-    /// needs its own surface to be readable over arbitrary frames. The share
-    /// card passes false: there it sits in a row of plain buttons on a card
-    /// that already has a background, and a pill-in-card reads as a second
-    /// card rather than a control.
+    /// Whether to draw the floating-pill chrome (padding + hubCard). True for
+    /// the over-video control, which needs its own surface over arbitrary
+    /// frames. False in the share card, where a pill would read as a nested card.
     let floating: Bool
     let onToggle: @MainActor @Sendable () -> Void
 
@@ -394,9 +318,8 @@ public struct MicrophoneButton: View {
         self.onToggle = onToggle
     }
 
-    /// Hover text: the ACTION (the label already carries the state), plus the
-    /// chord when one is registered — the macOS mic tooltip's exact wording
-    /// and keys.
+    /// Hover text: the action (label already carries state), plus the chord
+    /// when registered.
     private var tooltip: String {
         if isOn {
             return chordHint.map { L("Mute microphone (\($0))") } ?? L("Mute microphone")
@@ -417,9 +340,7 @@ public struct MicrophoneButton: View {
 
     private var content: some View {
         HStack(spacing: 8) {
-            // Bracketed when live, matching the annotation toolbar's active
-            // state: swift-cross-ui's Button takes a String label, so "which of
-            // these is on" has to be carried by the text itself.
+            // Bracketed when live, matching the annotation toolbar's convention for a String-only label.
             Button(isOn ? "[\(L("🎙 On"))]" : " \(L("🎙 Off")) ", action: onToggle)
                 .help(tooltip)
             if let failureNote {
@@ -435,12 +356,9 @@ public struct MicrophoneButton: View {
 /// The share-card sentence for a system-wide mute chord that could not be
 /// taken, per `GlobalHotkeyUnavailability` case.
 ///
-/// One catalog key per case rather than interpolating `unavailability.reason`
-/// — that property is English source text meant for logs, and a sentence
-/// assembled around it would ship half-translated. `chord` is the platform
-/// spelling ("Ctrl+Alt+M"); chords are never localized. Shared here because
-/// both swift-cross-ui hosts append the same sentence to their share cards,
-/// and two spellings of one warning would drift.
+/// One catalog key per case, not an interpolated `unavailability.reason`
+/// (that's log-only English). `chord` is the platform spelling
+/// ("Ctrl+Alt+M") and is never localized. Shared so both hosts' warnings don't drift.
 public enum MuteHotkeyNote {
     public static func text(
         chord: String, unavailability: GlobalHotkeyUnavailability

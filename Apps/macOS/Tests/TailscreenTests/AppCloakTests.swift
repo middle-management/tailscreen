@@ -37,10 +37,8 @@ final class AppCloakTests: XCTestCase {
             ["com.b.b", "com.a.a"])
     }
 
-    /// A `.window` share captures exactly one window and an `.application`
-    /// share's include-list already hides everything not picked — cloaking
-    /// must not interfere (an explicitly picked app wins over its cloak
-    /// entry).
+    /// `.window`/`.application` shares already hide everything not picked;
+    /// cloaking must not interfere.
     func testNonDisplayKindsNeverExclude() {
         for kind in [PickerSelection.Kind.window, .application] {
             XCTAssertEqual(
@@ -67,8 +65,7 @@ final class AppCloakTests: XCTestCase {
         XCTAssertTrue(store.isCloaked("com.slack.Slack"))
         XCTAssertFalse(store.isCloaked("com.other.app"))
 
-        // A fresh store over the same suite sees the persisted list, in
-        // insertion order.
+        // A fresh store over the same suite sees the persisted list, in insertion order.
         let reloaded = AppCloakStore(defaults: defaults)
         XCTAssertEqual(reloaded.entries.map(\.bundleID), ["com.slack.Slack", "com.apple.mail"])
         XCTAssertEqual(reloaded.entries.map(\.displayName), ["Slack", "Mail"])

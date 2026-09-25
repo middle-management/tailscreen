@@ -9,18 +9,13 @@ import (
 // Coverage-guided fuzzing of every parser this package implements.
 //
 // The vectors next door say what a correct implementation does with input
-// somebody meant to send. These say what it does with input nobody meant to
-// send — which is the input that actually arrives, because TS-GEN-011 puts a
-// tunnel around the traffic but nothing around the peer, and every parser
-// here reads bytes an admitted-or-not peer chose (TS-SEC-002, TS-SEC-008).
+// somebody meant to send; these say what it does with input nobody meant to
+// send — the input that actually arrives, since TS-GEN-011 tunnels the
+// traffic but not the peer (TS-SEC-002, TS-SEC-008).
 //
-// The assertions are structural invariants rather than expected values: a
-// fuzzer cannot know what a random datagram should decode to, but it can
-// know that a successful decode never claims more bytes than it was given,
-// that a rejection stays rejected, and that anything the encoder produces
-// the decoder reads back. Those are the properties whose violation is a
-// memory-safety bug or an interop bug, and they are checkable without a
-// second implementation.
+// Assertions are structural invariants, not expected values — a decode never
+// claims more bytes than given, a rejection stays rejected, an encoder's
+// output round-trips — checkable without a second implementation.
 //
 // The seed corpus runs on every `go test`, so these cost CI nothing. Real
 // fuzzing is opt-in and time-boxed:

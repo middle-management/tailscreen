@@ -12,8 +12,7 @@ final class PeerConnectionInfoTests: XCTestCase {
     // MARK: - Route classification
 
     func testDirectEndpointWinsOverRelay() {
-        // tsnet reports both fields while a relayed path upgrades to
-        // direct; a populated curAddr is the authoritative "direct" signal.
+        // A populated curAddr is the authoritative "direct" signal even when relay is also reported.
         XCTAssertEqual(
             PeerRoute.from(curAddr: "100.64.0.2:41641", relay: "fra"), .direct)
     }
@@ -24,9 +23,7 @@ final class PeerConnectionInfoTests: XCTestCase {
     }
 
     func testEmptyStringsCountAsAbsent() {
-        // LocalAPI reports "" rather than omitting the key before a path
-        // exists — treating "" as present would render an empty
-        // "DERP ()" label or a bogus "Direct".
+        // LocalAPI reports "" rather than omitting the key; treating "" as present would render "DERP ()" or a bogus "Direct".
         XCTAssertEqual(PeerRoute.from(curAddr: "", relay: "fra"), .relay(region: "fra"))
         XCTAssertEqual(PeerRoute.from(curAddr: "", relay: ""), .unknown)
         XCTAssertEqual(PeerRoute.from(curAddr: nil, relay: ""), .unknown)
@@ -39,8 +36,7 @@ final class PeerConnectionInfoTests: XCTestCase {
     // MARK: - Latency tiers
 
     func testLatencyTierBoundaries() {
-        // Boundaries are exclusive upper bounds: the threshold value
-        // itself belongs to the *next* tier down.
+        // Boundaries are exclusive upper bounds: the threshold value belongs to the next tier down.
         XCTAssertEqual(ConnectionQualityTier.forLatency(ms: 0), .good)
         XCTAssertEqual(ConnectionQualityTier.forLatency(ms: 59), .good)
         XCTAssertEqual(ConnectionQualityTier.forLatency(ms: 60), .fair)
@@ -50,8 +46,6 @@ final class PeerConnectionInfoTests: XCTestCase {
     }
 
     func testTierBoundariesMatchNamedConstants() {
-        // The named constants are the contract the doc comment describes;
-        // keep the literals above honest if someone retunes them.
         XCTAssertEqual(
             ConnectionQualityTier.forLatency(ms: ConnectionQualityTier.goodBelowMs - 1), .good)
         XCTAssertEqual(

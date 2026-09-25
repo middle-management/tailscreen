@@ -1,24 +1,18 @@
 import Foundation
 
-/// Where the sharer's server hands inbound viewer audio, decoupled from *when*
-/// this share's `SharerVoice` comes into existence.
+/// Where the sharer's server hands inbound viewer audio, decoupled from
+/// *when* this share's `SharerVoice` comes into existence.
 ///
-/// It exists because of `TailscaleScreenShareServer`'s callback contract:
-/// `onAudioReceived` and its siblings are bare stored vars read from the
-/// receive thread with no lock, so they must be **assigned before `start()`
-/// and left alone until after `stop()` returns**. Both swift-cross-ui sharer
-/// hosts used to assign `onAudioReceived` from `startVoice`, which runs after
-/// `start()` — a data race on the property itself, and, more visibly, every
-/// viewer packet that arrived while the capture device was still opening went
-/// on the floor with nothing anywhere saying so.
+/// `TailscaleScreenShareServer.onAudioReceived` is a bare stored var read
+/// from the receive thread with no lock, so it must be assigned before
+/// `start()` and left alone until after `stop()` returns. This route is
+/// installed once, before `start()`; the voice is published into it when
+/// ready and cleared on teardown, so an early viewer packet is never dropped
+/// silently.
 ///
-/// The route is installed once, before `start()`. The voice is published into
-/// it when it is ready and cleared on teardown. The capture device is still
-/// opened after the share is up, deliberately: on Windows `start()` includes
-/// tsnet bring-up, and a microphone indicator lit through an interactive
-/// browser login is a far worse answer than a few dropped milliseconds.
-/// (macOS does not need this — it builds its `VoiceChannel` before `start()`
-/// because its playback and capture halves open separately.)
+/// The capture device still opens after the share is up: on Windows
+/// `start()` includes tsnet bring-up, and a mic indicator lit through an
+/// interactive browser login is worse than a few dropped milliseconds.
 public final class SharerVoiceRoute: @unchecked Sendable {
     private let lock = NSLock()
     private var voice: SharerVoice?
@@ -31,11 +25,8 @@ public final class SharerVoiceRoute: @unchecked Sendable {
         lock.withLock { self.voice = voice }
     }
 
-    /// Route one inbound audio datagram, on the server's receive thread.
-    ///
-    /// A packet that arrives before a voice exists is dropped — the only
-    /// thing it could be — but one that arrives after is not, which is the
-    /// whole point of installing this before `start()`.
+    /// Route one inbound audio datagram, on the server's receive thread. A
+    /// packet arriving before a voice exists is dropped; one arriving after is not.
     public func receive(_ packet: Data) {
         guard let voice = lock.withLock({ self.voice }) else { return }
         voice.receive(packet)

@@ -1,12 +1,10 @@
-// Share-by-token link formatting: the one place the `tailscreen:` join
-// URL shape and the token's user-visible handling live, shared by every
-// host's "Copy Link" button and "Join a Share" paste field so a link one
-// app produces is always a string another app parses.
+// Share-by-token link formatting: the one place the `tailscreen:` join URL
+// shape and the token's user-visible handling live, shared by every host's
+// "Copy Link" button and "Join a Share" paste field.
 //
 // The token itself is opaque to Swift — a "tc"-prefixed base64url blob
-// minted by the guest node (see the guest package in libtailscale); it is
-// deliberately never decoded here. Base64url means the token is URL-safe
-// verbatim, so the link needs no percent-encoding.
+// minted by the guest node (libtailscale's guest package) — and is never
+// decoded here. Base64url means it's URL-safe verbatim, no percent-encoding.
 
 import Foundation
 
@@ -51,10 +49,9 @@ public enum ShareLinkFormat {
             guard let token, isPlausibleToken(token) else { return nil }
             return token
         case "https", "http":
-            // A web-viewer link, from ANY host: the page is static and
-            // self-hostable, so the host proves nothing — the token in the
-            // fragment (or, for a hand-typed form, a `token` query item) is
-            // what the join needs.
+            // Web-viewer link, from ANY host — the page is static and
+            // self-hostable, so the host proves nothing. Token lives in the
+            // fragment (or a `token` query item for a hand-typed form).
             if let fragment = components.fragment, isPlausibleToken(fragment) { return fragment }
             let token = components.queryItems?.first { $0.name == "token" }?.value
             guard let token, isPlausibleToken(token) else { return nil }

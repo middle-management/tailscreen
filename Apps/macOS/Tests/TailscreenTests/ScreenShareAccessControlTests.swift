@@ -211,13 +211,11 @@ final class ScreenShareAccessControlTests: XCTestCase {
         await server.stop()
     }
 
-    /// The SharingCard's per-row ✕: `disconnectViewer` kicks a *connected*
-    /// viewer one-time — HELLO_DENY fires viewer-side (`onDeniedBySharer`),
-    /// the roster empties, and NOTHING is remembered: the same node (same
-    /// state dir, same StableNodeID) reconnects and parks pending at the
-    /// approval gate again, where a fresh approve re-admits it. Distinguishes
-    /// the kick from "Deny & Block", whose policy sweep would reject the
-    /// re-HELLO outright.
+    /// `disconnectViewer` (SharingCard's per-row ✕) kicks a connected viewer
+    /// one-time: HELLO_DENY fires, the roster empties, and nothing is
+    /// remembered — the same node reconnects and parks pending again.
+    /// Distinguishes the kick from "Deny & Block", whose policy sweep would
+    /// reject the re-HELLO outright.
     func testSharerDisconnectIsOneTimeKick() async throws {
         let env = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(

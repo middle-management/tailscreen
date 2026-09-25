@@ -2,17 +2,10 @@ import Foundation
 import TailscaleKit
 import TailscreenProtocol
 
-/// One tsnet node bring-up instead of five.
-///
-/// Node bring-up used to be written independently by the viewer transport
-/// (`TsnetTransport`), the sharer (`TailscaleScreenShareServer`), the macOS
-/// client and `AppState`, and the Linux test sharer — five copies of "state
-/// dir, `Configuration`, `TailscaleNode`, `up()`" whose semantics had
-/// quietly diverged. The mechanics live here once; the *divergences* are
-/// deliberate knobs each call site states explicitly (ephemerality, the
-/// up-timeout policy, whether a login-URL subscription rides along), so a
-/// site's behaviour is readable at the site rather than encoded in which
-/// copy it happened to carry.
+/// One tsnet node bring-up instead of five (previously duplicated across the
+/// viewer transport, sharer, macOS client/AppState, and the Linux test
+/// sharer). Divergences are explicit knobs at each call site (ephemerality,
+/// up-timeout policy, login-URL subscription) instead of copy-drift.
 ///
 /// Two granularities on purpose:
 /// - ``makeNode(spec:logger:)`` + ``up(_:spec:timeout:)`` for hosts that
@@ -118,13 +111,9 @@ public enum TsnetNodeFactory {
     ///     forever).
     ///   - onLoginURL: when non-nil and the spec has no auth key, an IPN-bus
     ///     watcher is subscribed before `up()` and every `BrowseToURL` is
-    ///     handed to this closure. The watcher is torn down on **every** exit
-    ///     path — `up()` returning, `up()` throwing, and `startWatching`
-    ///     itself throwing — because its `MessageProcessor` keeps running
-    ///     (retaining the node) unless `stopWatching()` cancels it. (A
-    ///     `startWatching` that throws now disarms itself, so the stop on
-    ///     that path is belt-and-braces rather than load-bearing.) With an
-    ///     auth key the subscription is skipped entirely.
+    ///     handed to this closure. Torn down on **every** exit path — its
+    ///     `MessageProcessor` keeps running (retaining the node) unless
+    ///     `stopWatching()` cancels it. Skipped entirely with an auth key.
     ///   - stepLogPrefix: when non-nil, each step logs *before* it starts
     ///     under this prefix (e.g. `"prepare"`). Before rather than after
     ///     because the failure this diagnoses is a *hang*, and a line that
@@ -155,24 +144,15 @@ public enum TsnetNodeFactory {
             await beforeUp(node)
         }
 
-        // Interactive login (no auth key): tsnet's `up()` blocks until the
-        // backend reaches Running, which on a fresh device means waiting for
-        // a browser login. tsnet emits that login URL as a BrowseToURL notify
-        // on the IPN bus — subscribe BEFORE `up()` (else the notify fires
-        // with nobody listening and `up()` waits forever) and surface the URL
-        // for the user to open. With an auth key this path is skipped
-        // entirely.
-        // ONE teardown covering every exit path from here on. `defer` cannot
-        // `await`, so the whole subscribe-then-up sequence runs inside a
-        // do/catch whose catch stops the watcher: it subscribed the IPN bus
-        // before `up()`, and its MessageProcessor keeps running (retaining the
-        // node) unless `stopWatching()` cancels it — a leak on the
-        // interactive-login path. `startWatching` is INSIDE the same block
-        // for the same reason: it used to latch `isWatching` before it could
-        // throw, so a failed subscribe left the watcher half-armed and
-        // untorn-down when this assigned `authWatcher` only after it
-        // returned. It disarms itself on failure now; the shape stays because
-        // the stop is harmless and the block reads as one teardown.
+        // Interactive login (no auth key): `up()` blocks until Running,
+        // which on a fresh device means waiting for a browser login. tsnet
+        // emits that URL as a BrowseToURL notify, so subscribe BEFORE `up()`
+        // or the notify fires with nobody listening and `up()` waits forever.
+        //
+        // `defer` can't `await`, so the whole subscribe-then-up sequence runs
+        // inside a do/catch whose catch stops the watcher — its
+        // MessageProcessor keeps running (retaining the node) unless
+        // `stopWatching()` cancels it.
         var authWatcher: TailscaleIPNWatcher?
         do {
             if let onLoginURL, spec.authKey == nil {

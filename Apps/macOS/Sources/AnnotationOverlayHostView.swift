@@ -1,19 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// AppKit shell that hosts ``AnnotationCanvasView``. Lives inside an
-/// `NSPanel` (sharer) or a sibling `NSView` (viewer) and forwards the bits
-/// SwiftUI doesn't cover for a borderless overlay panel:
+/// AppKit shell that hosts ``AnnotationCanvasView``, forwarding what SwiftUI
+/// doesn't cover for a borderless overlay panel:
 ///
-///   • `acceptsFirstMouse` so a click registers without first activating the
-///     app — important on the sharer panel which sits at `.statusBar` level.
-///   • `keyDown` for tool shortcuts (1–6), Cmd-Z, Esc — `.onKeyPress` inside
-///     a borderless panel doesn't reliably get focus.
-///   • `rightMouseDown` for clear-all — SwiftUI gestures have no
-///     right-click equivalent.
-///
-/// The hosted SwiftUI view handles every other piece of input (drag-to-draw)
-/// and all rendering.
+///   • `acceptsFirstMouse` so a click registers without activating the app
+///     first (the sharer panel sits at `.statusBar` level).
+///   • `keyDown` for tool shortcuts, Cmd-Z, Esc — `.onKeyPress` doesn't
+///     reliably get focus in a borderless panel.
+///   • `rightMouseDown` for clear-all — SwiftUI has no right-click gesture.
 @MainActor
 final class AnnotationOverlayHostView: NSView {
     let model: AnnotationCanvasModel
@@ -49,13 +44,11 @@ final class AnnotationOverlayHostView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        // Esc (keyCode 53) — let the host decide what to do.
-        if event.keyCode == 53 {
+        if event.keyCode == 53 {  // Esc
             model.escapePressed()
             return
         }
-        // Cmd-Z — undo the most recent shape this canvas created.
-        if event.modifierFlags.contains(.command),
+        if event.modifierFlags.contains(.command),  // Cmd-Z
             event.charactersIgnoringModifiers?.lowercased() == "z"
         {
             model.performLocalUndo()

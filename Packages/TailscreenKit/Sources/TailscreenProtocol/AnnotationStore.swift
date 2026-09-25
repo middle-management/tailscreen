@@ -18,43 +18,33 @@ public enum AnnotationMode: Sendable, Equatable {
 /// A **viewer's** annotation canvas: committed strokes (local + relayed from
 /// the sharer) plus the in-progress stroke being drawn.
 ///
-/// The counterpart of ``ReceivedAnnotations``, which is the *sharer's* half —
-/// display-only, no local drawing, no undo stack. This one owns the drawing:
-/// live drag tracking, the tool latch, the relay of finalized ops. Two types
-/// because the two roles genuinely differ, and a sharer that only displays what
-/// viewers send needs none of the machinery below.
+/// The counterpart of ``ReceivedAnnotations`` (the sharer's display-only
+/// half). This one owns the drawing: live drag tracking, the tool latch, the
+/// relay of finalized ops.
 ///
-/// Portable, and it always was — Foundation plus this module, with nothing
-/// toolkit-specific in it. It lived in `TailscreenViewerGtk` until the WinUI
-/// viewer needed the identical canvas, and copying it would have guaranteed the
-/// two drifted. Each host reads it differently and that is the point: GTK takes
-/// `renderData` (flattened arrays for its GL shader), WinUI takes
+/// Portable — Foundation plus this module, nothing toolkit-specific — shared
+/// by both GTK and WinUI viewers rather than copied and drifting. GTK takes
+/// `renderData` (flattened arrays for its GL shader); WinUI takes
 /// ``visibleAnnotations`` and hands them to ``AnnotationRasterizer``.
 ///
-/// Threading: the render side reads on the host's UI thread, capture writes on
-/// it, and the back-channel's inbound handler applies remote ops from its own
-/// task — so strokes are lock-guarded. Finalized local ops are handed to
-/// `onLocalOp` for the host to relay over the back-channel.
+/// Threading: render reads on the host's UI thread, capture writes on it, and
+/// the back-channel's inbound handler applies remote ops from its own task —
+/// so strokes are lock-guarded. Finalized local ops go to `onLocalOp` for the
+/// host to relay.
 ///
-/// Coordinates are normalized `[0, 1]` in the video frame (origin top-left) —
-/// the same space `Annotation`/`InputEvent` use — so a viewer stroke lands in
-/// the right place on the sharer's screen.
+/// Coordinates are normalized `[0, 1]` in the video frame, the same space
+/// `Annotation`/`InputEvent` use.
 ///
-/// Timing: the two decisions that need a clock — dating an ephemeral stroke and
-/// sweeping the ones that have aged out — read the `nowNs` handed to
-/// ``apply(_:nowNs:)`` / ``endStroke(nowNs:)`` / ``expire(nowNs:)``, with the
-/// process uptime clock as the fallback for a host that threads none. Same
-/// shape as `VoiceDownlink.ingest(_:nowNs:)`, and for the same reason: a
-/// time-based rule nobody can pin to a fixed instant is a rule nobody tests.
+/// Timing: dating an ephemeral stroke and sweeping aged-out ones read the
+/// `nowNs` handed to ``apply(_:nowNs:)`` / ``endStroke(nowNs:)`` /
+/// ``expire(nowNs:)``, falling back to the process uptime clock — same shape
+/// as `VoiceDownlink.ingest(_:nowNs:)`.
 public final class AnnotationStore: @unchecked Sendable {
     private let lock = NSLock()
     private var strokes: [Annotation] = []
-    /// Deadlines for the ephemeral strokes, keyed by annotation id — the same
-    /// bookkeeping ``ReceivedAnnotations`` keeps on the sharer's half, and
-    /// deliberately reading its ``ReceivedAnnotations/ephemeralLifetimeNs(for:)``
-    /// rather than a second table: a click marker that vanished at 0.8 s on the
-    /// sharer's screen and stayed up on the viewer's would be two machines
-    /// disagreeing about one gesture.
+    /// Deadlines for the ephemeral strokes, keyed by annotation id, reading
+    /// ``ReceivedAnnotations/ephemeralLifetimeNs(for:)`` rather than a second
+    /// table — a click marker must expire on the same schedule on both machines.
     private var expiries: [UUID: UInt64] = [:]
     private var live: [CGPoint] = []
     /// Tool the in-progress stroke was started with — latched at `beginStroke`
@@ -70,19 +60,15 @@ public final class AnnotationStore: @unchecked Sendable {
     /// Current drawing mode (main-thread only: the toolbar sets it, capture
     /// reads it).
     public var mode: AnnotationMode = .off
-    /// This participant's stroke color. SEEDED from the local identity — a
-    /// machine that never touches the color menu draws in the same color
-    /// across reconnects and relaunches — and settable since the toolbars
-    /// grew a picker (the mac viewer's color menu first, now the shared
-    /// chrome's): per-stroke color rides the wire (`Annotation.color`), so a
-    /// picked color reaches the sharer and other viewers with no protocol
-    /// change.
+    /// This participant's stroke color. Seeded from the local identity, so a
+    /// machine that never touches the color menu draws consistently across
+    /// reconnects; settable via a picker, since per-stroke color rides the
+    /// wire (`Annotation.color`) with no protocol change needed.
     public var color = Annotation.RGBA.paletteColor(forIdentity: AnnotationStore.localIdentity())
 
     /// Stable per-machine drawing identity, mirroring the mac's
     /// `Host.current().localizedName + TailscreenInstance.hostnameSuffix`.
-    /// Deliberately NOT the tsnet node name: that carries a fresh UUID each
-    /// launch, which would reshuffle this viewer's color every run.
+    /// Not the tsnet node name, which carries a fresh UUID each launch.
     public static func localIdentity() -> String {
         let host = ProcessInfo.processInfo.hostName
         let name = host.isEmpty ? "tailscreen-viewer" : host
@@ -125,19 +111,12 @@ public final class AnnotationStore: @unchecked Sendable {
 
     /// Apply an inbound op (safe from any thread). Does not re-emit `onLocalOp`.
     ///
-    /// **Upsert, not append.** A peer dragging a stroke re-sends the SAME id
-    /// with a longer point list every few milliseconds; appending stacked
-    /// hundreds of copies of one stroke, so the store grew without bound for as
-    /// long as somebody kept drawing and the renderer drew every copy on top of
-    /// itself. Same rule ``ReceivedAnnotations/apply(_:nowNs:)`` documents, and
-    /// the same rule ``visibleAnnotations`` already relied on for the live local
-    /// stroke.
+    /// **Upsert, not append.** A peer dragging a stroke re-sends the same id
+    /// with a longer point list every few milliseconds; appending would stack
+    /// hundreds of copies. Same rule ``ReceivedAnnotations/apply(_:nowNs:)`` documents.
     ///
-    /// - Parameter nowNs: monotonic clock reading for this op's arrival, used
-    ///   to date ephemeral strokes and to sweep the ones that have aged out.
-    ///   Pass the host's clock where one is already threaded (deterministic,
-    ///   testable); nil reads the process's monotonic uptime clock — the same
-    ///   affordance `VoiceDownlink.ingest(_:nowNs:)` offers.
+    /// - Parameter nowNs: monotonic clock reading, used to date ephemeral
+    ///   strokes and sweep aged-out ones. Nil reads the uptime clock.
     public func apply(_ op: AnnotationOp, nowNs: UInt64? = nil) {
         let now = nowNs ?? Self.monotonicNowNs()
         lock.lock()
@@ -163,14 +142,10 @@ public final class AnnotationStore: @unchecked Sendable {
 
     // MARK: Ephemeral strokes
 
-    /// Drop every stroke past its deadline. Returns whether anything went, so a
-    /// host can skip a repaint it would otherwise queue.
-    ///
-    /// Deliberately does **not** call `redraw()`: both hosts sweep from inside
-    /// their render pass (the GTK GLArea's `render`, the WinUI frame composite),
-    /// where asking for another repaint from within the repaint is at best a
-    /// wasted frame. `apply` sweeps too, so a canvas anyone is still drawing on
-    /// stays swept without a render pass at all.
+    /// Drop every stroke past its deadline. Returns whether anything went, so
+    /// a host can skip a repaint it would otherwise queue. Deliberately does
+    /// not call `redraw()`: both hosts sweep from inside their own render
+    /// pass, where requesting another repaint would waste a frame.
     ///
     /// - Parameter nowNs: monotonic clock reading; nil reads the uptime clock.
     @discardableResult
@@ -247,10 +222,7 @@ public final class AnnotationStore: @unchecked Sendable {
     /// that's exactly what the `click` marker is.
     ///
     /// - Parameter nowNs: monotonic clock reading, so a locally-drawn click
-    ///   marker ages out on the same schedule as one relayed in. macOS's
-    ///   `AnnotationCanvasModel` already expires its own clicks; a viewer whose
-    ///   marker outlived the one it just put on the sharer's screen would be
-    ///   the two halves of one gesture disagreeing.
+    ///   marker ages out on the same schedule as one relayed in.
     public func endStroke(nowNs: UInt64? = nil) {
         let now = nowNs ?? Self.monotonicNowNs()
         lock.lock()
@@ -298,19 +270,15 @@ public final class AnnotationStore: @unchecked Sendable {
 
     // MARK: Rendering
 
-    /// Everything that should currently be visible, including the in-progress
-    /// stroke, as `Annotation` values.
+    /// Everything that should currently be visible, including the
+    /// in-progress stroke, as `Annotation` values — the renderer-agnostic
+    /// view for a host that rasterizes rather than feeding a shader (WinUI
+    /// via ``AnnotationRasterizer/draw(_:into:)``).
     ///
-    /// The renderer-agnostic view of this canvas, for a host that rasterizes
-    /// rather than feeding a shader — the WinUI viewer draws these straight
-    /// into the decoded frame with ``AnnotationRasterizer/draw(_:into:)``.
-    ///
-    /// The live stroke is materialized rather than omitted: a viewer that
-    /// cannot see its own stroke until the drag ends has no idea whether
-    /// drawing is working. Its id is stable for the whole drag (minted at
-    /// `beginStroke`), so a renderer that diffs by id sees one stroke growing
-    /// rather than a new one every frame — the same upsert-not-append rule
-    /// `ReceivedAnnotations` documents for the relayed side.
+    /// The live stroke is materialized, not omitted, so a viewer can see
+    /// their own drawing mid-drag. Its id is stable for the whole drag
+    /// (minted at `beginStroke`), so a renderer diffing by id sees one stroke
+    /// growing rather than a new one per frame.
     public var visibleAnnotations: [Annotation] {
         lock.lock()
         let committed = strokes
@@ -329,15 +297,12 @@ public final class AnnotationStore: @unchecked Sendable {
 
     /// Flattened stroke geometry for `cgtkvideo_draw_annotations`: normalized
     /// x,y pairs, per-stroke vertex counts, per-stroke rgba (4 each), per-stroke
-    /// pixel widths. Includes the in-progress live stroke last (in the current
-    /// color) so drawing is visible mid-drag.
+    /// pixel widths. Includes the in-progress live stroke last.
     /// - Parameters:
-    ///   - aspect: the video's width÷height, so the `click` marker renders as a
-    ///     circle rather than an ellipse on non-square video.
-    ///   - renderHeight: the surface height in pixels. Arrowheads and the click
-    ///     ring are FIXED pixel sizes shared with the mac
-    ///     (`AnnotationGeometry.arrowHeadLength` / `clickOuterRadius`), so they
-    ///     are converted into this store's normalized space here.
+    ///   - aspect: the video's width÷height, so `click` renders as a circle,
+    ///     not an ellipse, on non-square video.
+    ///   - renderHeight: the surface height in pixels — converts the fixed
+    ///     pixel sizes of arrowheads/click ring into this store's normalized space.
     public func renderData(
         aspect: Double = 1,
         renderHeight: Double = 540

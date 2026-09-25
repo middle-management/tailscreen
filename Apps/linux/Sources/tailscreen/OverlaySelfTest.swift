@@ -5,51 +5,32 @@ import X11CaptureKit
 /// `tailscreen --overlay-self-test`: prove the sharer's annotation overlay
 /// actually puts pixels on the screen.
 ///
-/// The counterpart of `--render-self-test`, and it exists for the same reason:
-/// everything either overlay path could get wrong is invisible. A window that
-/// never maps, one the compositor ignores, one placed at the wrong origin, one
-/// whose bytes cairo reads as the wrong channel order — all four produce a
-/// share that works perfectly and annotations nobody can see, with no error
-/// anywhere. So instead of trusting the window, this draws a known stroke and
-/// reads the screen back through the same X11 capture path the sharer encodes
-/// from.
+/// Counterpart of `--render-self-test`: a window that never maps, is ignored
+/// by the compositor, is mis-positioned, or has a wrong channel order all
+/// produce a working share with invisible annotations and no error. So this
+/// draws a known stroke and reads the screen back through the same X11
+/// capture path the sharer encodes from — a PASS means it reached the real
+/// framebuffer, not just that GTK accepted the calls.
 ///
-/// That last part is what makes it worth the code: the capture is the sharer's
-/// real eye on the screen, so a PASS means the overlay reached the actual
-/// framebuffer — not merely that GTK accepted the calls.
-///
-/// Runs under Xvfb + a compositing manager in CI (see the `linux-app` job).
-/// The compositor is not optional set dressing: without one the overlay
-/// refuses to exist at all, deliberately, and this test would be checking the
-/// refusal rather than the drawing.
+/// Runs under Xvfb + a compositing manager in CI (`linux-app` job); without a
+/// compositor the overlay deliberately refuses to exist, and this would test
+/// that refusal instead of the drawing.
 enum OverlaySelfTest {
-    /// Printed on the happy path; the CI step greps for it, so a "graceful"
-    /// early exit that never ran a comparison cannot pass by exiting 0.
+    /// CI greps for this, so an early exit that skipped the comparison can't
+    /// pass by exiting 0.
     static let passMarker = "CGTKOVERLAY_SELFTEST result=PASS"
 
-    /// Where the stroke goes, in normalized capture coordinates. Horizontal
-    /// across the middle, and deliberately not full width — a stroke that ran
-    /// edge to edge would still look right if the overlay were placed at the
-    /// wrong horizontal origin.
+    /// Not full width — a stroke edge-to-edge would still look right even if
+    /// the overlay had the wrong horizontal origin.
     private static let strokeY = 0.5
     private static let strokeX0 = 0.25
     private static let strokeX1 = 0.75
 
-    /// How far apart the on-stroke and off-stroke chroma readings must be for
-    /// this to count as "the stroke is there, in red".
-    ///
-    /// Margins rather than absolute values, because what sits *behind* the
-    /// transparent parts of the overlay is not ours to control — under Xvfb it
-    /// is the app's own hub window, on a desktop it is whatever the user has
-    /// open. Contrast against a control point is the assertion that holds in
-    /// both.
-    ///
-    /// The two differ by a lot because the colour space says they must: in
-    /// BT.709 limited range, pure red moves Cr by ~112 and Cb by only ~26. A
-    /// symmetric threshold would either be trivially loose on V or sit two
-    /// counts under the real U value — which is a test that goes red the first
-    /// time antialiasing shifts a sample, and is then "fixed" by loosening the
-    /// number, which is how a threshold stops meaning anything.
+    /// Margins (not absolute values) between on-stroke and off-stroke chroma,
+    /// since what sits behind the overlay's transparent parts isn't ours to
+    /// control. The two differ because BT.709 limited-range red moves Cr by
+    /// ~112 but Cb by only ~26 — a symmetric threshold would be loose on one
+    /// or flaky on the other.
     private static let minCrMargin = 60
     private static let minCbMargin = 12
 
@@ -72,10 +53,8 @@ enum OverlaySelfTest {
             return
         }
 
-        // Pure red at full alpha, and thick. Thickness matters more than it
-        // looks: the assertion samples a single pixel, and a hairline that the
-        // rasterizer antialiases to 40 % coverage would read as a washed-out
-        // pink that no threshold could separate from a rendering opinion.
+        // Thick: the assertion samples a single pixel, and an antialiased
+        // hairline would read as washed-out pink.
         let stroke = Annotation(
             id: UUID(),
             tool: .line,
@@ -87,10 +66,8 @@ enum OverlaySelfTest {
             width: 40)
         overlay.apply(.add(stroke))
 
-        // The overlay marshals its repaint onto the GTK main loop, and the X
-        // server then has to composite it. Both are asynchronous, so the check
-        // is scheduled rather than run inline — this function is itself called
-        // from the running loop, so returning is what lets the paint happen.
+        // Repaint + compositing are both async; returning here is what lets
+        // them happen before the scheduled check runs.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             check(capture: capture, overlay: overlay, width: width, height: height)
         }
@@ -108,10 +85,9 @@ enum OverlaySelfTest {
             return
         }
 
-        // The chroma planes are half resolution in both axes (I420), so a
-        // point in capture pixels indexes them at half the coordinates. Both
-        // capture dimensions are even by construction (`captureWidth` masks the
-        // low bit off), so the halving is exact.
+        // I420 chroma planes are half resolution; capture dimensions are even
+        // by construction (`captureWidth` masks the low bit off), so this
+        // halving is exact.
         let chromaWidth = width / 2
         let chromaHeight = height / 2
         func chroma(_ plane: [UInt8], atX x: Double, y: Double) -> Int {
@@ -120,18 +96,17 @@ enum OverlaySelfTest {
             return Int(plane[py * chromaWidth + px])
         }
 
-        // On the stroke, and well away from it — same column, a quarter of the
-        // screen higher, so a vertically misplaced overlay fails here rather
-        // than passing on a stroke that happens to be somewhere else.
+        // On the stroke, and a quarter-screen higher (same column), so a
+        // vertically misplaced overlay fails rather than sampling a stroke
+        // that moved with it.
         let midX = (strokeX0 + strokeX1) / 2
         let onV = chroma(planes.v, atX: midX, y: strokeY)
         let offV = chroma(planes.v, atX: midX, y: strokeY - 0.25)
         let onU = chroma(planes.u, atX: midX, y: strokeY)
         let offU = chroma(planes.u, atX: midX, y: strokeY - 0.25)
 
-        // Red is high V (Cr) and low U (Cb). Requiring BOTH excludes a bright
-        // patch of anything — a white window behind a hole in the overlay
-        // would raise neither.
+        // Requiring both V and U to move excludes a bright patch of anything
+        // else showing through the overlay.
         let redder = (onV - offV) >= minCrMargin
         let lessBlue = (offU - onU) >= minCbMargin
         let detail =
@@ -148,8 +123,8 @@ enum OverlaySelfTest {
             : "CGTKOVERLAY_SELFTEST result=FAIL \(detail)"
         FileHandle.standardError.write(Data((line + "\n").utf8))
         print(line)
-        // Same exit convention as the render self-test: 3 for a real failure,
-        // so a timeout (124) and a crash stay distinguishable from bad pixels.
+        // 3 for a real failure, matching the render self-test's convention
+        // (so timeout/124 and a crash stay distinguishable).
         exit(passed ? 0 : 3)
     }
 }

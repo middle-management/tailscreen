@@ -3,30 +3,18 @@ import TailscreenProtocol
 
 /// Pure, platform-detail input mapping for the Linux/GTK viewer's opt-in
 /// remote-control capture. Kept in Core (Foundation + `TailscreenProtocol`
-/// only, no GTK) so it's **unit-tested by `TailscreenViewerCoreTests`** — the
-/// GTK event-controller layer only feeds it plain integers and ships the
-/// resulting `InputEvent`s.
-///
-/// The mac side has the mirror of this (`RemoteControlInputView` on capture,
-/// `MacKeyCodeMapping`); this is the GTK/GDK capture half.
+/// only, no GTK) so it's unit-tested — the GTK event-controller layer only
+/// feeds it plain integers and ships the resulting `InputEvent`s.
 public enum ViewerInputMapping {
     // MARK: Pointer
 
     /// Map a widget-space pointer position to normalized `[0, 1]` over the
-    /// aspect-fit **video content rect** (letterbox bars excluded), origin
-    /// top-left — the coordinate space `InputEvent`/`Annotation` use. The result
-    /// is clamped to `[0, 1]`, so a position in a letterbox bar lands on the
-    /// nearest content edge (the sharer clamps identically, so this never
-    /// produces an out-of-frame click).
+    /// aspect-fit video content rect (letterbox bars excluded), origin
+    /// top-left. Clamped to `[0, 1]` so a letterbox-bar position lands on the
+    /// nearest content edge (matches the sharer's own clamp).
     ///
-    /// Ratio-based, so it's independent of HiDPI scale — the widget's logical
-    /// size and the GL device-pixel viewport share the same aspect, which is all
-    /// that matters. The letterbox geometry matches `cgtkvideo_draw_yuv`'s
-    /// aspect-fit exactly.
-    /// Forwards to the portable ``ViewerPointerMapping/normalize(point:paneSize:videoSize:)``,
-    /// which is where this moved when the WinUI viewer needed the identical
-    /// letterbox arithmetic. Kept as a name so no GTK caller changed, and
-    /// because "normalizePointer" is what the event-controller layer reads as.
+    /// Forwards to ``ViewerPointerMapping/normalize(point:paneSize:videoSize:)``,
+    /// which the WinUI viewer shares; kept as a name so no GTK caller changed.
     public static func normalizePointer(
         px: Double, py: Double, widgetW: Double, widgetH: Double,
         videoW: Int, videoH: Int
@@ -49,16 +37,10 @@ public enum ViewerInputMapping {
 
     // MARK: Scroll
 
-    /// What a wheel/touchpad scroll over the video should do.
-    ///
-    /// The wheel is the one input the viewer and the sharer both want. While a
-    /// grant is live the sharer's content has to scroll — a remote desktop you
-    /// cannot scroll is barely usable — but zoom has to stay reachable too, so
-    /// Ctrl+wheel is kept local. Without that split one of the two is simply
-    /// unavailable, and this viewer used to resolve it by never forwarding
-    /// scroll at all: the wheel zoomed the local view and the sharer's content
-    /// never moved. The WinUI viewer makes the identical split
-    /// (`WinUIVideoView.handleWheel`).
+    /// What a wheel/touchpad scroll over the video should do. While a grant
+    /// is live the wheel scrolls the sharer's content, but Ctrl+wheel stays
+    /// local for zoom — without that split one of the two is unreachable.
+    /// The WinUI viewer makes the identical split (`WinUIVideoView.handleWheel`).
     public enum ScrollDisposition: Equatable, Sendable {
         /// Send it to the sharer as an ``InputEvent/scroll(x:y:deltaX:deltaY:modifiers:)``
         /// with these already-converted **wire** deltas.
@@ -69,12 +51,9 @@ public enum ViewerInputMapping {
 
     /// Decide, and convert GDK's delta convention to the wire's.
     ///
-    /// The sign flip on the vertical axis is the part to read twice. GDK
-    /// reports `dy > 0` for scrolling **down**; the wire (and every injector
-    /// behind it — see ``X11PointerMapping/scroll(delta:axis:)``) reads
-    /// positive `deltaY` as scrolling **up**. The horizontal axis needs no
-    /// flip: both call rightward positive. Getting this wrong scrolls the
-    /// sharer's document the wrong way, which is worse than not scrolling it.
+    /// The vertical sign flip is load-bearing: GDK reports `dy > 0` for
+    /// scrolling down, but the wire reads positive `deltaY` as up. Horizontal
+    /// needs no flip.
     public static func scrollDisposition(
         dx: Double, dy: Double, gdkState: UInt, isControlling: Bool
     ) -> ScrollDisposition {
@@ -93,9 +72,9 @@ public enum ViewerInputMapping {
     static let gdkAltMask: UInt = 1 << 3  // GDK_ALT_MASK (formerly GDK_MOD1_MASK)
     static let gdkSuperMask: UInt = 1 << 26  // Super / Windows key → `.meta`
 
-    /// `GdkModifierType` raw bitmask → neutral ``KeyModifiers``. Only the five
-    /// wire-defined bits are extracted; everything else is ignored (the sharer
-    /// reconstructs native flags from exactly these, so nothing else can leak).
+    /// `GdkModifierType` raw bitmask → neutral ``KeyModifiers``. Only the
+    /// five wire-defined bits are extracted; the sharer reconstructs native
+    /// flags from exactly these.
     public static func keyModifiers(fromGdkState state: UInt) -> KeyModifiers {
         var mods: KeyModifiers = []
         if state & gdkShiftMask != 0 { mods.insert(.shift) }
@@ -108,30 +87,21 @@ public enum ViewerInputMapping {
 
     // MARK: Keyboard
 
-    /// Map a GDK hardware keycode to a USB HID keyboard-page (0x07) usage ID, or
-    /// nil if unmapped (dropped, exactly as the mac injector drops an unmappable
-    /// usage — never guessed).
+    /// Map a GDK hardware keycode to a USB HID keyboard-page (0x07) usage ID,
+    /// or nil if unmapped (dropped, never guessed).
     ///
-    /// On Linux GDK, `hardware_keycode == evdev keycode + 8` (the X11/xkb
-    /// convention, also used on Wayland), so we subtract 8 and look up the
-    /// evdev→HID table. We map the **physical** key (position), not the layout
-    /// symbol: keyboard-layout interpretation stays on the sharer's machine,
-    /// which translates HID usage → its own native keycode.
+    /// `hardware_keycode == evdev keycode + 8` (X11/xkb convention, also used
+    /// on Wayland). Maps the physical key (position), not the layout symbol —
+    /// layout interpretation stays on the sharer's machine.
     public static func hidUsage(fromGdkHardwareKeycode keycode: Int) -> UInt16? {
         evdevToHID[keycode - 8]
     }
 
-    /// True for HID usages that are modifier keys (0xE0–0xE7). Modifier keys are
-    /// **not** sent as standalone key events — their held state rides every
-    /// event's `modifiers` field — so the coordinator drops them.
-    ///
-    /// Answered from the shared `KeyModifiers.heldModifier(forHIDUsage:)`
-    /// table rather than a range of its own: the WinUI viewer needs the same
-    /// usages, spelled there as an exhaustive switch, and one table in two
-    /// spellings is one edit away from disagreeing about a key. Caps Lock
-    /// (0x39) is deliberately not one of them here — GDK reports it in the
-    /// event's own modifier mask, so this viewer forwards the key and lets
-    /// `keyModifiers(fromGdkState:)` carry the latched state.
+    /// True for HID usages that are modifier keys (0xE0–0xE7) — not sent as
+    /// standalone key events; their held state rides `modifiers`. Answered
+    /// from the shared `KeyModifiers.heldModifier(forHIDUsage:)` table so it
+    /// can't disagree with the WinUI viewer's copy. Caps Lock (0x39) is
+    /// deliberately excluded — GDK reports it in the modifier mask instead.
     public static func isModifierUsage(_ usage: UInt16) -> Bool {
         KeyModifiers.heldModifier(forHIDUsage: usage) != nil
     }

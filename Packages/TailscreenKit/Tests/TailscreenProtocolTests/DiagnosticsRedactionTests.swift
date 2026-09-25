@@ -3,21 +3,15 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// `DiagnosticsRedaction` — what never reaches a bundle, and what deliberately
-/// does.
-///
-/// Worth pinning harder than most pure logic, because the two failure
-/// directions are both silent and both bad. Under-redacting puts a live share
-/// token in a file somebody pastes into a chat — the token is a bearer
-/// credential, so the reader can join the share. Over-redacting quietly
-/// destroys the thing the bundle was made for: a timeline with every address
-/// replaced by `<redacted>` cannot be merged, because merging is exactly the
-/// act of matching the addresses up.
+/// `DiagnosticsRedaction` — what never reaches a bundle, and what
+/// deliberately does. Both failure directions are silent: under-redacting
+/// leaks a bearer-credential share token; over-redacting destroys the
+/// addresses that merging needs to match sides up.
 final class DiagnosticsRedactionTests: XCTestCase {
 
     // MARK: - Capabilities go
 
-    /// The share token is the sharp one: possession is permission.
+    /// Possession of the share token is permission.
     func testShareTokenIsFingerprintedNotPassedThrough() {
         let token = "tcABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
         let scrubbed = DiagnosticsRedaction.scrub("joining \(token) now")
@@ -27,12 +21,9 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.hasSuffix(" now"), "surrounding text must survive")
     }
 
-    /// **The shapes a token actually arrives in.** A bare token in a log line
-    /// is the rare case; what really reaches one is a key/value pair, a JSON
-    /// fragment, or a URL. An earlier version tested only whether the *whole
-    /// word* was a token, so every one of these passed through untouched —
-    /// which is exactly the guarantee the bundle header makes to whoever is
-    /// about to send the file.
+    /// A bare token is the rare case — what really reaches a log line is a
+    /// key/value pair, JSON fragment, or URL; testing only whole-word tokens
+    /// let all of these pass through.
     func testEmbeddedTokensAreRedactedInEveryCarrierShape() {
         let token = "tcAAAABBBBCCCCDDDDEEEEFFFF"
         let carriers = [
@@ -54,9 +45,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         }
     }
 
-    /// The text around a token survives, because that is what tells a reader
-    /// WHICH thing was redacted — `token=tc:9f21…` is diagnostic where a bare
-    /// `<redacted>` is not.
+    /// Surrounding text survives so a reader can tell WHICH thing was
+    /// redacted — `token=tc:9f21…` is diagnostic, a bare `<redacted>` is not.
     func testSurroundingTextSurvivesEmbeddedRedaction() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "guest joined with token=tcQQQQ1111WWWW2222EEEE and was approved")
@@ -64,8 +54,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.hasSuffix(" and was approved"))
     }
 
-    /// The same token in two places fingerprints identically, so a merged
-    /// bundle can still show that both sides used one link.
+    /// The same token fingerprints identically wherever it appears, so a
+    /// merged bundle can show both sides used one link.
     func testSameTokenFingerprintsIdenticallyWhereverItAppears() {
         let token = "tcZZZZ9999YYYY8888XXXX"
         let bare = DiagnosticsRedaction.scrub(token)
@@ -73,9 +63,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(embedded.hasSuffix(bare), "\(embedded) vs \(bare)")
     }
 
-    /// Ordinary words containing "tc" are not candidates: a token is only
-    /// recognised at a word boundary or straight after a real delimiter, so
-    /// prose and paths keep their shape.
+    /// A token is only recognised at a word boundary or after a real
+    /// delimiter, so prose and paths keep their shape.
     func testOrdinaryWordsContainingTCAreNotRedacted() {
         for text in [
             "watch the patch land",
@@ -86,9 +75,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         }
     }
 
-    /// A fingerprint has to be stable, or the two sides of a merged bundle
-    /// cannot be shown to have used the same link — which is the only reason
-    /// it is a fingerprint rather than a flat `<redacted>`.
+    /// A fingerprint has to be stable, or the merge can't show two sides
+    /// used the same link.
     func testFingerprintIsStableAndDistinguishing() {
         let a = DiagnosticsRedaction.fingerprint("tcAAAA1111BBBB2222")
         let b = DiagnosticsRedaction.fingerprint("tcAAAA1111BBBB2222")
@@ -99,9 +87,7 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertEqual(a.count, 12)
     }
 
-    /// Auth keys keep their kind and lose their secret. Which kind of key was
-    /// in play is a real answer ("they were using a reusable ephemeral key");
-    /// the key itself is the tailnet.
+    /// Auth keys keep their kind and lose their secret.
     func testAuthKeyKeepsItsKindAndLosesItsSecret() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "up failed with tskey-auth-kSecRetVaLue123456")
@@ -110,28 +96,22 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("tskey-auth-"))
     }
 
-    /// **The bare two-segment form was leaking the secret verbatim.**
-    /// `tskey-<secret>` split into two parts, and the code kept both and
-    /// appended a placeholder — `tskey-<secret>-<redacted>` — from the
-    /// function whose only job is to stop exactly that. The three-segment form
-    /// was fine, which is why the original test missed it.
+    /// The bare two-segment `tskey-<secret>` form was leaking the secret
+    /// verbatim (appended as `tskey-<secret>-<redacted>`); only the
+    /// three-segment form was tested before.
     func testBareAuthKeyDoesNotLeakItsSecret() {
         let scrubbed = DiagnosticsRedaction.scrub("up failed with tskey-SECRETVALUE123456")
         XCTAssertFalse(scrubbed.contains("SECRETVALUE123456"), scrubbed)
         XCTAssertTrue(scrubbed.contains("tskey-"), scrubbed)
     }
 
-    /// An unrecognised kind is treated as a secret, not as a kind. There is no
-    /// way to tell one from the other by shape, and guessing wrong in this
-    /// direction is what produced the leak above.
+    /// An unrecognised kind is treated as a secret, not a kind.
     func testUnknownAuthKeyKindIsRedactedWholesale() {
         let scrubbed = DiagnosticsRedaction.scrub("tskey-somethingnew-SECRET99999")
         XCTAssertFalse(scrubbed.contains("SECRET99999"), scrubbed)
         XCTAssertFalse(scrubbed.contains("somethingnew"), scrubbed)
     }
 
-    /// Known kinds survive, because which kind of key was used is a real
-    /// troubleshooting answer.
     func testKnownAuthKeyKindsAreKept() {
         for kind in ["auth", "client", "api"] {
             let scrubbed = DiagnosticsRedaction.scrub("tskey-\(kind)-SECRETABCDEF")
@@ -140,7 +120,6 @@ final class DiagnosticsRedactionTests: XCTestCase {
         }
     }
 
-    /// Auth keys arrive embedded, exactly as tokens do.
     func testEmbeddedAuthKeysAreRedacted() {
         for carrier in [
             "authKey=tskey-auth-SECRETABCDEF",
@@ -152,9 +131,7 @@ final class DiagnosticsRedactionTests: XCTestCase {
         }
     }
 
-    /// A sign-in URL's secret path goes; its origin stays, because which
-    /// control server was in use is a genuine troubleshooting answer and is
-    /// not itself the credential.
+    /// A sign-in URL's secret path goes; its origin stays.
     func testSignInURLKeepsOriginAndDropsSecretPath() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "open https://login.tailscale.com/a/1a2b3c4d5e6f7a8b to continue")
@@ -164,8 +141,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("to continue"))
     }
 
-    /// Self-hosted control servers are the case a hostname allowlist would
-    /// miss — so the shape is matched, not the host.
+    /// The shape is matched, not the host — self-hosted control servers
+    /// would defeat a hostname allowlist.
     func testSelfHostedControlURLIsRedactedToo() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "visit https://headscale.example.org/a/deadbeefcafe1234")
@@ -173,8 +150,7 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("headscale.example.org"))
     }
 
-    /// Punctuation after a secret must not save it. "…token=tcABC." is how a
-    /// credential actually appears in a sentence-shaped log line.
+    /// Punctuation after a secret must not save it.
     func testTrailingPunctuationDoesNotDefeatRedaction() {
         let token = "tcQQQQ1111WWWW2222EEEE"
         for suffix in [".", ",", ")", "\"", "!"] {
@@ -186,24 +162,21 @@ final class DiagnosticsRedactionTests: XCTestCase {
 
     // MARK: - Identifiers stay
 
-    /// Tailnet addresses are kept on purpose. They are what makes a bundle
-    /// legible and what the two sides are merged on; redacting them would
-    /// leave a file that cannot answer "which viewer went black".
+    /// Tailnet addresses are kept on purpose — what makes a bundle legible
+    /// and what the two sides are merged on.
     func testTailnetAddressesAndHostnamesSurvive() {
         let text = "viewer 100.64.0.3 (roberts-mac) admitted"
         XCTAssertEqual(DiagnosticsRedaction.scrub(text), text)
     }
 
-    /// A node-key fingerprint is already a fingerprint — it is the guest
-    /// roster's only human-readable identity, and mangling it would make the
-    /// guest rows anonymous.
+    /// A node-key fingerprint is already a fingerprint — the guest roster's
+    /// only human-readable identity.
     func testNodeKeyFingerprintSurvives() {
         let text = "guest 9c8d…4f21 joined"
         XCTAssertEqual(DiagnosticsRedaction.scrub(text), text)
     }
 
-    /// Ordinary prose costs nothing and comes back byte-identical — the
-    /// cheap pre-filter must not mangle the overwhelmingly common case.
+    /// The cheap pre-filter must not mangle the overwhelmingly common case.
     func testOrdinaryTextIsUntouched() {
         for text in [
             "capture restarted after helper exit",
@@ -215,18 +188,14 @@ final class DiagnosticsRedactionTests: XCTestCase {
         }
     }
 
-    /// The docs links the app itself shows are not secrets and must not be
-    /// turned into noise.
     func testWellKnownPublicLinksSurvive() {
         let text = "see https://tailscreen.dev/troubleshooting for help"
         XCTAssertEqual(DiagnosticsRedaction.scrub(text), text)
     }
 
-    /// A URL the origin-keeping branch decides to leave WHOLE still has to go
-    /// through the auth-key scan. An exempt docs path with
-    /// `?authKey=tskey-auth-…` on the end used to return straight out of that
-    /// branch and pass the credential through untouched — an exception to
-    /// "removed wherever embedded" is the one thing this function cannot have.
+    /// A URL the origin-keeping branch leaves WHOLE still must go through
+    /// the auth-key scan — an exempt docs path used to return early and
+    /// leak an embedded `?authKey=…`.
     func testExemptURLStillLosesAnEmbeddedAuthKey() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "opened https://tailscreen.dev/install?authKey=tskey-auth-kSECRETVALUE1234")
@@ -235,8 +204,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("tailscreen.dev/install"), scrubbed)
     }
 
-    /// Same hole, reached the other way: a URL with no path at all never finds
-    /// a slash to split on, and that case fell out of the branch too.
+    /// Same hole, reached the other way: a URL with no path never finds a
+    /// slash to split on.
     func testOriginOnlyURLStillLosesAnEmbeddedAuthKey() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "control=https://login.tailscale.com?authKey=tskey-auth-zSECRET99")
@@ -245,10 +214,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("login.tailscale.com"), scrubbed)
     }
 
-    /// **Two credentials in one value.** `redactCore` used to return on the
-    /// first match, so a value carrying both a share token and an auth key
-    /// lost the token and kept the key verbatim — the function's own guarantee
-    /// defeated by which credential happened to come first.
+    /// `redactCore` used to return on the first match, so a value carrying
+    /// both a share token and an auth key kept the second verbatim.
     func testBothCredentialsInOneValueAreRedacted() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "join?token=tcAAAABBBBCCCCDDDD&authKey=tskey-auth-SECRETABCDEF")
@@ -259,9 +226,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("tskey-auth-"), "the key's kind is still useful")
     }
 
-    /// A login URL that ALSO carries a token loses both: the opaque path and
-    /// the token. Running the URL step only when nothing had matched yet left
-    /// the sign-in secret sitting next to a redacted token.
+    /// A login URL that ALSO carries a token loses both the opaque path and
+    /// the token.
     func testLoginURLCarryingATokenLosesBoth() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "https://login.tailscale.com/a/f00dcafedeadbeef?token=tcAAAABBBBCCCCDDDD")
@@ -271,10 +237,8 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(scrubbed.hasPrefix("https://login.tailscale.com/"), scrubbed)
     }
 
-    /// And the share link keeps its fingerprint. Its path is long only BECAUSE
-    /// the fingerprint is in it, so a URL step that measured the path after
-    /// token redaction would replace the whole thing and destroy the one value
-    /// that lets two bundles show they used the same link.
+    /// The share link's path is long only because the fingerprint is in it —
+    /// measuring path length after token redaction would replace the whole thing.
     func testShareLinkKeepsItsFingerprintRatherThanLosingItsWholePath() {
         let scrubbed = DiagnosticsRedaction.scrub(
             "https://tailscreen.dev/view/#tcAAAABBBBCCCCDDDDEEEEFFFF")
@@ -285,7 +249,7 @@ final class DiagnosticsRedactionTests: XCTestCase {
 
     // MARK: - Field-set behaviour
 
-    /// Keys are instrumentation-authored and must never be scrubbed: the
+    /// Keys are instrumentation-authored and must never be scrubbed — the
     /// merge joins on them.
     func testFieldKeysAreNeverScrubbed() {
         let fields: [String: DiagnosticValue] = [
@@ -295,8 +259,6 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertNotNil(scrubbed["tskey-auth-looking-key"])
     }
 
-    /// Non-string values pass through untouched — an SSRC is not a secret and
-    /// re-boxing every integer would cost an allocation per event.
     func testNonStringValuesArePreserved() {
         let fields: [String: DiagnosticValue] = [
             "ssrc": .int(7), "ok": .bool(true), "ms": .double(1.5)

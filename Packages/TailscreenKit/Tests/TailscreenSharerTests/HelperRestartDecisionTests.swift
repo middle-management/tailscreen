@@ -31,9 +31,8 @@ final class HelperRestartDecisionTests: XCTestCase {
     }
 
     func testSourceGoneMarkerIsClassifiedSeparately() {
-        // The shared window/display/app closing is non-retryable but is an
-        // expected stop, not an error — it gets its own disposition so the UI
-        // can show a gentle notice instead of an error alert.
+        // Non-retryable but an expected stop, not an error — its own
+        // disposition lets the UI show a gentle notice, not an alert.
         XCTAssertEqual(
             TailscaleScreenShareServer.classifyHelperExit(
                 reason: "fatal: source-gone: windowNotFound(Optional(1234))"),
@@ -41,8 +40,7 @@ final class HelperRestartDecisionTests: XCTestCase {
     }
 
     func testSlotRefusalWinsOverSourceGone() {
-        // -3805 is still checked first: a slot refusal is the more actionable
-        // signal even if the reason also mentions a missing source.
+        // -3805 checked first: more actionable than a mentioned missing source.
         XCTAssertEqual(
             TailscaleScreenShareServer.classifyHelperExit(
                 reason: "source-gone: -3805 being interrupted"),
@@ -50,8 +48,7 @@ final class HelperRestartDecisionTests: XCTestCase {
     }
 
     func testSlotRefusalWinsOverPermanentMarker() {
-        // -3805 is checked first — it carries the more actionable message
-        // (another instance holds the slot).
+        // -3805 checked first: another instance holds the slot.
         XCTAssertEqual(
             TailscaleScreenShareServer.classifyHelperExit(
                 reason: "permanent: -3805"),

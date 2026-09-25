@@ -2,28 +2,19 @@ import Foundation
 
 /// The loaded translation table, and the one-time work of finding it.
 ///
-/// Deliberately NOT `Bundle.module`. The accessor SwiftPM synthesizes for that
-/// property calls `fatalError` when the resource bundle is not beside the
-/// executable — acceptable for an app whose icons live there, fatal for a
-/// string lookup that every label on every screen goes through. A Linux
-/// tarball or an MSIX that shipped without the bundle would abort on launch
-/// instead of rendering in English. So the bundle is located here, by hand, and
-/// not finding it is an ordinary outcome: `table` stays empty and every key
-/// resolves to itself, which is the English string.
-/// `@unchecked Sendable`: the only stored property is the lock, and the table
-/// lives inside it — the same ownership pattern `RetransmitBuffer` uses.
+/// Deliberately NOT `Bundle.module` — its synthesized accessor `fatalError`s
+/// when the resource bundle is missing, which would crash every string lookup
+/// on a bad Linux/Windows packaging run instead of degrading to English. So
+/// the bundle is located by hand here; not finding it just leaves `table`
+/// empty, and every key resolves to itself (the English text).
+/// `@unchecked Sendable`: the only stored property is the lock.
 final class LocalizationCatalog: @unchecked Sendable {
     static let shared = LocalizationCatalog()
 
-    /// The half of SwiftPM's generated bundle name we actually own.
-    ///
-    /// It names the directory `<something>_<target>.<ext>`, and BOTH of the
-    /// other two parts vary: the `<something>` is derived from the package,
-    /// and the extension is `.bundle` on Darwin but `.resources` elsewhere.
-    /// Assuming `TailscreenL10n_TailscreenL10n.bundle` is what broke the first
-    /// Linux packaging run. Matching on the one stable part — the target name
-    /// — and then confirming by looking inside for `.lproj`s means being right
-    /// about the catalog rather than about the name.
+    /// SwiftPM names the bundle `<something>_<target>.<ext>`, where both
+    /// `<something>` and the extension (`.bundle` Darwin, `.resources`
+    /// elsewhere) vary — match on the stable target-name suffix and confirm
+    /// by looking inside for `.lproj`s.
     static let bundleNameStem = "_TailscreenL10n"
     static let bundleExtensions = ["bundle", "resources"]
     /// The conventional Darwin name, for docs and tests.
@@ -33,36 +24,28 @@ final class LocalizationCatalog: @unchecked Sendable {
     /// so the one language that needs no table.
     static let developmentLanguage = "en"
 
-    /// Point the lookup at a directory of `.lproj`s (or at a
-    /// `…_TailscreenL10n.bundle`). Set by tests; also a legitimate escape
-    /// hatch for a packager whose layout puts the catalog somewhere unusual.
+    /// Points the lookup at a directory of `.lproj`s. Set by tests; also an
+    /// escape hatch for unusual packaging layouts.
     static let bundlePathEnvironmentKey = "TAILSCREEN_L10N_BUNDLE"
-    /// Force a language regardless of the system's — `TAILSCREEN_LANG=sv`.
-    /// Screenshot tooling and manual verification both need this, and it is
-    /// the only way to see another language on a host whose locale machinery
-    /// reports nothing useful.
+    /// Forces a language regardless of the system's — `TAILSCREEN_LANG=sv`.
     static let languageEnvironmentKey = "TAILSCREEN_LANG"
 
     private struct State {
         var isLoaded = false
         var language = LocalizationCatalog.developmentLanguage
         var table: [String: String] = [:]
-        /// The same table keyed by `normalizeSpecifiers`, so a `%@`/`%lld`
-        /// disagreement between call site and catalog costs nothing.
+        /// Keyed by `normalizeSpecifiers`, so a `%@`/`%lld` mismatch between
+        /// call site and catalog costs nothing.
         var normalized: [String: String] = [:]
     }
 
     private let lock = Guarded<State>(State())
 
-    /// Look the key up and substitute its arguments.
-    ///
-    /// Only the format string leaves the lock — the substitution itself is
-    /// pure and doesn't need it, and keeping the table inside means no caller
-    /// can hold a copy of it.
+    /// Look the key up and substitute its arguments. Only the format string
+    /// leaves the lock — substitution is pure.
     func string(for key: LocalizationKey) -> String {
-        // A key absent from the table falls back to itself, which IS the
-        // English text — so an untranslated string and an untranslatable one
-        // look the same to the user, and neither looks like a bug.
+        // Absent key falls back to itself — the English text — so an
+        // untranslated and an untranslatable string look the same, not a bug.
         let format = lock.withLock { state -> String in
             Self.ensureLoaded(&state)
             return state.table[key.format]
@@ -80,9 +63,8 @@ final class LocalizationCatalog: @unchecked Sendable {
         }
     }
 
-    /// Resolve the catalog once, on first use. Called under the lock, so the
-    /// file I/O happens on exactly one thread and every later caller finds the
-    /// table already there.
+    /// Resolve the catalog once, on first use; called under the lock so the
+    /// file I/O happens on exactly one thread.
     private static func ensureLoaded(_ state: inout State) {
         guard !state.isLoaded else { return }
         let resolved = load()
@@ -94,8 +76,8 @@ final class LocalizationCatalog: @unchecked Sendable {
             uniquingKeysWith: { first, _ in first })
     }
 
-    /// Drop the cached table so the next lookup re-resolves the environment.
-    /// Test-only seam — nothing in the app changes language mid-run.
+    /// Drop the cached table so the next lookup re-resolves. Test-only —
+    /// nothing in the app changes language mid-run.
     func resetForTesting() {
         lock.withLock { $0 = State() }
     }
@@ -110,9 +92,8 @@ final class LocalizationCatalog: @unchecked Sendable {
         guard let language = match(preferredLanguages(), against: available) else {
             return (developmentLanguage, [:])
         }
-        // The development language needs no table: its values are its keys.
-        // Skipping it is not just an optimization — it means an `en.lproj`
-        // that failed to ship cannot make English worse than it already is.
+        // Development language needs no table — its values are its keys, so a
+        // missing en.lproj can't make English worse.
         guard language != developmentLanguage else { return (developmentLanguage, [:]) }
 
         let url =
@@ -125,22 +106,18 @@ final class LocalizationCatalog: @unchecked Sendable {
         return (language, StringsFile.parse(data: data))
     }
 
-    /// The directory holding the `.lproj`s, or nil if it isn't anywhere we
-    /// look.
+    /// The directory holding the `.lproj`s, or nil if it isn't anywhere we look.
     static func resourceRoot() -> URL? {
         for candidate in searchDirectories() {
-            // The directory itself, for a layout that drops the `.lproj`s
-            // straight beside the binary.
             if containsLocalizations(candidate) { return candidate }
             if let bundle = resourceBundle(in: candidate) { return bundle }
         }
         return nil
     }
 
-    /// The generated resource bundle inside `directory`, found by the target
-    /// name rather than by full name — and confirmed by looking inside it, so
-    /// a sibling bundle (the mac app ships two) can't be mistaken for this
-    /// one.
+    /// The generated resource bundle inside `directory`, matched by target
+    /// name and confirmed by looking inside — the mac app ships a sibling
+    /// bundle that must not be mistaken for this one.
     private static func resourceBundle(in directory: URL) -> URL? {
         let bundles =
             ((try? FileManager.default.contentsOfDirectory(
@@ -157,18 +134,13 @@ final class LocalizationCatalog: @unchecked Sendable {
         var directories: [URL] = []
         let environment = ProcessInfo.processInfo.environment
         // An explicit override is the ONLY place looked at, not the first of
-        // several. Somebody who names a directory and gets the catalog from a
-        // different one has been lied to — and the failure would be invisible,
-        // since both answers are plausible strings on screen.
+        // several — otherwise a wrong catalog could load silently.
         if let override = environment[bundlePathEnvironmentKey], !override.isEmpty {
             return [URL(fileURLWithPath: override)]
         }
-        // macOS: the app bundle's Contents/Resources, where the `.app`
-        // assembly step drops every SwiftPM resource bundle.
+        // macOS: Contents/Resources. Linux/Windows: the executable's own
+        // directory, where staging scripts copy the resource bundle.
         if let resources = Bundle.main.resourceURL { directories.append(resources) }
-        // Linux/Windows: a bare executable's `bundleURL` is the directory it
-        // sits in, which is also where SwiftPM leaves the resource bundle and
-        // where both staging scripts copy it.
         directories.append(Bundle.main.bundleURL)
         if let executable = Bundle.main.executableURL?.deletingLastPathComponent() {
             directories.append(executable)
@@ -194,15 +166,10 @@ final class LocalizationCatalog: @unchecked Sendable {
 
     // MARK: - Language preference
 
-    /// The user's languages, most-preferred first, as BCP-47-ish tags.
-    ///
-    /// Three sources, in order, because the three platforms answer this
-    /// question in three different places and only Darwin answers it well:
-    /// an explicit override, then Darwin's `Locale.preferredLanguages` (the
-    /// ordered list from System Settings), then the POSIX locale environment
-    /// that a GTK app on Linux actually runs under — falling back to
-    /// `Locale.current`, which is where a Windows process picks up the user's
-    /// default UI language.
+    /// The user's languages, most-preferred first, as BCP-47-ish tags. Order:
+    /// explicit override, then Darwin's `Locale.preferredLanguages`, then the
+    /// POSIX locale env vars a Linux GTK app runs under, then `Locale.current`
+    /// for Windows' default UI language.
     static func preferredLanguages() -> [String] {
         let environment = ProcessInfo.processInfo.environment
         if let forced = environment[languageEnvironmentKey], !forced.isEmpty {
@@ -222,8 +189,8 @@ final class LocalizationCatalog: @unchecked Sendable {
         #endif
     }
 
-    /// Turn each tag into itself plus its progressively shorter prefixes, so
-    /// `sv_SE.UTF-8` reaches an `sv.lproj`: ["sv-se", "sv"].
+    /// Each tag plus its progressively shorter prefixes, so `sv_SE.UTF-8`
+    /// reaches an `sv.lproj`: ["sv-se", "sv"].
     private static func expand(_ tags: [String]) -> [String] {
         var out: [String] = []
         for tag in tags {

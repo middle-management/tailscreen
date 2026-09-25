@@ -4,18 +4,14 @@ import XCTest
 
 @testable import TailscreenAudio
 
-/// `SharerVoiceSession` — the start/stop/toggle triple both share engines drive,
-/// and the ordering inside it that is the whole of the correctness.
-///
-/// Written once because the GTK and WinUI engines each had it, each had it
-/// slightly differently, and every difference was invisible at runtime: a route
-/// published a moment too late drops the packets a viewer already sent, an
-/// `onStopped` installed a moment too late loses the report that the device
-/// never opened, and a mute flag that survives teardown is a live-microphone
-/// indicator over nothing.
+/// `SharerVoiceSession` — the start/stop/toggle triple both share engines
+/// drive. Written once because GTK and WinUI each had it slightly
+/// differently, and every difference was invisible at runtime: a route
+/// published too late drops packets already sent, `onStopped` installed too
+/// late loses the report that a device never opened, and a mute flag
+/// surviving teardown is a live-microphone indicator over nothing.
 final class SharerVoiceSessionTests: XCTestCase {
 
-    /// A microphone that is only ever asked to start and stop.
     private final class ManualMic: MicrophoneCapturing, @unchecked Sendable {
         var onPCM: (([Float], AudioInputFormat) -> Void)?
         var onStopped: ((Error?) -> Void)?
@@ -33,12 +29,9 @@ final class SharerVoiceSessionTests: XCTestCase {
         func feedFrame() {
             onPCM?((0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }, .wire)
         }
-        /// The device going away underneath a running stream.
         func fail() { onStopped?(NoDevice()) }
     }
 
-    /// Collects `@Sendable` state pushes — the callback fires from whichever
-    /// thread moved the device.
     private final class StateLog: @unchecked Sendable {
         private let lock = NSLock()
         private var entries: [(Bool, Bool)] = []
@@ -57,28 +50,21 @@ final class SharerVoiceSessionTests: XCTestCase {
 
     // MARK: The route
 
-    /// The handler installed on the server before `start()` is valid for the
-    /// life of the session — that is the whole reason it routes through a
-    /// long-lived `SharerVoiceRoute` rather than capturing a voice that does
-    /// not exist yet. Reassigning `server.onAudioReceived` on a running share
-    /// is a data race on a bare stored var its receive thread reads with no
-    /// lock.
+    /// The handler installed before `start()` is valid for the life of the
+    /// session — routes through a long-lived `SharerVoiceRoute` rather than
+    /// capturing a voice that doesn't exist yet, since reassigning
+    /// `server.onAudioReceived` on a running share is a data race.
     func testInboundHandlerIsStableAcrossSharesAndSafeBeforeAnyDevice() throws {
         let (session, _) = makeSession()
         let handler = session.inboundHandler
-        // Arrives before anything is open: dropped, not crashed. It is the only
-        // thing a packet from before there is a voice could be.
-        handler(Data([0, 1, 2, 3]))
+        handler(Data([0, 1, 2, 3]))  // arrives before anything is open: dropped, not crashed
 
         try session.start(microphone: ManualMic(), send: { _ in })
-        // Still the same handler, and now it reaches a live voice.
         handler(Data([0, 1, 2, 3]))
         session.stop()
         handler(Data([0, 1, 2, 3]))
     }
 
-    /// A viewer already speaking is heard from the first packet, not from the
-    /// first packet after the device finished opening.
     func testAViewerIsHeardThroughTheRoute() throws {
         let (session, _) = makeSession()
         let heard = StateLog()
@@ -95,7 +81,7 @@ final class SharerVoiceSessionTests: XCTestCase {
         let encoder = try OpusVoiceEncoder()
         let au = try XCTUnwrap(
             encoder.encode(pcm: (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }))
-        // Viewer SSRCs start at 2 — 0 is the sharer's own voice, 1 system audio.
+        // Viewer SSRCs start at 2 — 0 is sharer voice, 1 system audio.
         let packetizer = AudioRTPPacketizer(
             ssrc: 2, payloadType: RTPHeader.voicePayloadType)
         session.inboundHandler(packetizer.packetize(au: au))
@@ -104,9 +90,8 @@ final class SharerVoiceSessionTests: XCTestCase {
 
     // MARK: Start / stop
 
-    /// Starting publishes available-and-muted, and the microphone really is
-    /// muted: a share that put somebody on the air the moment it came up would
-    /// be a person talking into a call they did not know was live.
+    /// Starting must not put somebody on the air before they know the call
+    /// is live.
     func testStartPublishesAvailableAndSendsNothingUntilUnmuted() throws {
         let (session, log) = makeSession()
         let mic = ManualMic()
@@ -128,21 +113,15 @@ final class SharerVoiceSessionTests: XCTestCase {
         XCTAssertGreaterThan(packetsLock.withLock { packets }, 0)
     }
 
-    /// A device that will not open leaves nothing behind — no published
-    /// availability, and no route pointing at a voice that never ran.
     func testAFailedStartPublishesNothingAndLeavesTheRouteEmpty() {
         let (session, log) = makeSession()
         XCTAssertThrowsError(
             try session.start(microphone: ManualMic(failsToStart: true), send: { _ in }))
         XCTAssertEqual(log.count, 0, "the host words the failure; the latch never moved")
         XCTAssertFalse(session.isAvailable)
-        // The route must not have been left pointing at the dead voice.
         session.inboundHandler(Data([0, 1, 2, 3]))
     }
 
-    /// Stopping releases the device and drops both flags together — and the
-    /// device really is released, because an open capture device after Stop
-    /// Sharing keeps the OS microphone indicator lit.
     func testStopReleasesTheDeviceAndClearsBothFlags() throws {
         let (session, log) = makeSession()
         let mic = ManualMic()
@@ -158,8 +137,6 @@ final class SharerVoiceSessionTests: XCTestCase {
         XCTAssertFalse(session.isOn)
     }
 
-    /// Every teardown path calls `stop()`, including ones that never opened a
-    /// device. A second call must not push a status nothing changed.
     func testStopIsIdempotentAndSilentWhenNothingWasOpen() {
         let (session, log) = makeSession()
         session.stop()
@@ -169,9 +146,8 @@ final class SharerVoiceSessionTests: XCTestCase {
 
     // MARK: The device going away mid-share
 
-    /// The report the WinUI engine could previously miss, because it installed
-    /// `onStopped` *after* `start()`. Both flags come down together: a live
-    /// indicator over a device recording nothing is the one wrong answer here.
+    /// Both flags come down together — a live indicator over a device
+    /// recording nothing is the one wrong answer here.
     func testADeviceLostMidShareClearsBothFlags() throws {
         let (session, log) = makeSession()
         let mic = ManualMic()
@@ -184,9 +160,8 @@ final class SharerVoiceSessionTests: XCTestCase {
         XCTAssertFalse(session.isAvailable)
     }
 
-    /// And once it is gone, the toggle cannot bring the indicator back — the
-    /// exact case both engines got wrong by guarding on the voice rather than
-    /// on availability.
+    /// Once gone, the toggle cannot bring the indicator back — the case both
+    /// engines got wrong by guarding on the voice rather than availability.
     func testToggleAfterTheDeviceIsLostChangesNothing() throws {
         let (session, log) = makeSession()
         let mic = ManualMic()
@@ -199,9 +174,7 @@ final class SharerVoiceSessionTests: XCTestCase {
         XCTAssertFalse(session.isOn)
     }
 
-    /// A caller-asked stop must not be reported as a device failure — the host
-    /// has already published, and a second "your microphone went away" over a
-    /// share the person ended themselves reads as a fault.
+    /// A caller-asked stop must not be reported as a device failure.
     func testAnAskedForStopIsNotReportedAsAFailure() throws {
         let (session, log) = makeSession()
         let mic = ManualMic()
@@ -214,8 +187,6 @@ final class SharerVoiceSessionTests: XCTestCase {
             "exactly one transition: the teardown, not a teardown plus a failure")
     }
 
-    /// A toggle with no device open publishes nothing at all, so a host can
-    /// wire `onStateChanged` straight into whatever re-renders.
     func testToggleWithNoDeviceIsSilent() {
         let (session, log) = makeSession()
         session.toggleMic()

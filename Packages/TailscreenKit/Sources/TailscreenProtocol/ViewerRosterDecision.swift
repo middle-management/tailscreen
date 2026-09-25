@@ -3,13 +3,11 @@ import Foundation
 /// The sharer's decisions about the people currently connected to — or asking
 /// to connect to — their screen.
 ///
-/// This is the layer the alignment plan calls the worst gap: Linux and Windows
-/// could *admit* a viewer and then had no way to change their mind. The
-/// decisions themselves were never the hard part — most of them already exist
-/// on the server (`disconnectViewer`, `setAccessPolicies`) and in
-/// ``PeerAccessStore``. What was missing is the small amount of logic *between*
-/// the roster and the store, which macOS had grown inline in `AppState` and the
-/// other two hosts had not grown at all.
+/// Linux and Windows could *admit* a viewer and then had no way to change
+/// their mind. The decisions themselves already exist on the server
+/// (`disconnectViewer`, `setAccessPolicies`) and in ``PeerAccessStore``; what
+/// was missing is the logic *between* the roster and the store, which macOS
+/// had grown inline in `AppState`.
 ///
 /// So it lives here, tested, and each host renders it. Three things it decides:
 ///
@@ -20,12 +18,11 @@ import Foundation
 public enum ViewerRosterDecision {
     /// What a roster row can offer right now.
     ///
-    /// `remember` is conditional and that is the entire point: the persistent
-    /// store is keyed by Tailscale StableNodeID — never by hostname or any
-    /// other wire-supplied claim, since remembering "allow" against something a
-    /// peer can choose is a trivially forgeable allow-list. The ID arrives from
-    /// the sharer's *own* LocalAPI netmap lookup, which is asynchronous, so for
-    /// the first moments of a connection there is nothing safe to key on.
+    /// `remember` is conditional: the persistent store is keyed by Tailscale
+    /// StableNodeID, never by hostname or any wire-supplied claim (a
+    /// trivially forgeable allow-list otherwise). The ID arrives from an
+    /// asynchronous LocalAPI netmap lookup, so nothing is safe to key on for
+    /// the first moments of a connection.
     public struct Actions: Sendable, Equatable {
         /// One-time disconnect. Always available for a connected viewer: it is
         /// keyed by the connection's `"ip:port"`, which is known immediately,
@@ -37,12 +34,9 @@ public enum ViewerRosterDecision {
         /// *peer*, not this connection.
         public let canRemember: Bool
         /// Whether choosing to remember will take effect immediately or be
-        /// queued until the identity resolves.
-        ///
-        /// The UI should say so. A button that silently does nothing for two
-        /// seconds and then works is worse than one that says "will apply when
-        /// this peer is identified" — and much worse than one that is simply
-        /// absent, which is what a host without this flag would have to do.
+        /// queued until the identity resolves. The UI should say so — a
+        /// button that silently does nothing for two seconds is worse than
+        /// one that names the wait.
         public let rememberIsDeferred: Bool
 
         public init(
@@ -55,13 +49,11 @@ public enum ViewerRosterDecision {
         }
     }
 
-    /// Actions for a row in the **connected** roster.
-    ///
-    /// Remembering is always offered, deferred when the identity has not
-    /// resolved — rather than hidden. Hiding it would mean the affordance
-    /// blinks into existence a moment after someone connects, which reads as a
-    /// glitch and, worse, means a sharer who reaches for it in the first second
-    /// of an unwanted connection finds nothing there.
+    /// Actions for a row in the **connected** roster. Remembering is always
+    /// offered, deferred rather than hidden when identity hasn't resolved —
+    /// hiding it would make the affordance blink into existence a moment
+    /// after connecting, leaving nothing there for a sharer who reaches for
+    /// it in the first second of an unwanted connection.
     public static func connectedActions(stableID: String?) -> Actions {
         Actions(
             canKick: true, canDecide: false, canRemember: true,
@@ -82,11 +74,8 @@ public enum ViewerRosterDecision {
     /// Queued "remember this peer" decisions, keyed by the roster row's
     /// `"ip:port"` id, waiting for that peer's StableNodeID to resolve.
     ///
-    /// A value type with no clock and no storage: the host holds one, feeds it
-    /// roster snapshots, and persists whatever comes back. The macOS app grew
-    /// this inline as `queuedPolicyIntents` + `resolvableIntents`; this is the
-    /// same decision, portable, so all three hosts behave identically and Linux
-    /// CI checks it.
+    /// A value type with no clock and no storage: the host holds one, feeds
+    /// it roster snapshots, and persists whatever comes back.
     public struct PendingIntents: Sendable, Equatable {
         private var intents: [String: PeerPolicy] = [:]
 
@@ -95,11 +84,9 @@ public enum ViewerRosterDecision {
         public var isEmpty: Bool { intents.isEmpty }
         public var count: Int { intents.count }
 
-        /// Record a decision made before the peer's identity resolved.
-        ///
-        /// Last write wins: a sharer who clicks Deny & Block after Always Allow
-        /// means the second one. Queueing both and applying them in arrival
-        /// order would end with the first.
+        /// Record a decision made before the peer's identity resolved. Last
+        /// write wins: a sharer clicking Deny & Block after Always Allow
+        /// means the second one.
         public mutating func queue(id: String, policy: PeerPolicy) {
             intents[id] = policy
         }
@@ -115,12 +102,10 @@ public enum ViewerRosterDecision {
         public func queued(id: String) -> PeerPolicy? { intents[id] }
 
         /// Given a roster snapshot, everything that can now be persisted —
-        /// and remove it from the queue.
-        ///
-        /// Takes the WHOLE snapshot rather than one row, because that is what
-        /// the host has: the server hands over the full roster whenever
-        /// anything about it changes, including a hostname or StableNodeID
-        /// resolving, which is exactly the event this is waiting for.
+        /// and remove it from the queue. Takes the WHOLE snapshot, since
+        /// that's what the host has: the server hands over the full roster
+        /// on every change, including the StableNodeID resolving that this
+        /// is waiting for.
         ///
         /// - Returns: `(id, stableID, displayName, policy)` per applicable row.
         public mutating func drain(
@@ -139,24 +124,17 @@ public enum ViewerRosterDecision {
         }
 
         /// Forget queued decisions for rows that are no longer present.
-        ///
-        /// Without this a queue grows for the life of a share: a peer that
-        /// connects, gets a Deny & Block the sharer then reconsiders, and
-        /// leaves before its identity resolves would have that intent applied
-        /// to *the next connection from the same address* — which may be a
-        /// different machine behind the same NAT, or the same one the sharer
-        /// has since decided to allow.
+        /// Without this, a peer denied then leaving before identity resolves
+        /// would have that intent applied to the next connection from the
+        /// same address — possibly a different machine behind the same NAT.
         public mutating func prune(presentIDs: Set<String>) {
             intents = intents.filter { presentIDs.contains($0.key) }
         }
     }
 
-    /// The identity fields a roster row carries, for the queue above.
-    ///
-    /// A small struct rather than a tuple so the drain result is readable at
-    /// the call site and so a host cannot silently pass hostname where
-    /// stableID belongs — the two are both `String?` and only one of them is
-    /// safe to key a policy on.
+    /// The identity fields a roster row carries, for the queue above. A
+    /// struct, not a tuple, so a host can't silently pass hostname where
+    /// stableID belongs — both are `String?` and only one is safe to key on.
     public struct RosterIdentity: Sendable, Equatable {
         public let id: String
         public let stableID: String?
@@ -170,13 +148,10 @@ public enum ViewerRosterDecision {
     }
 
     /// What a just-made policy decision means for the CONNECTED roster.
-    ///
-    /// "Deny & Block" on someone already watching has to expel them, not merely
-    /// stop them coming back — a block that leaves the blocked person watching
-    /// is not a block. The server's `connectedDenyList` already does this
-    /// sweep; this is the host-side answer to the narrower question "did what I
-    /// just clicked apply to anyone on screen right now", which is what decides
-    /// whether the roster needs redrawing and whether to say so.
+    /// "Deny & Block" on someone already watching has to expel them, not
+    /// merely stop them coming back. This is the host-side answer to "did
+    /// what I just clicked apply to anyone on screen right now", deciding
+    /// whether the roster needs redrawing.
     public static func expelledByPolicy(
         policies: [String: PeerPolicy], connected: [RosterIdentity]
     ) -> [String] {

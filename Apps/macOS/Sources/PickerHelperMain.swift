@@ -3,25 +3,15 @@ import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
-/// Entry point for `Tailscreen --picker-helper`. A short-lived UI
-/// subprocess that presents the macOS native `SCContentSharingPicker`,
-/// extracts the primitives describing what the user picked
-/// (`PickerSelection`), JSON-encodes them onto stdout, and exits.
+/// Entry point for `Tailscreen --picker-helper`. Presents the native
+/// `SCContentSharingPicker`, extracts the primitives describing what the user
+/// picked (`PickerSelection`), JSON-encodes onto stdout, and exits — a
+/// separate subprocess since `SCContentSharingPicker` couples to
+/// `replayd`/WindowServer, which the main process must stay clear of.
 ///
-/// Why a separate subprocess: `SCContentSharingPicker` is part of the
-/// ScreenCaptureKit family of APIs that interact with `replayd` and the
-/// WindowServer. CLAUDE.md is explicit that the main process must
-/// stay clear of those couplings — the existing capture pipeline
-/// already isolates `SCStream` in `--capture-helper` for the same
-/// reason. Presenting the picker from a child process that exits
-/// immediately on selection guarantees no live process in the main
-/// app retains XPC state from the picker UI session.
-///
-/// Why primitives + JSON instead of an archived `SCContentFilter`:
-/// `SCContentFilter` doesn't conform to `NSCoding`, so there's no
-/// way to ship the live class instance across processes. Instead we
-/// extract IDs (display, window, bundle) and let the capture-helper
-/// reconstruct the filter via `SCShareableContent`.
+/// Primitives + JSON, not an archived `SCContentFilter`: it doesn't conform
+/// to `NSCoding`, so IDs (display/window/bundle) cross instead and the
+/// capture-helper reconstructs the filter via `SCShareableContent`.
 ///
 /// Wire format on stdout (parent reads exactly this):
 ///
@@ -32,32 +22,22 @@ import ScreenCaptureKit
 enum PickerHelperMain {
     @MainActor
     static func run() -> Never {
-        // Save FD 1 and redirect FD 1 → stderr, mirroring the capture
-        // helper's discipline. Any stray `print` from inside Apple
-        // frameworks then lands on stderr (inherited by the parent's
-        // log) instead of corrupting the framed payload on stdout.
+        // Redirect FD 1 -> stderr, mirroring the capture helper's discipline,
+        // so a stray print doesn't corrupt the framed payload.
         let savedStdout = dup(1)
         if savedStdout >= 0 {
             _ = dup2(2, 1)
         }
         let outFD: Int32 = savedStdout >= 0 ? savedStdout : 1
 
-        // We need a real run loop and `NSApplication.shared` because
-        // `SCContentSharingPicker.present()` posts UI events that have
-        // to be pumped. Accessory activation policy keeps the helper
-        // out of the Dock — it's a transient picker, not a top-level
-        // app window.
+        // Real run loop needed to pump `SCContentSharingPicker.present()`'s UI
+        // events. Accessory policy keeps the helper out of the Dock.
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        // Test affordance: end-to-end tests / scripted harnesses set
-        // TAILSCREEN_AUTOSHARE_DISPLAY=1 on the parent process before
-        // launching it. We inherit the env, short-circuit the interactive
-        // picker, and emit a synthetic PickerSelection for the main display
-        // before NSApp.run() ever touches WindowServer. Safe in this
-        // subprocess: CGMainDisplayID() is a CoreGraphics call that doesn't
-        // register us with replayd, so the downstream capture-helper's
-        // SCStream can still come up cleanly.
+        // Test affordance: short-circuits the interactive picker with a
+        // synthetic main-display selection. `CGMainDisplayID()` doesn't
+        // register with replayd, so the downstream SCStream still comes up cleanly.
         if ProcessInfo.processInfo.environment["TAILSCREEN_AUTOSHARE_DISPLAY"] == "1" {
             let selection = PickerSelection(
                 kind: .display,
@@ -79,46 +59,27 @@ enum PickerHelperMain {
             }
         }
 
-        // Hold the observer alive for the process lifetime; the picker
-        // singleton retains it weakly.
+        // Held for the process lifetime; the picker singleton retains it weakly.
         let observer = PickerObserver(outFD: outFD)
         Self.observer = observer
         let picker = SCContentSharingPicker.shared
         picker.add(observer)
-        // `maximumStreamCount` is documented as a per-picker-session
-        // limit, but observed behavior is that the picker singleton
-        // refuses to `present()` once the bundle's running stream
-        // count reaches this value. The default of 1 makes
-        // multi-instance local testing (test-local.sh) impossible —
-        // launching a second Tailscreen instance and clicking
-        // "Choose what to share…" silently no-ops. 3 is enough for
-        // typical multi-instance dev runs; the cross-instance
-        // `ShareLock` is the real serialization point that prevents
-        // replayd -3805 conflicts.
+        // Default of 1 makes multi-instance local testing impossible (a
+        // second instance's picker silently no-ops); the cross-instance
+        // `ShareLock` is the real serialization point against replayd -3805.
         picker.maximumStreamCount = 3
-        // Activating the singleton is documented as required for
-        // `present()` to actually show the picker UI on macOS 15.
-        picker.isActive = true
-        // No explicit configuration — `present()` without a config
-        // defaults to allowing display / window / single-app /
-        // multi-app selection, which is exactly what we want.
+        picker.isActive = true  // required for present() to show UI on macOS 15
         picker.present()
 
-        // Run until the observer calls `exit()`. NSApp.run never
-        // returns normally; the observer drives termination.
+        // NSApp.run never returns normally; the observer drives termination.
         app.run()
-        // Defensive: if NSApp.run somehow returns, treat as a generic
-        // error so the parent doesn't hang.
-        exit(2)
+        exit(2)  // defensive, in case NSApp.run somehow returns
     }
 
     nonisolated(unsafe) private static var observer: PickerObserver?
 }
 
-/// `SCContentSharingPickerObserver` is a class-protocol; instances must
-/// be NSObject subclasses. Owns the parent-bound output FD and routes
-/// the picker's three callbacks (didUpdateWith, didCancelFor, error)
-/// into framed writes + process exit.
+/// Routes the picker's three callbacks into framed writes + process exit.
 private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
     private let outFD: Int32
     private let lock = NSLock()
@@ -134,17 +95,13 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
         didUpdateWith filter: SCContentFilter,
         for stream: SCStream?
     ) {
-        // The picker can fire didUpdateWith multiple times for
-        // refinements; only the first is the user's commit. After we
-        // emit the selection and exit, the singleton tears down.
+        // Fires multiple times for refinements; only the first is the commit.
         guard markFiredOnce() else { return }
         let selection = Self.extract(from: filter)
         do {
             let data = try JSONEncoder().encode(selection)
             writeFrame(data)
-            // Brief flush window. Without this the parent occasionally
-            // sees EOF before the framed payload lands on the pipe.
-            usleep(30_000)
+            usleep(30_000)  // flush window; else the parent sometimes sees EOF first
             exit(0)
         } catch {
             FileHandle.standardError.write(
@@ -155,10 +112,6 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
         }
     }
 
-    /// Walk the filter the picker just produced and pull out the
-    /// primitive identifiers we'll ship across processes. The picker
-    /// always populates `includedDisplays` / `includedWindows` /
-    /// `includedApplications` in the shape implied by `style`.
     static func extract(from filter: SCContentFilter) -> PickerSelection {
         switch filter.style {
         case .display:
@@ -176,10 +129,8 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
                 bundleIDs: []
             )
         case .application:
-            // Both single-app and multi-app picker modes resolve to
-            // `.application` here — the only difference is the count
-            // of `includedApplications`. The capture-helper handles
-            // either uniformly.
+            // Single-app and multi-app modes both resolve here; only
+            // includedApplications' count differs.
             let bundleIDs = filter.includedApplications.map { $0.bundleIdentifier }
             return PickerSelection(
                 kind: .application,
@@ -188,9 +139,7 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
                 bundleIDs: bundleIDs
             )
         case .none:
-            // Picker handed us a filter with no concrete content;
-            // fall back to "main display" so the helper at least has
-            // something to work with.
+            // No concrete content; fall back to "main display".
             return PickerSelection(
                 kind: .display, displayID: nil, windowID: nil, bundleIDs: [])
         @unknown default:
@@ -204,7 +153,7 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
         didCancelFor stream: SCStream?
     ) {
         guard markFiredOnce() else { return }
-        // Zero-length frame signals "user cancelled" to the parent.
+        // Zero-length frame signals "cancelled".
         writeFrame(Data())
         usleep(30_000)
         exit(1)
@@ -232,14 +181,10 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
     }
 }
 
-/// Picker-helper wire framing: `[length:4 BE][JSON bytes:N]`, `length == 0`
-/// = user cancelled. The writer is shared between `PickerObserver.writeFrame`
-/// (the production picker → parent path) and `PickerHelperMain.run` (the
-/// `TAILSCREEN_AUTOSHARE_DISPLAY=1` test short-circuit) — one canonical
-/// implementation guarantees the two paths emit identical bytes; the parent
-/// (`PickerHelperClient.readFramed`) reads either with the same logic.
-/// Internal (not a private free func) so `WireByteRegistryTests` can pin the
-/// framing by a production writer → production reader round-trip.
+/// `[length:4 BE][JSON bytes:N]`, `length == 0` = cancelled. Shared between
+/// `PickerObserver.writeFrame` and the `TAILSCREEN_AUTOSHARE_DISPLAY=1` test
+/// short-circuit so both paths emit identical bytes. Internal so
+/// `WireByteRegistryTests` can pin it against `PickerHelperClient.readFramed`.
 enum PickerHelperFraming {
     static func writeFramedPayload(_ payload: Data, to fd: Int32) {
         var header = Data(count: 4)

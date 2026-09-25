@@ -5,11 +5,8 @@ import CWGCCapture
 #endif
 
 /// Swift face of Windows.Graphics.Capture — the Windows analogue of
-/// ScreenCaptureKit, picker and all.
-///
-/// Thin by design, like `WASAPI.Player`: the shim owns the WinRT lifetime and
-/// this owns the Swift ergonomics — a throwing API, a typed error, and a scoped
-/// frame accessor that cannot leak the mapping.
+/// ScreenCaptureKit, picker and all. Thin by design, like `WASAPI.Player`:
+/// the shim owns the WinRT lifetime, this owns the Swift ergonomics.
 public enum WGC {
     public enum Error: Swift.Error, CustomStringConvertible {
         case invalidArgument
@@ -63,19 +60,14 @@ public enum WGC {
         #endif
     }
 
-    /// A chosen capture target — a display or a window.
+    /// A chosen capture target — a display or a window. Outlives the session
+    /// capturing it, so a share can restart against the same target without
+    /// asking the user again.
     ///
-    /// Outlives the session capturing it, so a share can be restarted against
-    /// the same target without asking the user again. That is what the macOS
-    /// capture-helper respawn does with its cached `PickerSelection`.
-    ///
-    /// `@unchecked Sendable` because the handle is written only by `init` and
-    /// `deinit` and the underlying WinRT object is agile — and because it has
-    /// to cross: the sharer's capture FACTORY closes over the picked item so a
-    /// restart re-targets the same window without asking the user again, which
-    /// is the invariant the macOS helper gets from re-resolving its cached
-    /// `PickerSelection`. An item has no ID to re-resolve, so it is the item
-    /// itself that must travel.
+    /// `@unchecked Sendable`: the handle is written only by `init`/`deinit`
+    /// and the underlying WinRT object is agile — and it must cross, since
+    /// the sharer's capture factory closes over the picked item (it has no
+    /// ID to re-resolve, so the item itself must travel).
     public final class CaptureItem: @unchecked Sendable {
         #if os(Windows)
         fileprivate var handle: OpaquePointer?
@@ -133,12 +125,10 @@ public enum WGC {
             #endif
         }
 
-        /// The target's pixel size, without opening a capture session.
-        ///
-        /// The only handle on WHICH display an item refers to: a
+        /// The target's pixel size, without opening a capture session. The
+        /// only handle on WHICH display an item refers to — a
         /// `GraphicsCaptureItem` exposes no HMONITOR, so the size is matched
-        /// against the enumerated monitors to recover the rect remote control
-        /// needs. Zero when unavailable.
+        /// against enumerated monitors to recover the rect remote control needs.
         public var size: (width: Int, height: Int) {
             #if os(Windows)
             guard let handle else { return (0, 0) }
@@ -179,12 +169,10 @@ public enum WGC {
         public let height: Int
     }
 
-    /// An active capture on a chosen item.
-    ///
-    /// Not thread-safe, and does not need to be: the sharer drives it from one
-    /// capture thread. It may be a different thread from the one that picked —
-    /// the frame pool is created free-threaded precisely so frames do not have
-    /// to be pulled on the UI thread.
+    /// An active capture on a chosen item. Not thread-safe, and doesn't need
+    /// to be — the sharer drives it from one capture thread, which may
+    /// differ from the one that picked (the frame pool is free-threaded so
+    /// frames needn't be pulled on the UI thread).
     public final class Session {
         public let width: Int
         public let height: Int
@@ -220,14 +208,11 @@ public enum WGC {
 
         /// Wait for a frame and hand it to `body`.
         ///
-        /// - Returns: `body`'s result, or **nil when no frame arrived in
-        ///   time**. That is the normal state of a still target — WGC produces
-        ///   a frame only when the content changes — so it is an absent value
-        ///   rather than an error, and the caller re-encodes what it has.
+        /// - Returns: `body`'s result, or nil when no frame arrived in time —
+        ///   the normal state of a still target, not an error.
         ///
-        /// The mapping is released before this returns, whether `body` throws
-        /// or not; escaping the pointer is a use-after-unmap that the scoped
-        /// shape makes hard to reach by accident.
+        /// The mapping is released before this returns, whether `body`
+        /// throws or not, so escaping the pointer is hard to reach by accident.
         public func withFrame<T>(
             timeoutMilliseconds: Int = 100,
             _ body: (Frame) throws -> T

@@ -2,10 +2,9 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
-/// Discoverable handle to one CoreAudio device. The `id` is the
-/// `AudioDeviceID` we hand to `AudioUnitSetProperty
-/// (kAudioOutputUnitProperty_CurrentDevice…)` to bind an AVAudioEngine
-/// node to a specific physical or virtual device.
+/// Discoverable handle to one CoreAudio device. `id` is the `AudioDeviceID`
+/// passed to `AudioUnitSetProperty(kAudioOutputUnitProperty_CurrentDevice…)`
+/// to bind an AVAudioEngine node to it.
 struct AudioDevice: Identifiable, Hashable, Sendable {
     let id: AudioDeviceID
     let uid: String
@@ -14,13 +13,10 @@ struct AudioDevice: Identifiable, Hashable, Sendable {
     let hasOutput: Bool
 }
 
-/// CoreAudio device enumeration + system-default helpers. Used by
-/// `MicCapture` to bind the AVAudioEngine input/output nodes to the
-/// user-selected device, and by the menubar UI to populate pickers.
+/// CoreAudio device enumeration + system-default helpers.
 enum AudioDevices {
-    /// All known input + output devices on the system. Repeated calls
-    /// are cheap (a couple of HAL property reads); call on every
-    /// menubar-popover open to pick up hot-plug changes.
+    /// Cheap to call repeatedly (a couple of HAL property reads); call on
+    /// every menubar-popover open to pick up hot-plug changes.
     static func all() -> [AudioDevice] {
         deviceIDs().compactMap(makeDevice)
     }
@@ -33,38 +29,21 @@ enum AudioDevices {
         all().filter { $0.hasOutput }
     }
 
-    /// Default-input device (system-wide).
     static func defaultInputID() -> AudioDeviceID? {
         defaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice)
     }
 
-    /// Default-output device (system-wide).
     static func defaultOutputID() -> AudioDeviceID? {
         defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
     }
 
-    /// Human-readable name of one device, straight from the HAL. One
-    /// property read — the same one enumeration does per device.
     static func name(of id: AudioDeviceID) -> String? {
         stringProperty(deviceID: id, selector: kAudioObjectPropertyName)
     }
 
-    /// Name a device for a diagnostics line: the enumerated list first, the
-    /// HAL when the list does not carry it.
-    ///
-    /// The list is a cache that only the pickers fill (`refreshAudioDevices`
-    /// runs from their `onAppear`), so a process that never rendered one has
-    /// an empty list. That is the viewer, typically: they toggle the mic from
-    /// the viewer window and open neither Settings nor the sharer tool. A
-    /// lookup that stopped at the list recorded `device=unknown` for exactly
-    /// that person while the sharing side, same session, named its headset.
-    /// The HAL read is the property enumeration itself uses, so it cannot
-    /// disagree with the list where the list has an answer; it only fills in
-    /// where the list has none — never enumerated, or a device that arrived
-    /// after the last enumeration.
-    ///
-    /// `nil` in, `nil` out, without asking the HAL: no default device is a
-    /// real state (a machine with no inputs), not a lookup to attempt.
+    /// Name a device for a diagnostics line: enumerated-list cache first, HAL
+    /// fallback when the list doesn't carry it (e.g. a viewer-only process
+    /// that never opened a picker and so never populated the list).
     static func name(
         of id: AudioDeviceID?,
         in devices: [AudioDevice],
@@ -74,11 +53,9 @@ enum AudioDevices {
         return devices.first { $0.id == id }?.name ?? hal(id)
     }
 
-    /// Apply a device to an AVAudioEngine input or output node. Pass
-    /// the node's audioUnit handle. Engine must be stopped before
-    /// this — switching device requires a fresh render-graph
-    /// negotiation. Returns the OSStatus from
-    /// `AudioUnitSetProperty`; `noErr` on success.
+    /// Apply a device to an AVAudioEngine node's audioUnit. Engine must be
+    /// stopped first — switching device requires a fresh render-graph
+    /// negotiation.
     @discardableResult
     static func bind(deviceID: AudioDeviceID, to audioUnit: AudioUnit) -> OSStatus {
         var id = deviceID
@@ -144,9 +121,8 @@ enum AudioDevices {
         return cfName as String
     }
 
-    /// True if the device has any streams in the given scope. Filters
-    /// e.g. Bluetooth A2DP devices that show up in both lists but only
-    /// have output streams when paired in headphone-only mode.
+    /// Filters e.g. Bluetooth A2DP devices that show up in both lists but
+    /// only have output streams when paired in headphone-only mode.
     private static func hasStreams(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Bool {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreams,

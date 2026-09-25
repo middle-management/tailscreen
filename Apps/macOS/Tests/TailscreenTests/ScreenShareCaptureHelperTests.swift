@@ -54,11 +54,9 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         let renderer = await MainActor.run { MetalViewerRenderer() }
         let client = TailscaleScreenShareClient(renderer: renderer)
 
-        // Exercise the REAL render path: host the renderer's CAMetalLayer in an
-        // on-screen NSWindow and call start(in:) so its CADisplayLink ticks.
-        // onVideoSizeChanged fires from the display-link-driven render() — the
-        // same present path production uses. (This is why the test is local-
-        // only: a headless CI runner has no screen for the link to attach to.)
+        // Host the renderer's CAMetalLayer in an on-screen NSWindow so its
+        // CADisplayLink ticks — the same present path production uses (and
+        // why this test is local-only: no screen for the link on CI).
         let firstFrame = expectation(description: "viewer rendered a frame")
         firstFrame.assertForOverFulfill = false
         let window = await MainActor.run { () -> NSWindow in
@@ -105,14 +103,11 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         await server.stop()
     }
 
-    /// Mid-share source switch over the full pipeline: real capture-helper,
-    /// real tsnet transport, one connected viewer. After the first decoded
-    /// frame, `server.changeSource(filterData:)` retargets capture — a
-    /// same-target switch back to the main display, which is deterministic
-    /// on a one-display Mac while still exercising the full stop-helper →
-    /// respawn → fresh-IDR path — and the test asserts (1) the viewer
-    /// resumes decoding after the swap and (2) `onCaptureStopped` never
-    /// fired (the share survived). Local-only, like its sibling above.
+    /// Mid-share source switch over the full pipeline. After the first
+    /// decoded frame, `server.changeSource(filterData:)` retargets capture
+    /// (same-target, deterministic on a one-display Mac, but still exercises
+    /// the full stop-helper → respawn → fresh-IDR path). Asserts the viewer
+    /// resumes decoding and `onCaptureStopped` never fired.
     func testChangeSourceRestartsCaptureWithoutDroppingViewer() async throws {
         try TailscreenE2E.skipCaptureTestOnCI()
 

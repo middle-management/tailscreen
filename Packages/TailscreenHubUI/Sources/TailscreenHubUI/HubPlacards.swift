@@ -5,37 +5,24 @@ import enum TailscreenProtocol.ViewerSessionEndReason
 import enum TailscreenProtocol.ViewerSessionPhase
 
 /// Where a viewing session is, for the placard shown before video arrives.
-///
-/// The list lives in the dependency-free protocol tier alongside the end
-/// reasons. The chrome still imports no transport; it and both swift-cross-ui
-/// hosts now name one lifecycle instead of maintaining identical enums.
+/// Lives in the dependency-free protocol tier alongside the end reasons, so
+/// the chrome and both hosts name one lifecycle instead of three copies.
 public typealias HubSessionPhase = ViewerSessionPhase
 
 /// Why an ended session ended — the presentation-side mirror of the portable
-/// `ViewerCloseReason`, with the deny byte already split by admission context
-/// (declined at the gate vs kicked mid-watch), which is the host's call.
-///
-/// The list itself now lives in the dependency-free tier as
-/// `ViewerSessionEndReason`, so the chrome, the GTK app's `ViewerUIState` and
-/// the macOS viewer share ONE set of endings instead of three copies that had
-/// to be kept in step by hand. This package still depends on no viewer tier —
-/// `TailscreenProtocol` is the edge it already had — and the name stays
-/// because it is what every call site in the chrome reads as.
+/// `ViewerCloseReason`, with the deny byte split by admission context
+/// (declined at the gate vs. kicked mid-watch). Lives in the dependency-free
+/// tier as `ViewerSessionEndReason`; the chrome, GTK's `ViewerUIState`, and
+/// the macOS viewer share this one set instead of three kept in step by hand.
 public typealias HubSessionEndReason = ViewerSessionEndReason
 
 /// Centered placard for the session lifecycle before or around video —
 /// connecting, awaiting the sharer's approval, or ended/failed with the reason.
+/// A blank window during any of these waits is indistinguishable from a
+/// crash, and "Waiting for approval" must not read as a hang.
 ///
-/// Every one of these states is a wait with no picture, and a blank window is
-/// the worst possible rendering of a wait: it is indistinguishable from a
-/// crash. "Waiting for approval" in particular is a state the viewer can do
-/// nothing about and must not mistake for a hang.
-///
-/// The action slots are optional so each host offers only what it can honor:
-/// `onCancel` renders on the connecting/pending phases (ending the dial),
-/// `onReconnect` / `onBack` on the ended and failed ones. A host with no list
-/// to go back to (the GTK direct-host CLI) passes `onBack: nil` and the button
-/// simply is not there.
+/// Action slots are optional so each host offers only what it can honor:
+/// `onCancel` on connecting/pending, `onReconnect`/`onBack` on ended/failed.
 public struct SessionPlacard: View {
     let phase: HubSessionPhase
     let host: String
@@ -110,8 +97,7 @@ public struct SessionPlacard: View {
         }
     }
 
-    /// The peer's name for the ended sentences, with the macOS viewer's same
-    /// defensive fallback for a host string that never got filled in.
+    /// The peer's name for the ended sentences; falls back like the macOS viewer's.
     private var peerName: String {
         host.isEmpty ? L("peer") : host
     }
@@ -122,8 +108,7 @@ public struct SessionPlacard: View {
         case .awaitingApproval: return L("Waiting for approval")
         case .viewing: return ""
         case .ended(let reason):
-            // The deny-flavored titles reuse the macOS viewer's wording so the
-            // same ending never tells a different story per platform.
+            // Reuses the macOS viewer's wording so an ending isn't told differently per platform.
             switch reason {
             case .sharerStopped, .timedOut, .connectionLost: return L("Session Ended")
             case .declined: return L("Connection Declined")

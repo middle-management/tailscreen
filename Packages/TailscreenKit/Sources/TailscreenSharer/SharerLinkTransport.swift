@@ -1,19 +1,11 @@
 // The two things `SharerLinkSession` talks to, named as protocols so a test
-// can put a fake behind them.
+// can put a fake behind them (every method on a live `GuestServerNode` blocks
+// on a DERP handshake, so nothing was drivable before this existed).
 //
-// This exists because the session was untestable and the cost showed: two
-// rounds of review on the link lifecycle found eight ordering bugs — a
-// teardown that closed a replacement's node, a mint that published onto a
-// stopped share, a `close()` that awaited before it cleared — and not one of
-// them was reachable by any suite in the repo. Every method took a live
-// `GuestServerNode`, whose `start()` is a DERP handshake over the network,
-// so there was nothing to drive.
-//
-// The seam is deliberately thin: it names what the session already called
-// and nothing more, so the ORDERING stays in the session where the bugs
-// were, rather than moving into an adapter where a test would not see it.
-// The production conformances below are the whole of the real implementation
-// and contain no decisions.
+// Deliberately thin: it names what the session already called, nothing more,
+// so ordering logic stays in the session (where the bugs were) rather than
+// hiding in an adapter a test wouldn't see. The production conformances below
+// contain no decisions.
 
 import Foundation
 import TailscaleKit
@@ -32,13 +24,11 @@ public protocol GuestControlRoute: Sendable {
 
 /// A guest node: the ephemeral WireGuard endpoint a share link is.
 ///
-/// Every method is `async` because the live one blocks on the network, and
-/// because those suspension points are exactly what a test needs to hold: an
-/// actor yields at each of them, which is where a stop and a second start
-/// get in.
+/// Every method is `async` because the live one blocks on the network, and a
+/// test needs to hold those suspension points open to exercise the actor's
+/// ordering races.
 public protocol GuestLinkNode: Sendable {
-    /// Connects to the relay. The long one — seconds, and the window every
-    /// one of the fixed races opened in.
+    /// Connects to the relay — seconds long.
     func startNode() async throws
     func openPacketRoute(port: UInt16) async throws -> any GuestPacketRoute
     /// Throws on a host that cannot carry the control channel; the session
@@ -70,10 +60,9 @@ public protocol GuestLinkServer: AnyObject, Sendable {
 extension PacketListener: GuestPacketRoute {}
 extension TailscreenControlListener: GuestControlRoute {}
 
-/// `GuestServerNode` behind the protocol. The one piece of translation is
-/// the control route: the live node hands back a bound `Listener`, and the
-/// framed-channel object that adopts it is built here so the session sees
-/// one call either way.
+/// `GuestServerNode` behind the protocol. One piece of translation: the live
+/// node hands back a bound `Listener`, and the framed-channel object that
+/// adopts it is built here.
 public struct LiveGuestLinkNode: GuestLinkNode {
     private let node: GuestServerNode
 
@@ -100,10 +89,9 @@ public struct LiveGuestLinkNode: GuestLinkNode {
     public func closeNode() async { await node.close() }
 }
 
-/// The shipping server behind the protocol. The casts are safe by
-/// construction — the routes reaching here came from `LiveGuestLinkNode`,
-/// and a fake node's routes only ever meet a fake server — and a mismatch
-/// answers `false`, which the session already handles as a refused attach.
+/// The shipping server behind the protocol. Casts are safe by construction
+/// (routes here came from `LiveGuestLinkNode`; a fake node's routes only meet
+/// a fake server); a mismatch answers `false`, handled as a refused attach.
 extension TailscaleScreenShareServer: GuestLinkServer {
     public func attachGuestPacket(_ route: any GuestPacketRoute) -> Bool {
         guard let listener = route as? PacketListener else { return false }

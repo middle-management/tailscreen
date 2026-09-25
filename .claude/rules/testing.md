@@ -9,7 +9,7 @@ paths:
 
 # Testing
 
-The catalog of extracted pure-decision suites, the test-only seams, and the which-package-does-a-suite-live-in rule are in the **`test-catalog` skill** — invoke it when adding or moving a test. This file covers running tests and the local-only harnesses.
+The catalog of extracted pure-decision suites, test-only seams, and which package a new suite belongs in is the **`test-catalog` skill** — invoke it when adding or moving a test. This file covers running tests and the local-only harnesses.
 
 ## Unit tests
 
@@ -22,55 +22,22 @@ make test
 ## ThreadSanitizer (`linux-tsan`, and `test-tsan` on macOS)
 
 ```bash
-make tailscale   # once per checkout — see below
+make tailscale   # once per checkout — not optional
 PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
   swift test --package-path Packages/TailscreenKit --sanitize=thread
 ```
 
-`make tailscale` first, and it is not optional on a fresh checkout: the
-`TailscreenSharerTests` bundle links `TailscreenSharer` → `TailscaleKit`, so
-`libtailscale.a` is a link-time input even though no test here calls tsnet.
-`PKG_CONFIG_PATH` only says where the archive *is*; without the build the link
-fails on `undefined reference to 'tailscale_close'` and friends, which reads
-like a broken toolchain rather than a missing step. (CI gets this from the leg's
-`libtailscale: host` bootstrap, which is why the job definition doesn't show it.)
+`TailscreenSharerTests` links `TailscreenSharer` → `TailscaleKit`, so `libtailscale.a` is a link-time input even though nothing here calls tsnet — skip `make tailscale` and you get `undefined reference to 'tailscale_close'`, which reads like a broken toolchain rather than a missing step.
 
-The `swift test` line is otherwise the `linux-tsan` job verbatim. Unlike the macOS `test-tsan` job — which
-runs the app target, trips over third-party C nothing here can fix
-(libtailscale's Go runtime, ScreenCaptureKit's XPC) and is `continue-on-error`
-for exactly that reason — this package imports no Apple framework and calls no
-tsnet, so it carries no tolerated noise and **a warning here is a real race**.
+This is the `linux-tsan` job verbatim. Unlike macOS's `test-tsan` (runs the app target, trips over third-party C noise from libtailscale's Go runtime / ScreenCaptureKit's XPC, hence `continue-on-error`), this package imports no Apple framework and calls no tsnet — **a warning here is a real race**.
 
 ### Lock with `Guarded`, never `Synchronization.Mutex`
 
-TSan cannot see through `Mutex`. It learns happens-before from the pthread
-primitives it interposes on; `Mutex` bypasses those and parks on the futex
-directly, so the sanitiser never observes the release/acquire pair and reads
-every `withLock { $0.field = … }` as an unsynchronised `inout` access. It then
-reports a **"Swift access race" inside the lock body**, on correct code.
+TSan learns happens-before from the pthread primitives it interposes on; `Mutex` bypasses those and parks on the futex directly, so it never sees the release/acquire pair and reports a **"Swift access race" inside the lock body** — on correct code. Worse: **a `Mutex`-guarded type is invisible to the gate**, not failing but simply unchecked, so a green `linux-tsan` says nothing about it. No type in this repo uses `Mutex` any more — `TailscreenProtocol.Guarded` (`Mutex`'s `withLock { $0 … }` shape over an `NSLock`) replaced every one; full argument in `Guarded.swift`. (`TailscreenL10n` keeps a private copy — that package has no dependencies on purpose.)
 
-The noise is not the problem. The problem is that **a `Mutex`-guarded type is
-invisible to this gate**: it does not fail the check, the check has nothing to
-say about it, and a green `linux-tsan` is silent about every race it might
-hold. So **no type in this repo is guarded by `Mutex` any more**:
-`TailscreenProtocol.Guarded` — `Mutex`'s `withLock { $0 … }` shape over an
-`NSLock` — replaced every one of them, and `Guarded.swift` carries the argument.
-(`TailscreenL10n` keeps a private copy of the type; that package has no
-dependencies on purpose.)
+A bare `NSLock` beside the state is still fine and common (`FrameStore`, `VoiceDownlink`, `DiagnosticsRecorder`, ~30 others) — it's what the sanitizer needs; `Guarded` is the default for *new* lock-guarded state and additionally makes the state unreachable without the lock. Reach for bare `NSLock` when the locking isn't one scoped body (`DiagnosticsRecorder.record` releases early; `DiagnosticsBundle` guards two separate statics).
 
-This is a rule about `Mutex`, not a claim that everything is a `Guarded`.
-Plenty of production types hold a bare `NSLock` beside their state —
-`FrameStore`, `VoiceDownlink`, `DiagnosticsRecorder` and about thirty others —
-and that stays correct and is not a migration backlog: `NSLock` is what the
-sanitiser can see, which is the property this whole section is about. What
-`Guarded` adds on top is that the state cannot be reached without taking the
-lock, so it is the default for new lock-guarded state and the automatic answer
-for anything that was a `Mutex`. Reach for a bare `NSLock` when the locking
-genuinely isn't one scoped body — `DiagnosticsRecorder.record` releases early,
-`DiagnosticsBundle` guards two separate statics.
-
-Reproduce it in thirty seconds, with no repo code involved, in a throwaway
-package built with `swift build --sanitize=thread`:
+Reproduce in 30s, no repo code, `swift build --sanitize=thread`:
 
 ```swift
 struct State { var counter: UInt64 = 0; var items: [UInt64] = [] }
@@ -80,86 +47,68 @@ DispatchQueue.concurrentPerform(iterations: 8) { _ in
 }
 ```
 
-That reports the race. The same hammer over `NSLock` — or over `Guarded` — is
-clean, and a genuinely unsynchronised race through the same shape is still
-caught, so the swap costs no detection. **Do not wait for a toolchain fix:**
-this was checked on Swift 6.3 (what CI runs) and on a Swift 6.5 development
-snapshot two majors ahead, which reports the identical warnings.
+Reports the race; the same hammer over `NSLock`/`Guarded` is clean and still catches a genuine unsynchronized race. Checked on Swift 6.3 (CI) and a 6.5 snapshot two majors ahead — identical result, so don't wait on a toolchain fix.
 
 ### A lock nothing exercises concurrently proves nothing
 
-TSan only reports races it watches execute, so a thread-safe type whose whole
-suite is single-threaded passes the gate without ever being checked. When you
-add a type that is genuinely touched from several threads, add a case that
-hammers it from several threads — `RTPBufferPoolTests` and
-`RetransmitBufferTests` each carry one, and both assert
-interleaving-independent invariants (an acquired buffer is always reset; a
-retransmit template always comes back whole) rather than a particular ordering,
-so they are deterministic rather than flaky.
+TSan only reports races it watches execute. A new genuinely multi-threaded type needs a test that hammers it from several threads and asserts interleaving-independent invariants (see `RTPBufferPoolTests`, `RetransmitBufferTests`), or the gate has nothing to watch.
 
 ## E2E connectivity (real tsnet transport)
 
-Two paths:
-
-1. **Local headscale (preferred for CI/dev):**
+1. **Local headscale (preferred):**
    ```bash
    make test-e2e         # one-shot
-   # or, manually:
-   eval "$(make e2e-up)" # exports TAILSCREEN_TS_AUTHKEY + TAILSCREEN_TS_CONTROL_URL
-   swift test --filter TailscaleConnectivityTests
-   make e2e-down
+   # or: eval "$(make e2e-up)"; swift test --filter TailscaleConnectivityTests; make e2e-down
    ```
-   `scripts/e2e-up.sh` boots `e2e/docker-compose.yml` (headscale on `localhost:8080`), creates a user, and mints a reusable ephemeral pre-auth key.
+   `scripts/e2e-up.sh` boots `e2e/docker-compose.yml`, creates a user, mints a reusable pre-auth key.
+2. **Real tailnet:** export your own `TAILSCREEN_TS_AUTHKEY` and run `swift test`.
+3. **Docker-free:** `scripts/e2e-up-native.sh` downloads the pinned headscale binary (keep `HEADSCALE_VERSION` matching `e2e/docker-compose.yml`), runs it natively; tear down with `scripts/e2e-down-native.sh`.
 
-2. **Real tailnet:** export your own `TAILSCREEN_TS_AUTHKEY` from the Tailscale admin console and run `swift test`.
+**These tsnet suites can't run on CI** — GitHub's hosted macOS sandbox blocks the userspace-WireGuard handshake / DERP-STUN, and `node.up()` has no internal timeout, so it just hangs. Anything bringing up a tsnet node (`TailscaleConnectivityTests`, screen-share E2E suites) is local-only; only pure-logic suites (`AdaptiveBitrateTests`, `VideoCodecTests`, `VoiceChannelTests`, `RTPPacketTests`, `RTPLossyChannelTests`, etc.) run on CI.
 
-3. **Docker-free headscale (local, no Docker):** `scripts/e2e-up-native.sh` downloads the pinned headscale release binary (keep `HEADSCALE_VERSION` in lockstep with `e2e/docker-compose.yml`), runs it natively, and emits the same env exports; tear down with `scripts/e2e-down-native.sh`. Useful on machines without Docker.
+`RTPLossyChannelTests` is the CI-able stand-in for network impairment: real packetize → `LossyChannel` (deterministic seeded loss/reorder/duplication) → depacketize, asserting recovery; also closes the NACK loop (packetize → seeded loss → `NACKScheduler` + depacketizer → retransmit) and the FEC leg (`runRecoveryLoop`: server-side parity groups, viewer-side FEC scheduler + `FECGroupBuffer`). `LossyChannel` (`Apps/macOS/Tests/`) is reusable by any in-process packet test but can't impair the live tsnet path — for that see `scripts/net-impair.sh` below.
 
-**These tsnet suites can't run on CI.** Tried on `macos-latest` via the native script: headscale came up healthy, but the first tsnet `node.up()` hung — GitHub's hosted macOS runner sandbox doesn't let the userspace-WireGuard handshake / DERP-STUN (`:3478/udp`) complete, and `node.up()` has no internal timeout. So anything that brings up a tsnet node (`TailscaleConnectivityTests` and all the screen-share E2E suites) is local-only. Only the pure-logic suites (`AdaptiveBitrateTests`, `VideoCodecTests`, `VoiceChannelTests`, `RTPPacketTests`, `RTPLossyChannelTests`, etc.) run on CI.
+Connectivity tests skip/fail without an auth key — expected.
 
-`RTPLossyChannelTests` is the CI-able stand-in for the impairment harness: it runs the real packetize → `LossyChannel` (deterministic, seeded loss/reorder/duplication) → depacketize pipeline and asserts recovery (reordering/duplication never drop or tear frames; genuine loss is signaled and the pipeline never wedges). It also closes the **NACK-recovery loop** (packetize → seeded loss → `NACKScheduler` + depacketizer → retransmit re-injection): loss recovered by NACK with zero PLIs and no torn frames, PLI fallback when retransmits also drop (never wedges), and small reordering producing neither NACK nor PLI. Its **FEC leg** (`runRecoveryLoop`: server-side `groupRanges` + `parityBody` per frame, viewer-side FEC-mode scheduler + `FECGroupBuffer` in front of the depacketizer) pins the layered handoff: seeded ≤1-loss-per-group recovered with zero NACKs/PLIs (H.264 + HEVC), ~10 % loss handing multi-loss groups to NACK with no torn frames, dropping every parity datagram reproducing today's NACK behavior exactly, and a late original after its FEC recovery changing nothing. `LossyChannel` (in `Apps/macOS/Tests/`) is reusable by any in-process packet test. It can't impair the live tsnet path — for that, see `scripts/net-impair.sh` (local-only).
-
-Connectivity tests skip or fail without an auth key — that's expected.
-
-**Browser ↔ sharer, no internet** (`make test-web-spike`, Linux; CI's `linux-web-spike`): the browser viewer's transport spike (`plans/browser-viewer.md`, Phase 2). `web/viewer/e2e/spike.mjs` boots `web/viewer/cmd/localderp` (a DERP+STUN+`/derpmap` stand-in for the relay fleet, self-signed TLS with `InsecureForTests`), an Xvfb display with a gradient on it, `tailscreen-sharer-linux --link --link-relay-map-url … --approve-guests` (a link-only share: no tsnet, no headscale), and headless Chromium (Playwright, `ignoreHTTPSErrors` for the relay's cert, `--no-proxy-server` so a container's `HTTPS_PROXY` never captures the loopback `wss://`). It asserts the page reaches `acked` — HELLO as a `mediaDatagram` frame, parked, auto-approved, `HELLO_ACK` — then ≥ 50 video datagrams over the stream, then (where the browser decodes H.264) ≥ 10 decoded frames and a non-flat canvas (sampled luma spread), and prints the wasm sizes. It prefers **Google Chrome** (`playwright install chrome`; `PW_CHANNEL` overrides): Playwright's own Chromium ships without H.264, so there only the transport half runs. Since Phase 3 it also asserts decoded frames and a non-flat canvas where the browser decodes H.264 — **Playwright's own Chromium cannot** (no proprietary codecs; WebCodecs reports every H.264 config unsupported), so the harness prefers Google Chrome when installed (`playwright install chrome`; `PW_CHANNEL` overrides) and CI installs it. `PW_BROWSER=firefox` runs the same assertions on Playwright's Firefox, which does decode H.264. Since Phase 4 it also drives **remote control end to end**: the sharer runs `--allow-control --grant-control`, the page requests control, a real pointer move over the stage becomes an XTEST move on the Xvfb, read back with `xdotool getmouselocation` (skipped, with a NOTE, when xdotool is absent) — and it asserts the drawing tools stay hidden, because a headless sharer advertises no `annotations` capability. `web/viewer/e2e/wire.test.mjs` (run first by the target) checks the page's pure wire half — the HID key table, the modifier bit field, the §11/§12.2 JSON shapes — with no browser. Knobs: `TAILSCREEN_SHARER_BIN`, `TAILSCREEN_E2E_DISPLAY` (default `:99`), `TAILSCREEN_E2E_FPS`, `TAILSCREEN_E2E_MIN_VIDEO`, `TAILSCREEN_E2E_MIN_FRAMES`, `PW_CHANNEL`, `PW_BROWSER`. Needs Node with the global `playwright` module (`NODE_PATH=$(npm root -g)`, which the Makefile sets) and its Chromium. `--approve-guests` and `--grant-control` are the guest-side twins of `TAILSCREEN_OPEN_DOOR` — never for a share with a person in front of it.
+**Browser ↔ sharer, no internet** (`make test-web-spike`, Linux; CI's `linux-web-spike`): `web/viewer/e2e/spike.mjs` boots `web/viewer/cmd/localderp` (DERP+STUN+`/derpmap` stand-in, self-signed TLS), Xvfb with a gradient, `tailscreen-sharer-linux --link --link-relay-map-url … --approve-guests` (link-only, no tsnet/headscale), and headless Chromium (Playwright, `--no-proxy-server` so a container's `HTTPS_PROXY` doesn't capture loopback `wss://`). Asserts the page reaches `acked` (HELLO → parked → auto-approved → HELLO_ACK), ≥50 video datagrams, and where the browser decodes H.264, ≥10 decoded frames + non-flat canvas. Prefers **Google Chrome** (`playwright install chrome`; `PW_CHANNEL` overrides) — Playwright's own Chromium has no H.264 decoder (WebCodecs reports every config unsupported); `PW_BROWSER=firefox` also decodes. Also drives remote control end to end (`--allow-control --grant-control`; pointer moves become XTEST, read back via `xdotool getmouselocation`, skipped with a NOTE if absent) and asserts drawing tools stay hidden (headless sharer advertises no `annotations` capability). `web/viewer/e2e/wire.test.mjs` checks the pure wire half with no browser first. Knobs: `TAILSCREEN_SHARER_BIN`, `TAILSCREEN_E2E_DISPLAY` (default `:99`), `TAILSCREEN_E2E_FPS`, `TAILSCREEN_E2E_MIN_VIDEO`, `TAILSCREEN_E2E_MIN_FRAMES`, `PW_CHANNEL`, `PW_BROWSER`. Needs Node with global `playwright` (`NODE_PATH=$(npm root -g)`, set by the Makefile) + its Chromium. `--approve-guests`/`--grant-control` are the guest-side twins of `TAILSCREEN_OPEN_DOOR` — never for a share with a person in front of it.
 
 ## Local screen-share E2E (LOCAL ONLY)
 
-These test surfaces exercise the screen-share pipeline beyond what GitHub Actions can run — its macOS runners can't grant Screen Recording TCC, can't host a real display, and `replayd`/`SCStream` won't come up. Most run over local-headscale tsnet with the server in `filterData: nil` mode (no capture-helper), so they're headless and need no Screen Recording permission.
+GitHub's macOS runners can't grant Screen Recording TCC or host a real display, so these run only locally. Most run over local-headscale tsnet with `filterData: nil` (no capture-helper) and need no Screen Recording permission.
 
-1. **`ScreenShareSyntheticFramesTests`** — server (no helper) + real client over local-headscale tsnet, pre-encoded AVCC injected into the broadcast path. Asserts on `client.onDecodedFrameForTesting` (decode signal — the renderer's display-link render path needs an on-screen view, which xctest lacks). CI-eligible (skips if VideoToolbox produces no output, e.g. virtualized runners).
-2. **`ScreenShareCaptureHelperTests`** — full pipeline including the real `--capture-helper` subprocess against the main display, hosted in a real on-screen `NSWindow` so the Metal **render** path runs and `renderer.onVideoSizeChanged` fires. Jiggles the cursor to keep ScreenCaptureKit delivering frames (a static screen starves the encoder). Local-only — self-skips on `CI` / `GITHUB_ACTIONS`. First run pops macOS's Screen Recording permission prompt on `Apps/macOS/.build/debug/Tailscreen`; subsequent runs are unattended.
-3. **`ScreenShareFanoutTests`** — two viewers on one server: asserts video fan-out (both decode one broadcast) and audio relay (one viewer's RTP reaches the sharer locally **and** is relayed to the other viewer, gated by the server-assigned SSRC). A second test (`testSystemAudioReachesBothViewers`) injects a real `OpusVoiceEncoder` AU via `broadcastSystemAudioForTesting` and asserts both viewers receive it tagged PT 99.
-4. **`ScreenShareControlChannelTests`** — viewer→sharer control paths: annotation op over the TCP back-channel reaches `server.onAnnotationReceived`; a viewer PLI is recorded (observed via the test-only `onPLIRecordedForTesting` seam, since no helper is attached to act on the keyframe request).
-5. **`ScreenShareRequestToShareTests`** — two raw tsnet nodes: one sends `TailscreenMetadataService.sendRequestToShareAwaitingResponse`, the other's `TailscreenControlListener.onRequestToShare` fires (now with the connection UUID). Also covers the accept/decline round-trip: a `.shareResponse` sent back on the same connection resolves the requester's await to `.accepted`/`.declined`, and silence resolves to `.noAnswer`. No UI/notifications.
-6. **`ScreenShareAccessControlTests`** — headless server (`filterData: nil`, `requireApproval` on) + three sequential viewers over local-headscale tsnet: an unknown viewer parks pending and `approveViewer` admits it; pushing an `.allow` policy via `setAccessPolicies` auto-admits a parked viewer once its StableNodeID resolves; pushing `.deny` rejects it (viewer's `onDeniedBySharer` fires via HELLO_DENY) and it never enters the fan-out roster. A second test covers the sharer's one-time kick (`server.disconnectViewer`, the SharingCard viewer-row ✕): an admitted viewer is expelled (its `onDeniedBySharer` fires, roster empties) and the *same node identity* (reused state dir) reconnects to park pending again and gets re-admitted — proving nothing was remembered, unlike "Deny & Block".
-7. **`ScreenShareRemoteControlTests`** — headless server (`filterData: nil`) + one admitted viewer over local-headscale tsnet, exercising the opt-in remote-control grant flow: `requestControl` → server `onControlRequestsChanged` surfaces the request; input sent before a grant is dropped by the server gate; `grantControl` (Accessibility check bypassed via `grantBypassesAccessibilityForTesting`) → viewer `onControlGranted` fires; input after the grant passes the gate (`onInputEventForTesting`, no real `CGEventPost`); the viewer's `releaseControl()` clears the server grant (`onControlGrantChanged` → nil) and the viewer gets `onControlRevoked`. A second test covers the "Allow control requests" toggle off: `setAllowControlRequests(false)` → an admitted viewer's request is declined immediately with `.controlRevoked` and never surfaces to `onControlRequestsChanged`. Skipped without `TAILSCREEN_TS_AUTHKEY`.
-8. **`PickerHelperSmokeTests`** — verifies the `--picker-helper` `TAILSCREEN_AUTOSHARE_DISPLAY=1` short-circuit (no UI; always runs locally). A second test exercises the full picker-UI lifecycle and SIGTERM path — that one pops the real picker on screen for ~2 s and is **opt-in**: set `TAILSCREEN_RUN_PICKER_LIFECYCLE_TEST=1` to enable.
+1. **`ScreenShareSyntheticFramesTests`** — server (no helper) + real client over local-headscale tsnet, pre-encoded AVCC injected directly. CI-eligible (skips if VideoToolbox produces no output).
+2. **`ScreenShareCaptureHelperTests`** — full pipeline incl. real `--capture-helper` against the main display, real on-screen `NSWindow` so Metal renders. Jiggles the cursor (a static screen starves the encoder). Local-only, self-skips on `CI`/`GITHUB_ACTIONS`. First run pops the Screen Recording prompt.
+3. **`ScreenShareFanoutTests`** — two viewers on one server: video fan-out + audio relay (RTP reaches sharer and is relayed to the other viewer via server-assigned SSRC); a second test covers system audio (`OpusVoiceEncoder`, PT 99) reaching both.
+4. **`ScreenShareControlChannelTests`** — annotation op over TCP back-channel reaches `server.onAnnotationReceived`; a viewer PLI is recorded via the test-only seam.
+5. **`ScreenShareRequestToShareTests`** — two raw tsnet nodes: request-to-share round trip incl. accept/decline/no-answer.
+6. **`ScreenShareAccessControlTests`** — headless server + `requireApproval`: park/approve, policy-driven auto-admit/deny, sharer's one-time kick (re-admits on reconnect since nothing was remembered, unlike "Deny & Block").
+7. **`ScreenShareRemoteControlTests`** — opt-in remote-control grant flow: request/grant/gate/revoke, plus the "Allow control requests" toggle off path. Skipped without `TAILSCREEN_TS_AUTHKEY`.
+8. **`PickerHelperSmokeTests`** — `--picker-helper` `TAILSCREEN_AUTOSHARE_DISPLAY=1` short-circuit (always runs). Full picker-UI lifecycle + SIGTERM test is opt-in: `TAILSCREEN_RUN_PICKER_LIFECYCLE_TEST=1`.
 
 ```bash
 make test-e2e-local     # XCTest suites above, under local headscale
 make test-e2e-harness   # two real Tailscreen processes, asserted by log marker
 ```
 
-The harness greps the merged log for `E2E_MARKER firstFrame width=… height=…`, emitted from `AppState`'s viewer-side `onVideoSizeChanged` callback on the first decoded frame.
+The harness greps the merged log for `E2E_MARKER firstFrame width=… height=…` from `AppState`'s viewer-side `onVideoSizeChanged`.
 
-**Linux sharer → Linux viewer** (`scripts/e2e-linux-sharer.sh`, local-only): the non-macOS counterpart. Brings up local headscale + an Xvfb display with real content, runs `tailscreen-sharer-linux` (the portable `TailscaleScreenShareServer` + the X11 `CaptureEncoding` backend) and `tailscreen-viewer-probe` (the real receive path with a counting sink instead of a window), and asserts the viewer was admitted, decoded frames at the display's geometry, and that those frames are **non-uniform** — i.e. real captured pixels rather than a flat rectangle that a frame-count assertion alone would accept. It also incidentally pins the conditional-capability behaviour: with no injector supplied the advertised `serverCaps` omits `.remoteControl`.
+**Linux sharer → Linux viewer** (`scripts/e2e-linux-sharer.sh`, local-only): local headscale + Xvfb with real content, `tailscreen-sharer-linux` (X11 `CaptureEncoding`) + `tailscreen-viewer-probe` (counting sink instead of a window); asserts admission, decoded frames at display geometry, and non-uniform pixels (real capture, not a flat rectangle). Also pins that with no injector supplied, advertised `serverCaps` omits `.remoteControl`.
 
 ## Env-var test affordances
 
 | Env var | Read by | Effect |
 |---------|---------|--------|
-| `TAILSCREEN_OPEN_DOOR=1` | Main process (`ViewerApprovalPreference.load`) | Force the require-approval gate off regardless of the stored preference. Viewer approval defaults **on**, so the scripted harness and `test-local.sh` set this to keep automated viewers from parking on the approval prompt. Never set in production. |
-| `TAILSCREEN_AUTOSHARE_DISPLAY=1` | `--picker-helper` subprocess | Skip the interactive picker; emit a synthetic main-display `PickerSelection` and exit. |
-| `TAILSCREEN_FORCE_STREAM=1` | Portable viewer (`ViewerConfig.useStreamTransport` default) | Run the session over the stream profile (spec §2.2): the whole datagram plane rides the framed TCP back-channel as `.mediaDatagram` frames instead of UDP, and the advertised caps drop NACK/FEC. The way to exercise the UDP-blocked fallback end to end; against a pre-profile sharer the HELLO times out, which is the profile's designed degradation. |
-| `TAILSCREEN_AUTOSTART_SHARE=1` | Main process (`AppState.init`) | Once signed in, automatically invoke `presentNativePicker()`. Pair with `TAILSCREEN_AUTOSHARE_DISPLAY=1`. |
-| `TAILSCREEN_AUTOCONNECT_TO=<prefix>` | Main process (`AppState.init`) | Once signed in, discover peers and connect to the first one whose hostname starts with `<prefix>` — matched against both the raw hostname (`tailscreen-wisp`, what the harnesses pass) and the displayed name (`wisp`, what the peer list shows). |
-| `TAILSCREEN_AUTOSHARE_LINK=1` | Main process (`AppState.startSharing`) | Mint the share link the moment a share starts (a guest-only share already has its token; a tailnet share enables the link as the toggle would) and print `E2E_MARKER shareLink token=…` so a scripted second instance can join by token. The seed for a future `test-local.sh --guest` mode. |
-| `TAILSCREEN_HELPER_EXE=<path>` | `HelperScreenCapture` / `PickerHelperClient` | Override `Bundle.main.executableURL` for helper spawns. Only used by XCTests (under xctest, `Bundle.main` points at the test harness, not Tailscreen). |
-| `TAILSCREEN_SOAK=1` | `SoakTests` | Opt in to the nightly long-run soak tier (ParserFuzz at ~50× budget + the seeded LossyChannel impairment matrix). Off for `make test` and PR CI; `.github/workflows/soak.yml` sets it. |
-| `TAILSCREEN_RUN_PICKER_LIFECYCLE_TEST=1` | `PickerHelperSmokeTests` | Opt in to the picker-UI lifecycle test that pops the real picker on screen for ~2 s before SIGTERM. Skipped by default to keep `make test-e2e-local` non-interactive. |
-| `TAILSCREEN_DEBUG_INPUT=1` | Viewer (`TailscaleScreenShareClient`) + sharer (`TailscaleScreenShareServer`, `RemoteControlInjector`) | Instrument the remote-control input path: the viewer logs how long each framed `.inputEvent` write actually took (plus a 1 Hz `n=/mean=/max=` summary), the sharer logs the gap between admitted events, and the mac injector logs each scroll's wire delta and the whole-line count it became — **including when the sub-line accumulator banked it and injected nothing**, which is the one thing that looks identical to no scroll arriving at all. Both ends measure the same stall independently, so a viewer reporting multi-second sends with a sharer reporting matching arrival gaps localizes it to the send path rather than the network. Off by default; diagnostic only. |
-| `TAILSCREEN_DEBUG_FEC=1` | Server (`TailscaleScreenShareServer`) + viewer (`TailscaleScreenShareClient`) | Log the FEC-arming feedback loop: the server prints per-viewer FEC sweep inputs (measured RTT, residual/raw loss, recovered/expected, `.fec` cap) and the arm decision every 5 s; the viewer prints each receiver-report send (fracLost, whether a PING was echoed, delay). Diagnoses why FEC did/didn't gate on under real loss (e.g. RTT staying 0 ⇒ RRs/ping echoes aren't landing so the >150 ms gate can't trip). Off by default; diagnostic only. |
+| `TAILSCREEN_OPEN_DOOR=1` | Main process (`ViewerApprovalPreference.load`) | Force require-approval off regardless of stored preference. Never in production. |
+| `TAILSCREEN_AUTOSHARE_DISPLAY=1` | `--picker-helper` subprocess | Skip interactive picker; emit a synthetic main-display selection and exit. |
+| `TAILSCREEN_FORCE_STREAM=1` | Portable viewer (`ViewerConfig.useStreamTransport`) | Run the session over the stream profile (spec §2.2): datagram plane rides framed TCP as `.mediaDatagram`, caps drop NACK/FEC. Exercises the UDP-blocked fallback (HELLO times out against a pre-profile sharer). |
+| `TAILSCREEN_AUTOSTART_SHARE=1` | Main process (`AppState.init`) | Once signed in, auto-invoke `presentNativePicker()`. Pair with `TAILSCREEN_AUTOSHARE_DISPLAY=1`. |
+| `TAILSCREEN_AUTOCONNECT_TO=<prefix>` | Main process (`AppState.init`) | Once signed in, connect to the first discovered peer whose hostname or displayed name starts with `<prefix>`. |
+| `TAILSCREEN_AUTOSHARE_LINK=1` | Main process (`AppState.startSharing`) | Mint the share link at share start, print `E2E_MARKER shareLink token=…` for a scripted second instance to join. |
+| `TAILSCREEN_HELPER_EXE=<path>` | `HelperScreenCapture` / `PickerHelperClient` | Override `Bundle.main.executableURL` for helper spawns (needed under xctest). |
+| `TAILSCREEN_SOAK=1` | `SoakTests` | Opt in to the nightly soak tier (ParserFuzz ~50× budget + seeded LossyChannel matrix). Off for `make test`/PR CI. |
+| `TAILSCREEN_RUN_PICKER_LIFECYCLE_TEST=1` | `PickerHelperSmokeTests` | Opt in to the on-screen picker lifecycle test. |
+| `TAILSCREEN_DEBUG_INPUT=1` | Viewer + sharer + mac injector | Instrument remote-control input timing (per-write duration, admission gap, scroll delta incl. banked sub-line accumulation). Diagnostic only. |
+| `TAILSCREEN_DEBUG_FEC=1` | Server + viewer | Log the FEC-arming feedback loop (RTT, loss, arm decision every 5s; receiver-report sends). Diagnoses why FEC didn't gate under real loss (e.g. RTT staying 0 means RRs aren't landing). Diagnostic only. |
 
 ## Local manual testing — multiple instances on one Mac
 
@@ -168,29 +117,27 @@ The harness greps the merged log for `E2E_MARKER firstFrame width=… height=…
 ./test-local.sh 3         # N instances
 ```
 
-Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale state directory and hostname (e.g. `wisp-1`, `wisp-2`). Without it, two processes share `~/Library/Application Support/Tailscreen/tailscale`, reuse the same machine key, and the browser sees zero peers (it's looking at its own node).
+Each child gets `TAILSCREEN_INSTANCE=<i>`, suffixing the Tailscale state dir and hostname (`wisp-1`, `wisp-2`). Without it, two processes share one state dir, reuse one machine key, and the peer list shows zero peers (each sees only itself).
 
-Merged stdout/stderr lands in `/tmp/tailscreen-merged.log` (override with `TAILSCREEN_LOG`). Ctrl-C kills the whole process group.
-
-Memory-debug modes (set before invoking the script):
+Merged output: `/tmp/tailscreen-merged.log` (override `TAILSCREEN_LOG`). Ctrl-C kills the process group.
 
 | Env var | Effect |
 |---------|--------|
 | `TAILSCREEN_DEBUG_ZOMBIES=1` | `NSZombieEnabled` + malloc stack logging — over-releases log instead of crashing |
-| `TAILSCREEN_DEBUG_ASAN=1` | Sets `ASAN_OPTIONS`; **also rebuild with** `swift build -Xswiftc -sanitize=address` |
+| `TAILSCREEN_DEBUG_ASAN=1` | Sets `ASAN_OPTIONS`; also rebuild with `swift build -Xswiftc -sanitize=address` |
 | `TAILSCREEN_DEBUG_GMALLOC=1` | libgmalloc — known to break ScreenCaptureKit's XPC; prefer Instruments' Zombies template |
 
 ## Simulating a bad network on one Mac — `scripts/net-impair.sh`
 
-Loopback and local-headscale deliver packets with ~0% loss, in order, at a 16 KB MTU. That hides every WAN-only failure mode: loss-driven PLI/keyframe storms, the adaptive-bitrate sweep, viewer stall + recovery, and one-slow-viewer head-of-line blocking. `scripts/net-impair.sh` uses pf + dummynet (the machinery behind Network Link Conditioner) to beat up the node-to-node UDP transport so those paths actually run.
+Loopback/local-headscale deliver ~0% loss, in order — hides loss-driven PLI/keyframe storms, the adaptive-bitrate sweep, stall+recovery, and head-of-line blocking. Uses pf + dummynet to beat up node-to-node UDP:
 
 ```bash
 sudo ./scripts/net-impair.sh up --loss 3 --delay 80   # 3% loss, 80 ms each way
 ./test-local.sh 2                                      # share + view, watch it cope
-sudo ./scripts/net-impair.sh down                      # always tear down when done
+sudo ./scripts/net-impair.sh down                      # always tear down
 sudo ./scripts/net-impair.sh status                    # inspect active pipes/anchor
 ```
 
-Knobs: `--loss PCT`, `--delay MS`, `--bw RATE` (e.g. `5Mbit/s`), `--reorder PCT` (+`--reorder-delay MS`), `--iface IFACE` (default `lo0` — two co-located tsnet nodes prefer their loopback endpoints). It impairs UDP on the interface while leaving headscale control (8080/tcp) and STUN (3478/udp) alone so setup still works.
+Knobs: `--loss PCT`, `--delay MS`, `--bw RATE` (e.g. `5Mbit/s`), `--reorder PCT` (+`--reorder-delay MS`), `--iface IFACE` (default `lo0`). Leaves headscale control (8080/tcp) and STUN (3478/udp) alone.
 
-Caveats: it's **best-effort** — if the two nodes fall back to a DERP-relayed path the flow may not be on `lo0` (confirm impairment is biting via the viewer's rising PLI count / dropping bitrate in the stats overlay; otherwise try `--iface en0`). dummynet has no native packet-reorder knob, so `--reorder` uses the two-pipe + `probability` workaround and may be rejected on some macOS pf versions. For **deterministic, root-free, CI-able** reorder/loss/duplicate coverage of the depacketizer, use the unit tests in `RTPPacketTests` and the end-to-end pipeline tests in `RTPLossyChannelTests` (via `LossyChannel`) instead — the harness is the end-to-end complement, not a replacement.
+Caveats: best-effort — a DERP-relayed fallback path may not be on `lo0` (confirm via rising PLI / dropping bitrate in the stats overlay, or try `--iface en0`); dummynet has no native reorder knob (`--reorder` uses a two-pipe probability workaround, may be rejected on some pf versions). For deterministic, root-free, CI-able coverage instead, use `RTPPacketTests` and `RTPLossyChannelTests` (via `LossyChannel`) — this harness is the end-to-end complement, not a replacement.

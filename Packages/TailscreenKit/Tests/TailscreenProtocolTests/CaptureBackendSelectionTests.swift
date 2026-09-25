@@ -21,26 +21,17 @@ final class CaptureBackendSelectionTests: XCTestCase {
 
     // MARK: The bug this type exists for
 
-    /// **A Wayland session must never get X11 capture.**
-    ///
-    /// XWayland sets `$DISPLAY`, so the obvious "do we have a display?" gate
-    /// passes on Wayland and the share succeeds — capturing the XWayland root,
-    /// which holds only whichever X11 apps are running and is frequently empty.
-    /// The sharer's UI says "Sharing". Viewers see a blank screen. Nothing
-    /// errors anywhere.
-    ///
-    /// That is what the Linux app shipped before this type existed: its only
-    /// gate was a non-empty `$DISPLAY`, and its "Wayland is not supported"
-    /// message was therefore unreachable on any Wayland desktop with XWayland.
+    /// XWayland sets `$DISPLAY`, so a naive "do we have a display?" gate
+    /// passes on Wayland and captures the XWayland root — frequently empty,
+    /// with the sharer saying "Sharing" and viewers seeing a blank screen.
     func testAWaylandSessionNeverGetsX11CaptureEvenThoughDisplayIsSet() {
         let choice = CaptureBackendSelection.choose(
             intent: .entireScreen, environment: environment(session: .wayland, display: ":0"))
         XCTAssertEqual(choice, .portal)
     }
 
-    /// And with no portal it must refuse, rather than falling back to the X11
-    /// capture that would "work". A refusal a person can read beats a share
-    /// that silently sends the wrong screen.
+    /// A refusal a person can read beats a share that silently sends the
+    /// wrong screen.
     func testAWaylandSessionWithNoPortalRefusesRatherThanFallingBackToX11() {
         let choice = CaptureBackendSelection.choose(
             intent: .entireScreen,
@@ -55,8 +46,8 @@ final class CaptureBackendSelectionTests: XCTestCase {
 
     // MARK: Window and app shares
 
-    /// X11 root capture cannot scope to a window. Widening the request to the
-    /// whole screen would be a privacy failure, not a missing feature.
+    /// Widening the request to the whole screen would be a privacy failure,
+    /// not a missing feature.
     func testAWindowShareWithoutAPortalIsRefusedAndNotWidenedToTheScreen() {
         for session in CaptureBackendSelection.SessionKind.allCases {
             let choice = CaptureBackendSelection.choose(
@@ -68,8 +59,7 @@ final class CaptureBackendSelectionTests: XCTestCase {
         }
     }
 
-    /// Including on X11, where the whole-screen path would have worked — the
-    /// point is that it is not what was asked for.
+    /// Including on X11, where the whole-screen path would have worked.
     func testAWindowShareUsesThePortalOnEverySessionKind() {
         for session in CaptureBackendSelection.SessionKind.allCases {
             let choice = CaptureBackendSelection.choose(
@@ -80,9 +70,8 @@ final class CaptureBackendSelectionTests: XCTestCase {
 
     // MARK: X11 keeps its silent path
 
-    /// An X11 session sharing the whole screen keeps X11 capture even though
-    /// the portal is available and can also do it. The portal would add a
-    /// consent dialog to every share for no capability the person asked for.
+    /// The portal would add a consent dialog for no capability the person
+    /// asked for.
     func testAnX11ScreenShareStaysOnX11EvenWhenThePortalIsAvailable() {
         let choice = CaptureBackendSelection.choose(
             intent: .entireScreen, environment: environment(session: .x11, portal: true))
@@ -103,10 +92,8 @@ final class CaptureBackendSelectionTests: XCTestCase {
         XCTAssertEqual(choice, .portal)
     }
 
-    /// `DISPLAY=""` is common in service units and means the same as unset —
-    /// but compares differently, and an empty display string reaches
-    /// `XOpenDisplay` as a request to open the default, which is not what the
-    /// caller meant.
+    /// `DISPLAY=""` means the same as unset, but an empty string reaches
+    /// `XOpenDisplay` as a request to open the default.
     func testAnEmptyDisplayStringCountsAsNoDisplay() {
         let choice = CaptureBackendSelection.choose(
             intent: .entireScreen,
@@ -123,8 +110,6 @@ final class CaptureBackendSelectionTests: XCTestCase {
         }
     }
 
-    /// The display is carried through, not re-read from somewhere else — a
-    /// share on `:1` must not capture `:0`.
     func testTheChosenDisplayIsTheOneThatWasPassedIn() {
         let choice = CaptureBackendSelection.choose(
             intent: .entireScreen, environment: environment(session: .x11, display: ":7"))
@@ -147,21 +132,17 @@ final class CaptureBackendSelectionTests: XCTestCase {
             .wayland)
     }
 
-    /// A compositor exports `WAYLAND_DISPLAY` even when nothing set the session
-    /// type — so missing it here would put a Wayland desktop back on the X11
-    /// path, which is the original bug.
+    /// Missing this would put a Wayland desktop back on the X11 path.
     func testWaylandDisplayIsTheFallbackWhenNoSessionTypeIsSet() {
         XCTAssertEqual(
             CaptureBackendSelection.sessionKind(fromEnvironment: ["WAYLAND_DISPLAY": "wayland-0"]),
             .wayland)
     }
 
-    /// **`DISPLAY` must not be consulted.** It is set under XWayland, so
-    /// reading it as evidence of an X11 session is precisely the bug.
+    /// `DISPLAY` must not be consulted — it's set under XWayland too.
     func testDisplayAloneIsNotEvidenceOfAnX11Session() {
         XCTAssertEqual(
             CaptureBackendSelection.sessionKind(fromEnvironment: ["DISPLAY": ":0"]), .unknown)
-        // And the pair that actually occurs on a Wayland desktop.
         XCTAssertEqual(
             CaptureBackendSelection.sessionKind(
                 fromEnvironment: ["DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"]), .wayland)
@@ -174,14 +155,10 @@ final class CaptureBackendSelectionTests: XCTestCase {
 
     // MARK: Derived hub state
 
-    /// The share button's enabled state is derived from `choose`, so the button
-    /// and the share can never disagree about whether this machine can share.
     func testCanShareIsTrueWhenAnyIntentIsServable() {
-        // Wayland with a portal: no X11 path at all, but still shareable.
         XCTAssertTrue(
             CaptureBackendSelection.canShareAnything(
                 environment: environment(session: .wayland, display: nil, portal: true)))
-        // X11 with no portal: no window shares, but the screen still works.
         XCTAssertTrue(
             CaptureBackendSelection.canShareAnything(
                 environment: environment(session: .x11, portal: false)))

@@ -1,42 +1,20 @@
 import Foundation
 
-/// Interleaving two or more sides of one session into a single ordered story.
+/// Interleaving two or more sides of one session into a single ordered
+/// story — the payoff for recording at all. See
+/// `.claude/rules/diagnostics.md`'s "The clock problem" for the full picture.
 ///
-/// This is the payoff for recording at all. One side's bundle answers "what
-/// did my machine do"; the pair answers "what happened", which is the question
-/// anybody actually has. A viewer that waited thirty seconds and gave up and a
-/// sharer that never saw a HELLO are the same bundle pair as a viewer that
-/// waited thirty seconds and a sharer that saw the HELLO and parked it on an
-/// approval prompt nobody was looking at — and those are completely different
-/// bugs. Only the interleaving distinguishes them.
-///
-/// ## The clock problem, and why the handshake solves it
-///
-/// Two machines' wall clocks disagree, by milliseconds if they are both
-/// healthy and by minutes if one is not. Sorting two bundles on raw timestamps
-/// therefore produces, at best, a plausible-looking lie: an acknowledgement
-/// before the message it acknowledges, a viewer connecting before the share
-/// started. A reader who cannot see the skew will read causality out of the
-/// order, because that is what an ordered list is for.
-///
-/// The fix is already on the wire. A handshake is exactly the four-timestamp
-/// exchange NTP uses to estimate offset:
+/// Two machines' wall clocks disagree, so sorting raw timestamps can show an
+/// ack before its message. The fix uses the handshake's four timestamps,
+/// exactly the NTP offset exchange:
 ///
 /// ```text
 ///   viewer  ──HELLO────────▶  t1 sent (viewer clock)   t2 received (sharer clock)
 ///   sharer  ◀─HELLO_ACK────   t4 received (viewer)     t3 sent (sharer clock)
 /// ```
 ///
-/// with `offset = ((t2 - t1) + (t3 - t4)) / 2` — the amount the sharer's clock
-/// leads the viewer's, with the one-way delay cancelling out under the usual
-/// assumption that it is roughly symmetric. The four events are recorded
-/// anyway, so the correction costs nothing to collect, and the two sides are
-/// paired on the **SSRC the sharer assigns in the HELLO_ACK** — a value both
-/// ends already know and neither had to invent.
-///
-/// The estimate is reported, never silently applied: ``Timeline/clockNotes``
-/// says what was inferred and from what. An offset a reader cannot see is
-/// exactly as misleading as a skew they cannot see.
+/// `offset = ((t2 - t1) + (t3 - t4)) / 2`, paired on the SSRC the sharer
+/// assigns in HELLO_ACK. Always reported in ``Timeline/clockNotes``, never silently applied.
 public enum DiagnosticsMerge {
 
     /// One event in a merged timeline, tagged with where it came from.
@@ -69,19 +47,10 @@ public enum DiagnosticsMerge {
         }
     }
 
-    /// A hole in one device's stream, where the recorder evicted events.
-    ///
-    /// The whole point of the drop counter is that a reader must not read the
-    /// retained prologue and the recent ring as ADJACENT and infer causality
-    /// across however long is missing — and until this existed the rendered
-    /// timeline printed them adjacent with nothing between, which is exactly
-    /// that failure. The JSONL header carried the count all along; nothing
-    /// carried it into the thing people actually read.
-    ///
-    /// Located from a discontinuity in `seq`, not from the header's total:
-    /// sequence numbers are dense by construction, so a jump says not just how
-    /// many events are missing but WHERE, which is the part that lets a reader
-    /// know whether the hole is anywhere near what they are looking at.
+    /// A hole in one device's stream, where the recorder evicted events. So a
+    /// reader doesn't read the retained prologue and ring as adjacent and
+    /// infer causality across the gap. Located from a `seq` discontinuity
+    /// (dense by construction), which says where, not just how many.
     public struct Gap: Sendable, Equatable {
         public var device: String
         /// How many events the recorder dropped here.
@@ -122,24 +91,17 @@ public enum DiagnosticsMerge {
         }
     }
 
-    /// Merge bundles into one ordered timeline.
-    ///
-    /// The reference clock is the **sharer's** when there is one, otherwise the
-    /// first bundle given. The sharer is the better choice because it is the
-    /// one side every other side talked to, so every offset is estimated
-    /// directly against it rather than through a third machine.
+    /// Merge bundles into one ordered timeline. The reference clock is the
+    /// sharer's when there is one — every offset estimates directly against
+    /// it rather than through a third machine — otherwise the first bundle given.
     public static func merge(_ bundles: [DiagnosticsBundle]) -> Timeline {
         guard !bundles.isEmpty else {
             return Timeline(lines: [], referenceDevice: "", clockNotes: [])
         }
 
-        // The sharer is the better reference because it is the one side every
-        // other side talked to, so every offset is estimated directly against
-        // it rather than through a third machine. Identified by what the
-        // bundle CONTAINS rather than by its header role: one process can be
-        // both sharer and viewer at once (a Mac sharing to one person while
-        // watching another), so the header's role is a default, not a fact
-        // about the session. Sending a HELLO_ACK is a fact.
+        // Identified by what the bundle CONTAINS (sending a HELLO_ACK), not
+        // its header role — a process can be both sharer and viewer at once,
+        // so the header role is only a default.
         let referenceIndex =
             bundles.firstIndex { bundle in
                 bundle.events.contains { $0.name == DiagnosticEventName.helloAckSent.rawValue }
@@ -166,16 +128,10 @@ public enum DiagnosticsMerge {
                         + "its timestamps are shown as recorded and may be skewed.")
             }
 
-            // Disclosed rather than silently papered over. ONE offset is
-            // estimated per bundle, from one handshake, and applied to every
-            // session in it — so on a bundle spanning several sessions the
-            // later ones are corrected by an estimate taken during an earlier
-            // one, off by whatever the two clocks drifted in between. Drift
-            // over an hour is milliseconds and the sessions are usually
-            // minutes apart, so a per-session offset would be machinery for a
-            // correction smaller than the round trip already quoted beside it
-            // — but a reader comparing two sessions to the millisecond deserves
-            // to know which one the number came from.
+            // One offset per bundle, from one handshake, applied to every
+            // session in it — disclosed, since a multi-session bundle's later
+            // sessions are corrected by an earlier one's estimate, off by
+            // whatever the clocks drifted in between.
             let sessions = Set(bundle.events.map(\.session))
             if sessions.count > 1, offset != 0 {
                 notes.append(
@@ -184,20 +140,10 @@ public enum DiagnosticsMerge {
                         + "apart in time may have drifted since.")
             }
 
-            // Each side is replayed from ONE wall-clock anchor plus its own
-            // monotonic elapsed, not from each event's recorded wall clock.
-            // The anchor is derived from the HANDSHAKE, not from the session
-            // start — see `anchor(for:)`.
-            //
-            // This is what `monotonicNs` was recorded for, and until now the
-            // merge did not use it. A wall clock can step mid-session — NTP
-            // correcting a drifting machine is routine, and a share is exactly
-            // long enough for it — which would place a later event before an
-            // earlier one on the SAME device, inventing a causal inversion
-            // inside one machine's own story. The monotonic clock cannot do
-            // that. The anchor is the first event's wall clock, so the timeline
-            // still sits at the real time of day, and the cross-device offset
-            // is applied on top exactly as before.
+            // Each side replays from one wall-clock anchor (derived from the
+            // handshake, see `anchor(for:)`) plus its own monotonic elapsed,
+            // not each event's recorded wall clock — a mid-session NTP step
+            // could otherwise invert two events on the same device.
             let anchor = Self.anchor(for: bundle)
 
             var previousSeq: UInt64?
@@ -209,11 +155,9 @@ public enum DiagnosticsMerge {
                 } else {
                     shifted.wallClock = event.wallClock.addingTimeInterval(offset)
                 }
-                // Sequence numbers are dense, so any jump is an eviction. The
-                // leading case (`previousSeq == nil` and the first event is not
-                // seq 1) is a whole session prologue released under the
-                // retention cap — a hole with no event before it to hang off,
-                // and the one a reader is least likely to suspect.
+                // Sequence numbers are dense, so any jump is an eviction — the
+                // leading case (first event not at seq 1) is a whole
+                // prologue lost to the retention cap.
                 let expected = previousSeq.map { $0 &+ 1 } ?? 1
                 if event.seq > expected {
                     gaps.append(
@@ -226,12 +170,7 @@ public enum DiagnosticsMerge {
                 lines.append(
                     Line(
                         device: bundle.header.device,
-                        // The EVENT's role, not the bundle header's. The header
-                        // carries the recorder's *default*, which in production
-                        // is `.app` precisely because one process can share and
-                        // view at once — so taking it here labelled every line
-                        // `.app` and threw away the per-event role the rest of
-                        // this type is built on.
+                        // The event's role, not the header's default (`.app`).
                         role: event.role,
                         event: shifted,
                         originalWallClock: event.wallClock,
@@ -239,10 +178,8 @@ public enum DiagnosticsMerge {
             }
         }
 
-        // Sort on the corrected clock, then break ties deterministically. The
-        // tie-break matters more than it looks: two events in the same
-        // millisecond on two devices would otherwise order differently between
-        // runs, and a timeline that reorders itself is one nobody can cite.
+        // Sort on the corrected clock, then break ties deterministically —
+        // else two same-millisecond events on different devices could reorder between runs.
         lines.sort { lhs, rhs in
             if lhs.event.wallClock != rhs.event.wallClock {
                 return lhs.event.wallClock < rhs.event.wallClock
@@ -251,9 +188,7 @@ public enum DiagnosticsMerge {
             return lhs.event.seq < rhs.event.seq
         }
 
-        // Sorted the same way the lines are, so the renderer can walk both in
-        // one pass and a marker always lands immediately before the event it
-        // precedes.
+        // Sorted the same way as `lines` so the renderer walks both in one pass.
         gaps.sort { lhs, rhs in
             if lhs.at != rhs.at { return lhs.at < rhs.at }
             return lhs.device < rhs.device
@@ -278,16 +213,9 @@ public enum DiagnosticsMerge {
     }
 
     /// Estimate how far `subject`'s clock is from `reference`'s, using the
-    /// handshake between them.
-    ///
-    /// Tries the pairing both ways round — subject-as-viewer and
-    /// subject-as-sharer — because neither bundle's header decides which it
-    /// was. A process can be both at once, and what matters is only which end
-    /// of one particular handshake each bundle holds.
-    ///
-    /// Returns nil when the four timestamps are not all present: a viewer that
-    /// never completed a handshake with this sharer, a bundle whose prologue
-    /// was cleared, two bundles from unrelated sessions.
+    /// handshake between them. Tries both ways round (subject-as-viewer,
+    /// subject-as-sharer), since neither header decides which it was.
+    /// Returns nil when the four timestamps aren't all present.
     public static func estimateOffset(
         of subject: DiagnosticsBundle,
         against reference: DiagnosticsBundle
@@ -323,10 +251,8 @@ public enum DiagnosticsMerge {
         client: DiagnosticsBundle,
         server: DiagnosticsBundle
     ) -> HandshakePair? {
-        // Pair on the SSRC the sharer assigned. Taking the FIRST completed
-        // handshake rather than the latest: it is the one closest to the
-        // prologue, so it is the one least likely to have been evicted, and a
-        // reconnect later in the session would estimate the same offset anyway.
+        // Pair on the SSRC the sharer assigned. First completed handshake,
+        // not latest — closest to the prologue, least likely evicted.
         for ackReceived in client.events
         where ackReceived.name == DiagnosticEventName.helloAckReceived.rawValue {
             guard case .int(let ssrc)? = ackReceived.fields["ssrc"] else { continue }
@@ -337,36 +263,16 @@ public enum DiagnosticsMerge {
                 })
             else { continue }
 
-            // The client's HELLO is the last one it sent before the ack came
-            // back; the server's is the last it saw before it answered. "Last
-            // before" rather than "first" because a viewer retries its HELLO
-            // until acked, and it is the final retry that actually produced
-            // this ack — pairing against the first would fold the whole retry
-            // period into the offset.
-            // The sharer's HELLO must be THIS viewer's. A share with several
-            // people joining at once has many `hello.received` interleaved, and
-            // taking the latest before the ack would happily pick another
-            // viewer's retry as `t2` — yielding an offset that looks entirely
-            // plausible and is wrong. The ack carries the addr it answered, so
-            // the pairing is available; it just was not being used.
+            // Last HELLO before the ack, not first — a viewer retries until
+            // acked, and only the final retry produced this ack. The
+            // sharer's HELLO must be THIS viewer's: several joiners at once
+            // interleave `hello.received`, so match on the ack's own `addr`.
             //
-            // Both "before" tests compare `seq`, not `wallClock`. They are
-            // WITHIN one bundle, where sequence is exact, local and monotonic
-            // by construction — while the wall clock is the very thing that can
-            // step, and a backward step between the HELLO and the ACK made the
-            // legitimate HELLO compare LATER than the ack, so the pair was
-            // rejected and the alignment this function exists for silently did
-            // not happen. The four timestamps below are still wall clocks,
-            // because the offset is a statement about wall clocks; it is only
-            // the SELECTION that must not be.
-            //
-            // And both are scoped to the ack's own SESSION. A process shares or
-            // views several times, and a bundle retains the last few, so
-            // without this the pairing could reach back into an earlier
-            // session's HELLO — two unrelated handshakes averaged into one
-            // confidently wrong offset. The scope is per bundle, since the two
-            // sides number their sessions independently; what joins them across
-            // machines is still the SSRC.
+            // Both "before" tests compare `seq`, not `wallClock` — sequence
+            // is exact and monotonic within a bundle; the wall clock is the
+            // thing that can step and reject a legitimate pair. Both are
+            // also scoped to the ack's own session, so a multi-session
+            // bundle can't pair across unrelated handshakes.
             let ackAddr = ackSent.fields["addr"]
             guard
                 let helloSent = client.events.last(where: {
@@ -378,9 +284,7 @@ public enum DiagnosticsMerge {
                     $0.name == DiagnosticEventName.helloReceived.rawValue
                         && $0.session == ackSent.session
                         && $0.seq <= ackSent.seq
-                        // Older bundles predate the addr field on one side or
-                        // the other; falling back to time-only there keeps them
-                        // readable rather than refusing to align them at all.
+                        // Older bundles predate the addr field; fall back rather than refusing to align.
                         && (ackAddr == nil || $0.fields["addr"] == nil
                             || $0.fields["addr"] == ackAddr)
                 })
@@ -394,9 +298,8 @@ public enum DiagnosticsMerge {
             let serverLead = ((t2 - t1) + (t3 - t4)) / 2
             let roundTrip = (t4 - t1) - (t3 - t2)
 
-            // A negative round trip is impossible and means the pairing is
-            // wrong (two unrelated sessions, a reused SSRC across a restart).
-            // Refusing is right: a confidently wrong offset is worse than none.
+            // A negative round trip means the pairing is wrong (two unrelated
+            // sessions, a reused SSRC). Refusing beats a confidently wrong offset.
             guard roundTrip >= 0 else { continue }
             return HandshakePair(serverLead: serverLead, roundTrip: roundTrip, ssrc: ssrc)
         }
@@ -404,19 +307,10 @@ public enum DiagnosticsMerge {
     }
 
     /// The wall-clock time this bundle's monotonic zero corresponds to.
-    ///
-    /// Derived from the **handshake** event where there is one, not from the
-    /// session start, and the difference matters whenever a clock steps
-    /// between the two. The offset is estimated from handshake timestamps, so
-    /// it already contains any step that happened before them; anchoring at
-    /// `startedAt` — a reading taken *before* the step — then replays the whole
-    /// side from a pre-step origin while correcting it by a post-step offset,
-    /// leaving the timeline shifted by exactly that discontinuity.
-    ///
-    /// Anchoring on the handshake makes the two consistent: the same event
-    /// that produced the offset also fixes the origin. `startedAt` remains the
-    /// fallback for a bundle that never completed one, where there is nothing
-    /// better to use.
+    /// Derived from the handshake event, not the session start — the offset
+    /// already accounts for any clock step before the handshake, and
+    /// anchoring earlier would reintroduce that discontinuity. `startedAt`
+    /// is the fallback for a bundle with no completed handshake.
     static func anchor(for bundle: DiagnosticsBundle) -> Date? {
         let handshakeNames: Set<String> = [
             DiagnosticEventName.helloAckSent.rawValue,

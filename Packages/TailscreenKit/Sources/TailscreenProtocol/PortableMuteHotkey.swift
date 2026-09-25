@@ -1,104 +1,66 @@
 import Foundation
 
-/// A system-wide chord this process currently holds.
-///
-/// The half of a platform hotkey shim that a controller actually uses: how many
-/// times the chord fired, and give it back. `X11Hotkey` and `WindowsHotkey`
-/// already had exactly this surface — the protocol only names it.
+/// A system-wide chord this process currently holds. The surface a
+/// controller actually uses; `X11Hotkey`/`WindowsHotkey` already had it.
 public protocol GlobalHotkeyHolding: AnyObject {
-    /// How many times the chord was pressed since the last call.
-    ///
-    /// Polled rather than pushed, because that is what both platforms make
-    /// cheap: X11 has no "post to the app's loop" primitive that does not mean
-    /// threading Xlib, and `WM_HOTKEY` is a thread message the shim's own pump
-    /// collects. A count rather than a bool so a fast double-press is two
-    /// toggles rather than one.
+    /// How many times the chord was pressed since the last call. Polled, not
+    /// pushed — cheap on both platforms (X11 has no post-to-loop primitive
+    /// without threading Xlib; `WM_HOTKEY` is a thread message the shim's
+    /// pump collects). A count, not a bool, so a fast double-press is two
+    /// toggles.
     func drain() -> Int
 
-    /// Give the chord back to the rest of the desktop.
-    ///
-    /// Explicit rather than left to `deinit`: a global grab is exclusive, so a
-    /// hotkey this app no longer wants is a key no other app can have until the
-    /// reference dies.
+    /// Give the chord back to the rest of the desktop. Explicit, not left to
+    /// `deinit`: a global grab is exclusive, so the key stays unavailable
+    /// until the reference dies otherwise.
     func release()
 }
 
 /// Takes a chord system-wide on this platform, or says why it could not.
-///
-/// The ONE thing that genuinely differs between the two hosts' mute hotkeys,
-/// and therefore the only thing left in each app after ``PortableMuteHotkey``.
-/// The X11 binding checks the session type before touching Xlib (XWayland sets
-/// `DISPLAY`, so "do we have a display?" passes on Wayland and the grab then
-/// silently under-delivers) and warns about a server with no detectable
-/// auto-repeat; the Windows binding has neither problem and simply calls
-/// `RegisterHotKey`. Neither of those belongs in a shared controller, and
-/// everything around them was identical.
+/// The one thing that genuinely differs between the two hosts' mute
+/// hotkeys, so the only thing left in each app after ``PortableMuteHotkey``.
 public protocol GlobalHotkeyBinding {
     func hold(
         _ chord: ShortcutChord
     ) -> Result<any GlobalHotkeyHolding, GlobalHotkeyUnavailability>
 }
 
-/// The mute hotkey — the half of "mute from outside the window" that does not
-/// need a window at all.
+/// The mute hotkey — the half of "mute from outside the window" that does
+/// not need a window at all. Holds the catalog's `toggleMicrophone` chord
+/// system-wide and flips the microphone ``MuteHotkeyRouting`` names.
 ///
-/// The in-window mic buttons only exist while the app is in front of you, and
-/// during a share the app is behind whatever you are showing. This holds the
-/// catalog's `toggleMicrophone` chord system-wide and flips the microphone
-/// ``MuteHotkeyRouting`` names.
+/// Both swift-cross-ui apps wrote this near-identically around their own
+/// platform shim; only one method's worth (``GlobalHotkeyBinding``) and the
+/// diagnostic sink differ. Shared rules a second copy would let drift:
 ///
-/// Both swift-cross-ui apps wrote this controller, near identically, around
-/// their own platform shim; what differed was one method's worth of platform
-/// (see ``GlobalHotkeyBinding``) and where a diagnostic line goes. What is
-/// shared, and what a second copy would let drift, is every rule below:
+/// - **Held only while there is something to mute** — a global grab is
+///   exclusive, so idle-holding would take the chord from every other app.
+/// - **Hold/release acted on only when it CHANGES** — on Windows re-taking
+///   the chord destroys/recreates the shim's pump thread.
+/// - **A failure is reported once**, not once per 50ms tick.
+/// - **A retarget is announced**, since starting a share while watching
+///   silently changes which mic the chord flips.
+/// - **`chordHint` is nil while not actually held**, so UI never advertises
+///   a mute key that does nothing.
 ///
-/// - **It is held only while there is something to mute.** A global grab is
-///   exclusive — whoever takes a chord takes it from every other app on the
-///   machine — so holding ⌃⌥M while idle would be taking it for a handler with
-///   nothing to do. Same reason macOS registers its panic-revoke key only while
-///   a control grant is live.
-/// - **The hold/release decision is acted on only when it CHANGES.** On Windows
-///   re-taking the chord means destroying and recreating the shim's pump
-///   thread; re-asserting it every tick would do that 20 times a second.
-/// - **A failure is reported once, and surfaced rather than swallowed.** A mute
-///   hotkey that was never registered looks exactly like one that works, right
-///   up to the moment somebody presses it believing they have gone quiet — but
-///   a line per 50 ms tick is a log nobody reads.
-/// - **A retarget is announced.** Starting a share while already watching
-///   silently changes which microphone the chord flips, and the honest thing is
-///   to name the new one rather than let the user find out by pressing it.
-/// - **`chordHint` is nil while the hotkey is not actually held**, so UI that
-///   advertises the chord cannot teach somebody a mute key that does nothing.
-///
-/// `@MainActor` because both hosts read their mic availability and flip their
-/// mic from there. It owns no thread: ``start()`` polls, and ``tick()`` is one
-/// pass, which is what the suite drives.
+/// `@MainActor`; owns no thread — ``start()`` polls, ``tick()`` is one pass.
 @MainActor
 public final class PortableMuteHotkey {
     /// Human-readable reason the hotkey is not available, or nil when it is.
     public private(set) var unavailability: GlobalHotkeyUnavailability?
 
-    /// Invoked whenever ``unavailability`` changes, so the host can mirror it
-    /// into whatever its views observe. A callback rather than an
-    /// `ObservableObject` conformance: the swift-cross-ui hosts import this
-    /// module wholesale and adding SwiftCrossUI beside it resurrects the
-    /// `Published` collision their targeted imports exist to dodge.
+    /// Invoked whenever ``unavailability`` changes. A callback rather than
+    /// `ObservableObject`: adding SwiftCrossUI here would resurrect the
+    /// `Published` collision the hosts' targeted imports dodge.
     public var onUnavailabilityChange: (@MainActor (GlobalHotkeyUnavailability?) -> Void)?
 
     /// The chord's platform spelling ("Ctrl+Alt+M"), for UI that names it.
     public var chordDisplay: String { chord.display(.words) }
 
     /// The chord to advertise on microphone controls, or nil while the hotkey
-    /// is not actually registered.
-    ///
-    /// Read off the HELD hotkey, not off `unavailability == nil`, which is what
-    /// both apps' copies did: that answer is also nil before the first
-    /// acquisition has been attempted, so it advertised a chord nobody was
-    /// holding. Harmless in practice — the hosts only draw the hint beside a
-    /// live mic control, and the same tick that makes one available takes the
-    /// chord — but the contract this comment states is the one worth having,
-    /// because the whole point is never to teach somebody a mute key that does
-    /// nothing.
+    /// is not actually registered. Read off the HELD hotkey, not
+    /// `unavailability == nil` (also nil before the first acquisition
+    /// attempt, which would advertise a chord nobody was holding).
     public var chordHint: String? { hotkey == nil ? nil : chordDisplay }
 
     /// Which microphone the chord currently flips, for the UI to say so.
@@ -110,9 +72,8 @@ public final class PortableMuteHotkey {
     private let viewerMicAvailable: @MainActor () -> Bool
     private let toggleSharerMic: @MainActor () -> Void
     private let toggleViewerMic: @MainActor () -> Void
-    /// Where a diagnostic goes. The host's, because the two disagree — stderr
-    /// on GTK, stdout on WinUI — and neither is localized: these are console
-    /// lines, not UI. The sharer-facing wording is `MuteHotkeyNote`.
+    /// Where a diagnostic goes (stderr on GTK, stdout on WinUI), unlocalized
+    /// console lines. The sharer-facing wording is `MuteHotkeyNote`.
     private let note: @Sendable (String) -> Void
 
     /// The last target announced, so a retarget is said once rather than per
@@ -144,11 +105,8 @@ public final class PortableMuteHotkey {
         self.note = note
     }
 
-    /// Begin watching. Idempotent.
-    ///
-    /// 50 ms is imperceptible on a keypress and cheap: an idle tick is one
-    /// `XPending` on a socket with nothing on it, or one atomic read of the
-    /// Windows shim's counter.
+    /// Begin watching. Idempotent. 50ms is imperceptible on a keypress and
+    /// cheap on both platforms (one `XPending`/counter read when idle).
     public func start() {
         guard !polling else { return }
         polling = true
@@ -161,9 +119,8 @@ public final class PortableMuteHotkey {
     }
 
     /// One pass: re-target, grab or release accordingly, then drain.
-    ///
-    /// Internal, not private, so `PortableMuteHotkeyTests` can drive the whole
-    /// state machine deterministically instead of sleeping through the poll.
+    /// Internal, not private, so `PortableMuteHotkeyTests` can drive it
+    /// deterministically instead of sleeping through the poll.
     func tick() {
         let sharer = sharerMicAvailable()
         let viewer = viewerMicAvailable()
@@ -197,10 +154,8 @@ public final class PortableMuteHotkey {
         }
     }
 
-    /// Take the chord, if it is not already held.
-    ///
-    /// The guard is the load-bearing part on Windows: re-registering means
-    /// tearing down and rebuilding the shim's pump thread.
+    /// Take the chord, if it is not already held. The guard matters on
+    /// Windows: re-registering tears down and rebuilds the pump thread.
     private func acquire() {
         guard hotkey == nil else { return }
         switch binding.hold(chord) {
@@ -226,8 +181,7 @@ public final class PortableMuteHotkey {
         self.hotkey = nil
     }
 
-    /// Record a transition and tell the host about it — only on change, so a
-    /// failure re-reported every 50 ms tick is one mirror write, not many.
+    /// Record a transition and tell the host, only on change.
     private func setUnavailability(_ reason: GlobalHotkeyUnavailability?) {
         guard reason != unavailability else { return }
         unavailability = reason

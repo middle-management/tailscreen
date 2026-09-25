@@ -3,34 +3,20 @@ import Foundation
 /// Ships things to the sharer over the viewer's TCP back-channel **in the
 /// order they were produced**.
 ///
-/// The producers (`RemoteControlInputView`, `AnnotationCanvasModel`) fire on
-/// the main actor; the send path (`TailscaleScreenShareClient.sendInputEvent`
-/// / `sendAnnotationOp`) is `async` and serializes on a writer actor.
-/// Bridging the two with one detached `Task` per item — which is what this
-/// replaced — hands the runtime N independent tasks racing for that actor,
-/// and Swift promises nothing about which arrives first.
+/// A detached `Task` per item (the prior approach) hands the runtime N
+/// independent tasks racing for the send path's writer actor, with no
+/// ordering guarantee. Reordering, not dropping, is the failure mode, and
+/// both payloads here are sequences: a `mouseUp` overtaking its `mouseDown`
+/// leaves a button held down until the grant is revoked; `.undo(X)`
+/// overtaking `.add(X)` is dropped as an unknown id, leaving the stroke
+/// permanently on screen.
 ///
-/// What that costs is not a dropped item but a REORDERED one, and both
-/// payloads on this channel are sequences rather than independent events:
-///
-///   - Input: a `mouseUp` overtaking its `mouseDown` leaves a button held
-///     down on somebody else's Mac until the grant is revoked, and a `keyUp`
-///     overtaking its `keyDown` does the same to a key. Both are far worse
-///     than the click that was supposed to happen not happening.
-///   - Annotations: `.undo(X)` only means anything to a peer that already has
-///     `.add(X)`. Overtake it and the undo is dropped as an unknown id, so
-///     the stroke stays on the sharer's screen — and on every other viewer's,
-///     since the sharer relays it — for the rest of the share, with nothing
-///     left that can remove it.
-///
-/// So items go through one `AsyncStream` drained by a **single** consumer
-/// that awaits each send in turn: one producer, one consumer, production
-/// order preserved end to end. The GTK viewer's `InputForwarder` /
-/// `AnnotationForwarder` and the WinUI viewer's `Outbound` queue are the same
-/// shape for the same reason, and `ViewerBackChannel.sendInputEvent` states
-/// the contract all of them satisfy. The sharer's fan-out side has its own
-/// (`TailscaleScreenShareServer.enqueueAnnotationBroadcast`), because the
-/// relay to *other* viewers can invert the same pair independently.
+/// So items go through one `AsyncStream` drained by a single consumer that
+/// awaits each send in turn. The GTK `InputForwarder`/`AnnotationForwarder`
+/// and WinUI `Outbound` queue are the same shape; `ViewerBackChannel.sendInputEvent`
+/// states the contract. The sharer's fan-out side has its own
+/// (`TailscaleScreenShareServer.enqueueAnnotationBroadcast`), since relay to
+/// other viewers can invert the pair independently.
 @MainActor
 final class OrderedOutbox<Element: Sendable> {
     private let stream: AsyncStream<Element>
@@ -43,12 +29,9 @@ final class OrderedOutbox<Element: Sendable> {
     ///   working across a back-channel reconnect.
     init(send: @escaping @MainActor (Element) async -> Void) {
         self.send = send
-        // Unbounded on purpose: dropping the oldest could drop a `mouseUp`,
-        // a `keyUp`, or the `.add` a later `.undo` refers to — the exact
-        // failures this type exists to prevent. Flood control belongs
-        // upstream, where it can be selective: the capture view throttles
-        // `mouseMove` (the only coalescable event) and the sharer's injector
-        // coalesces runs of them per drain.
+        // Unbounded on purpose: dropping the oldest could drop a `mouseUp` or
+        // the `.add` a later `.undo` refers to. Flood control belongs
+        // upstream (mouseMove throttling/coalescing).
         let (stream, continuation) = AsyncStream<Element>.makeStream(bufferingPolicy: .unbounded)
         self.stream = stream
         self.continuation = continuation

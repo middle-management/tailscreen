@@ -2,12 +2,9 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Tests for `CaptureTimings` / `CaptureTimingAccumulator` — the sharer-side
-/// answer to "which part is slow".
-///
-/// The two behaviours worth pinning are both about not lying. A still screen
-/// must not read as a fast sharer, and a sharer whose encode dominates must
-/// say `encode` rather than leaving someone to infer it from a frame rate.
+/// `CaptureTimings` / `CaptureTimingAccumulator` — the sharer-side answer to
+/// "which part is slow". Must not lie: a still screen must not read as fast,
+/// and the dominant stage must be named rather than left to be inferred.
 final class CaptureTimingsTests: XCTestCase {
     private let ms: UInt64 = 1_000_000
     private let second: UInt64 = 1_000_000_000
@@ -39,10 +36,8 @@ final class CaptureTimingsTests: XCTestCase {
     }
 
     func testTimeoutsDoNotDragTheAveragesDown() {
-        // A still screen: WGC yields nothing, so most passes are timeouts.
-        // Averaging their zero convert/encode times in would report a sharer
-        // that is fast when it is simply idle — and that is exactly the
-        // question this type exists to answer.
+        // A still screen: WGC yields nothing, most passes are timeouts. Averaging
+        // their zero convert/encode times in would report idle as fast.
         var accumulator = CaptureTimingAccumulator()
         accumulator.record(
             nowNs: 0, acquireNs: 16 * ms, convertNs: 40 * ms, encodeNs: 100 * ms,
@@ -59,8 +54,7 @@ final class CaptureTimingsTests: XCTestCase {
         XCTAssertEqual(timings.timeouts, 19)
         XCTAssertEqual(timings.convertMs, 40, accuracy: 0.01, "averaged over frames, not passes")
         XCTAssertEqual(timings.encodeMs, 100, accuracy: 0.01)
-        // Acquire IS averaged over every pass: a timeout really did spend that
-        // time waiting.
+        // Acquire IS averaged over every pass: a timeout really spent that time waiting.
         XCTAssertEqual(timings.acquireMs, 16, accuracy: 0.01)
     }
 
@@ -71,7 +65,6 @@ final class CaptureTimingsTests: XCTestCase {
             producedFrame: true)
         XCTAssertNotNil(accumulator.snapshot(nowNs: second))
 
-        // A second window must not inherit the first one's totals.
         accumulator.record(
             nowNs: second, acquireNs: ms, convertNs: 2 * ms, encodeNs: 3 * ms,
             producedFrame: true)
@@ -120,9 +113,7 @@ final class CaptureTimingsTests: XCTestCase {
     }
 
     func testSummaryNamesIdlePassesWhenThereAreAny() {
-        // Two frames a second with 38 idle passes and two frames a second with
-        // none are completely different problems, and the stage timings alone
-        // cannot tell them apart.
+        // Stage timings alone can't distinguish 2fps with 38 idle passes from 2fps with none.
         let mostlyIdle = CaptureTimings(
             framesPerSecond: 2, acquireMs: 24, convertMs: 6, encodeMs: 3,
             frames: 2, timeouts: 38)

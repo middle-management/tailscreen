@@ -7,26 +7,18 @@ import CoreGraphics
 /// The shared *shape* of an annotation: how an ``Annotation``'s stored points
 /// become the outline every platform draws.
 ///
-/// Shape tools store only what the user dragged — an anchor and the current
-/// point — so the outline (rectangle corners, ellipse arc, arrowhead barbs,
-/// click ring) is *derived* at render time rather than baked into the wire
-/// payload. Both endpoints render each other's relayed strokes, so that
-/// derivation has to agree: the constants and barb math live here, in the
-/// portable tier, precisely so an arrow drawn on Linux looks like the same
-/// arrow drawn on macOS.
+/// Shape tools store only what the user dragged (an anchor and the current
+/// point); the outline is derived at render time. Both endpoints render each
+/// other's relayed strokes, so the constants and barb math live here so an
+/// arrow drawn on Linux matches one drawn on macOS.
 ///
-/// Two coordinate spaces are in play and this type is deliberately agnostic:
-/// the macOS overlay maps normalized points into a pixel `CGRect` and strokes a
-/// `CGPath`; the GTK viewer keeps normalized coordinates and hands a polyline to
-/// GL. So callers pass whatever space they draw in, along with a `headLength`
-/// already expressed in that space (see ``arrowHeadLength(strokeWidth:)``), and
-/// the geometry comes back in the same units.
+/// Coordinate-space agnostic: callers pass whatever space they draw in
+/// (normalized, pixel `CGRect`, …) with `headLength` already in those units,
+/// and geometry comes back in the same units.
 ///
 /// ``polyline(tool:points:headLength:clickRadius:aspect:)`` is the flattened
-/// form a vertex-array renderer needs. A path-based renderer (CoreGraphics) can
-/// use ``arrowBarbs(from:to:headLength:)`` plus the constants directly and keep
-/// its native curve primitives — flattening an ellipse to line segments would
-/// be a downgrade there.
+/// form a vertex-array renderer needs; a path-based renderer can use
+/// ``arrowBarbs(from:to:headLength:)`` and the constants directly instead.
 public enum AnnotationGeometry {
     // MARK: Shared constants
 
@@ -39,13 +31,9 @@ public enum AnnotationGeometry {
     /// shaft direction.
     public static let arrowHeadAngle = Double.pi * 5 / 6
 
-    /// Arrowhead length for a stroke of `width`, in the SAME units as `width`.
-    /// Mirrors the macOS overlay exactly (`max(12, width * 4)`): a *fixed* size
-    /// rather than a fraction of the shaft, so short and long arrows carry
-    /// equally legible heads.
-    ///
-    /// A renderer working in normalized coordinates converts into its own space
-    /// — e.g. `arrowHeadLength(strokeWidth:) / renderHeightInPixels`.
+    /// Arrowhead length for a stroke of `width`, same units as `width`.
+    /// Mirrors the macOS overlay (`max(12, width * 4)`): a fixed size, not a
+    /// fraction of the shaft, so short and long arrows have equally legible heads.
     public static func arrowHeadLength(strokeWidth: Double) -> Double {
         max(12.0, strokeWidth * 4)
     }
@@ -95,11 +83,10 @@ public enum AnnotationGeometry {
 
     /// Expand `points` for `tool` into a single renderable polyline.
     ///
-    /// `pen` passes through (it is already a freehand polyline). Shape tools use
-    /// the FIRST and LAST points as the drag anchor and current position, so a
-    /// shape stays correct whether the capture layer replaced the moving point
-    /// or appended to it. Degenerate input (empty, or a shape with one point)
-    /// returns the raw points rather than inventing geometry.
+    /// `pen` passes through. Shape tools use the first and last points as the
+    /// drag anchor and current position, so a shape stays correct whether the
+    /// capture layer replaced the moving point or appended to it. Degenerate
+    /// input returns the raw points.
     ///
     /// - Parameters:
     ///   - headLength: arrowhead length in the same units as `points` — see

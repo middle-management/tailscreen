@@ -58,83 +58,46 @@ import enum WGCCaptureKit.WGC
 // NOT named main.swift on purpose: Swift rejects `@main` in a file with that
 // name, because main.swift is itself top-level code.
 
-/// Stage W5 of the Windows port: sign in, pick a peer, watch and hear it.
-///
-/// W2 proved the chrome renders; W3 proved libtailscale's Go↔native bridge
-/// (patch 024) carries a real tsnet node; W4 added libavcodec decode through the
-/// portable `VideoDecoding` seam and a CPU blit into a WinUI `WriteableBitmap`.
-/// W5 adds WASAPI playback behind the portable `AudioSink` seam, and W6 adds
-/// sharing: the system capture picker, then the portable
-/// `TailscaleScreenShareServer` driven by Windows.Graphics.Capture.
+/// The Windows app: sign in, pick a peer, watch and hear it, or share.
 ///
 /// Very little of this is Windows-specific: the decoder is the same
 /// `FFmpegVideoDecoder` the Linux viewer runs, the colour conversion is
-/// `I420Converter`, the PCM conversion is `MonoPCMConverter`, and the off-thread
-/// audio wrapper is `ThreadedAudioSink` — all portable and all tested on Linux.
-/// What is genuinely new per stage is one platform file: the WinUI surface, and
-/// the WASAPI sink.
+/// `I420Converter`, the PCM conversion is `MonoPCMConverter`, and the
+/// off-thread audio wrapper is `ThreadedAudioSink` — all portable and tested
+/// on Linux. What's genuinely new is the WinUI surface and the WASAPI sink.
 @main
 struct TailscreenWindowsApp: App {
     @State var state = AppUIState()
 
-    /// Process-wide setup that has to happen before a window exists — today,
-    /// per-monitor DPI awareness. Without it Windows reports scaled coordinates
-    /// for every display while Windows.Graphics.Capture reports capture items
-    /// in real pixels, so on any display above 100 % scaling the sharer cannot
-    /// work out which monitor it is capturing and silently loses both remote
-    /// control and annotations.
+    /// This init must NOT call `WindowsShareSession.prepareProcess()` (DPI
+    /// awareness) — it runs BEFORE swift-winui's `WindowsAppRuntimeInitializer`,
+    /// whose own `SetProcessDpiAwareness` call then returns E_ACCESSDENIED and
+    /// fatalErrors, since awareness was already set. swift-winui's own
+    /// per-monitor (v1) awareness is sufficient for the capture-region math;
+    /// `prepareProcess()` stays available for non-WinUI hosts (tests, probes).
     ///
-    /// `App.main()` default-constructs the app and then runs it — which is
-    /// exactly why this init must NOT call `WindowsShareSession.prepareProcess()`
-    /// any more. It runs BEFORE swift-winui's `WindowsAppRuntimeInitializer`,
-    /// whose init does `try CHECKED(SetProcessDpiAwareness(PROCESS_PER_MONITOR_
-    /// DPI_AWARE))` — and that call returns E_ACCESSDENIED (0x80070005) when
-    /// awareness was already set, which `CHECKED` turns into a fatalError at
-    /// SwiftApplication.swift:64. Setting awareness here therefore killed the
-    /// app at startup, deterministically, on every real desktop ("Failed to
-    /// initialize WindowsAppRuntimeInitializer: 0x80070005 — Access is denied").
-    ///
-    /// swift-winui's own per-monitor (v1) awareness is sufficient for the
-    /// capture-region math this call existed for: monitor enumeration returns
-    /// physical pixels under v1 too. `prepareProcess()` remains available for
-    /// non-WinUI hosts (tests, headless probes), where nothing else sets
-    /// awareness.
-    ///
-    /// What DOES belong here is `ConsoleBridge`: the exe is a GUI-subsystem
-    /// binary, so stdio must be attached to a parent console or redirected to
-    /// the log file before anything prints — and it touches no DPI, COM, or
-    /// WinUI state, so it cannot re-create the initializer collision above.
+    /// `ConsoleBridge` DOES belong here: it touches no DPI/COM/WinUI state, so
+    /// it can't re-create the collision above, and stdio needs attaching
+    /// before anything prints (GUI-subsystem binary).
     init() {
         ConsoleBridge.attachOrRedirect()
-        // Open the session record straight after stdio, so the log tee has
-        // somewhere to go from the first line. Recording is on or off per
-        // `DiagnosticsPreference` — see `.claude/rules/diagnostics.md`. There
-        // is no settings toggle on this host yet; `TAILSCREEN_DIAGNOSTICS=1` /
-        // `=0` forces it either way.
+        // Recording is on/off per `DiagnosticsPreference`; no settings toggle
+        // on this host yet — `TAILSCREEN_DIAGNOSTICS=1`/`=0` forces it.
         DiagnosticsHost.start(environment: BuildInfo.diagnosticsEnvironment)
     }
 
-    // The view is deliberately split into many small, individually-typed
-    // pieces rather than one nested expression. A first attempt inlined the
-    // header's two optional arguments as `cond ? closure : nil` ternaries, and
-    // the Windows compiler answered with "failed to produce diagnostic for
-    // expression" against the whole `body` — the type checker giving up
-    // without saying on what. Result builders plus optional closures are the
-    // known way to get there, and the fix is not to find the clever line but
-    // to stop asking one expression to be inferred all at once. The GTK app is
-    // written the same way for the same reason.
+    // The view is split into many small, individually-typed pieces rather
+    // than one nested expression: inlining ternaries for optional arguments
+    // made the Windows compiler give up with "failed to produce diagnostic
+    // for expression" against the whole `body`. Same reason the GTK app is
+    // written this way.
     var body: some Scene {
         WindowGroup("Tailscreen") {
             VStack(spacing: 0) {
-                // The hub header is suppressed while a session owns the window.
-                // Its subtitle IS `status`, which during a session reads
-                // "Watching <host>" — the same sentence the session bar below
-                // already carries next to Stop, so the window opened with two
-                // identical headers stacked on each other. Everything else the
-                // header offers is already gated off mid-session (`canRefresh`
-                // and `showsAccountMenu` both require `watching == nil`), so
-                // what was left was a duplicate line and 44 points of video.
-                // macOS names the host once, in the window, for the same reason.
+                // The hub header is suppressed while a session owns the
+                // window: its subtitle mirrors `status`, which during a
+                // session reads the same sentence the session bar already
+                // shows next to Stop.
                 if state.watching == nil {
                     header
                     Divider()
@@ -144,9 +107,7 @@ struct TailscreenWindowsApp: App {
                 footer
             }
         }
-        // Opens hub-narrow, like the macOS window and the GTK viewer: the hub
-        // is one column, and a wide window turns every row into a ribbon with
-        // the IP a foot from the hostname it belongs to.
+        // Opens hub-narrow, like the macOS window and the GTK viewer.
         .defaultSize(width: 480, height: 700)
     }
 
@@ -164,17 +125,9 @@ struct TailscreenWindowsApp: App {
     }
 
     /// The peer-list filter, offered from the same settled signed-in state as
-    /// Refresh — there is nothing to filter while the node is still coming up
-    /// or while a session owns the window.
-    ///
-    /// All three axes are live: this app has always kept offline machines in
-    /// `peers`, `DiscoveredSharer` carries the netmap's ACL tags, and
-    /// `sweepShareStatus` fills the sharing axis's input off every discovery.
-    ///
-    /// A computed property with an explicit type for the same reason
-    /// `headerRefresh` is one: an optional built at the call site inside a
-    /// result builder is how this file previously got "failed to produce
-    /// diagnostic for expression" out of the Windows compiler.
+    /// Refresh. All three axes are live: `peers` keeps offline machines,
+    /// `DiscoveredSharer` carries netmap ACL tags, and `sweepShareStatus`
+    /// fills the sharing axis off every discovery.
     private var headerFilter: HubFilter? {
         guard state.phase.isReady, state.watching == nil else { return nil }
         let model = state
@@ -186,26 +139,17 @@ struct TailscreenWindowsApp: App {
 
     /// Refresh, offered only from the settled signed-in state.
     ///
-    /// A computed property with an explicit type, not a ternary at the call
-    /// site: the annotation is what lets the closure literal be checked on its
-    /// own instead of against an optional inside a builder.
-    ///
     /// Every action closure captures the MODEL, never `self` — these are
-    /// `@MainActor @Sendable`, and a view struct is the wrong thing to be
-    /// sending. `AppUIState` is a main-actor class and therefore Sendable.
+    /// `@MainActor @Sendable`, and a view struct is the wrong thing to send.
     private var headerRefresh: (@MainActor @Sendable () -> Void)? {
         guard state.canRefresh else { return nil }
         let model = state
         return { model.refreshPeers() }
     }
 
-    /// The account menu, which replaces what used to be a bare Sign out
-    /// button. Sign out did not go away — it rides INSIDE the menu as a row
-    /// (see `AppUIState.accountMenuEntries`), because the shared header takes
-    /// a list of accounts and one selection callback and nothing else, and a
-    /// second button beside the menu is the arrangement the menu exists to
-    /// replace. The GTK viewer has had this menu since it grew profiles;
-    /// this is the same one, over the same registry.
+    /// Sign out rides INSIDE the account menu as a row (see
+    /// `AppUIState.accountMenuEntries`), since the shared header takes a list
+    /// of accounts and one selection callback and nothing else.
     private var headerSelectAccount: (@MainActor @Sendable (String) -> Void)? {
         guard state.showsAccountMenu else { return nil }
         let model = state
@@ -233,18 +177,10 @@ struct TailscreenWindowsApp: App {
             }
         } else if state.isSignedOut && state.sharing.phase.isLive {
             // Signed out with a share running OR STARTING: the sharing view
-            // owns the window. Two things that each want the whole column
-            // would otherwise stack, and "get started" over a share already
-            // going out is not a screen anybody should be shown.
-            //
-            // `isLive`, not `isSharing`, and the `starting` half is the point
-            // — this is the flow where bring-up is slowest (relay bootstrap,
-            // guest node, server) and it was the one place the new `.starting`
-            // state could not be reached. The welcome pane stayed up with its
-            // share button now unavailable, showing neither progress nor a
-            // way to cancel, until frames were already going out. The GTK hub
-            // has always spelled this `.starting || .sharing`; this is that
-            // condition, through the shared predicate.
+            // owns the window rather than stacking with "get started."
+            // `isLive` (not `isSharing`) matters because link-only bring-up
+            // (relay bootstrap, guest node, server) is the slowest path, and
+            // the welcome pane would otherwise sit unresponsive through it.
             signedOutSharing
         } else if state.isSignedOut {
             signIn
@@ -308,21 +244,12 @@ struct TailscreenWindowsApp: App {
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
-            // Something to say about a session that is still going — today
-            // the decode-stall ladder's last rung. Above the video and below
-            // the bar that can end it, so the sentence and the way out sit
-            // together; the picture underneath is untouched, which is the
-            // whole reason this is a strip and not a placard.
+            // A strip above the video (not a placard) so the picture stays visible.
             if let notice = state.viewerNotice {
                 ViewerNoticeBanner(message: notice) { model.viewerNotice = nil }
             }
-            // The annotation toolbar owns the stats toggle, which is why this
-            // merge collapsed two of them into one. 4.3 landed a `Stats`
-            // button in the top bar while this branch was open; keeping both
-            // would have put two controls for one boolean on the same screen.
-            // The toolbar wins because it is where the other view-level
-            // controls already are — and the state stays `AppUIState.showStats`,
-            // since that is what the fps counter feeds.
+            // The annotation toolbar owns the stats toggle; the state stays
+            // `AppUIState.showStats` since that's what the fps counter feeds.
             if interaction.annotationsAvailable {
                 AnnotationToolbar(
                     activeTool: interaction.activeTool,
@@ -345,10 +272,8 @@ struct TailscreenWindowsApp: App {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
             }
-            // Drawn only once the first fps window has closed. Before that the
-            // numbers are all zero, and "0×0 · 0 fps" over a stream that is
-            // plainly running reads as a broken overlay rather than a warming
-            // one.
+            // Drawn only after the first fps window closes, or "0x0 · 0 fps"
+            // over a running stream reads as broken rather than warming up.
             if state.showStats && state.fps > 0 {
                 HStack {
                     StatsHUD(
@@ -364,9 +289,8 @@ struct TailscreenWindowsApp: App {
                 generation: state.frameGeneration,
                 interaction: interaction)
             if state.micAvailable || interaction.remoteControlAvailable {
-                // Talking and taking control, each on its own capability: a
-                // sharer that cannot inject input must not also cost the viewer
-                // its microphone.
+                // Each on its own capability: a sharer that can't inject
+                // input must not also cost the viewer its microphone.
                 HStack(spacing: 8) {
                     if state.micAvailable {
                         MicrophoneButton(
@@ -390,31 +314,24 @@ struct TailscreenWindowsApp: App {
 
     private var signIn: some View {
         let model = state
-        // "with", not "to": Tailscale is the identity provider here, the same
-        // sense as any other sign-in-with-X button, and this is the same
-        // control the macOS welcome pane and the GTK hub render — all three
-        // pass it into `HubSignInPane.signInLabel`. It said "to" here alone.
-        // (`HubLoginCard`'s heading keeps "Sign in to Tailscale": that card is
-        // a URL to open in a browser, not a button, and reads right as a title.)
+        // "with", not "to": Tailscale is the identity provider here — the
+        // same control the macOS welcome pane and the GTK hub render.
         let label = state.phase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
         return HubSignInPane(
             tailnetMessage: state.welcomeTailnetMessage,
             signInLabel: label,
             onSignIn: { model.signIn() },
             // Beside sign-in, never behind it: both link directions need no
-            // Tailscale account, so gating them on one would put an account
-            // in front of the paths that exist for people without one.
+            // Tailscale account.
             onJoin: { token in model.joinShare(token: token) },
             shareAction: state.welcomeShareAction,
             onShare: { model.startSharing() },
-            // A start that failed, worded under the button that retries it —
-            // kept apart from `detail` (the tailnet card's) so a share
-            // failure is not reported on the sign-in card.
+            // Kept apart from `detail` (the tailnet card's) so a share
+            // failure isn't reported on the sign-in card.
             shareNote: state.shareNote)
     }
 
-    /// The share-by-token way in. A computed property with an explicit type
-    /// for the usual result-builder reason.
+    /// The share-by-token way in.
     private var hubJoinCard: HubJoinCard {
         let model = state
         return HubJoinCard(onJoin: { token in model.joinShare(token: token) })
@@ -428,18 +345,12 @@ struct TailscreenWindowsApp: App {
         return PickerContent(
             statusLine: state.status,
             isPicking: state.phase.isReady && !state.isSearching,
-            // This hub never enters `.discovering` — it goes straight to
-            // `ready` and reports its sweep through `isSearching` — so that
-            // flag is what names the state here. Ungated on purpose: a sweep
-            // already sets `isPicking` false and takes the rows off screen,
-            // so this changes what fills the gap, not whether there is one.
+            // This hub never enters `.discovering` — it reports its sweep
+            // through `isSearching` instead.
             isDiscovering: state.isSearching,
             screens: state.hubScreens,
             loginURL: state.loginURL,
             emptyMessage: L("No Tailscreen screens found on your tailnet."),
-            // The empty list's way out: every machine that could appear there
-            // is one without Tailscreen yet. Same link (and catalog key) as
-            // the macOS hub.
             emptyAction: HubAction(
                 label: L("Get Tailscreen for your other devices"),
                 perform: { model.openInstallPage() }),
@@ -454,10 +365,6 @@ struct TailscreenWindowsApp: App {
     }
 
     /// Build stamp, and whatever the last thing to go wrong was.
-    ///
-    /// The stamp leads because it is the one thing you need before any other
-    /// number on screen can be trusted: "the new counter isn't there" and "this
-    /// is yesterday's exe" are indistinguishable without it.
     private var footer: some View {
         VStack(spacing: 2) {
             if showsDetail {
@@ -485,12 +392,10 @@ struct TailscreenWindowsApp: App {
     }
 }
 
-/// The server's viewer health as the chrome's — case for case, so
-/// TailscreenHubUI can draw the roster without importing the sharer tier
-/// (the same import-direction rule the session-phase enums follow). The GTK
-/// app carries the twin of this; three lines duplicated is the price of that
-/// boundary, and the WORDING — the part that would actually drift — is
-/// written once, in `HubViewerHealth.note`.
+/// The server's viewer health as the chrome's, case for case, so
+/// TailscreenHubUI can draw the roster without importing the sharer tier.
+/// The GTK app carries the twin of this; the WORDING (the part that would
+/// actually drift) is written once, in `HubViewerHealth.note`.
 private func hubHealth(_ health: ViewerHealth) -> HubViewerHealth {
     switch health {
     case .good: return .good
@@ -507,116 +412,74 @@ private func hubHealth(_ health: ViewerHealth) -> HubViewerHealth {
 @MainActor
 final class AppUIState: ObservableObject {
     /// The shared bring-up vocabulary, in `TailscreenProtocol` so this hub,
-    /// the GTK picker and the macOS one name one lifecycle. This app's old
-    /// `idle` is its `signedOut` and `starting` its `startingNode`; `failed`
-    /// now carries the reason it used to leave in `detail`.
-    ///
-    /// `discovering` is a case this hub never enters: it goes straight from
-    /// `startingNode` to `ready` and reports its peer sweep through
-    /// `isSearching`, which is a re-list from a settled state rather than the
-    /// first one. The GTK hub does distinguish it.
+    /// the GTK picker and the macOS one name one lifecycle. `discovering` is a
+    /// case this hub never enters: it goes straight from `startingNode` to
+    /// `ready` and reports its peer sweep through `isSearching` instead.
     typealias Phase = NodeBringUpPhase
 
     @Published var phase: Phase = .signedOut
     @Published var status = L("Not signed in")
     @Published var detail = ""
-    /// A SHARE failure, kept apart from `detail` so the welcome pane can put
-    /// it on the card that offered the share rather than on the sign-in card
-    /// beside it. Cleared when a fresh attempt starts, so a retry never
-    /// carries the last one's reason.
+    /// A SHARE failure, kept apart from `detail` so it lands on the card that
+    /// offered the share, not the sign-in card beside it. Cleared on a fresh attempt.
     @Published var shareDetail: String?
     /// A non-modal notice about a session that is still RUNNING — rendered as
-    /// a strip above the video by `ViewerNoticeBanner`, never in place of it.
-    /// Nil when there is nothing to say.
-    ///
-    /// Its own slot rather than `detail`, which is the HUB's line: the stall
-    /// notice used to be written there, on a surface that is not on screen
-    /// while this window is watching a stream, so the one thing it had to say
-    /// was said to nobody. It is not a `sessionPhase` case either — every
-    /// phase is a state the session is IN, and this is a remark about one
-    /// still in `viewing`.
+    /// a strip above the video by `ViewerNoticeBanner`. Its own slot rather
+    /// than `detail` (the hub's line, not on screen while watching a stream).
     @Published var viewerNotice: String?
     @Published var loginURL: String?
-    /// The RAW discovery result. Stays unfiltered on purpose: the filter menu
-    /// enumerates its tags, `connect(toID:)` resolves against it, and a filter
-    /// that ate its own input could never be undone. `hubScreens` is the
-    /// projection — the same split the macOS hub keeps between `availablePeers`
-    /// and `filteredPeers`.
+    /// The RAW discovery result. Stays unfiltered so the filter menu can
+    /// enumerate its tags and `connect(toID:)` can resolve against it;
+    /// `hubScreens` is the filtered projection.
     @Published var peers: [DiscoveredSharer] = []
     /// Per-peer live share status from the metadata sweep, keyed by peer id.
     /// A missing entry is status-UNKNOWN, never "not sharing" — every failure
-    /// mode of `fetchMetadata` (timeout, EOF, a legacy peer dropping the
-    /// unknown byte) collapses to nil, and rendering that as "idle" would be a
-    /// claim the app cannot support.
+    /// mode of `fetchMetadata` collapses to nil.
     @Published var shareInfo: [String: TailscreenMetadata] = [:]
-    /// Round-trip time of the last successful probe, by peer id. Free: it
-    /// times the sweep above rather than adding a second dial. Absent means no
-    /// probe has completed — never "fast".
+    /// Round-trip time of the last successful probe, by peer id. Absent means
+    /// no probe has completed — never "fast".
     @Published var latencyMs: [String: Int] = [:]
 
-    /// The encoder knobs the next share will start with.
-    ///
-    /// Persisted through the portable `QualitySettingsStore`, the same store
-    /// and key the macOS Settings pane writes, so the clamps and the
-    /// decode-with-fallback are shared rather than reimplemented. Read at
-    /// share start: `WGCCaptureEncoder` takes its settings at construction, so
-    /// a mid-share change lands on the NEXT share and the card says so.
+    /// The encoder knobs the next share will start with. Persisted through the
+    /// portable `QualitySettingsStore`, shared with the macOS Settings pane.
+    /// Read at share start: `WGCCaptureEncoder` takes its settings at
+    /// construction, so a mid-share change lands on the NEXT share.
     @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
 
-    /// Live video stats for the HUD, counted at the sink.
-    ///
-    /// Zero until the first window closes — about a second in — which is why
-    /// the HUD is only drawn once there is something to draw. Showing
-    /// "0×0 · 0 fps" over a stream that is plainly running would read as a
-    /// broken overlay rather than a warming-up one.
+    /// Live video stats for the HUD, counted at the sink. Zero until the
+    /// first window closes (~1s in), which is why the HUD only draws once
+    /// there's something to draw.
     @Published private(set) var videoWidth = 0
     @Published private(set) var videoHeight = 0
     @Published private(set) var fps = 0
     /// The stream's colour encoding as the decoder reported it, preformatted
-    /// ("BT.709 · limited"). Empty until the first stats window closes; the HUD
-    /// prints no colour line while it is, since blank would read as "no colour
-    /// information" rather than "not measured yet".
+    /// ("BT.709 · limited"). Empty until the first stats window closes.
     @Published private(set) var videoColorLabel = ""
-    /// Whether the stats HUD is shown. Session-scoped rather than persisted:
-    /// it is a debugging glance, not a preference, and the GTK viewer treats
-    /// it the same way.
+    /// Whether the stats HUD is shown. Session-scoped, not persisted — a debugging glance.
     @Published var showStats = false
 
-    /// Whether this machine opened a capture device for the live session — the
-    /// capability the mic control's existence rides on. A box with no
-    /// microphone shows no button rather than one that cannot unmute.
+    /// Whether this machine opened a capture device for the live session.
+    /// A box with no microphone shows no button rather than one that cannot unmute.
     @Published private(set) var micAvailable = false
     /// Whether the microphone is live. Starts off: joining a share must never
     /// put somebody on the air, matching the macOS viewer.
     @Published private(set) var micOn = false
-    /// Set when the device goes away mid-session, so the control says so
-    /// instead of quietly ceasing to work.
+    /// Set when the device goes away mid-session.
     @Published private(set) var micFailure: String?
-    /// The live session's uplink, held for exactly as long as the session.
-    /// Cleared in the session tail — a stale one would leave the microphone
-    /// open, and Windows shows that in the tray for everyone to see.
+    /// The live session's uplink, cleared in the session tail — a stale one
+    /// would leave the microphone open (visible in the Windows tray).
     private var voiceUplink: VoiceUplink?
     /// The two flags above and every transition allowed to move them. Shared
-    /// with the GTK viewer and both share engines — see `VoiceLatch`, which
-    /// exists because five copies of this had to agree that a released device
-    /// can never be toggled back on the air.
+    /// with the GTK viewer and both share engines — see `VoiceLatch`.
     private var voiceLatch = VoiceLatch()
-    /// Header filter state, persisted through the portable `PeerListFilterStore`
-    /// the macOS hub uses — not a new persistence layer. On Windows that is
-    /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
-    /// the filter is per-session, which is a far better failure than refusing to
-    /// filter at all. Unlike the GTK picker there is no legacy online-only list
-    /// to preserve here — this app has always shown offline machines — so the
-    /// portable `.default` (every axis off) is the right first-run state.
+    /// Header filter state, persisted through the portable `PeerListFilterStore`.
+    /// Unlike the GTK picker there is no legacy online-only list to preserve
+    /// here — this app has always shown offline machines.
     @Published private(set) var filter = PeerListFilterStore.load()
     @Published var isSearching = false
-    /// Non-nil while a viewing session OWNS THE WINDOW — from the dial until
-    /// the session's UI is dismissed. That is deliberately longer than the
-    /// session itself: after a non-user end the ended placard stays up (with
-    /// the reason and Reconnect / Back) instead of the window silently
-    /// snapping back to the hub, and everything gated on `watching == nil`
-    /// (header, refresh, account switching) stays gated until the person
-    /// dismisses it.
+    /// Non-nil while a viewing session OWNS THE WINDOW, from dial until the
+    /// session's UI is dismissed — deliberately longer than the session
+    /// itself, since the ended placard stays up until the person dismisses it.
     @Published private(set) var viewerLifecycle = ViewerSessionLifecycle()
     /// Toolkit-facing projections. Mutating `viewerLifecycle` publishes the
     /// one source value, so the view still re-renders without parallel
@@ -634,61 +497,44 @@ final class AppUIState: ObservableObject {
     /// typecheck the whole interactive layer, which is where the mistakes are.
     let interaction = WindowsViewerInteraction()
 
-    /// Sharing state, mirrored from `SharingController` (which is off the main
-    /// actor on purpose — see its type comment).
+    /// Sharing state, mirrored from `SharingController` (off the main actor on purpose).
     @Published var sharing = WindowsShareSession.Status()
 
     /// The signed-in accounts, mirrored out of `profileStore` so the header
-    /// re-renders on switch / add / relabel. Mirrored rather than read through,
-    /// because the registry is deliberately not observable — it is portable
-    /// Foundation, and the `ObservableObject` this app observes is
-    /// SwiftCrossUI's.
+    /// re-renders on switch / add / relabel. Mirrored because the registry is
+    /// deliberately not observable — it's portable Foundation, and the
+    /// `ObservableObject` this app observes is SwiftCrossUI's.
     @Published private(set) var accounts: [HubAccount] = []
     @Published private(set) var activeAccountID = ""
     @Published private(set) var activeAccountName = ""
 
     /// Auto-resume: a non-empty tsnet state directory means a previous login
-    /// whose node can come up with no browser interaction, so the app goes
-    /// straight for the peer list instead of parking on a Sign in button the
-    /// user would always press. A fresh install still lands on the sign-in
-    /// card — auto-starting THERE would be a surprise browser prompt. If the
-    /// stored login has expired, `prepare` falls back to the interactive URL
-    /// and the UI shows the usual waiting-for-browser card, so the worst case
-    /// of guessing wrong is exactly the screen the user would have reached by
-    /// clicking. (The GTK app's picker mode already behaves this way.)
+    /// can come up with no browser interaction, so the app goes straight for
+    /// the peer list. A fresh install still lands on sign-in. If the stored
+    /// login expired, `prepare` falls back to the interactive URL.
     init() {
-        // Subscribe to share status here rather than on the first Share press.
-        // The approval gate is decided BEFORE a share exists, and a switch
-        // whose value only arrives once you press Share reads wrong at exactly
-        // the moment you are deciding whether to press it.
+        // Subscribed here, not on the first Share press: the approval gate is
+        // decided BEFORE a share exists.
         shareSession.onStatus = { [weak self] status in
             Task { @MainActor in self?.applySharingStatus(status) }
         }
-        // A notification button answers exactly what the card's button does,
-        // through the same router — so there is one implementation of each
-        // decision and the two surfaces cannot drift. `answerPrompt` matches
-        // the identity against the live rows, which also makes a press about
-        // somebody who has since gone land nowhere instead of on whoever is
-        // there now.
+        // Same router as the card's own button, so the two decisions can't
+        // drift. `answerPrompt` matches against the live rows, so a stale
+        // press lands nowhere.
         notifications.onAnswer = { [weak self] _, identity, accept in
             self?.answerPrompt(identity, accept: accept)
         }
-        // The press half. Subscribed once, for the life of the process, and
-        // deliberately NOT gated on `notifications.isAvailable`: the two are
-        // different runtime facts, and a subscription with nothing to deliver
-        // costs nothing while the reverse — a toast whose button reaches
-        // nobody — is the failure that makes buttons worse than no buttons.
+        // Not gated on `notifications.isAvailable`: a subscription with
+        // nothing to deliver costs nothing, while a toast whose button
+        // reaches nobody is worse than no button.
         NotificationActivation.observe { [weak self] press in
             self?.notifications.answer(activationID: press.id, action: press.action)
         }
-        // The ask-to-share flow: the listener lifecycle, the inbox and the
-        // answer sequencing are the shared coordinator's; these closures are
-        // the parts that are this host's.
+        // The ask-to-share flow: listener lifecycle, inbox, answer sequencing
+        // are the shared coordinator's; these closures are this host's part.
         askToShare.onRequestsChanged = { [weak self] requests in
             guard let self else { return }
             self.shareRequests = requests
-            // Reconciled on every change, which is also what takes the toast
-            // back when the ask was answered from the window instead.
             self.applyShareRequestNotifications()
         }
         askToShare.onPreApproveViewer = { [weak self] sourceKey in
@@ -698,48 +544,32 @@ final class AppUIState: ObservableObject {
         }
         askToShare.onStartShare = { [weak self] in self?.startSharing() }
         askToShare.onListenerError = { [weak self] (error: Error) in
-            // Surfaced rather than swallowed: sharing still works and this
-            // machine simply never hears an ask, which from the other end
-            // looks exactly like nobody being home.
             self?.detail = L("Not listening for share requests: \(error)")
         }
-        // The sharer's own voice. Both ends are WASAPI and both live in this
-        // target, so they are handed over as closures — `WindowsShareSession`
-        // deliberately carries no Windows-only code, which is what lets Linux
-        // CI typecheck it. The factory is called at share start and the device
-        // released at share stop, so an idle app holds no microphone.
+        // Both ends are WASAPI; handed over as closures since
+        // `WindowsShareSession` carries no Windows-only code (so Linux CI can
+        // typecheck it). Factory called at share start, device released at stop.
         shareSession.microphoneFactory = { makeWASAPIMicrophone() }
         shareSession.playRemoteVoice = { [weak self] pcm in
             self?.sharerVoiceOut.play(pcm)
         }
-        // Push the persisted choice at the session. It already fails closed on
-        // its own, but "closed" and "what the user asked for" are not the same
-        // answer, and only one of them is this app's to give.
         shareSession.setRequireApproval(ViewerApprovalPreference.load())
-        // Mute from OUTSIDE the window. The in-window buttons only exist while
-        // the app is in front of you, and during a share it is behind whatever
-        // you are showing — which is exactly when muting matters most. The two
-        // microphones stay separate (`toggleMic` vs `toggleShareMic`);
-        // `MuteHotkeyRouting` picks which one the single chord flips, and the
-        // controller holds the chord only while there is one to flip.
+        // Mute from OUTSIDE the window: during a share it's behind whatever
+        // is shown, exactly when muting matters most. `toggleMic` vs
+        // `toggleShareMic` stay separate; the controller picks which one the
+        // single chord flips.
         muteHotkey = makeMuteHotkeyController(
             sharerMicAvailable: { [weak self] in self?.sharing.micAvailable ?? false },
             viewerMicAvailable: { [weak self] in self?.micAvailable ?? false },
             toggleSharerMic: { [weak self] in self?.toggleShareMic() },
             toggleViewerMic: { [weak self] in self?.toggleMic() })
-        // Mirror the chord's failure into a published field the share card
-        // reads: the controller's own report goes to the console, which
-        // reaches nobody mid-share, and an unregistered mute shortcut looks
-        // exactly like one that works — until it is trusted.
         muteHotkey?.onUnavailabilityChange = { [weak self] reason in
             self?.hotkeyUnavailability = reason
         }
         muteHotkey?.start()
         syncAccounts()
-        // Protocol activations delivered to a RUNNING instance. Nothing
-        // redirects today — each link click is a fresh process — but the
-        // subscription costs nothing installed, same reasoning as the
-        // notification observer above.
+        // Nothing redirects today — each link click is a fresh process — but
+        // the subscription costs nothing installed.
         ProtocolActivation.observe { [weak self] link in
             guard let token = ShareLinkFormat.token(fromUserInput: link) else { return }
             self?.joinShare(token: token)
@@ -748,12 +578,9 @@ final class AppUIState: ObservableObject {
             seedUIPreview()
         } else if let launchToken = Self.launchJoinToken() {
             // Launched by a `tailscreen:` link click: straight into the
-            // guest session, and deliberately NO sign-in auto-resume — a
-            // click while another instance runs starts a second process,
-            // and two tsnet nodes on one state directory is the known
-            // pitfall. The guest tunnel needs no node, so this instance
-            // simply never brings one up; the sign-in card is still there
-            // when the session ends.
+            // guest session, deliberately NO sign-in auto-resume (a click
+            // while another instance runs starts a second process, and two
+            // tsnet nodes on one state directory is the known pitfall).
             joinShare(token: launchToken)
         } else if hasPreviousLogin() {
             signIn()
@@ -761,40 +588,29 @@ final class AppUIState: ObservableObject {
     }
 
     /// The share token this process was protocol-launched with, if any. A
-    /// link that turns out not to carry a plausible token falls through to
-    /// an ordinary launch rather than a dead screen.
+    /// link with no plausible token falls through to an ordinary launch.
     private static func launchJoinToken() -> String? {
         guard let link = ProtocolActivation.launchJoinLink() else { return nil }
         return ShareLinkFormat.token(fromUserInput: link)
     }
 
     /// True when launched with `--ui-preview`: the hub renders a seeded,
-    /// deterministic peer list — no tsnet node, no networking — so CI can
-    /// screenshot the chrome. Same flag, same fake tailnet as the GTK app's
-    /// preview mode, so the platforms' screenshots read as one product.
+    /// deterministic peer list so CI can screenshot the chrome. Same flag as
+    /// the GTK app's preview mode.
     static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
 
     /// The one preview state that is NOT signed in: the welcome pane a first
-    /// launch opens on, which is where the two no-account ways in earn their
-    /// place. Spelled as the macOS and GTK apps spell it, so one screenshot
-    /// job drives all three with one vocabulary. It rides `--ui-preview`
-    /// alongside for what that flag suppresses rather than what it seeds —
-    /// without it `init` falls through to `signIn()` on a machine with a
-    /// previous login, which would sign the state away mid-screenshot.
+    /// launch opens on. Rides `--ui-preview` alongside — without it `init`
+    /// falls through to `signIn()` on a machine with a previous login.
     static let isUIPreviewWelcome = CommandLine.arguments.contains("--ui-preview-welcome")
 
-    /// The seeded preview state: tagged and untagged, online and offline,
-    /// one peer sharing and one relayed — so a single screenshot exercises
-    /// the sharing chip, the route line, the latency figure, and every axis
-    /// of the filter menu. Verbatim data, deliberately not localized.
+    /// The seeded preview state: tagged and untagged, online and offline, one
+    /// peer sharing and one relayed, so a single screenshot exercises the
+    /// sharing chip, route line, latency figure, and filter menu.
     private func seedUIPreview() {
         if Self.isUIPreviewWelcome {
-            // `content` renders the welcome pane from `.signedOut`: the
-            // tailnet card, and the share-link card with
-            // both no-account directions under it. Seeding stops here on
-            // purpose — every line below is a tailnet this state does not
-            // have, `activeAccountName` included, and `loginURL` stays nil
-            // because nobody has started a sign-in to be waiting on.
+            // Seeding stops here — everything below is a tailnet this state
+            // doesn't have, and `loginURL` stays nil.
             phase = .signedOut
             status = L("Not signed in")
             return
@@ -830,102 +646,72 @@ final class AppUIState: ObservableObject {
 
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
-    /// Holds ⌃⌥M system-wide while there is a microphone to mute. Built in
-    /// `init` and kept for the process — it decides for itself when to take
-    /// and release the chord.
+    /// Holds ⌃⌥M system-wide while there is a microphone to mute.
     private var muteHotkey: PortableMuteHotkey?
     /// Why the system-wide mute chord could not be taken, mirrored from
-    /// `PortableMuteHotkey` so the share card can say so. Nil while the
-    /// chord is held, or before a microphone made holding it worthwhile.
+    /// `PortableMuteHotkey` so the share card can say so.
     @Published private(set) var hotkeyUnavailability: GlobalHotkeyUnavailability?
     /// The mute chord to advertise on the viewer's mic control, or nil while
     /// the hotkey is not actually registered.
     var muteChordHint: String? { muteHotkey?.chordHint }
     /// Posts the sharer's notifications and routes their buttons back.
-    ///
-    /// The other half of the same problem the hotkey above solves: during a
-    /// share this window is behind the thing being shared, and raising it is
-    /// itself visible to the viewers. Built unconditionally — a machine that
-    /// cannot register is a normal state the type reports rather than an error
-    /// to avoid constructing.
+    /// During a share this window is behind the thing being shared, and
+    /// raising it is itself visible to viewers. Built unconditionally — a
+    /// machine that can't register is a normal state the type reports.
     private let notifications = SharerNotifications()
-    /// Where viewers' voices come out while sharing.
-    ///
-    /// Its own sink, separate from the viewing session's: this app can share
-    /// while not watching, and sharing one would mean a viewing session's
-    /// teardown silently taking the share's audio with it. `ThreadedAudioSink`
-    /// for the usual reason — a blocking WASAPI write must not run on the
-    /// thread that publishes it — and it opens its device lazily, so an app
-    /// that never shares never touches the output endpoint.
+    /// Where viewers' voices come out while sharing. Its own sink, separate
+    /// from the viewing session's, since this app can share while not
+    /// watching. `ThreadedAudioSink` since a blocking WASAPI write must not
+    /// run on the thread that publishes it; opens its device lazily.
     private let sharerVoiceOut = ThreadedAudioSink(wrapping: WASAPIAudioSink())
 
     /// Peers asking this machine to share — the coordinator's inbox, mirrored
     /// so the card re-renders.
     @Published private(set) var shareRequests: [PendingShareRequest] = []
 
-    /// The whole ask-to-share flow — the long-lived idempotent-per-node
-    /// control listener, the coalesced/bounded inbox, and the answer
-    /// sequencing (reply on the arrival connection; accept ⇒ pre-approve,
-    /// then start) — written once in `TailscreenSharer` and shared with the
-    /// GTK engine and macOS. Wired in `init`; what stays here is this host's
-    /// chrome: the `@Published` mirror, the toast reconcile, and where a
-    /// listener failure is said.
+    /// The whole ask-to-share flow — control listener, inbox, answer
+    /// sequencing — written once in `TailscreenSharer` and shared with the
+    /// GTK engine and macOS. What stays here: the `@Published` mirror, the
+    /// toast reconcile, and where a listener failure is said.
     private let askToShare = SharerAskToShareCoordinator()
 
     /// Screens with an outstanding "please share" ask, by `DiscoveredSharer.id`.
     @Published private(set) var asking: Set<String> = []
     /// How the last ask to each screen ended, by screen id.
     @Published private(set) var askOutcome: [String: String] = [:]
-    /// The multi-account registry, shared with the GTK viewer and unit-tested
-    /// on Linux CI. A profile IS a tsnet state directory, so switching accounts
-    /// is a node teardown and a fresh bring-up under a different one.
-    ///
-    /// `.windowsLocalAppData()` seeds account #1 onto
-    /// `%LOCALAPPDATA%\Tailscreen\tailscale` — the single fixed directory this
-    /// app used before it had accounts — so introducing the registry signs
-    /// nobody out.
+    /// The multi-account registry, shared with the GTK viewer. A profile IS a
+    /// tsnet state directory, so switching accounts is a node teardown and
+    /// fresh bring-up under a different one. `.windowsLocalAppData()` seeds
+    /// account #1 onto the single fixed directory this app used before it
+    /// had accounts, so introducing the registry signs nobody out.
     private let profileStore = AccountProfileStore(layout: .windowsLocalAppData())
     /// The renderer hand-off, shared with `WinUIVideoView`. Portable, lock-
-    /// guarded, and the same type the GTK viewer polls from its draw callback.
+    /// guarded, the same type the GTK viewer polls from its draw callback.
     let frameStore = FrameStore()
     private var sessionTask: Task<Void, Never>?
     private var stopRequested = false
 
-    /// Architecture and a value read out of the portable protocol tier. W2 made
-    /// this a button because proving the shared core was reachable from WinUI
-    /// was the entire point of that stage; now that the same binary runs a tsnet
-    /// node, it is a footer.
     var environmentLine: String {
-        // The CONFIGURED value, not `.default` — a footer that reports a
-        // number the next share will not use is worse than no footer.
+        // The CONFIGURED value, not `.default` — a footer reporting a number
+        // the next share won't use is worse than no footer.
         let quality = self.quality
-        // The build stamp leads, because it is the one thing you need before
-        // any other number on screen can be trusted: "the new counter isn't
-        // there" and "this is yesterday's exe" are indistinguishable without
-        // it.
-        // One literal, not two joined with `+`: the argument is a
-        // `LocalizationKey`, and concatenating two of those is neither defined
-        // nor meaningful — the catalog key is the whole sentence.
+        // One literal, not joined with `+`: the argument is a
+        // `LocalizationKey`, whose catalog key is the whole sentence.
         return L(
             "\(BuildInfo.summary) · \(Self.architecture) · fps cap \(quality.fpsCap) · codec \(quality.codecPreference)"
         )
     }
 
-    /// A spinner rides the header while something is genuinely in flight —
-    /// node bring-up or a discovery sweep. Not while merely idle: a spinner
-    /// that never stops is worse than none, because it makes a settled state
-    /// look broken.
+    /// A spinner rides the header while node bring-up or a discovery sweep is
+    /// genuinely in flight, never while merely idle.
     var showsSpinner: Bool { phase.isBringingUp || isSearching }
 
     /// Refresh is offered only from the settled signed-in state.
     var canRefresh: Bool { phase.isReady && watching == nil && !isSearching }
 
     /// The discovered peers, narrowed by the header filter, as hub rows.
-    ///
     /// The sweep's answer rides along so the shared chrome derives the green
-    /// "Sharing" chip — and a peer we got no answer from gets no chip, because
-    /// one that appeared when a machine was merely reachable would be a lie,
-    /// and the chip is the one thing on the row people act on.
+    /// "Sharing" chip — a peer we got no answer from gets no chip.
     var hubScreens: [HubScreen] {
         filteredPeers.map {
             HubScreen(
@@ -936,11 +722,9 @@ final class AppUIState: ObservableObject {
     }
 
     /// `peers` narrowed by `filter` — hide-offline ∧ only-sharing ∧
-    /// any-of-selected-tags, with the tri-state sharing input the sweep fills.
-    ///
-    /// The projection is `PeerListFilter.narrow`, shared with the GTK hub and
-    /// the macOS one, so the "no sweep answer ⇒ unknown, never not-sharing"
-    /// rule is stated once rather than three times.
+    /// any-of-selected-tags. `PeerListFilter.narrow` is shared with the GTK
+    /// and macOS hubs, so "no sweep answer ⇒ unknown, never not-sharing" is
+    /// stated once.
     var filteredPeers: [DiscoveredSharer] {
         filter.narrow(peers, shareInfo: shareInfo)
     }
@@ -965,16 +749,11 @@ final class AppUIState: ObservableObject {
     var isSignedOut: Bool { phase.isSignedOut }
 
     /// The welcome pane's tailnet card copy: the pitch by default, or
-    /// whatever went wrong once something has. The reason belongs on the
-    /// card its Try again button is on, which is also why the window footer
-    /// deliberately stops repeating it before sign-in.
+    /// whatever went wrong once something has.
     var welcomeTailnetMessage: String {
-        // The PHASE first, then the legacy slot. `signInLabel` already reads
-        // the phase for its "Try again", and `detail` is cleared by anything
-        // that starts fresh — `startSharing()` blanks it before opening the
-        // capture picker — so reading `detail` first let a cancelled picker
-        // after a failed bring-up leave the button saying Try again over the
-        // first-run pitch: a card offering a retry for nothing.
+        // The PHASE first, then the legacy slot: `detail` is cleared by
+        // anything that starts fresh, so reading it first could leave the
+        // button saying "Try again" over the first-run pitch.
         if let reason = phase.failureReason { return reason }
         guard detail.isEmpty else { return detail }
         return L(
@@ -983,29 +762,17 @@ final class AppUIState: ObservableObject {
     }
 
     /// The welcome pane's share-link card note: why the last link-only start
-    /// did not happen.
-    ///
-    /// The phase leads, exactly as `welcomeTailnetMessage` reads it for the
-    /// card beside this one and as the GTK hub's `welcomeShareNote` does —
-    /// one failure, one carrier. `shareDetail` is still behind it because it
-    /// holds the one failure the phase cannot: a capture picker that threw
-    /// before `beginSharing` was ever called.
+    /// did not happen. `shareDetail` covers the one failure the phase can't:
+    /// a capture picker that threw before `beginSharing` was ever called.
     var shareNote: String? {
         sharing.phase.failureReason ?? shareDetail
     }
 
-    /// What the welcome pane's share-link card offers, via the pinned
-    /// `WelcomePaneDecision` both swift-cross-ui hubs read. `canShare` folds
-    /// in this app's two gates — a build without Windows.Graphics.Capture,
-    /// and a viewing session already owning the window.
-    ///
-    /// The other two are about the bootstrap window, which this hub renders
-    /// rather than swapping the pane for the sharing view as the GTK one
-    /// does: a link-only start publishes `linkBusy` before the phase leaves
-    /// `starting`, so idle has to exclude it or the button stays pressable
-    /// through the relay handshake — and `linkIsOnlyWayIn` is set at the
-    /// same early moment, so the "you're sharing via link" note waits for
-    /// the token rather than pointing at a card that does not exist yet.
+    /// What the welcome pane's share-link card offers. `canShare` folds in
+    /// this app's two gates: a build without Windows.Graphics.Capture, and a
+    /// viewing session already owning the window. `linkBusy` publishes
+    /// before the phase leaves `starting`, so idle must exclude it or the
+    /// button stays pressable through the relay handshake.
     var welcomeShareAction: WelcomePaneDecision.LinkShareAction {
         WelcomePaneDecision.linkShareAction(
             canShare: shareSession.isSupported && watching == nil,
@@ -1013,14 +780,8 @@ final class AppUIState: ObservableObject {
             isLinkOnlyShare: sharing.linkIsOnlyWayIn && sharing.linkToken != nil)
     }
 
-    /// What the share card's headline says, per phase.
-    ///
-    /// Four answers where this app used to have two. `starting` is the one it
-    /// could not say at all: the card read "Not sharing" through the encoder,
-    /// the server and tsnet bring-up, so a person who had just picked a window
-    /// had no sign their click had registered. Same wording as the GTK card,
-    /// which had all four from the start — and the same catalog keys, so
-    /// neither `.strings` file changes.
+    /// What the share card's headline says, per phase. Same wording (and
+    /// catalog keys) as the GTK card.
     private var shareStatusLine: String {
         switch sharing.phase {
         case .idle: L("Not sharing")
@@ -1031,10 +792,7 @@ final class AppUIState: ObservableObject {
     }
 
     /// The sharing half of the hub, or nil on a build that cannot capture.
-    ///
-    /// Withheld rather than shown and then failing: a Windows build without
-    /// Windows.Graphics.Capture cannot share, and finding that out by pressing
-    /// a button is worse than not being offered one.
+    /// Withheld rather than shown and then failing.
     var shareCard: ShareCard? {
         guard shareSession.isSupported else { return nil }
         return ShareCard(
@@ -1048,19 +806,12 @@ final class AppUIState: ObservableObject {
             // macOS welcome pane's link.
             startLabel: isSignedOut ? L("Share your screen via Link…") : L("Share this screen"),
             notes: shareNotes,
-            // The roster: who is watching, and what can be done about them.
-            // `notes` stays for statistics — a person is not a note.
+            // The roster: `notes` stays for statistics — a person is not a note.
             viewers: sharing.viewers.map { self.hubViewerRow($0) },
-            // Control requests and viewer approvals are the same interaction —
-            // a sentence and two buttons — so they go through the one prompt
-            // shape the shared card renders. This window is the only surface
-            // this app has; a request not rendered here is one nobody can
-            // answer, which is exactly what happened when the Windows sharer
-            // advertised the capability and had nowhere to show the request.
+            // Control requests and viewer approvals share one prompt shape.
             // Approvals lead: a viewer at the gate is stuck on a Connecting
             // placard with nothing on screen, while a control request comes
-            // from someone already watching. The more blocked person goes
-            // first.
+            // from someone already watching.
             prompts: sharing.pendingViewers.map {
                 HubPrompt(
                     id: $0.id, message: L("\($0.displayName) wants to watch"),
@@ -1072,11 +823,8 @@ final class AppUIState: ObservableObject {
                         id: $0.id.uuidString,
                         message: L("\($0.displayName) wants to control this machine"))
                 }
-                // Somebody asking this machine to START sharing. Third source
-                // into the one prompt list, and last because the other two are
-                // about people who are already blocked on an answer: a viewer
-                // sits on a Connecting placard with nothing on screen, and a
-                // control request comes from someone already watching.
+                // Somebody asking this machine to START sharing — last, since
+                // the other two are about people already blocked on an answer.
                 + shareRequests.map {
                     HubPrompt(
                         id: $0.id.uuidString,
@@ -1084,20 +832,14 @@ final class AppUIState: ObservableObject {
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
                 },
             // The approval gate governs TAILNET viewers, and a link-only
-            // share has none: every viewer is a guest, and a guest is parked
-            // for explicit approval whatever this says (`admissionDecision`).
-            // Showing it would be a switch wired to nothing, under a caption
-            // describing a tailnet this share never bound a listener on. The
-            // macOS card withholds it in the same state for the same reason.
+            // share has none — showing it would be a switch wired to nothing.
             settings: sharing.linkIsOnlyWayIn
                 ? []
                 : [
                     HubToggle(
                         label: L("Require approval for new viewers"),
-                        // Said only while it is off, and said as a consequence
-                        // rather than a warning glyph: this is the one setting on
-                        // the card whose wrong value is invisible in normal use —
-                        // the share looks identical, it just lets strangers in.
+                        // Said only while off: the one setting whose wrong
+                        // value is invisible in normal use.
                         caption: sharing.requireApproval
                             ? nil
                             : L("Anyone on your tailnet who can reach this machine can watch."),
@@ -1113,18 +855,12 @@ final class AppUIState: ObservableObject {
                     self?.revokeControl()
                 }
             },
-            // Absent unless a capture device was actually opened for this
-            // share, so a machine with no microphone shows no control rather
-            // than one that cannot unmute.
+            // Absent unless a capture device was actually opened for this share.
             microphone: sharing.micAvailable
                 ? HubMicrophone(isOn: sharing.micOn) { [weak self] in self?.toggleShareMic() }
                 : nil,
-            // The sharer's own pen, offered only while a share is actually
-            // running and only when this one resolved where its content is on
-            // screen. The shared card renders the escape route in its caption
-            // BEFORE anything is armed — which is the point, because once a
-            // tool is armed this window is behind a surface that covers the
-            // shared region and the caption is no longer readable.
+            // The escape route renders in the caption BEFORE anything is
+            // armed — once armed, this window is behind the shared surface.
             drawing: sharing.isSharing && sharing.drawingAvailable
                 ? HubDrawing(
                     activeTool: sharing.activeDrawingTool,
@@ -1134,18 +870,12 @@ final class AppUIState: ObservableObject {
                     undo: { [weak self] in self?.shareSession.undoDrawing() },
                     clear: { [weak self] in self?.shareSession.clearDrawing() })
                 : nil,
-            // Windows can always re-point a live share: its picker offers
-            // every target, and losing the capture region on the way is
-            // handled rather than prevented (see
-            // `WindowsShareSession.changeSource`).
+            // Windows can always re-point a live share (see `WindowsShareSession.changeSource`).
             changeSource: sharing.isSharing
                 ? HubAction(
                     label: L("Change source…"), perform: { [weak self] in self?.changeSource() })
                 : nil,
-            // What is actually on the wire, once a second. Only while
-            // sharing: the session clears it on teardown, and this second gate
-            // means a preview that somehow outlived its capture still cannot
-            // be shown next to a Start button.
+            // What is actually on the wire, once a second. Only while sharing.
             preview: sharing.isSharing
                 ? sharing.preview.map {
                     HubPreview(width: $0.width, height: $0.height, rgba: $0.rgba)
@@ -1158,11 +888,9 @@ final class AppUIState: ObservableObject {
             onDecline: { [weak self] id in self?.answerPrompt(id, accept: false) })
     }
 
-    /// One roster row. A method rather than an inline closure in the
-    /// `ShareCard` call for the usual result-builder-typechecker reason —
-    /// and because the guest branch (badge on, remember-actions off: those
-    /// persist under a StableNodeID a guest never has, and Deny already
-    /// denylists the guest's node key at the tunnel) doubles the ternaries.
+    /// One roster row. A method rather than an inline closure: the guest
+    /// branch (badge on, remember-actions off, since those persist under a
+    /// StableNodeID a guest never has) doubles the ternaries.
     private func hubViewerRow(_ viewer: WindowsShareSession.ConnectedViewer) -> HubViewerRow {
         let stableID = viewer.stableID
         if viewer.isGuest {
@@ -1196,8 +924,7 @@ final class AppUIState: ObservableObject {
             })
     }
 
-    /// The card's share-by-token half, live only while sharing. A computed
-    /// property with an explicit type for the usual result-builder reason.
+    /// The card's share-by-token half, live only while sharing.
     private var hubLinkSharing: HubLinkSharing? {
         guard sharing.isSharing else { return nil }
         let guests =
@@ -1217,25 +944,17 @@ final class AppUIState: ObservableObject {
             token: sharing.linkToken,
             busy: sharing.linkBusy,
             guestCount: guests,
-            // A link-only share has no off position short of Stop Sharing —
-            // the card says so rather than drawing a switch that would refuse
-            // to flip.
+            // A link-only share has no off position short of Stop Sharing.
             isOnlyWayIn: sharing.linkIsOnlyWayIn,
             onToggle: toggle,
             onNewLink: newLink,
-            // The WinRT clipboard — so the link is a click rather than a
-            // careful drag across three wrapped lines of token.
             onCopy: { copyToClipboard($0) })
     }
 
     /// Take a share-status snapshot, and reconcile the notifications with it.
-    ///
-    /// One function rather than a `didSet`, because the ORDER matters at the
-    /// end of a share: stopping expels every viewer at once, so a teardown
-    /// snapshot must clear the notification bookkeeping *before* the empty
-    /// rosters are reconciled against it — otherwise the sharer gets one
-    /// "stopped watching" toast per viewer at the exact moment they decided to
-    /// stop. The GTK app spells the same rule out in `SharerModel.stop()`.
+    /// Order matters at the end of a share: a teardown snapshot must clear
+    /// notification bookkeeping BEFORE the empty rosters are reconciled
+    /// against it, or the sharer gets one "stopped watching" toast per viewer.
     @MainActor
     private func applySharingStatus(_ status: WindowsShareSession.Status) {
         let wasSharing = sharing.isSharing
@@ -1244,8 +963,7 @@ final class AppUIState: ObservableObject {
             if wasSharing { notifications.stop() }
             return
         }
-        // Keyed by `ip:port`, deliberately: a genuine rejoin IS news, and the
-        // mac viewer-roster path keys the same way for the same reason.
+        // Keyed by `ip:port`: a genuine rejoin IS news (mac keys the same way).
         notifications.applyViewers(
             status.viewers.map { NoticeCandidate(identity: $0.id, label: $0.displayName) })
         // The identity IS the id `approveViewer`/`denyViewer` take, so a button
@@ -1263,9 +981,8 @@ final class AppUIState: ObservableObject {
             })
     }
 
-    /// An ask to share, from the inbox rather than from a share status — this
-    /// one arrives while the machine is idle, which is exactly why it is not
-    /// urgent.
+    /// An ask to share, from the inbox rather than a share status — arrives
+    /// while the machine is idle, so it's not urgent.
     @MainActor
     private func applyShareRequestNotifications() {
         notifications.applyAsk(
@@ -1275,14 +992,10 @@ final class AppUIState: ObservableObject {
             })
     }
 
-    /// Route a card prompt back to whichever feature raised it.
-    ///
-    /// Two sources share one prompt list and one pair of buttons, so the id
-    /// has to say which. Matched against the live pending list rather than by
-    /// looking at the string's shape: an `"ip:port"` and a UUID happen to be
-    /// distinguishable today, and a dispatch that leans on that is one id
-    /// format change away from granting remote control to someone who asked
-    /// to watch.
+    /// Route a card prompt back to whichever feature raised it. Matched
+    /// against the live pending list, never the string's shape — a dispatch
+    /// that leaned on `"ip:port"` vs UUID would be one format change away
+    /// from granting control to someone who asked to watch.
     private func answerPrompt(_ id: String, accept: Bool) {
         if sharing.pendingViewers.contains(where: { $0.id == id }) {
             if accept {
@@ -1293,10 +1006,7 @@ final class AppUIState: ObservableObject {
             return
         }
         guard let requestID = UUID(uuidString: id) else { return }
-        // Three sources now share one id space, so each is matched against its
-        // own live list. Both UUID-shaped, which is exactly why the shape is
-        // not consulted: an ask to share and a request for control are very
-        // different things to say yes to.
+        // Both UUID-shaped; each matched against its own live list, never by shape.
         if shareRequests.contains(where: { $0.id == requestID }) {
             answerShareRequest(id: requestID, accept: accept)
             return
@@ -1309,17 +1019,9 @@ final class AppUIState: ObservableObject {
         }
     }
 
-    /// Flip the approval gate and remember it.
-    ///
-    /// Persisted through the shared `ViewerApprovalPreference` so this app and
-    /// the GTK one cannot disagree about the default or about
-    /// `TAILSCREEN_OPEN_DOOR=1`. The session applies it to a running share as
-    /// well as the next one — turning it off drains whoever is already parked.
-    /// Change the encoder knobs and remember them.
-    ///
-    /// Deliberately does not touch a running share: the WGC encoder was built
-    /// with the old values and this host has no re-push path, so applying it
-    /// live would be a control that appears to work.
+    /// Change the encoder knobs and remember them. Deliberately does not
+    /// touch a running share: the WGC encoder was built with the old values
+    /// and this host has no re-push path.
     func setQuality(_ new: QualitySettings) {
         let normalized = new.normalized()
         guard normalized != quality else { return }
@@ -1337,52 +1039,35 @@ final class AppUIState: ObservableObject {
     private var shareNotes: [String] {
         guard sharing.isSharing else { return [] }
         var notes: [String] = [
-            // Spelled out rather than shown as a number: "nobody is watching
-            // yet" and "two people are watching" are the two facts a sharer
-            // wants, and a bare count leaves the first ambiguous.
+            // Spelled out rather than a number: "nobody watching" vs "N watching".
             sharing.viewerCount == 0
                 ? L("No one is watching yet")
                 : L("\(sharing.viewerCount) watching")
         ]
-        // Which of the two optional features this share actually got. Their
-        // absence is otherwise invisible from both ends — the viewer simply
-        // stops offering them and the sharer sees a share that looks normal.
+        // Which of the two optional features this share actually got —
+        // otherwise invisible from both ends.
         if sharing.remoteControlAvailable {
             notes.append(L("Viewers can ask to control this machine"))
         }
         if sharing.annotationsAvailable {
             notes.append(L("Viewers' drawings appear on this screen"))
         }
-        // Carries the reason they are unavailable, when they are. "Request
-        // Control is missing" with no explanation is a support ticket; "2
-        // displays share this resolution" is something the sharer can act on.
         if !sharing.message.isEmpty { notes.append(sharing.message) }
-        // Said only while sharing, and only when it is true. The reason it is
-        // said at all: the approval gate defaults on, so a sharer who assumes
-        // they will be told about a waiting viewer and never is has no way to
-        // discover the difference — the share looks completely normal from
-        // here. Two distinct silences, because the fixes are different: no
-        // registration is the platform (the unpackaged build's runtime),
+        // Two distinct silences: no registration is the platform runtime,
         // switched off is this app's row in Windows' notification settings.
         if !notifications.isAvailable {
             notes.append(L("No desktop notifications on this system — approvals appear here only"))
         } else if !notifications.isVisible {
             notes.append(L("Notifications are off for Tailscreen — approvals appear here only"))
         }
-        // The mute chord's failure, said beside the microphone it would have
-        // muted: the press that discovers it is the one made believing this
-        // side had gone quiet.
         if sharing.micAvailable, let hotkey = muteHotkey,
             let reason = hotkeyUnavailability
         {
             notes.append(
                 MuteHotkeyNote.text(chord: hotkey.chordDisplay, unavailability: reason))
         }
-        // Where the frame time goes. A viewer's stats overlay can prove the
-        // network is fine and still leave "why is it 2 fps" open — capture,
-        // convert and encode are three different problems with three different
-        // fixes, and the idle count separates all of them from "nothing on
-        // screen moved".
+        // Where the frame time goes: capture, convert and encode are three
+        // different problems with three different fixes.
         if let timings = sharing.timings {
             notes.append(timings.summary)
             if let slowest = timings.slowestStage {
@@ -1399,34 +1084,25 @@ final class AppUIState: ObservableObject {
         detail = ""
         loginURL = nil
 
-        // Keep the node alive between viewing sessions. `run`'s defer clears
-        // `preparedNode` on EVERY exit path, so without this the peer list is
-        // still on screen with a node that is gone, and the next Refresh fails
-        // with `badInterfaceHandle` — which is exactly what happened after
-        // watching a share once.
+        // Keep the node alive between viewing sessions — without this, the
+        // peer list stays on screen with a node that's gone, and the next
+        // Refresh fails with `badInterfaceHandle`.
         transport.retainsNodeAcrossSessions = true
-        // The stamp was already computed and already displayed — in the window
-        // footer, which a stderr log never sees. Two rounds of blank-viewer
-        // diagnosis were spent on logs from a binary that predated the fix under
-        // test, so it goes in the log too.
+        // Also goes in the log, not just the window footer, so a log alone
+        // can rule out "this is yesterday's build."
         transport.buildIdentity = BuildInfo.summary
 
         Task {
             do {
                 try await transport.prepare(
                     config: ViewerConfig(
-                        // The dial target, used only by `run()` when a viewing
-                        // session starts. Discovery never reads it, and this
-                        // stage stops before dialing.
+                        // The dial target, used only by `run()`; discovery never reads it.
                         hostname: "",
                         statePath: stateDirectory(),
                         // Share-capable, so the node registers under
                         // `tailscreen-<machine>` rather than the viewer prefix
-                        // that discovery deliberately EXCLUDES. A viewer-only
-                        // node is invisible in everyone's screen list by
-                        // design — correct while this app could only watch,
-                        // and the reason a share from it never showed up on
-                        // the Mac.
+                        // discovery deliberately EXCLUDES (a viewer-only node
+                        // is invisible in everyone's screen list by design).
                         nodeRole: .shareCapable(name: Self.machineName())
                     ),
                     onLoginURL: { [weak self] url in
@@ -1442,10 +1118,8 @@ final class AppUIState: ObservableObject {
                 status = hubSignedInSubtitle(
                     tailnet: transport.tailnetName, account: transport.accountIdentity)
                 labelActiveAccount()
-                // Start answering asks to share. The node is up and shared at
-                // this point, and the call is idempotent per node — so a later
-                // profile switch re-points it rather than leaving it bound to
-                // a node that is going away.
+                // Idempotent per node, so a later profile switch re-points it
+                // rather than leaving it bound to a node that's going away.
                 ensureControlListener()
                 refreshPeers()
             } catch {
@@ -1469,12 +1143,9 @@ final class AppUIState: ObservableObject {
             do {
                 let found = try await transport.discoverPeers()
                 peers = found
-                // Drop answers for machines that are no longer discovered — or
-                // that have gone offline, since the sweep below skips those and
-                // their cached answer can therefore only get staler. Without it
-                // a departed or sleeping peer keeps looking like it is sharing.
-                // Pruned to the ONLINE set, which is what the GTK picker does
-                // and what this function's own doc comment already claimed.
+                // Drop answers for peers no longer discovered or gone
+                // offline, since the sweep below skips those and their
+                // cached answer can only get staler.
                 shareInfo = PeerShareStatusMap.pruned(
                     shareInfo, toPresent: Set(found.filter(\.isOnline).map(\.id)))
                 isSearching = false
@@ -1487,53 +1158,33 @@ final class AppUIState: ObservableObject {
     }
 
     /// Lazy per-peer share-status sweep — the input to the filter's "Only
-    /// screens being shared" axis and to the rows' sharing chips.
-    ///
-    /// The same portable path the GTK picker uses (`TsnetTransport.fetchMetadata`
-    /// → `TailscreenMetadataClient` over TCP/7447), and lazy for the same reason
-    /// the macOS `refreshPeerShareStatus()` is: it is a real dial per peer, so
-    /// it rides discovery rather than a timer. Offline peers are skipped —
-    /// dialing a machine tsnet says is down buys nothing but a timeout — which
-    /// correctly leaves them `.unknown`, and therefore hidden while the sharing
-    /// axis is on. A no-answer REMOVES the entry rather than leaving the last
-    /// one in place, so the status can never go stale-positive.
+    /// screens being shared" axis and the rows' sharing chips. Rides
+    /// discovery rather than a timer; offline peers are skipped, correctly
+    /// leaving them `.unknown`. A no-answer REMOVES the entry rather than
+    /// leaving the last one in place, so status can never go stale-positive.
     private func sweepShareStatus(_ found: [DiscoveredSharer]) async {
         let online = found.filter(\.isOnline)
         guard !online.isEmpty else { return }
-        // The child tasks capture the transport, not `self`, and are NOT
-        // annotated `@MainActor` — the GTK sweep's exact shape. Annotating them
-        // makes the closure main-actor-isolated and therefore non-`Sendable`,
-        // which `addTask`'s `sending` parameter rejects; leaving them
-        // nonisolated lets each simply `await` the main-actor `fetchMetadata`.
+        // Child tasks capture the transport, not `self`, and are NOT
+        // `@MainActor` — that would make the closure non-`Sendable`, which
+        // `addTask`'s `sending` parameter rejects.
         let transport = self.transport
         await withTaskGroup(of: (String, PeerProbe).self) { group in
             for peer in online {
                 group.addTask { (peer.id, await transport.probePeer(ip: peer.tailscaleIP)) }
             }
             for await (id, probe) in group {
-                // No answer CLEARS the entry — the shared rule, see
-                // `PeerShareStatusMap`.
                 shareInfo = PeerShareStatusMap.recording(probe.metadata, for: id, in: shareInfo)
-                // Only on a completed round trip: a latency recorded for a
-                // probe that never answered would read as a fast link to a
-                // machine that is gone. `probePeer` returns nil for both
-                // together, so the two can never disagree.
+                // Only on a completed round trip, so a probe that never
+                // answered can't record a "fast" latency.
                 latencyMs[id] = probe.latencyMs
             }
         }
     }
 
-    /// Dial a peer and run a viewing session until `disconnect()`.
-    ///
-    /// `run` owns the whole receive loop, so it is held in a Task and torn down
-    /// by flipping `stopRequested`, which its `shouldClose` closure polls — the
-    /// transport's own contract for ending a session cleanly rather than
-    /// cancelling mid-datagram.
-    /// Dial the row the hub reports was tapped.
-    ///
-    /// The shared chrome hands back a row id rather than a `DiscoveredSharer`,
-    /// because it deliberately does not import the transport that defines one —
-    /// a package that draws rectangles should not need a Go archive to compile.
+    /// Dial the row the hub reports was tapped. The shared chrome hands back
+    /// a row id rather than a `DiscoveredSharer`, since it doesn't import the
+    /// transport that defines one.
     func connect(toID id: String) {
         guard let peer = peers.first(where: { $0.id == id }) else { return }
         connect(to: peer)
@@ -1573,18 +1224,12 @@ final class AppUIState: ObservableObject {
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
-            // The portable sink, shared with the GTK viewer: it parks the frame
-            // in the store and counts fps, and this app supplies only what
-            // wakes ITS renderer — swift-cross-ui calls `updateWinUIElement`
-            // when observable state changes, where GTK has `g_idle_add` inside
-            // its C shim.
+            // The portable sink, shared with the GTK viewer: parks the frame
+            // and counts fps; this app supplies only what wakes ITS renderer.
             let sink = FrameStoreVideoSink(
                 store: frameStore,
-                // What makes a stall RECOVERABLE rather than merely
-                // survivable: announcing one re-arms this latch, so the next
-                // frame that decodes takes the banner away by itself. A notice
-                // about a stream that is visibly running again is worse than
-                // no notice.
+                // Announcing a frame re-arms this latch, so the next decode
+                // takes the stall banner away by itself.
                 onFirstFrame: { [weak self] in
                     Task { @MainActor in self?.viewerNotice = nil }
                 },
@@ -1592,8 +1237,7 @@ final class AppUIState: ObservableObject {
                     Task { @MainActor in self?.frameGeneration &+= 1 }
                 },
                 onStats: { [weak self] width, height, fps, color in
-                    // Fires roughly once a second off the session's thread; the
-                    // published values are main-actor state.
+                    // Fires roughly once a second off the session's thread.
                     Task { @MainActor in
                         self?.videoWidth = width
                         self?.videoHeight = height
@@ -1602,27 +1246,20 @@ final class AppUIState: ObservableObject {
                     }
                 })
             sink.resetForNewSession()
-            // Off-thread on purpose. The transport is serviced by the WinUI main
-            // thread, so a blocking WASAPI write inline in `handleAudio` — up to
-            // a device buffer, ~50×/s — would stall the UI loop and freeze
-            // video. The wrapper is also what gives the sink its single-threaded
-            // COM apartment, which is why it opens the device lazily.
+            // Off-thread: a blocking WASAPI write inline would stall the WinUI
+            // main thread and freeze video.
             let audio = ThreadedAudioSink(wrapping: WASAPIAudioSink())
             defer { audio.stop() }
-            // The capture device is opened on the pump's own thread (COM
-            // apartment affinity, same as the sink), so building this cannot
-            // fail here — "there is no microphone" arrives as `onStopped`.
+            // Opened on the pump's own thread, so building this cannot fail
+            // here — "no microphone" arrives as `onStopped`.
             let microphone = makeWASAPIMicrophone()
-            // The transport's end verdict, set from the @Sendable onEnded
-            // callback (both it and the post-run read run on the main actor).
             // nil after `run` returns means the USER stopped it.
             final class EndedBox: @unchecked Sendable {
                 var value: (reason: ViewerCloseReason, wasAdmitted: Bool)?
             }
             let ended = EndedBox()
             var failureMessage: String?
-            // Held here (not inline in the `run` call) so the decode-recovery
-            // ladder's reset rung can reach it.
+            // Held here so the decode-recovery ladder's reset rung can reach it.
             let decoder = FFmpegVideoDecoder()
             do {
                 try await transport.run(
@@ -1645,25 +1282,18 @@ final class AppUIState: ObservableObject {
                     },
                     onAdmitted: { [weak self] caps in
                         Task { @MainActor in
-                            // The hop can land after the session tail on a
-                            // session that ended immediately — a stale
-                            // `.viewing` must not clobber the ended placard.
+                            // A stale hop must not clobber the ended placard.
                             guard let self, self.sessionTask != nil else { return }
                             guard self.viewerLifecycle.markViewing(for: sessionID) else { return }
                             self.status = L("Watching \(target.displayName)")
                             // Drawing and Request Control appear only if the
-                            // sharer said it can serve them. Withheld bits mean
-                            // a quieter UI, never a broken one — and the
-                            // sharer's caps decide for guests too now: the
-                            // back-channel rides the guest tunnel, and a
-                            // sharer that predates it doesn't advertise these
-                            // bits over a link in the first place.
+                            // sharer advertised them — withheld bits mean a
+                            // quieter UI, never a broken one.
                             self.interaction.setCaps(caps)
                         }
                     },
                     onAwaitingApproval: { [weak self] in
                         Task { @MainActor in
-                            // Same stale-hop guard as `onAdmitted`.
                             guard let self, self.sessionTask != nil else { return }
                             guard self.viewerLifecycle.markAwaitingApproval(for: sessionID) else {
                                 return
@@ -1680,12 +1310,9 @@ final class AppUIState: ObservableObject {
                     onDecoderResetNeeded: { decoder.reset() },
                     onDecodeFatal: { [weak self] in
                         guard let self, self.viewerLifecycle.isActive(sessionID) else { return }
-                        // Terminal rung: say so over the frozen frame. It used
-                        // to be written to `detail`, the hub's line, which is
-                        // not on screen while this window is watching — so the
-                        // stall was announced to nobody. Unlatch the sink
-                        // first, so a frame that decodes later re-announces
-                        // video and clears the banner by itself.
+                        // Terminal rung: say so over the frozen frame. Unlatch
+                        // the sink first, so a later decode re-announces video
+                        // and clears the banner by itself.
                         sink.resetForNewSession()
                         self.viewerNotice = L(
                             "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
@@ -1702,23 +1329,17 @@ final class AppUIState: ObservableObject {
             // Before the status line, so a stale grant or armed tool can never
             // outlive the session that produced it.
             interaction.endSession()
-            // Restore the pre-session header line. A guest session can run
-            // with no account at all, and "Signed in" over the sign-in pane
-            // would be the header contradicting the card under it.
+            // A guest session can run with no account at all, so "Signed in"
+            // must not show over the sign-in pane.
             status =
                 phase.isReady
                 ? transport.accountIdentity.map { L("Signed in as \($0)") } ?? L("Signed in")
                 : L("Not signed in")
             if let end = ended.value {
-                // Sharer stop / deny / kick / timeout / socket death: keep
-                // `watching` so the window shows the ended placard with the
-                // reason — never a silent snap back to the hub. The deny byte
-                // is worded by admission context, the same split the macOS
-                // viewer applies.
-                // The deny byte is worded by admission context — the shared
-                // `resolve` is the one place that split is applied, so this
-                // app, the GTK one and macOS cannot tell the same ending
-                // different stories.
+                // Keep `watching` so the window shows the ended placard with
+                // the reason, never a silent snap back to the hub. The deny
+                // byte's wording comes from the shared `resolve`, so this
+                // app, GTK and macOS tell the same ending the same story.
                 _ = viewerLifecycle.end(
                     ViewerSessionEndReason.resolve(
                         end.reason, wasAdmitted: end.wasAdmitted),
@@ -1774,9 +1395,6 @@ final class AppUIState: ObservableObject {
             guard error != nil else { return }
             Task { @MainActor in
                 guard let self else { return }
-                // Both flags move together — the latch owns that pairing, so a
-                // live indicator over a device that is recording nothing is not
-                // expressible here.
                 self.voiceLatch.detach()
                 self.publishViewerVoice()
                 self.micFailure = L("Microphone unavailable")
@@ -1805,13 +1423,8 @@ final class AppUIState: ObservableObject {
     }
 
     /// Arm one of the sharer's own drawing tools, or disarm by re-picking it.
-    ///
-    /// A pass-through, and it stays one: everything that could go wrong here —
-    /// the toggle, the refusal, the guarantee that a refused arm never leaves a
-    /// window up — lives in `SharerDrawingLatch` in the portable tier, where
-    /// Linux CI tests it. The status comes back through the session's normal
-    /// publish, so a refusal renders as an unarmed toolbar plus a sentence
-    /// rather than a tool that looks selected and does nothing.
+    /// A pass-through: everything that could go wrong lives in
+    /// `SharerDrawingLatch` in the portable tier.
     func selectDrawingTool(_ tool: AnnotationTool) {
         shareSession.selectDrawingTool(tool)
     }
@@ -1825,12 +1438,8 @@ final class AppUIState: ObservableObject {
     // MARK: Accounts
 
     /// Reserved row id for the Sign out entry inside the account menu.
-    ///
     /// `ViewerHeader` renders a flat list of accounts and hands back the id
-    /// that was picked, which is all the menu it has. Sign out travels as a row
-    /// with an id no UUID can collide with, rather than as a second header
-    /// control — the bare Sign out button beside the menu is exactly what the
-    /// menu replaces.
+    /// picked, so Sign out travels as a row with an id no UUID can collide with.
     static let signOutEntryID = "__tailscreen.signOut__"
 
     /// The account menu is hidden during a viewing session: the video owns the
@@ -1855,9 +1464,8 @@ final class AppUIState: ObservableObject {
         }
     }
 
-    /// Switching closes the node, so every non-idle state blocks it — the same
-    /// rule as the macOS app's `canSwitchProfile`. A share still starting or a
-    /// session still connecting would be torn out from under itself.
+    /// Switching closes the node, so every non-idle state blocks it, the same
+    /// rule as the macOS app's `canSwitchProfile`.
     var canSwitchAccount: Bool {
         watching == nil && sessionTask == nil && sharing.phase.canStart && phase != .startingNode
     }
@@ -1868,9 +1476,8 @@ final class AppUIState: ObservableObject {
         restartUnderActiveAccount()
     }
 
-    /// Add an account and switch to it. Its state directory is fresh and empty,
-    /// which is precisely what makes the bring-up below hand back an
-    /// interactive login URL instead of resuming.
+    /// Add an account and switch to it. Its state directory is fresh and
+    /// empty, so the bring-up below hands back an interactive login URL.
     func addAccount() {
         guard canSwitchAccount else { return }
         profileStore.addProfile()
@@ -1885,12 +1492,10 @@ final class AppUIState: ObservableObject {
     }
 
     /// Bring the node down and back up under the active account's state
-    /// directory. Teardown first, and `signIn()` only after it returns: the two
-    /// accounts must never have a node up at the same time, since a tsnet node
-    /// is one machine key and one identity.
-    ///
-    /// The previous account stays signed in *on disk* — its state directory is
-    /// untouched — so switching back resumes without a browser round trip.
+    /// directory. Teardown first, `signIn()` only after: two accounts must
+    /// never have a node up at once, since a tsnet node is one machine key.
+    /// The previous account stays signed in on disk, so switching back
+    /// resumes without a browser round trip.
     private func restartUnderActiveAccount() {
         phase = .signedOut
         status = L("Switching account…")
@@ -1914,20 +1519,9 @@ final class AppUIState: ObservableObject {
 
     // MARK: Sharing
 
-    /// Pick a target, then start sharing it.
-    ///
-    /// The picker runs inline on the main actor because it is modal system UI
-    /// that needs an owner window and a message pump. Everything after it —
-    /// tsnet bring-up, capture, encode — runs off the main actor inside
-    /// `beginSharing`, which is the whole reason `WindowsShareSession` is not
-    /// `@MainActor`: the same shape of mistake froze sign-in earlier in this
-    /// port, and a share brings up a node exactly the same way.
-    /// Re-point the live share at something else, keeping the viewers.
-    ///
-    /// The same picker `startSharing` opens, so the person chooses from
-    /// everything Windows offers rather than a subset this app decided on.
-    /// Dismissing it changes nothing and says nothing — they declined a
-    /// change, not the share.
+    /// Re-point the live share at something else, keeping the viewers. The
+    /// same picker `startSharing` opens. Dismissing it changes nothing and
+    /// says nothing — they declined a change, not the share.
     func changeSource() {
         guard sharing.isSharing else { return }
         let item: WGC.CaptureItem?
@@ -1949,20 +1543,18 @@ final class AppUIState: ObservableObject {
         }
     }
 
+    /// The picker runs inline on the main actor (modal system UI needing an
+    /// owner window). Everything after it — tsnet bring-up, capture, encode —
+    /// runs off the main actor inside `beginSharing`, why `WindowsShareSession`
+    /// is not `@MainActor`.
     func startSharing() {
-        // Signed out is a real way to share, not a blocked one: the share
-        // comes up over the guest tunnel with its link as the only way in,
-        // exactly as the macOS welcome pane's "Share your screen via Link…".
-        // Mid-bring-up (`.starting`) is still refused — the person is signing
-        // in, and turning that into a link-only share would answer a question
-        // they had not finished asking.
+        // Signed out is a real way to share: the share comes up over the
+        // guest tunnel with its link as the only way in. Mid-bring-up
+        // (`.starting`) is still refused.
         let linkOnly = isSignedOut
-        // `canStart` is idle-or-failed, so this now also refuses a second
-        // click during CAPTURE bring-up, which `!isSharing` used to allow —
-        // the share is not live yet, and the second click started a whole
-        // second share whose first became a stale generation tearing itself
-        // down. `linkBusy` still covers the link-only bootstrap, which
-        // publishes before the phase moves.
+        // `canStart` is idle-or-failed, so this also refuses a second click
+        // during capture bring-up. `linkBusy` still covers the link-only
+        // bootstrap, which publishes before the phase moves.
         guard phase.isReady || linkOnly, sharing.phase.canStart, !sharing.linkBusy else { return }
         detail = ""
         shareDetail = nil
@@ -1972,10 +1564,8 @@ final class AppUIState: ObservableObject {
             item = try shareSession.pickTarget()
         } catch {
             // Signed out, the button that opened this picker lives on the
-            // share-link card, so its failure belongs there — `detail` is
-            // rendered by the welcome pane's *tailnet* card, which would put
-            // a capture error under the sign-in button that had nothing to
-            // do with it. Same split `beginSharing`'s failures already make.
+            // share-link card, so its failure belongs there, not `detail`
+            // (the welcome pane's tailnet card).
             if linkOnly {
                 shareDetail = L("Could not open the capture picker: \(error)")
             } else {
@@ -1992,38 +1582,25 @@ final class AppUIState: ObservableObject {
             do {
                 try await shareSession.beginSharing(
                     item: item,
-                    // Both are ignored when a node is supplied; passed so the
-                    // signature stays honest about what a standalone bring-up
-                    // would have used.
+                    // Both ignored when a node is supplied; passed so the
+                    // signature stays honest about a standalone bring-up.
                     hostname: Self.machineName(),
                     statePath: stateDirectory(),
                     quality: quality,
-                    // THE app's node, not a new one. A second node means a
-                    // second machine key, a second browser login nobody is
-                    // prompted for, and a share that waits at that login
-                    // forever without ever joining the tailnet. Nil signed
-                    // out, where `linkOnly` says there is to be no node at
-                    // all.
+                    // THE app's node, not a new one — a second node means a
+                    // second machine key and a share that never joins the
+                    // tailnet. Nil when signed out (`linkOnly`).
                     existingNode: transport.sharedNode,
-                    // The app's long-lived listener, so the share does not bind
-                    // a second one to port 7447 and `onRequestToShare` keeps
-                    // pointing at this model.
+                    // The app's long-lived listener, so the share doesn't
+                    // bind a second one to port 7447.
                     controlListener: askToShare.controlListener,
                     linkOnly: linkOnly
                 )
             } catch {
-                // Deliberately silent: the ENGINE owns this failure now. It
-                // sets `phase = .failed(reason)`, which `shareStatusLine`
-                // renders as the card's headline and `shareNote` derives the
-                // signed-out card's note from. Writing a second copy
-                // here put the same failure on screen twice in two different
-                // wordings — the card saying "Share failed: …" over a footer
-                // saying "Could not start sharing: …" — and gave the new
-                // phase payload a rival for being the source of truth.
-                //
-                // The picker failure above still writes its own slot: that
-                // one throws before `beginSharing`, so no phase ever carries
-                // it.
+                // Deliberately silent: the ENGINE owns this failure — it sets
+                // `phase = .failed(reason)`, which `shareStatusLine` and
+                // `shareNote` already render. A second copy here would show
+                // the same failure twice in two different wordings.
                 _ = error
             }
         }
@@ -2035,30 +1612,22 @@ final class AppUIState: ObservableObject {
 
     // MARK: Asks to share
 
-    /// Bring up (or re-point) the idle control listener.
-    ///
-    /// Idempotent per node, and safe to call on every discovery — which is how
-    /// it is called, because there is no single observable "the node is ready"
-    /// moment here. A listener already bound to this node is left alone. The
-    /// lifecycle itself is the shared coordinator's.
+    /// Bring up (or re-point) the idle control listener. Idempotent per node
+    /// and safe to call on every discovery — there's no single observable
+    /// "the node is ready" moment here.
     func ensureControlListener() {
         guard let node = transport.sharedNode else { return }
         askToShare.ensureListener(node: node)
     }
 
     /// Answer an ask: reply on its own connection, and on accept invite the
-    /// asker past the approval gate and open the capture picker — the
-    /// coordinator's sequencing; the invite and the picker land in the
-    /// closures `init` wired.
+    /// asker past the approval gate and open the capture picker.
     func answerShareRequest(id: UUID, accept: Bool) {
         askToShare.answer(id: id, accept: accept)
     }
 
-    /// Ask a machine to start sharing.
-    ///
-    /// Nothing awaits this inline: the ask parks for up to two minutes on the
-    /// far side, and freezing the window for that would also stop somebody
-    /// viewing a different screen that came free meanwhile.
+    /// Ask a machine to start sharing. Nothing awaits this inline: the ask
+    /// parks for up to two minutes on the far side.
     func askToShare(id: String) {
         guard let peer = peers.first(where: { $0.id == id }), !asking.contains(id) else { return }
         asking.insert(id)
@@ -2141,24 +1710,14 @@ final class AppUIState: ObservableObject {
     }
 
     /// Where the ACTIVE account's tsnet node keeps its state (machine key,
-    /// netmap) — which is what a profile is.
-    ///
-    /// Under `%LOCALAPPDATA%` because it is per-machine, per-user data that
-    /// should not roam: the machine key identifies *this* device to the tailnet,
-    /// and a roaming profile would carry it to another one. Account #1 is
-    /// seeded onto the exact directory this method used to return outright, so
-    /// an existing install keeps its login.
+    /// netmap). Under `%LOCALAPPDATA%` since it's per-machine, per-user data
+    /// that should not roam.
     private func stateDirectory() -> String {
         profileStore.active.statePath
     }
 
-    /// This machine's name, as the tailnet sees it.
-    ///
-    /// `TsnetTransport` prefixes it with `serverHostnamePrefix`, so what is
-    /// returned here is the bare name — sanitised by the shared
-    /// `TailscreenInstance.nodeLabel`, and never empty. The old inline filter
-    /// neither trimmed hyphens nor capped length, so a `COMPUTERNAME` of
-    /// `-lab-box` registered a DNS-illegal label.
+    /// This machine's name, as the tailnet sees it. `TsnetTransport` prefixes
+    /// it with `serverHostnamePrefix`; sanitised by `TailscreenInstance.nodeLabel`, never empty.
     private static func machineName() -> String {
         let machine =
             ProcessInfo.processInfo.environment["COMPUTERNAME"]

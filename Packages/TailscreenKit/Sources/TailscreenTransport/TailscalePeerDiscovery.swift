@@ -89,17 +89,11 @@ public class TailscalePeerDiscovery: ObservableObject {
     private var ipnWatcher: TailscaleIPNWatcher?
     private var monitoringStartInFlight = false
 
-    /// Per-source peer maps, keyed by stable node ID and merged (watcher
-    /// wins per node) before publishing. The two sources race: the seed
-    /// (`backendStatus`) and the IPN watcher deliver overlapping data at
-    /// different times, and an early netmap can be incomplete — right
-    /// after login it may carry only the recently-active peers. Letting
-    /// either source wholesale-replace the list made the menu churn
-    /// (seeded offline rows vanished when a partial netmap landed, then
-    /// reappeared on the next seed). A node deleted from the tailnet
-    /// leaves `watcherPeers` on the next netmap and `seedPeers` on the
-    /// next refresh pass, so it still prunes — just not via a partial
-    /// netmap alone.
+    /// Per-source peer maps, merged (watcher wins per node) before
+    /// publishing. The seed (`backendStatus`) and IPN watcher race and an
+    /// early netmap can be incomplete, so letting either wholesale-replace
+    /// the list made the menu churn. A deleted node prunes once it's gone
+    /// from both sides.
     private var seedPeers: [String: TailscreenPeer] = [:]
     private var watcherPeers: [String: TailscreenPeer] = [:]
 
@@ -118,11 +112,8 @@ public class TailscalePeerDiscovery: ObservableObject {
 
         let client = LocalAPIClient(localNode: node, logger: logger)
 
-        // Wrap in a watchdog because tsnet's LocalAPI can hang silently
-        // when the node exists but its backend hasn't reached Running
-        // (e.g. silent session restore still in progress). Without a
-        // timeout the discovery spinner never resolves and the menu
-        // stays on "Looking for screens…".
+        // Watchdog: tsnet's LocalAPI can hang silently while the backend
+        // hasn't reached Running, else the discovery spinner never resolves.
         let status = try await Self.withWatchdog(seconds: 5) {
             try await client.backendStatus()
         }
@@ -166,13 +157,9 @@ public class TailscalePeerDiscovery: ObservableObject {
         defer { monitoringStartInFlight = false }
 
         let watcher = TailscaleIPNWatcher()
-        // Watchdog: `watchIPNBus` can park indefinitely when tsnet's
-        // LocalAPI isn't ready (typical right after launch — exactly when
-        // the first discovery runs). Without the timeout a parked start
-        // holds `monitoringStartInFlight` forever, and since the discovery
-        // object is reused across refreshes, real-time monitoring would
-        // stay wedged for the whole session. Timing out clears the flag
-        // (via defer) so the next refresh genuinely retries.
+        // Watchdog: `watchIPNBus` can park indefinitely if tsnet's LocalAPI
+        // isn't ready yet, which would otherwise hold
+        // `monitoringStartInFlight` forever across refreshes.
         try await Self.withWatchdog(seconds: 5) {
             try await watcher.startWatching(node: node)
         }
@@ -189,11 +176,9 @@ public class TailscalePeerDiscovery: ObservableObject {
         logger.log("Real-time monitoring started")
     }
 
-    /// Refresh the watcher-side peer map from the watcher's current
-    /// snapshot and republish the merged view. Discovers new rows
-    /// (offline → online transitions) and updates existing ones; pruning
-    /// a node that left the tailnet completes once it's also gone from
-    /// the seed side (see `seedPeers`/`watcherPeers`).
+    /// Refresh the watcher-side peer map and republish the merged view.
+    /// Pruning a node that left the tailnet completes once it's also gone
+    /// from the seed side.
     private func updatePeerListFromIPNWatcher() async {
         guard let watcher = ipnWatcher else { return }
         let snapshot = watcher.peers
@@ -242,13 +227,10 @@ public class TailscalePeerDiscovery: ObservableObject {
         availablePeers = next
     }
 
-    /// Merge key (and SwiftUI row identity) for a peer. The two sources
-    /// report *different* node identifiers — LocalAPI's `PeerStatus.ID`
-    /// is the string StableNodeID ("nXXXX…") while a netmap node's `ID`
-    /// is the numeric NodeID — so keying each source by its own ID made
-    /// the merged union list every node twice. The MagicDNS name is
-    /// unique per node and present in both sources; normalize case and
-    /// the FQDN trailing dot so both spellings collide.
+    /// Merge key (and SwiftUI row identity) for a peer. The two sources use
+    /// different node identifiers (LocalAPI's string StableNodeID vs. a
+    /// netmap node's numeric ID), so keying by ID doubled every node — use
+    /// the MagicDNS name instead, normalized for case and trailing dot.
     public nonisolated static func mergeKey(dnsName: String, fallbackID: String) -> String {
         let normalized = dnsName.lowercased()
         let trimmed =
@@ -256,14 +238,10 @@ public class TailscalePeerDiscovery: ObservableObject {
         return trimmed.isEmpty ? fallbackID : trimmed
     }
 
-    /// Canonical display hostname: the first DNS label. The seed path's
-    /// `HostName` (raw hostinfo name, mixed case — "tailscreen-Fredrik's
-    /// MacBook Pro (2)") and the watcher's `ComputedName` (DNS-safe
-    /// lowercase — "tailscreen-fredriks-macbook-pro-2") differ for the
-    /// same node, so a row's text flipped whenever the fresher source
-    /// changed — visible churn in an open menu. The DNS label is derived
-    /// from the same data on both paths, so identical state renders
-    /// byte-identically wherever it came from.
+    /// Canonical display hostname: the first DNS label. The seed's raw
+    /// `HostName` and the watcher's DNS-safe `ComputedName` differ for the
+    /// same node, causing visible row-text churn; the DNS label is derived
+    /// identically on both paths.
     public nonisolated static func displayHostname(dnsName: String, fallback: String) -> String {
         let label = dnsName.split(separator: ".").first.map(String.init) ?? ""
         return label.isEmpty ? fallback : label
@@ -286,30 +264,20 @@ public class TailscalePeerDiscovery: ObservableObject {
         }
     }
 
-    /// Pick a dial-safe address from a peer's address list. tsnet's
-    /// `tailscale_dial("host:port", …)` does Go-style `net.SplitHostPort`
-    /// which requires IPv6 hosts to be bracketed; we pass raw `"host:port"`
-    /// everywhere, so any IPv6 entry like `"fd7a:…"` ends up unparseable.
-    /// Prefer the first IPv4 (no `:`); fall back to whatever's first only
-    /// if the list is IPv6-only.
+    /// Pick a dial-safe address. tsnet's `tailscale_dial` requires bracketed
+    /// IPv6 hosts, but we pass raw `"host:port"` everywhere, so an unbracketed
+    /// IPv6 entry is unparseable — prefer IPv4, fall back to first if IPv6-only.
     public nonisolated static func preferIPv4(_ ips: [String]) -> String {
         ips.first(where: { !$0.contains(":") }) ?? ips.first ?? ""
     }
 
     /// Runs `operation` in an unstructured `Task.detached` so a blocking C
-    /// call (e.g. `tailscale_dial`, the LocalAPI HTTP-over-Unix-socket
-    /// roundtrip, the `OutgoingConnection` init's actor handshake) does not
-    /// hold a Swift actor-hop continuation open when the calling task is
-    /// cancelled or times out.
+    /// call doesn't hold an actor-hop continuation open when the calling task
+    /// is cancelled or times out.
     ///
-    /// Three independent paths race to resume the continuation exactly once:
-    ///   1. The unstructured task delivers the operation's result (success or error).
-    ///   2. A DispatchQueue watchdog fires after `seconds`, resuming with `TimeoutError`.
-    ///   3. `withTaskCancellationHandler`'s `onCancel` fires immediately when the
-    ///      calling task is cancelled, resuming with `CancellationError`.
-    ///
-    /// `ResumeBox` is a resume-once guard that silently drops whichever of the
-    /// three arrives second and third.
+    /// Three paths race to resume the continuation exactly once: the
+    /// operation's own result, a watchdog timeout, or immediate cancellation.
+    /// `ResumeBox` drops whichever arrives second and third.
     public static func withWatchdog<T: Sendable>(
         seconds: Double,
         operation: @escaping @Sendable () async throws -> T

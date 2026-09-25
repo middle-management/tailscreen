@@ -2,65 +2,44 @@ import Foundation
 import TailscaleKit
 import os
 
-/// Main-side wrapper around the `Tailscreen --capture-helper` child
-/// process. Spawns a fresh helper per share session, parses framed
-/// access units off its stdout, and surfaces them through callbacks
-/// shaped like the in-process `ScreenCapture` so the rest of the
-/// server doesn't have to care which path produced the bytes.
+/// Main-side wrapper around the `Tailscreen --capture-helper` child process.
+/// Spawns a fresh helper per share, parses framed access units off its
+/// stdout, and surfaces them through callbacks shaped like `ScreenCapture`.
 ///
-/// Why a child process: macOS's `replayd` is the only process that
-/// can definitively release a per-bundle SCStream slot, and the
-/// only signal it always responds to is process death. Killing the
-/// child on Stop Sharing reliably clears the recording badge and the
-/// "interrupted/orphan" state that has wedged Tailscreen across
-/// session boundaries (Apple bug FB16310901).
+/// A child process because `replayd` releases a per-bundle SCStream slot only
+/// on process death — killing the child on Stop Sharing reliably clears the
+/// recording badge and orphan state that has wedged sharing across sessions
+/// (Apple bug FB16310901).
 final class HelperScreenCapture: @unchecked Sendable {
-    /// Helper produced an encoded access unit. `(avccData, isKeyframe)`.
-    /// Mirrors `VideoEncoder.onEncodedData` so the server can broadcast
-    /// without an in-process encoder.
+    /// `(avccData, isKeyframe)`. Mirrors `VideoEncoder.onEncodedData` so the
+    /// server broadcasts without an in-process encoder.
     var onAccessUnit: ((Data, Bool) -> Void)?
-    /// Helper produced an encoded system-audio access unit (raw Opus packet
-    /// bytes). The server packetizes these as RTP PT 99 and fans them out on
-    /// the UDP audio path. Fires on the reader thread.
+    /// Raw Opus packet bytes; the server packetizes as RTP PT 99.
     var onAudioAccessUnit: ((Data) -> Void)?
-    /// Codec parameter sets, sent once per encoder configuration.
     var onParameterSets: ((CodecParameterSets) -> Void)?
-    /// Encoded resolution, surfaced once per parameter-sets emit so
-    /// the server can anchor its adaptive-bitrate baseline.
+    /// Surfaced once per parameter-sets emit so the server can anchor its
+    /// adaptive-bitrate baseline.
     var onEncoderResolution: ((Int, Int) -> Void)?
-    /// Fires the first time the helper's encoder produces a frame —
-    /// signal for the SharingCard's "first preview" gate.
+    /// First frame from the helper's encoder — SharingCard's "first preview" gate.
     var onFirstFrame: (() -> Void)?
-    /// Helper sent a downsampled preview JPEG for the SharingCard
-    /// thumbnail. ~1 Hz cadence. Carries the **encoded JPEG bytes**, not a
-    /// decoded image: `CaptureEncoding` is Foundation-only, so the decode
-    /// happens at the point of display (see `AppState.previewImage`).
+    /// Encoded JPEG bytes (not a decoded image — `CaptureEncoding` is
+    /// Foundation-only; decode happens at `AppState.previewImage`), ~1Hz.
     var onPreviewImage: ((Data) -> Void)?
-    /// Fires when the helper exits unexpectedly (process death without
-    /// a prior `stop()` call). The reason describes how it died.
+    /// Process death without a prior `stop()` call.
     var onUnexpectedExit: ((String) -> Void)?
-    /// Fires when the helper reports the user clicked the macOS
-    /// Control Center "Stop" button. Distinct from `onUnexpectedExit`
-    /// so the server tears the share down instead of respawning.
+    /// User clicked Control Center's "Stop" — distinct from `onUnexpectedExit`
+    /// so the server tears down instead of respawning.
     var onUserStopped: (() -> Void)?
-    /// Fires on *every* message received from the helper (AUs, params,
-    /// previews, logs, and the ~1 Hz heartbeat). The server uses it as a
-    /// liveness tick for its hung-helper watchdog: a helper that's alive but no
-    /// longer producing — SCStream wedged without exiting — stops emitting
-    /// these, which process-death detection can't catch.
+    /// Fires on every message from the helper; feeds the hung-helper watchdog,
+    /// since a wedged-but-alive SCStream stops producing without exiting.
     var onActivity: (() -> Void)?
 
-    /// Spawn-time color-pipeline opt-ins (`TAILSCREEN_ENABLE_10BIT` /
-    /// `TAILSCREEN_ENABLE_HDR`), pushed by `AppState` from the Settings →
-    /// Color toggles and merged into every helper's environment. A static,
-    /// not a `start` parameter: the server's crash-restart path constructs
-    /// fresh `HelperScreenCapture` instances deep inside TailscreenSharer,
-    /// which knows nothing about macOS settings — this is the parent-side
-    /// counterpart of `qualityEnv`, which originates in that package.
-    /// Locked because it's written on the MainActor and read on whatever
-    /// thread the server spawns helpers from. Merged *before* `qualityEnv`
-    /// so a server-set override (e.g. `TAILSCREEN_FORCE_8BIT` on a viewer's
-    /// PROFILE_NO) keeps the last word.
+    /// Pushed by `AppState` from Settings -> Color and merged into every
+    /// helper's environment. Static because the crash-restart path constructs
+    /// `HelperScreenCapture` deep inside TailscreenSharer, which knows nothing
+    /// about macOS settings. Locked: written on MainActor, read on the spawn
+    /// thread. Merged before `qualityEnv` so a server override (e.g.
+    /// `TAILSCREEN_FORCE_8BIT`) keeps the last word.
     static let colorEnvironment = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
     private let queueLabel: String
@@ -68,13 +47,10 @@ final class HelperScreenCapture: @unchecked Sendable {
     private var stdinHandle: FileHandle?
     private var stdoutHandle: FileHandle?
     private var readerThread: Thread?
-    /// Set when *we* initiate teardown (`stop()`) or the helper reports a
-    /// deliberate exit (`fatal`/`userStopped`), so `terminationHandler`
-    /// doesn't misread an intentional exit as a crash and fire
-    /// `onUnexpectedExit`. Locked because it's written from `stop()` and the
-    /// reader thread but read from the process `terminationHandler`'s
-    /// arbitrary queue — a torn read there would spuriously restart a share
-    /// the user just stopped.
+    /// Set on deliberate exit (`stop()`, `fatal`/`userStopped`) so
+    /// `terminationHandler` doesn't misread it as a crash. Locked: written
+    /// from `stop()`/reader thread, read from the process's arbitrary
+    /// termination-handler queue.
     private let stoppedIntentionally = OSAllocatedUnfairLock<Bool>(initialState: false)
     private var debugAUCount = 0
     private var debugParamsLogged = false
@@ -85,13 +61,9 @@ final class HelperScreenCapture: @unchecked Sendable {
     }
 
     /// - Parameters:
-    ///   - forceH264: when true, the spawned helper is told (via
-    ///     `TAILSCREEN_FORCE_H264=1`) to encode H.264 instead of the preferred
-    ///     codec. Used by the codec-fallback path when a viewer can't decode
-    ///     HEVC — it wins over any `qualityEnv` codec preference.
-    ///   - qualityEnv: spawn-time quality knobs from
-    ///     `QualitySettings.helperEnvironment()` (fps cap, codec preference,
-    ///     bandwidth ceiling), merged into the child's environment.
+    ///   - forceH264: codec-fallback path when a viewer can't decode HEVC;
+    ///     wins over any `qualityEnv` codec preference.
+    ///   - qualityEnv: spawn-time quality knobs from `QualitySettings.helperEnvironment()`.
     func start(selectionData: Data, forceH264: Bool = false, qualityEnv: [String: String] = [:]) throws {
         guard let exe = resolveHelperExecutable() else {
             throw HelperScreenCaptureError.executableNotFound
@@ -101,10 +73,9 @@ final class HelperScreenCapture: @unchecked Sendable {
         proc.arguments = ["--capture-helper"]
         let colorEnv = Self.colorEnvironment.withLock { $0 }
         if forceH264 || !qualityEnv.isEmpty || !colorEnv.isEmpty {
-            // Setting `environment` replaces (doesn't merge with) the child's
-            // env, so seed it from ours before adding the overrides — the
-            // helper relies on inherited vars (TAILSCREEN_INSTANCE, the TS
-            // auth/control-URL keys, TAILSCREEN_HELPER_EXE under xctest, etc.).
+            // `environment` replaces, not merges — seed from ours first, since
+            // the helper relies on inherited vars (TAILSCREEN_INSTANCE, TS
+            // auth keys, etc.).
             var env = ProcessInfo.processInfo.environment
             env.merge(colorEnv) { _, override in override }
             env.merge(qualityEnv) { _, override in override }
@@ -118,8 +89,7 @@ final class HelperScreenCapture: @unchecked Sendable {
         let stdoutPipe = Pipe()
         proc.standardInput = stdinPipe
         proc.standardOutput = stdoutPipe
-        // Inherit stderr so helper logs land in the merged log alongside
-        // ours — easier debugging.
+        // Inherit stderr so helper logs land in the merged log.
 
         proc.terminationHandler = { [weak self] proc in
             guard let self else { return }
@@ -142,41 +112,32 @@ final class HelperScreenCapture: @unchecked Sendable {
         stdinHandle = stdinPipe.fileHandleForWriting
         stdoutHandle = stdoutPipe.fileHandleForReading
 
-        // Helper waits on stdin for the archived SCContentFilter
-        // before bringing the SCStream up. Send it now so the helper
-        // isn't blocked once the reader thread starts.
         if let stdin = stdinHandle {
             HelperControlWriter(handle: stdin).sendContentFilter(selectionData)
         }
 
-        // Reader thread — synchronous reads on the pipe. Async
-        // FileHandle reads on a Pipe-backed handle are buggy in some
-        // Swift releases; a dedicated thread doing blocking reads is
-        // simpler and more reliable.
+        // Dedicated thread doing blocking reads: async FileHandle reads on a
+        // Pipe-backed handle are buggy in some Swift releases.
         let thread = Thread { [weak self] in self?.readLoop() }
         thread.name = queueLabel
         thread.start()
         readerThread = thread
     }
 
-    /// Send a framed shutdown to the helper, give it a moment to
-    /// drain, then SIGTERM, then SIGKILL. Returns once we've torn the
-    /// process down — process death = replayd cleanup.
+    /// Framed shutdown, then SIGTERM, then SIGKILL — process death triggers
+    /// replayd cleanup.
     func stop() async {
         stoppedIntentionally.withLock { $0 = true }
         guard let proc = process else { return }
-        // Best-effort graceful shutdown.
         if let stdin = stdinHandle {
             let writer = HelperControlWriter(handle: stdin)
             writer.sendShutdown()
             try? stdin.close()
         }
-        // Give the helper ~500 ms to clean up before SIGTERM.
         try? await Task.sleep(for: .milliseconds(500))
         if proc.isRunning {
             proc.terminate()
         }
-        // SIGKILL after another 1 s if SIGTERM was ignored.
         for _ in 0..<10 {
             if !proc.isRunning { break }
             try? await Task.sleep(for: .milliseconds(100))
@@ -200,15 +161,12 @@ final class HelperScreenCapture: @unchecked Sendable {
         HelperControlWriter(handle: stdin).sendBitrate(bps)
     }
 
-    /// Enable/disable system-audio emission in the live helper. No-op if the
-    /// helper isn't up yet — the server re-sends the latch after every spawn.
+    /// No-op if the helper isn't up yet — the server re-sends after every spawn.
     func setAudioEnabled(_ on: Bool) {
         guard let stdin = stdinHandle else { return }
         HelperControlWriter(handle: stdin).sendAudioEnabled(on)
     }
 
-    /// Retune the capture frame-rate tier (fps ladder, second congestion
-    /// lever). The helper reconfigures the SCStream's `minimumFrameInterval`.
     func setFrameInterval(_ fps: Int) {
         guard let stdin = stdinHandle else { return }
         HelperControlWriter(handle: stdin).sendFrameInterval(fps)
@@ -218,13 +176,10 @@ final class HelperScreenCapture: @unchecked Sendable {
         guard let handle = stdoutHandle else { return }
         let reader = HelperFrameReader(handle: handle)
         while let (rawType, payload) = reader.readNext() {
-            // Any byte from the helper is proof of life — feed the watchdog
-            // before dispatching (covers logs/params during startup too, not
-            // just the heartbeat).
+            // Any byte is proof of life for the watchdog, not just the heartbeat.
             onActivity?()
             guard let type = CaptureHelperWire.OutType(rawValue: rawType) else {
-                // Unknown type — log and resync (next 5-byte header).
-                continue
+                continue  // unknown type: resync at the next 5-byte header
             }
             switch type {
             case .accessUnit:
@@ -242,14 +197,10 @@ final class HelperScreenCapture: @unchecked Sendable {
                 guard !payload.isEmpty else { continue }
                 onAudioAccessUnit?(payload)
             case .parameterSets:
-                // Ordering invariant: fire `onParameterSets` BEFORE
-                // `onEncoderResolution`. The server's params handler caches
-                // the codec (`helperCodec`); its resolution handler reads
-                // that codec to pick the bits-per-pixel figure for the
-                // adaptive-bitrate anchor. Resolution-first would compute
-                // the session's first anchor with `helperCodec == nil`
-                // (HEVC's bpp) even for an H.264 session. Both handlers are
-                // otherwise independent, so the swap is side-effect-free.
+                // Must fire onParameterSets before onEncoderResolution: the
+                // server's resolution handler reads the codec that
+                // onParameterSets caches, to pick the bpp for its
+                // adaptive-bitrate anchor.
                 if let params = Self.decodeParameterSets(payload) {
                     if !debugParamsLogged {
                         debugParamsLogged = true
@@ -295,18 +246,14 @@ final class HelperScreenCapture: @unchecked Sendable {
         }
     }
 
-    /// Parse a `parameterSets` payload. All indexing is `startIndex`-relative
-    /// so the parser is correct for `Data` *slices* too, not just zero-based
-    /// buffers — the historical absolute-offset `readBE32` only worked because
-    /// `HelperFrameReader.readExactly` always hands over a fresh zero-based
-    /// `Data`; a slice would have trapped. Internal (not private) so
+    /// All indexing is `startIndex`-relative so this is correct for `Data`
+    /// slices too, not just zero-based buffers. Internal (not private) so
     /// `ParserFuzzTests` can feed it hostile bytes and re-based slices.
     static func decodeParameterSets(_ data: Data) -> CodecParameterSets? {
         // Layout: [codec:1][width:4 BE][height:4 BE][count:4 BE]([len:4 BE][data:N])*
         guard data.count >= 13 else { return nil }
         let codec = data[data.startIndex]
-        // width/height are informational only; CodecParameterSets carries
-        // just the NAL byte arrays.
+        // width/height are informational only.
         let count = readBE32(data, offset: 9)
         var cursor = 13
         var paramSets: [Data] = []
@@ -332,9 +279,8 @@ final class HelperScreenCapture: @unchecked Sendable {
         }
     }
 
-    /// Big-endian UInt32 at `offset` bytes past `data.startIndex` —
-    /// slice-safe, unlike absolute `data[offset]` subscripting. Caller
-    /// guarantees `offset + 4 <= data.count`.
+    /// Slice-safe (unlike absolute `data[offset]`). Caller guarantees
+    /// `offset + 4 <= data.count`.
     private static func readBE32(_ data: Data, offset: Int) -> UInt32 {
         let base = data.index(data.startIndex, offsetBy: offset)
         let b0 = UInt32(data[base])

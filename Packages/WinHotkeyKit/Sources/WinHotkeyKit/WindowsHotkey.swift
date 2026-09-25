@@ -2,16 +2,14 @@ import CWinHotkey
 import Foundation
 import TailscreenProtocol
 
-/// A system-wide hotkey held with `RegisterHotKey`.
+/// A system-wide hotkey held with `RegisterHotKey`. Windows sibling of
+/// `X11Hotkey`, deliberately the same surface — hold a chord, drain
+/// activations — so the two apps' controllers differ only in which type
+/// they construct.
 ///
-/// The Windows sibling of `X11Hotkey`, with deliberately the same surface —
-/// hold a chord, drain activations from the host's tick — so the two apps'
-/// controllers differ only in which type they construct.
-///
-/// Two things genuinely differ underneath, and both are the platform's doing.
-/// The shim owns a thread with a message pump (`WM_HOTKEY` is a thread message
-/// and XAML's pump would eat it), and there is no repeat latch, because
-/// `MOD_NOREPEAT` is part of every registration `WindowsHotkeyMapping` emits.
+/// The shim owns a thread with a message pump (`WM_HOTKEY` is a thread
+/// message XAML's pump would eat), and needs no repeat latch since
+/// `MOD_NOREPEAT` is in every registration `WindowsHotkeyMapping` emits.
 public final class WindowsHotkey {
     private var handle: UnsafeMutableRawPointer?
 
@@ -21,12 +19,8 @@ public final class WindowsHotkey {
     /// Whether this build has `RegisterHotKey` at all.
     public static var isSupported: Bool { ts_winhotkey_supported() != 0 }
 
-    /// Take `chord` system-wide, or say why not.
-    ///
-    /// The failure that matters is `.alreadyOwned`: `RegisterHotKey` returns
-    /// FALSE with `ERROR_HOTKEY_ALREADY_REGISTERED` when another application
-    /// holds the combo, and a wrapper that ignored the return value would
-    /// advertise a shortcut that can never fire.
+    /// Take `chord` system-wide, or say why not. `.alreadyOwned`: another
+    /// application already holds the combo (`ERROR_HOTKEY_ALREADY_REGISTERED`).
     public static func hold(
         _ chord: ShortcutChord
     ) -> Result<
@@ -58,12 +52,8 @@ public final class WindowsHotkey {
         if let handle { ts_winhotkey_destroy(handle) }
     }
 
-    /// Give the chord back to the rest of the desktop.
-    ///
-    /// Explicit rather than left to `deinit`, for the same reason the sharer's
-    /// overlay and injector are: "stop holding this" has to mean now, and a
-    /// released hotkey that is still registered is a key another app cannot
-    /// have.
+    /// Give the chord back to the rest of the desktop. Explicit rather than
+    /// left to `deinit` — "stop holding this" has to mean now.
     public func release() {
         if let handle { ts_winhotkey_destroy(handle) }
         handle = nil
@@ -77,8 +67,6 @@ public final class WindowsHotkey {
     }
 }
 
-/// `drain()` and `release()` were already exactly the shape the portable
-/// controller wants — the conformance only names that. Declared here rather
-/// than in the app so neither swift-cross-ui host needs a `@retroactive`
-/// conformance of an imported type to an imported protocol.
+/// `drain()`/`release()` already match the portable controller's shape.
+/// Declared here, not in the app, so neither host needs a `@retroactive` conformance.
 extension WindowsHotkey: GlobalHotkeyHolding {}

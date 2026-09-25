@@ -21,10 +21,8 @@ struct MainWindowView: View {
             HubHeader()
             Divider()
             // Deliberately the two flags, not `appState.nodePhase`: this app
-            // renders an account switch as a pane of its own and a sign-in as
-            // a spinner on the card that started it, where the other two hubs
-            // show a status pane for both. Branching on `nodePhase.isSignedOut`
-            // here would put the hub up mid-sign-in. See `AppState.nodePhase`.
+            // renders a sign-in as a spinner on the card that started it,
+            // where other hosts show a status pane for it. See `AppState.nodePhase`.
             if appState.isSwitchingProfile {
                 ProfileSwitchingPane()
             } else if appState.tailscaleAuth.isAuthenticated {
@@ -35,35 +33,27 @@ struct MainWindowView: View {
         }
         .frame(minWidth: 340, minHeight: 460)
         .background(Color(nsColor: .textBackgroundColor))
-        // The window's title bar is hidden (see the `Window` scene) and the
-        // header extends under it, so the traffic lights float over the
-        // header like Tailscale's app.
+        // Title bar is hidden; header extends under it so traffic lights float over it.
         .ignoresSafeArea(edges: .top)
         .background(TitlebarConfigurator())
         .sheet(isPresented: $appState.joinSheetPresented) {
             JoinShareSheet()
         }
-        // `tailscreen:` links (Copy Link on another machine) land here and
-        // open the join sheet with the token pre-filled.
+        // `tailscreen:` links land here with the token pre-filled.
         .onOpenURL { url in
             appState.handleOpenURL(url)
         }
         .onAppear {
-            // Environment actions are only reachable from view context, so
-            // stash the scene-opening closure where AppKit callers (menu
+            // Stash the scene-opening closure where AppKit callers (menu
             // items, the menubar popover) can invoke it.
             appState.openMainWindowAction = { openWindow(id: TailscreenApp.mainWindowID) }
         }
     }
 }
 
-/// The Join-a-Share sheet: one paste field that accepts a bare token or a
-/// `tailscreen:` link, the guest-consent line, and Join. Reachable signed
-/// in or out — joining by token is exactly the path that needs no
-/// Tailscale account. Errors before the dial (non-token input) render
-/// inline; errors after it (unreachable relay, dead token) surface through
-/// the normal connect-failure alert, and a live sharer's approval gate
-/// shows the standard waiting placard.
+/// One paste field for a bare token or `tailscreen:` link, the guest-consent
+/// line, and Join. Reachable signed in or out. Pre-dial errors (non-token
+/// input) render inline; post-dial errors use the normal connect-failure alert.
 private struct JoinShareSheet: View {
     @EnvironmentObject var appState: AppState
     @State private var inputRejected = false
@@ -116,20 +106,16 @@ private struct JoinShareSheet: View {
     }
 }
 
-/// Configures the hosting `NSWindow` for the thick-header look: hidden
-/// title text plus an **empty** unified-style `NSToolbar`. That empty
-/// toolbar is the standard AppKit mechanism for a tall (~52pt) title-bar
-/// region with the traffic lights **vertically centered** in it — there
-/// is no public title-bar-height API, and without it the lights hug the
-/// window's top-left corner while `HubHeader`'s content centers, reading
-/// as misaligned. The toolbar carries no items (our header is ordinary
-/// SwiftUI content underneath the transparent title bar), so SwiftUI's
-/// toolbar item quirks don't apply.
+/// Hidden title text plus an **empty** unified-style `NSToolbar` — the
+/// standard AppKit mechanism for a tall (~52pt) title-bar region with the
+/// traffic lights vertically centered (no public title-bar-height API);
+/// without it the lights hug the top-left corner while `HubHeader` centers,
+/// reading as misaligned.
 private struct TitlebarConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        // The view isn't in a window yet during make; configure on the
-        // next runloop turn, and again on updates (cheap + idempotent).
+        // Not in a window yet during make; configure next runloop turn and on
+        // updates (cheap + idempotent).
         DispatchQueue.main.async { Self.configure(view.window) }
         return view
     }
@@ -144,8 +130,8 @@ private struct TitlebarConfigurator: NSViewRepresentable {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         if window.toolbar == nil {
-            // No `showsBaselineSeparator = false` — deprecated (and a
-            // no-op) since macOS 15; unified style draws no separator.
+            // No `showsBaselineSeparator = false` — deprecated/no-op since
+            // macOS 15; unified style draws no separator.
             window.toolbar = NSToolbar(identifier: "TailscreenTitlebarSpacer")
         }
         window.toolbarStyle = .unified
@@ -154,14 +140,10 @@ private struct TitlebarConfigurator: NSViewRepresentable {
 
 // MARK: - Header
 
-/// Thick custom header standing in for the title bar (which is hidden):
-/// app identity — wordmark + tailnet login — on the left, clear of the
-/// floating traffic lights, and the list controls + account menu on the
-/// right. A custom bar instead of a SwiftUI `.toolbar` for two reasons:
-/// toolbars on a hidden-title-bar window are visually thin, and macOS
-/// toolbar item labels drop custom views (the monogram avatar rendered as
-/// an empty pill there). `WindowDragGesture` keeps the strip draggable
-/// like the title bar it replaces.
+/// Custom header standing in for the hidden title bar. Not a SwiftUI
+/// `.toolbar`: those are visually thin here, and toolbar item labels drop
+/// custom views (the monogram avatar rendered as an empty pill).
+/// `WindowDragGesture` keeps it draggable like the title bar it replaces.
 private struct HubHeader: View {
     @EnvironmentObject var appState: AppState
 
@@ -171,9 +153,7 @@ private struct HubHeader: View {
                 Text(verbatim: "Tailscreen")
                     .font(.system(.headline, design: .rounded, weight: .bold))
                 if let profile = appState.tailscaleAuth.userProfile {
-                    // Prefer the tailnet (org) name, like Tailscale's own
-                    // title bar — it's the distinguishing fact when the
-                    // same login is used across several tailnets.
+                    // Tailnet name disambiguates one login across several tailnets.
                     Text(
                         verbatim: profile.tailnetName.isEmpty
                             ? profile.loginName : profile.tailnetName
@@ -187,8 +167,7 @@ private struct HubHeader: View {
 
             Spacer(minLength: 8)
 
-            // Outside the signed-in gate on purpose: joining by token is
-            // exactly the path that needs no Tailscale account.
+            // Outside the signed-in gate: joining by token needs no account.
             Button {
                 appState.joinSheetPresented = true
             } label: {
@@ -234,10 +213,8 @@ private struct HubHeader: View {
         // Clear the traffic lights, which float over the header's left edge.
         .padding(.leading, 84)
         .padding(.trailing, 16)
-        // minHeight, not height: at large text sizes the wordmark +
-        // tailnet lines must be able to push the bar taller rather than
-        // clip. 52 remains the floor, which is what keeps the traffic
-        // lights centered in the title-bar region at default sizes.
+        // minHeight, not height: large text sizes must push the bar taller
+        // rather than clip; 52 is the floor that centers the traffic lights.
         .frame(minHeight: 52)
         .frame(maxWidth: .infinity)
         .background(.bar)
@@ -245,11 +222,9 @@ private struct HubHeader: View {
     }
 }
 
-/// The header's account control: the profile list (Tailscale-style
-/// multi-account), Add Account…, Settings, and Sign out. Visible whenever
-/// there's something to act on: signed in, or signed out with other
-/// profiles to switch back to. A first-launch single signed-out profile
-/// hides it — the welcome pane's CTA is the only sensible action then.
+/// Visible whenever there's something to act on: signed in, or signed out
+/// with other profiles to switch back to. Hidden on a first-launch single
+/// signed-out profile, where the welcome pane's CTA is the only action.
 private struct AccountMenu: View {
     @EnvironmentObject var appState: AppState
 
@@ -262,13 +237,10 @@ private struct AccountMenu: View {
     }
 }
 
-/// AppKit-backed account button + menu. A real `NSMenu` because SwiftUI's
-/// `Menu` flattens custom row labels to plain text — Tailscale-style
-/// two-line rows (avatar, login over tailnet, checkmark on the active
-/// account) need `NSMenuItem.attributedTitle` + `.image`. Row semantics
-/// mirror Tailscale's: clicking a row switches to that account; holding ⌥
-/// swaps a non-active row for "Remove Account…" (the native alternate-item
-/// pattern).
+/// A real `NSMenu` because SwiftUI's `Menu` flattens custom row labels to
+/// plain text — two-line rows need `NSMenuItem.attributedTitle` + `.image`.
+/// Holding ⌥ swaps a non-active row for "Remove Account…" (native
+/// alternate-item pattern).
 private struct AccountMenuButton: NSViewRepresentable {
     let appState: AppState
     /// Observed so a landed avatar fetch re-runs `updateNSView` and swaps
@@ -299,8 +271,7 @@ private struct AccountMenuButton: NSViewRepresentable {
                 button.image = MonogramAvatar.nsImage(name: profile.displayName, size: 26)
             }
         } else {
-            // Signed out but other profiles exist: neutral glyph, the
-            // menu is the way back in.
+            // Signed out but other profiles exist: neutral glyph.
             let symbol = NSImage(
                 systemSymbolName: "person.crop.circle", accessibilityDescription: L("Account"))
             button.image = symbol?.withSymbolConfiguration(
@@ -325,9 +296,8 @@ private struct AccountMenuButton: NSViewRepresentable {
                     keyEquivalent: "")
                 item.target = self
                 item.attributedTitle = Self.rowTitle(for: profile)
-                // Real profile picture when its fetch has landed (kicked
-                // here on the miss, so the next open has it), else the
-                // monogram.
+                // Real picture when its fetch has landed (kicked off here on
+                // a miss, so the next open has it), else the monogram.
                 if let picture = AvatarStore.shared.avatar(for: profile.profilePicURL) {
                     item.image = AvatarStore.circular(picture, size: 24)
                 } else {
@@ -379,9 +349,8 @@ private struct AccountMenuButton: NSViewRepresentable {
                 in: sender)
         }
 
-        /// Two-line row: login (menu font) over tailnet (small, secondary).
-        /// The tailnet line is the disambiguator — GitHub logins collide
-        /// across orgs. Never-signed-in profiles get the placeholder only.
+        /// Login over tailnet (disambiguates — GitHub logins collide across
+        /// orgs). Never-signed-in profiles get the placeholder only.
         private static func rowTitle(for profile: TailscreenProfile) -> NSAttributedString {
             guard profile.hasSignedIn else {
                 return NSAttributedString(
@@ -439,11 +408,9 @@ private struct AccountMenuButton: NSViewRepresentable {
 
 // MARK: - Profile switching
 
-/// Interstitial shown while `AppState.switchProfile` tears one node down
-/// and silently restores the next profile's session. Without it the gap
-/// renders the signed-out welcome pane — alarming when the target
-/// profile is, in fact, still logged in. The header stays interactive
-/// above this pane, so the account menu remains an escape hatch.
+/// Shown while `AppState.switchProfile` tears one node down and restores the
+/// next. Without it the gap renders the alarming signed-out welcome pane. The
+/// header stays interactive above it as an escape hatch.
 private struct ProfileSwitchingPane: View {
     @EnvironmentObject var appState: AppState
 
@@ -472,23 +439,16 @@ private struct ProfileSwitchingPane: View {
 
 /// Window-sized welcome pane shown until Tailscale sign-in completes.
 ///
-/// One card per way in, because there are two and they are not variants of
-/// each other: the tailnet (sign in once, then every Tailscreen shows up by
-/// name) and a share link (nothing to sign into, works in both directions,
-/// guest-approval mandatory). The pane used to be a single sign-in call to
-/// action with the two link paths hanging under it as text links — under a
-/// subtitle that described only the tailnet, so the sentence had already
-/// excluded the thing the links below it offered. A link-only share is a
-/// whole mode of the app, not a footnote to signing in.
+/// One card per way in: the tailnet (sign in once, every Tailscreen shows up
+/// by name) and a share link (no sign-in, works both directions, guest
+/// approval mandatory) — a link-only share is a whole mode of the app, not a
+/// footnote to signing in.
 private struct WelcomePane: View {
     @EnvironmentObject var appState: AppState
 
-    /// The brand artwork (display + stand variant) loaded from the
-    /// SwiftPM resource bundle. Cached at type level so we don't decode
-    /// the PDF on every re-render. Marked template (like the menubar
-    /// icons) so the view's `.foregroundStyle(.secondary)` actually
-    /// applies — the PDF's baked-in black fill was invisible against the
-    /// dark-mode window background.
+    /// Cached at type level to avoid decoding the PDF on every re-render.
+    /// Marked template so `.foregroundStyle(.secondary)` applies — the PDF's
+    /// baked-in black fill was invisible in dark mode.
     private static let brandImage: NSImage? = {
         guard let url = Bundle.module.url(forResource: "WelcomeIcon", withExtension: "pdf"),
             let img = NSImage(contentsOf: url)
@@ -572,15 +532,9 @@ private struct WelcomeCard<Content: View>: View {
 private struct TailnetSignInCard: View {
     @EnvironmentObject var appState: AppState
 
-    /// The card's body copy: the pitch by default, or the reason the last
-    /// bring-up failed once there is one.
-    ///
-    /// Substituting rather than adding a line is what both other hubs do
-    /// (`welcomeTailnetMessage` on each), and it puts the reason on the card
-    /// whose button retries it instead of only in an alert that is dismissed
-    /// and gone. Hoisted out of the body so the pitch keeps its own
-    /// indentation — nested in the view tree the literal runs past the
-    /// formatter's column limit.
+    /// Substitutes the pitch with the last bring-up failure reason, so it
+    /// lands on the card whose button retries it rather than only in a
+    /// dismissed alert.
     private var bodyCopy: String {
         if let reason = appState.nodePhase.failureReason { return reason }
         return L(
@@ -588,9 +542,6 @@ private struct TailnetSignInCard: View {
         )
     }
 
-    /// The button's label: a retry once a bring-up has failed, the first-run
-    /// call to action otherwise. Named after the `HubSignInPane.signInLabel`
-    /// the other two hubs pass the same two strings into.
     private var signInLabel: String {
         appState.nodePhase.hasFailed ? L("Try again") : L("Sign in with Tailscale")
     }
@@ -636,13 +587,9 @@ private struct TailnetSignInCard: View {
     }
 }
 
-/// Lane two: the no-account paths, both directions. Joining is the inline
-/// field (the sheet's one control, inlined — joining always starts with a
-/// pasted token, and the sheet hop bought nothing at the point where the
-/// window is otherwise empty); sharing mints a token instead, so it stays a
-/// button. Both share `AppState.joinInput` with `JoinShareSheet`, which is
-/// still the target of the header's link button and of `tailscreen:` URL
-/// opens.
+/// Lane two: the no-account paths, both directions. Joining is inlined
+/// (the sheet hop bought nothing here); sharing mints a token, so it stays a
+/// button. Both share `AppState.joinInput` with `JoinShareSheet`.
 private struct ShareLinkCard: View {
     @EnvironmentObject var appState: AppState
     @State private var inputRejected = false
@@ -679,10 +626,7 @@ private struct ShareLinkCard: View {
                     .font(.callout.monospaced())
                     .onSubmit { join() }
                     .onChange(of: appState.joinInput) { _, _ in
-                        // Clear the rejection the moment they edit — an
-                        // error under a field they are already fixing is
-                        // noise.
-                        inputRejected = false
+                        inputRejected = false  // clear on edit, not on submit
                     }
                 Button(L("Join")) {
                     join()
@@ -717,15 +661,8 @@ private struct ShareLinkCard: View {
                 EmptyView()
             }
 
-            // Why the last link-only start did not happen, under the button
-            // that would try again.
-            //
-            // The hub's share card carries this too, but the hub is not where
-            // a signed-out start lands: that flow comes back HERE, and
-            // without this the alert was the whole explanation and it is
-            // dismissed and gone. The GTK hub says it through
-            // `welcomeShareNote` and the WinUI one through `shareNote`; this
-            // is the third, off the same `failureReason`.
+            // A signed-out share failure comes back HERE, not to the hub —
+            // without this the dismissed alert was the whole explanation.
             if let why = appState.sharingState.failureReason {
                 Text(L("Share failed: \(why)"))
                     .font(.caption)
@@ -753,8 +690,8 @@ private struct ShareLinkCard: View {
 private struct HubView: View {
     var body: some View {
         ScrollView {
-            // Reader inside the ScrollView so `PeerListSection` can keep
-            // the keyboard highlight scrolled into view as ↑/↓ move it.
+            // So `PeerListSection` can keep the keyboard highlight scrolled
+            // into view as up/down move it.
             ScrollViewReader { proxy in
                 VStack(alignment: .leading, spacing: 16) {
                     PendingRequestsBanner()
@@ -772,18 +709,9 @@ private struct HubView: View {
 // MARK: - Share section (window-side status + start)
 
 /// The window's share module: a titled card with the primary action at
-/// idle, and the full sharing view while a session is up.
-///
-/// While sharing, this card and the menubar popover's `SharingCard` show the
-/// same thing, out of the same components: the live preview, the session
-/// controls (Change Source / Draw / Mic / Share System Audio), the viewer
-/// roster and every decision surface hanging off it, the approval toggle, the
-/// Share-via-Link controls, and the audio device pickers. The popover is the
-/// sharer tool you can reach without raising a window; it is not a place
-/// anything lives *instead of* here, because the window is where a sharer who
-/// keeps the app open is already looking. The only deliberate difference is
-/// Stop Sharing, which sits in the status row here (there is room for a
-/// labelled button) rather than at the end of the control row.
+/// idle, and the full sharing view while a session is up — the same
+/// components as the menubar popover's `SharingCard`, per CLAUDE.md. Only
+/// deliberate difference: Stop Sharing sits in the status row here.
 private struct ShareStatusSection: View {
     @EnvironmentObject var appState: AppState
 
@@ -792,13 +720,8 @@ private struct ShareStatusSection: View {
             .recordsDiagnosticSurface(paneName)
     }
 
-    /// Which pane a reader should be told is on screen.
-    ///
-    /// Derived from the same pair the `switch` below branches on, and kept
-    /// directly beside it so the two cannot drift unnoticed. The macOS app has
-    /// no stored "current view" — `.claude/rules/macos-app.md` is explicit
-    /// that even `NodeBringUpPhase` is a projection — so this is the honest
-    /// place to name it.
+    /// Derived from the same pair `paneContent`'s switch branches on, kept
+    /// beside it so the two can't drift.
     private var paneName: String {
         switch (appState.sharingState, appState.connectionState) {
         case (.sharing, _): return "Hub/Sharing"
@@ -848,10 +771,8 @@ private struct ShareStatusSection: View {
                     }
                     .accessibilityHint(L("Closes the viewer window and ends this session"))
                 }
-                // Secondary path back to the video — the viewer window can
-                // sit buried under other apps, and without this the card's
-                // only button is the one that ends the session. Small so
-                // Disconnect above keeps the primary slot.
+                // Secondary path back to a viewer window buried under other
+                // apps. Small so Disconnect keeps the primary slot.
                 Button {
                     appState.focusViewerWindow()
                 } label: {
@@ -869,9 +790,8 @@ private struct ShareStatusSection: View {
                     Spacer(minLength: 0)
                 }
             default:
-                // Both surfaces carry this, per the same-commit rule: a start
-                // that failed says so above the button that retries it, since
-                // the alert is dismissed and gone.
+                // A failed start says so above the retry button; the alert is
+                // dismissed and gone.
                 if let why = appState.sharingState.failureReason {
                     Text(L("Share failed: \(why)"))
                         .font(.subheadline)
@@ -879,9 +799,8 @@ private struct ShareStatusSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if appState.anotherInstanceSharing {
-                    // Same replayd one-SCStream-per-bundle constraint the
-                    // popover surfaces — say it up-front instead of letting
-                    // the user discover it through a failed bring-up.
+                    // replayd's one-SCStream-per-bundle constraint, said
+                    // up-front rather than discovered via a failed bring-up.
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle")
                             .foregroundStyle(.secondary)
@@ -896,9 +815,6 @@ private struct ShareStatusSection: View {
                     }
                     .opacity(0.8)
                 } else {
-                    // Just the action + its one option — a heading here
-                    // ("Share your screen") only restated what the button
-                    // already says.
                     Button {
                         Task { await appState.presentNativePicker() }
                     } label: {
@@ -934,22 +850,14 @@ private struct ShareStatusSection: View {
 }
 
 /// The window's live-share card: the same sharing view the menubar popover
-/// shows, on the surface the user already has open.
-///
-/// Its own view rather than a `case` body inside `ShareStatusSection` for the
-/// same reason `SharingCard` is one in the popover: it is the longest branch of
-/// that switch by far, and the state it derives (the preview height, the status
-/// line) is meaningless in the other branches.
+/// shows. Its own view since it's by far the longest branch of
+/// `ShareStatusSection`'s switch.
 private struct ActiveShareCard: View {
     @EnvironmentObject var appState: AppState
 
-    /// Height of the live preview in the window card. The popover works back
-    /// from its own fixed width; this card is as wide as the user's window, so
-    /// it states a height and lets the thumbnail derive its width from the
-    /// shared display's aspect — a proportioned thumbnail sitting at the
-    /// card's leading edge rather than a full-width box. 120 pt is enough to
-    /// recognise what is on screen while leaving the actions, the roster and
-    /// the link controls above the fold at the default window size.
+    /// This card is as wide as the window, so it states a height and lets the
+    /// thumbnail derive its width from the shared display's aspect. 120pt
+    /// keeps the roster/link controls above the fold at the default window size.
     private static let previewHeight: CGFloat = 120
 
     private var viewersText: String {
@@ -958,13 +866,8 @@ private struct ActiveShareCard: View {
         return count == 1 ? L("1 viewer connected") : L("\(count) viewers connected")
     }
 
-    /// The shared display's resolution, once the metadata service has reported
-    /// one. Its own line under the viewer count rather than joined to it: the
-    /// status row shares its width with the Stop Sharing button, so the joined
-    /// form wrapped at the default window size — first mid-measurement ("1
-    /// viewer connected · 1920" over "× 1080"), then, once non-breaking spaces
-    /// ruled that out, with the separator left dangling at the end of the
-    /// line. Two short lines cannot do either, at any width.
+    /// Own line under the viewer count, not joined to it: the joined form
+    /// wrapped mid-measurement at the default window width.
     private var resolutionText: String? {
         guard let res = appState.metadataService.currentMetadata?.screenResolution else {
             return nil
@@ -986,9 +889,7 @@ private struct ActiveShareCard: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     if let resolutionText {
-                        // Verbatim: digits and a multiplication sign, with
-                        // nothing to translate.
-                        Text(verbatim: resolutionText)
+                        Text(verbatim: resolutionText)  // digits + × — nothing to translate
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -1003,16 +904,11 @@ private struct ActiveShareCard: View {
                 }
                 .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
             }
-            // Same reasoning as the decision surfaces below: a sharer who
-            // will never see an approval banner needs telling on whichever
-            // surface they are actually looking at.
             if appState.notificationsDenied {
                 NotificationsOffNotice()
             }
-            // The sharer's decision surfaces, shared with the menubar
-            // popover — approvals shouldn't require leaving the window.
-            // They stay directly under the status row on both surfaces:
-            // somebody is waiting behind each one.
+            // Decision surfaces, shared with the menubar popover — approvals
+            // shouldn't require leaving the window.
             if !appState.pendingViewers.isEmpty {
                 PendingViewersList(viewers: appState.pendingViewers)
             }
@@ -1022,16 +918,8 @@ private struct ActiveShareCard: View {
             if !appState.controlRequests.isEmpty {
                 ControlRequestsList(requests: appState.controlRequests)
             }
-            // What the viewers are actually seeing, then the controls that
-            // change it. Both are the menubar card's own components — the
-            // preview takes a fixed height here because the window is
-            // resizable and has no popover-width number to derive one from.
             SharePreviewThumbnail(height: Self.previewHeight)
             ShareSessionControls(style: .window)
-            // Who is watching, and the ✕ that drops one of them. The count
-            // above says *how many* and never *which*, which left no place
-            // to hang a per-viewer action — so dropping a viewer was the
-            // only sharer action reachable from nowhere but the popover.
             if !appState.currentViewers.isEmpty {
                 Divider()
                 ViewersList(viewers: appState.currentViewers)
@@ -1113,8 +1001,7 @@ private struct PeerListSection: View {
 
             content
         }
-        // Glide between skeleton → list → empty (and between row counts as
-        // IPN updates trickle in) — but only after the initial population
+        // Glide between skeleton/list/empty, only after initial population
         // has settled (see `animateChanges`).
         .animation(listAnimation, value: appState.filteredPeers)
         .animation(listAnimation, value: appState.isDiscovering)
@@ -1124,39 +1011,30 @@ private struct PeerListSection: View {
             Task { await appState.discoverPeers() }
         }
         .onChange(of: appState.isDiscovering) { _, discovering in
-            // Arm the animations only after the render that showed the
-            // first discovery's results — `onChange` runs after the view
-            // updated for the change, so the initial swap can't batch into
-            // an animated transaction.
+            // Arm only after the first discovery's results rendered, so the
+            // initial swap can't batch into an animated transaction.
             if !discovering { animateChanges = true }
         }
         .onChange(of: appState.filteredPeers.count) { _, count in
             if count > 0 { lastPeerRowCount = min(count, Self.maxSkeletonRows) }
         }
-        // Keyboard navigation. The handlers sit on the section so they
-        // fire wherever focus rests inside it — the search field or the
-        // focusable row list below — because unhandled presses bubble up
-        // from the focused descendant. Only these four keys are claimed;
-        // everything else (typing!) flows to the search field untouched.
+        // Handlers sit on the section so unhandled presses bubble up from
+        // whichever descendant has focus; only these four keys are claimed.
         .onKeyPress(.downArrow) { moveHighlight(by: 1) }
         .onKeyPress(.upArrow) { moveHighlight(by: -1) }
         .onKeyPress(.return) { activateHighlight() }
         .onKeyPress(.escape) { collapseOrClearSearch() }
         .onChange(of: visiblePeers) { _, peers in
-            // Search/filter changes can drop the highlighted row from the
-            // list — a highlight pointing at a hidden peer would make the
-            // next Return act on something invisible.
+            // A highlight pointing at a now-hidden peer would make Return
+            // act on something invisible.
             if let id = highlightedPeerID, !peers.contains(where: { $0.id == id }) {
                 highlightedPeerID = nil
             }
         }
         .background(
-            // Invisible ⌘F target: `keyboardShortcut` needs a control to
-            // hang off, and the search field itself can't carry one. Zero
-            // opacity (not `.hidden()`) keeps it in the hierarchy the
-            // shortcut resolver walks; hit-testing off so it can't
-            // swallow clicks meant for the section. Scoped to the main
-            // window by living in its view tree.
+            // Invisible ⌘F target: zero opacity (not `.hidden()`) keeps it in
+            // the shortcut resolver's hierarchy; hit-testing off so it can't
+            // swallow clicks.
             Button("") { searchFieldFocused = true }
                 .keyboardShortcut("f", modifiers: .command)
                 .opacity(0)
@@ -1165,17 +1043,14 @@ private struct PeerListSection: View {
         )
     }
 
-    /// Glide curve for list changes: off until the initial population has
-    /// settled (see `animateChanges`), and off entirely under Reduce
-    /// Motion.
+    /// Off until initial population has settled, and off under Reduce Motion.
     private var listAnimation: Animation? {
         guard animateChanges, !reduceMotion else { return nil }
         return .easeInOut(duration: 0.2)
     }
 
-    /// Expand/collapse a peer's detail pane. Expanding kicks a one-peer
-    /// share-status fetch so the pane shows the peer's *current* share,
-    /// not the last sweep's snapshot.
+    /// Expanding kicks a one-peer share-status fetch so the pane shows the
+    /// current share, not the last sweep's snapshot.
     private func toggleSelection(_ peer: TailscreenPeer) {
         let expanding = selectedPeerID != peer.id
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
@@ -1186,19 +1061,15 @@ private struct PeerListSection: View {
         }
     }
 
-    /// Same gate as `PeerMenuRow.canConnect`: connecting out is only
-    /// offered while the app is fully idle — the status cards own the
-    /// session otherwise.
+    /// Same gate as `PeerMenuRow.canConnect`.
     private func canConnect(_ peer: TailscreenPeer) -> Bool {
         peer.isOnline
             && !appState.sharingState.isLive
             && appState.connectionState == .idle
     }
 
-    /// ↑/↓: step the keyboard highlight through `visiblePeers`, clamped
-    /// at the ends (no wrap — the AppKit list feel), scrolling the
-    /// landing row into view. No highlight yet: enter the list from the
-    /// end the arrow moves away from.
+    /// Clamped at the ends (no wrap — the AppKit list feel). No highlight
+    /// yet: enter from the end the arrow moves away from.
     private func moveHighlight(by delta: Int) -> KeyPress.Result {
         let peers = visiblePeers
         guard !peers.isEmpty else { return .ignored }
@@ -1218,10 +1089,8 @@ private struct PeerListSection: View {
         return .handled
     }
 
-    /// Return: act on the highlighted row exactly like clicking it —
-    /// connect when idle and online, otherwise toggle the detail pane.
-    /// No highlight: leave the press alone, so a natively focused
-    /// control (search field, a row button) still gets it.
+    /// No highlight: leave the press alone, so a natively focused control
+    /// still gets it.
     private func activateHighlight() -> KeyPress.Result {
         guard let id = highlightedPeerID,
             let peer = visiblePeers.first(where: { $0.id == id })
@@ -1234,8 +1103,6 @@ private struct PeerListSection: View {
         return .handled
     }
 
-    /// Esc, in priority order: collapse the expanded detail pane, else
-    /// clear the search text. Nothing to do → let the press bubble.
     private func collapseOrClearSearch() -> KeyPress.Result {
         if selectedPeerID != nil {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
@@ -1259,10 +1126,8 @@ private struct PeerListSection: View {
                 .textFieldStyle(.plain)
                 .focused($searchFieldFocused)
             if !searchText.isEmpty {
-                // A real always-visible button, not a hover reveal —
-                // keyboard and VoiceOver users clear the field with it
-                // too (Esc also clears, but only an affordance you can
-                // see is discoverable).
+                // Real always-visible button, not a hover reveal, for
+                // keyboard/VoiceOver discoverability.
                 Button {
                     searchText = ""
                 } label: {
@@ -1283,8 +1148,7 @@ private struct PeerListSection: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// `appState.filteredPeers` (the persisted filter axes) narrowed
-    /// further by the transient search text.
+    /// `appState.filteredPeers` narrowed further by the transient search text.
     private var visiblePeers: [TailscreenPeer] {
         guard !searchText.isEmpty else { return appState.filteredPeers }
         return appState.filteredPeers.filter {
@@ -1294,20 +1158,13 @@ private struct PeerListSection: View {
         }
     }
 
-    /// Skeleton row count: last settled count, clamped in case defaults
-    /// hold junk or the tailnet shrank below one.
+    /// Clamped in case defaults hold junk or the tailnet shrank below one.
     private var skeletonRowCount: Int {
         max(1, min(lastPeerRowCount, Self.maxSkeletonRows))
     }
 
-    /// Show the skeleton while there is nothing to list *and* no settled
-    /// answer yet — a discovery pass is in flight, or the first frame
-    /// rendered before `onAppear` could kick one off.
-    ///
-    /// That pair of conditions is exactly what `NodeBringUpPhase.discovering`
-    /// names, so this reads the phase rather than re-deriving it from the two
-    /// flags. Doing so also folds in the signed-in check, which this section
-    /// is already nested under and so cannot change the answer.
+    /// Reads `NodeBringUpPhase.discovering` rather than re-deriving "nothing
+    /// to list and no settled answer yet" from the two flags.
     private var showsLoadingSkeleton: Bool {
         appState.availablePeers.isEmpty && appState.nodePhase == .discovering
     }
@@ -1329,9 +1186,6 @@ private struct PeerListSection: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(minHeight: 28)
-                // Not a dead end: say how screens get here and link the
-                // install page. Caption + link styling keeps it quiet —
-                // this state is normal right after a first install.
                 Text(L("Screens appear here when their devices are running Tailscreen."))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -1341,17 +1195,14 @@ private struct PeerListSection: View {
             }
             .transition(.opacity)
         } else if appState.filteredPeers.isEmpty {
-            // The FILTER hid everything. Distinct from the search case below
-            // because the fix is different, and this app used to answer both
-            // with this sentence — so a search that matched nothing sent
-            // people to a filter menu that was not the problem.
+            // Filter hid everything — distinct from the search case below,
+            // since the fix differs.
             Text(L("No screens match your filters."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(minHeight: 28)
                 .transition(.opacity)
         } else if visiblePeers.isEmpty {
-            // Rows survive the filter but not the search box.
             Text(L("No screens match your search."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1367,19 +1218,14 @@ private struct PeerListSection: View {
                         onToggle: { toggleSelection(peer) },
                         onConnect: { Task { await appState.connectToPeer(peer) } }
                     )
-                    // Explicit anchor for `scrollProxy.scrollTo` — keeps
-                    // the ↑/↓ highlight from walking off screen.
-                    .id(peer.id)
+                    .id(peer.id)  // anchor for scrollProxy.scrollTo
                     if selectedPeerID == peer.id {
                         PeerDetailView(peer: peer)
                             .transition(.opacity)
                     }
                 }
             }
-            // Tab stop (keyboard-navigation mode only) so focus can rest
-            // on the list itself and ↑/↓ work without first putting the
-            // caret in the search field — the key handlers live on the
-            // section and presses bubble up from here.
+            // Tab stop so up/down work without first focusing the search field.
             .focusable()
             .transition(.opacity)
 
@@ -1395,11 +1241,9 @@ private struct PeerListSection: View {
     }
 }
 
-/// Header affordance for `PeerListFilter`: a funnel button whose menu
-/// carries the hide-offline toggle and one toggle per known ACL tag (plus
-/// the explicit Untagged bucket while a tag filter is active). Writes go
-/// through `appState.peerFilter` so its `didSet` persists every change.
-/// Lives in the main window's toolbar.
+/// Funnel button: hide-offline toggle + one toggle per known ACL tag (plus
+/// Untagged while a tag filter is active). Writes go through
+/// `appState.peerFilter` so its `didSet` persists every change.
 private struct PeerFilterMenu: View {
     @EnvironmentObject var appState: AppState
 
@@ -1468,9 +1312,8 @@ private struct PeerFilterMenu: View {
         .accessibilityLabel(L("Filter available screens"))
     }
 
-    /// Binding into `appState.peerFilter` that mutates a copy and writes
-    /// the whole struct back, so the `@Published` setter (and its
-    /// persistence `didSet`) fires exactly once per toggle.
+    /// Mutates a copy and writes the whole struct back, so the `@Published`
+    /// setter (and its persistence `didSet`) fires exactly once per toggle.
     private func binding<T>(
         get: @escaping (PeerListFilter) -> T,
         set: @escaping (inout PeerListFilter, T) -> Void
@@ -1486,17 +1329,12 @@ private struct PeerFilterMenu: View {
     }
 }
 
-/// Placeholder mirroring `PeerMenuRow`'s geometry (same two-line height,
-/// dot slot, and padding) shown while the peer list is seeding. Matching
-/// the real row's layout means the fade from skeleton to content happens
-/// in place with no reflow. The name bar pulses gently so the section
-/// reads as "loading" rather than frozen.
+/// Mirrors `PeerMenuRow`'s geometry so skeleton->content is a fade with no
+/// reflow. Pulses gently so the section reads "loading" rather than frozen.
 private struct PeerRowSkeleton: View {
-    /// Row position — used to vary the fake-hostname width so a stack of
-    /// skeletons looks like a list of different names, not a repeated tile.
+    /// Varies the fake-hostname width so a stack of skeletons looks like
+    /// different names, not a repeated tile.
     let index: Int
-    /// A perpetually pulsing placeholder is exactly what Reduce Motion
-    /// exists to suppress — hold it static instead.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulsing = false
 
@@ -1522,15 +1360,10 @@ private struct PeerRowSkeleton: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
-        // Matches PeerMenuRow's floor (it was 44 against the row's 48, so
-        // the skeleton→list swap nudged the list); `minHeight` for the
-        // same Dynamic Type reason as the row.
-        .frame(minHeight: 48)
+        .frame(minHeight: 48)  // matches PeerMenuRow's floor
         .opacity(pulsing ? 0.45 : 1.0)
-        // Scoped `.animation(value:)`, NOT a global `withAnimation` in
-        // onAppear, so the repeat-forever curve can't leak onto the
-        // mounting transaction. The delay keeps the placeholder fully
-        // static through a fast seed (the common case).
+        // Scoped `.animation(value:)`, not a global `withAnimation`, so the
+        // repeat-forever curve can't leak onto the mounting transaction.
         .animation(
             reduceMotion
                 ? nil
@@ -1542,26 +1375,19 @@ private struct PeerRowSkeleton: View {
     }
 }
 
-/// One screens-list row: presence dot + hostname (+ green sharing chip)
-/// over the peer's Tailscale IP — the Tailscale device-row idiom. The
-/// row itself is the inline action: clicking connects when the app is
-/// idle and the peer is online (no expand-first hop); otherwise it
-/// toggles the detail pane — and `PeerListSection`'s Return-on-highlight
-/// mirrors exactly that split. The always-visible trailing chevron is a
-/// real button that toggles the pane regardless — reachable by
-/// keyboard/VoiceOver, unlike a hover-only affordance.
+/// Clicking connects when the app is idle and the peer is online; otherwise
+/// it toggles the detail pane (`PeerListSection`'s Return-on-highlight mirrors
+/// this split). The trailing chevron is a real button that always toggles the
+/// pane, reachable by keyboard/VoiceOver.
 private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
     let isExpanded: Bool
-    /// The section's ↑/↓ keyboard cursor sits on this row.
     let isHighlighted: Bool
     let onToggle: () -> Void
     let onConnect: () -> Void
     @State private var isHovered = false
 
-    /// Connecting out is only offered while the app is fully idle —
-    /// the sharing/viewing status cards own the session otherwise.
     private var canConnect: Bool {
         peer.isOnline
             && !appState.sharingState.isLive
@@ -1594,11 +1420,6 @@ private struct PeerMenuRow: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             if let share = shareInfo {
-                                // Fetched share status (`.metadataResponse`)
-                                // — the share name is peer data, shown as-is
-                                // (parser-clamped); fall back to a generic
-                                // caption when the peer didn't name its
-                                // share.
                                 Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(.green)
@@ -1651,11 +1472,9 @@ private struct PeerMenuRow: View {
         .onHover { isHovered = $0 }
     }
 
-    /// Keyboard highlight vs. hover: same slot (mirrors
-    /// `MenuRowHoverBackground`'s radius-6 shape and 4pt inset so the two
-    /// can't disagree about geometry), but an accent tint instead of the
-    /// hover gray — the ↑/↓ cursor must read as its own state, not as a
-    /// mouse that happens to be parked here.
+    /// Same slot as `MenuRowHoverBackground` (radius-6, 4pt inset), but an
+    /// accent tint instead of hover gray — the keyboard cursor must read as
+    /// its own state, not a parked mouse.
     @ViewBuilder
     private var rowBackground: some View {
         if isHighlighted {
@@ -1668,22 +1487,14 @@ private struct PeerMenuRow: View {
     }
 }
 
-/// Inline detail pane under a selected peer row: the live share (if any)
-/// with its resolution/codec, the primary View Screen / Ask to Share
-/// actions, and identity facts (MagicDNS name, IP — both copyable — plus
-/// ACL tags and, for offline peers, last-seen).
+/// Live share (if any), View Screen / Ask to Share actions, and identity
+/// facts (MagicDNS name, IP — both copyable — plus tags and last-seen).
 private struct PeerDetailView: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
-    /// Width of the "DNS" / "IP" / "Access" / "Route" gutter. Scaled
-    /// rather than fixed: at large text sizes a 40pt column truncates the
-    /// longer labels, and the whole point of the column is that the
-    /// values line up — so it has to grow with the text it holds.
+    /// Scaled, not fixed: at large text sizes a 40pt column truncates labels.
     @ScaledMetric(relativeTo: .caption) private var labelColumnWidth: CGFloat = 40
 
-    /// Connecting out is only offered while the app is fully idle —
-    /// mirroring what the menubar popover allowed before the list moved
-    /// here (the status cards owned the popover otherwise).
     private var canConnect: Bool {
         peer.isOnline
             && !appState.sharingState.isLive
@@ -1775,9 +1586,8 @@ private struct PeerDetailView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            // The dot beside this is decorative; fold its
-                            // meaning into the spoken label so the tier
-                            // isn't conveyed by color alone.
+                            // Quality dot is decorative; fold its meaning
+                            // into the spoken label.
                             .accessibilityLabel(
                                 qualityDescription.map { L("\(route), \($0)") } ?? route)
                         Spacer(minLength: 0)
@@ -1817,16 +1627,13 @@ private struct PeerDetailView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(.quaternary.opacity(0.4))
         )
-        // Indent under the row's text column so the pane reads as the
-        // row's expansion, not a sibling.
-        .padding(.leading, 24)
+        .padding(.leading, 24)  // reads as the row's expansion, not a sibling
         .padding(.top, 2)
         .padding(.bottom, 8)
     }
 
-    /// "Direct · ~23 ms" / "DERP (fra) · ~120 ms" — the path snapshot from
-    /// the LocalAPI status seed plus the measured metadata round-trip.
-    /// Either half renders alone when the other is unknown.
+    /// "Direct · ~23 ms" / "DERP (fra) · ~120 ms"; either half renders alone
+    /// when the other is unknown.
     private var routeText: String? {
         var parts: [String] = []
         switch PeerRoute.from(curAddr: peer.curAddr, relay: peer.relay) {
@@ -1840,8 +1647,6 @@ private struct PeerDetailView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Spoken form of the latency tier, so VoiceOver and colorblind users
-    /// get what the quality dot conveys visually.
     private var qualityDescription: String? {
         guard let ms = appState.peerLatencyMs[peer.id] else { return nil }
         switch ConnectionQualityTier.forLatency(ms: ms) {
@@ -1851,8 +1656,7 @@ private struct PeerDetailView: View {
         }
     }
 
-    /// Traffic-light latency tier for the quality dot; nil (no dot) until
-    /// a measurement lands.
+    /// nil (no dot) until a measurement lands.
     private var qualityColor: Color? {
         guard let ms = appState.peerLatencyMs[peer.id] else { return nil }
         switch ConnectionQualityTier.forLatency(ms: ms) {
@@ -1862,8 +1666,7 @@ private struct PeerDetailView: View {
         }
     }
 
-    /// "3456 × 2234 · HEVC" — resolution and codec are numbers/brand nouns,
-    /// deliberately unlocalized.
+    /// Resolution/codec are numbers/brand nouns — deliberately unlocalized.
     private func shareCaption(_ share: TailscreenMetadata) -> String {
         var caption = "\(share.screenResolution.width) × \(share.screenResolution.height)"
         if let codec = share.videoCodec {
@@ -1877,17 +1680,14 @@ private struct PeerDetailView: View {
         peer.dnsName.hasSuffix(".") ? String(peer.dnsName.dropLast()) : peer.dnsName
     }
 
-    /// Remembered Always Allow / Deny & Block decision for this peer, when
-    /// its StableNodeID is known (LocalAPI seed) and a decision exists.
-    /// Same keying the admission gate itself uses — never wire-claimed
+    /// Keyed by StableNodeID — same as the admission gate, never wire-claimed
     /// identity.
     private var rememberedEntry: PeerAccessEntry? {
         guard let stableID = peer.stableID else { return nil }
         return appState.viewerAccessPolicies.entries.first { $0.stableID == stableID }
     }
 
-    /// Relative last-seen for offline peers, when the netmap supplied one
-    /// (only the IPN-watcher discovery path does). Unparseable → omitted.
+    /// Only the IPN-watcher discovery path supplies this. Unparseable -> nil.
     private var lastSeenDisplay: String? {
         guard let raw = peer.lastSeen else { return nil }
         let iso = ISO8601DateFormatter()
@@ -1902,24 +1702,16 @@ private struct PeerDetailView: View {
     }
 }
 
-/// Caption label + selectable monospaced value + a copy button. Its own
-/// view (rather than a builder func on `PeerDetailView`) because the
-/// post-copy confirmation is per-row state: the icon flips to a green
-/// checkmark for a moment so the otherwise-silent pasteboard write
-/// visibly landed.
+/// Its own view (not a builder func) because the post-copy confirmation
+/// (icon flips to a checkmark briefly) is per-row state.
 private struct CopyableInfoRow: View {
     let label: String
     let value: String
-    /// Passed down from `PeerDetailView`'s scaled gutter so this row's
-    /// label column stays in lockstep with the non-copyable rows around it.
     let labelColumnWidth: CGFloat
-    /// Only the confirmation's cross-fade is motion; the state swap
-    /// itself always happens.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// True for the moment after a copy — drives the checkmark.
     @State private var confirmingCopy = false
-    /// Pending revert, kept so a re-copy extends the confirmation
-    /// instead of an old sleeper cutting the new one short.
+    /// Kept so a re-copy extends the confirmation instead of an old sleeper
+    /// cutting the new one short.
     @State private var revertTask: Task<Void, Never>?
 
     var body: some View {
@@ -1946,15 +1738,11 @@ private struct CopyableInfoRow: View {
             }
             .buttonStyle(.plain)
             .help(confirmingCopy ? L("Copied") : L("Copy"))
-            // The green is decorative; "Copied" carries the state for
-            // VoiceOver — checkmark + label, never color alone.
             .accessibilityLabel(confirmingCopy ? L("Copied") : L("Copy"))
             Spacer(minLength: 0)
         }
     }
 
-    /// Show the checkmark, then revert after a beat. The swap cross-fades
-    /// only when motion is allowed; under Reduce Motion it cuts.
     private func confirmCopy() {
         revertTask?.cancel()
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {

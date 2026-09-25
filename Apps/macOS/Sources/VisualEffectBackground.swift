@@ -1,16 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// SwiftUI bridge to `NSVisualEffectView` so overlays read as real macOS
-/// material panels — blurred, vibrant, and aware of light/dark mode and the
-/// user's "Reduce transparency" setting — instead of a flat
-/// `Color.black.opacity(…)` rectangle. Used by the viewer's stats HUD and the
-/// keyboard-shortcuts cheat-sheet; the sharer-side waiting placard builds its
-/// own `NSVisualEffectView` directly in AppKit (`AppState.makeWaitingPlacard`).
-///
-/// `.hudWindow` is the dark, vibrant HUD material — the right fit for a panel
-/// floating over live video, and it keeps the existing white-on-dark text
-/// legible without a colour rework.
+/// SwiftUI bridge to `NSVisualEffectView`, used by the viewer's stats HUD and
+/// shortcuts cheat-sheet (the sharer-side waiting placard builds its own
+/// `NSVisualEffectView` in `AppState.makeWaitingPlacard`).
+/// Default `.hudWindow` material keeps existing white-on-dark text legible.
 struct VisualEffectBackground: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .hudWindow
     var blendingMode: NSVisualEffectView.BlendingMode = .withinWindow

@@ -9,13 +9,9 @@ import (
 const SpecVersion = 1
 
 // Port is the protocol's default port, used for TCP and UDP alike
-// (TS-GEN-010).
-//
-// It is provisional: 7447 is not registered with IANA, and a registration
-// could land on a different number (TS-GEN-016). Read the port from your own
-// configuration and pass it around; do not write the literal at each listen,
-// dial and probe site, which is what makes a renumbering a one-line change
-// rather than an archaeology exercise.
+// (TS-GEN-010). Provisional — not IANA-registered (TS-GEN-016) — so read it
+// from here rather than hardcoding the literal at each listen/dial/probe
+// site.
 const Port = 7447
 
 // Timing constants from the specification's Appendix B. This package

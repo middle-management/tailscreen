@@ -2,14 +2,9 @@ import AppKit
 import CoreAudio
 import SwiftUI
 
-/// Corner-radius scale for the menubar popover. Two tiers keep the nested
-/// surfaces visually coherent instead of each site picking its own value:
-/// `card` for the top-level module cards (sharing / viewing / connecting /
-/// request prompts), `inner` for everything nested inside a card or a
-/// hoverable row (the preview thumbnail, the pending-viewer sublist, the
-/// row hover highlight). Every popover rect uses `.continuous` corners to
-/// match macOS system surfaces (Control Center, sheets) rather than the
-/// circular default.
+/// `card` for top-level module cards; `inner` for anything nested inside a
+/// card or hoverable row. `.continuous` corners throughout, matching macOS
+/// system surfaces.
 private enum PopoverRadius {
     static let card: CGFloat = 10
     static let inner: CGFloat = 6
@@ -21,24 +16,19 @@ struct MenuBarView: View {
     @State private var viewID = UUID()
 
     var body: some View {
-        // Errors surface via `AppState.presentError` driving an
-        // `NSAlert` directly — a SwiftUI `.alert` here lives inside the
-        // `MenuBarExtra(.window)` popover, which dismisses on any click
-        // outside its bounds, including the alert's own buttons, before
-        // the handler can run.
+        // Errors surface via `AppState.presentError` driving an `NSAlert`
+        // directly — a SwiftUI `.alert` here lives inside the
+        // `MenuBarExtra(.window)` popover, which dismisses on any outside
+        // click, including the alert's own buttons, before the handler runs.
         mainView
             .id(viewID)
             .onAppear {
                 // Second stash site for the main-window opener (see
-                // `MainWindowView.onAppear`) — covers the theoretical
-                // launch path where the main window never presented.
+                // `MainWindowView.onAppear`).
                 appState.openMainWindowAction = { openWindow(id: TailscreenApp.mainWindowID) }
-                // Remount without animation. MenuBarExtra(.window) keeps
-                // this view alive (and rendering) while the popover is
-                // closed, so the pre-open tree can hold stale content; an
-                // animated id-swap crossfades that stale tree with the
-                // fresh one — seen as ghost rows / doubled headers on
-                // open whenever the content changed since last time.
+                // Remount without animation: MenuBarExtra(.window) keeps this
+                // view alive while closed, so an animated id-swap would
+                // crossfade stale content with fresh (ghost rows/doubled headers).
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
@@ -49,18 +39,14 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var mainView: some View {
-        // Signed out AND idle → the pointer to the window's sign-in pane.
-        // Signed out but SHARING (a guest-only, link-only share) → the full
-        // popover: the sharing card is the sharer tool, and its approval
-        // prompts must be reachable regardless of sign-in state.
+        // Signed out AND idle -> pointer to the window's sign-in pane. Signed
+        // out but SHARING (guest-only link share) -> full popover, since its
+        // approval prompts must stay reachable.
         //
-        // `== .idle`, NOT `!isLive`, and this is the one gate in the app
-        // where the difference matters. Everywhere else the question is "is
-        // anything running"; here it is "is there anything to SAY". A failed
-        // link-only start has nothing running and plenty to say — its reason
-        // lives on the sharing card in this very popover — so routing it to
-        // the signed-out pointer buries the only explanation the person gets
-        // once the alert is dismissed.
+        // `== .idle`, not `!isLive`: a failed link-only start has nothing
+        // running but plenty to say (its reason lives on the sharing card
+        // here), so routing it to the signed-out pointer would bury the
+        // explanation once the alert is dismissed.
         if !appState.tailscaleAuth.isAuthenticated && appState.sharingState == .idle {
             SignedOutMenuView()
         } else {
@@ -131,12 +117,9 @@ private struct SignedOutMenuView: View {
 
 // MARK: - Identity strip
 
-/// Compact identity strip at the top of the popover: which account — and
-/// therefore which tailnet — a share started from here will appear on.
-/// With multi-account profiles, "Choose what to share…" is ambiguous
-/// without it. The tailnet (org) name leads, since login names collide
-/// across tailnets; clicking opens the main window, where accounts are
-/// switched and managed.
+/// Which account/tailnet a share started here will appear on — ambiguous
+/// otherwise with multi-account profiles. Tailnet name leads since login
+/// names collide across tailnets; click opens the main window.
 private struct PopoverIdentityHeader: View {
     @EnvironmentObject var appState: AppState
     @State private var isHovered = false
@@ -196,10 +179,8 @@ struct PendingRequestsBanner: View {
 
     var body: some View {
         let requests = appState.pendingShareRequests
-        // Suppress while the user is already sharing or viewing — the
-        // Share button would be disabled and the banner would read as
-        // "X wants you to share" while a share is on-screen, which is
-        // confusing. Requests stay queued for when state returns to idle.
+        // Suppress while already sharing/viewing; requests stay queued for
+        // when state returns to idle.
         let busy = appState.sharingState.isLive || appState.connectionState != .idle
         if requests.isEmpty || busy {
             EmptyView()
@@ -261,8 +242,7 @@ private struct StatusSection: View {
     }
 }
 
-/// Transitional state between peer click and `connectionState =
-/// .viewing`. Mirror of `StartingShareCard` for the receive side.
+/// Mirror of `StartingShareCard` for the receive side.
 private struct ConnectingCard: View {
     @EnvironmentObject var appState: AppState
 
@@ -297,11 +277,8 @@ private struct ConnectingCard: View {
     }
 }
 
-/// Transitional state between display click and `sharingState == .sharing`.
-/// SCStream bring-up can take 5–10 s when replayd is unhappy
-/// (multiple retries, watchdog timeouts). Without this card the
-/// popover sits silently on the display picker the whole time and
-/// looks like the click did nothing.
+/// SCStream bring-up can take 5-10s when replayd is unhappy; without this
+/// card the click looks like it did nothing.
 private struct StartingShareCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -341,11 +318,7 @@ private struct SharingCard: View {
         return "\(res.width) × \(res.height)"
     }
 
-    /// Preview height that fills the popover's content width. The popover is
-    /// 280 px wide, with 8 px outer padding + 12 px SharingCard inner padding
-    /// on each side, leaving ~240 px — so ask for the height that makes the
-    /// thumbnail exactly that wide, since it sizes its width from the height
-    /// and the shared display's aspect.
+    /// Popover is 280px wide minus 8px outer + 12px card padding each side = ~240px.
     private var previewHeight: CGFloat {
         let contentWidth: CGFloat = 240
         return contentWidth / SharePreviewThumbnail.screenAspect(appState)
@@ -364,9 +337,7 @@ private struct SharingCard: View {
                         Text(L("Sharing your screen"))
                             .font(.headline)
                         if !appState.currentViewers.isEmpty {
-                            // Pill-shaped viewer count. Small and
-                            // unobtrusive — full per-viewer hostname
-                            // list still renders below via `ViewersList`.
+                            // Full per-viewer list still renders below via `ViewersList`.
                             Text(verbatim: "\(appState.currentViewers.count)")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.white)
@@ -409,9 +380,7 @@ private struct SharingCard: View {
                 ControlRequestsList(requests: appState.controlRequests)
             }
 
-            // The approval toggle governs tailnet viewers; a guest-only
-            // share has none (guest approval is mandatory regardless), so
-            // showing it would be a switch wired to nothing.
+            // A guest-only share has no tailnet viewers to approve.
             if !appState.isGuestOnlyShare {
                 ApprovalToggle()
             }
@@ -436,28 +405,18 @@ private struct SharingCard: View {
     }
 }
 
-/// The live capture preview — the ~1 Hz thumbnail the capture helper sends
-/// back — as a black rounded box the exact shape of the shared display.
+/// The ~1Hz thumbnail the capture helper sends back, as a black rounded box
+/// shaped like the shared display.
 ///
-/// The caller gives the height and the width follows from the shared display's
-/// aspect, which is what lets one component serve a fixed-width popover and a
-/// resizable window without either measuring anything: the popover asks for the
-/// height that makes the box its own content width, the window asks for a
-/// height that leaves room for the rest of the card. Deriving the width instead
-/// of filling the available one is what keeps the picture free of letterbox
-/// bars at any height — a full-width box with a shorter fixed height would
-/// pillarbox a 16:9 capture into a black strip. Whatever width is left over
-/// goes either side of it: the box centers itself in the space the card gives
-/// it, which is a no-op in the popover and what keeps the window's shorter
-/// preview from reading as lopsided.
+/// The caller gives the height; width derives from the shared display's
+/// aspect, so one component serves both a fixed-width popover and a
+/// resizable window without either measuring anything, and stays letterbox-free.
 struct SharePreviewThumbnail: View {
     @EnvironmentObject var appState: AppState
     let height: CGFloat
 
-    /// Aspect ratio of the shared display. Falls back to 16:9 until the
-    /// metadata service has reported a resolution, so the gap before the first
-    /// report isn't a 1:1 black square. Static because `SharingCard` needs the
-    /// same number to work back from its content width to a height.
+    /// Falls back to 16:9 before the metadata service reports a resolution.
+    /// Static because `SharingCard` needs the same number for its own height.
     static func screenAspect(_ appState: AppState) -> CGFloat {
         guard let res = appState.metadataService.currentMetadata?.screenResolution,
             res.height > 0
@@ -483,15 +442,8 @@ struct SharePreviewThumbnail: View {
         }
         .frame(width: height * max(0.1, Self.screenAspect(appState)), height: height)
         .clipShape(RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous))
-        // Centered in whatever width the card gives it. In the popover the box
-        // already IS the content width, so this is a no-op there; in the
-        // window, where a shorter height makes the box narrower than the card,
-        // it is the difference between a framed preview and one shoved against
-        // the leading edge with a strip of card beside it.
+        // No-op in the popover; centers the narrower box in the window card.
         .frame(maxWidth: .infinity)
-        // One element rather than a black rectangle plus a spinner plus a
-        // label: the placard's own text is what the label says while the
-        // first frame is still coming.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             appState.previewImage == nil
@@ -500,28 +452,16 @@ struct SharePreviewThumbnail: View {
     }
 }
 
-/// The continuous session controls of a live share: Change Source, Draw, Mic,
-/// Share System Audio — and, in the popover, Stop Sharing on the same row.
-///
-/// One component, two layouts, because the two surfaces have different amounts
-/// of width and the same four actions do not fit both ways. A `style` rather
-/// than a pair of booleans: these are the two real surfaces, and the
-/// combinations a boolean pair would also allow (a labelled row carrying Stop,
-/// say) are ones nothing wants and nothing has checked. A third surface means a
-/// third case.
+/// One component, two layouts, since the two surfaces have different width
+/// budgets for the same four actions. `style` rather than a bool pair: only
+/// these two real surfaces exist.
 struct ShareSessionControls: View {
-    /// Which surface is asking, and therefore how the controls lay out.
     enum Style: Equatable {
-        /// The menubar popover: one row of icon-only buttons, Stop Sharing on
-        /// the end. Five labelled buttons would truncate ("Unmut…", "Stop
-        /// Shari…") in 280 pt, and the popover is the surface you open, act on
-        /// and dismiss — the `.help` tooltips carry the naming.
+        /// One row of icon-only buttons, Stop Sharing on the end — labelled
+        /// buttons would truncate in 280pt; `.help` tooltips carry the naming.
         case popover
-        /// The hub window: a 2×2 grid of labelled buttons, no Stop (the card's
-        /// status row already carries it, where there is room for a labelled
-        /// button beside the headline). Two per row rather than four, because
-        /// "Share System Audio" alone is most of a quarter of this card even at
-        /// the default window width.
+        /// 2x2 grid of labelled buttons, no Stop (the card's status row
+        /// already carries it).
         case window
     }
 
@@ -530,9 +470,8 @@ struct ShareSessionControls: View {
 
     private var isLabelled: Bool { style == .window }
 
-    /// Mic-button tooltip. The parenthetical chord tracks the configurable
-    /// hotkey; an unmappable stored chord is hidden rather than misprinted
-    /// (nil `micShortcutDisplay`).
+    /// nil `micShortcutDisplay` hides an unmappable stored chord rather than
+    /// misprinting it.
     private var micTooltip: String {
         guard let chord = appState.micShortcutDisplay else {
             return appState.isMicOn ? L("Mute Mic") : L("Unmute Mic")
@@ -551,8 +490,7 @@ struct ShareSessionControls: View {
                 stopButton
             }
         case .window:
-            // Two HStacks rather than a Grid: each divides its own width in
-            // two, so the columns line up across the rows for free.
+            // Two HStacks, not a Grid: columns line up across rows for free.
             VStack(spacing: 6) {
                 HStack(spacing: 6) {
                     changeSourceButton
@@ -566,8 +504,6 @@ struct ShareSessionControls: View {
         }
     }
 
-    /// Icon plus, where there is room for it, the action's name. Both forms
-    /// stretch to fill their share of the row so the buttons stay equal.
     @ViewBuilder
     private func controlLabel(_ systemImage: String, _ title: String) -> some View {
         if isLabelled {
@@ -652,9 +588,8 @@ struct ShareSessionControls: View {
     private var stopButton: some View {
         Button {
             Task {
-                // Recorded here rather than inside `stopSharing`, which is also
-                // the teardown funnel for failures and quit — see the comment
-                // there. This is the one in the menubar that a person pressed.
+                // Recorded here, not inside `stopSharing` (also the teardown
+                // funnel for failures/quit) — this is the menubar press specifically.
                 AppDiagnostics.action(.actionShareStop, ["surface": .string("MenuBar")])
                 await appState.stopSharing(reason: "StopSharingButton")
             }
@@ -668,17 +603,11 @@ struct ShareSessionControls: View {
     }
 }
 
-/// The share-by-token controls inside the sharing card: the "Share via
-/// Link" toggle (spins the guest node up / tears it down), the live token
-/// with Copy Link / Copy Token, New Link rotation, and the guest count.
-/// Hidden entirely when Settings → Link Sharing is off (the section's
-/// `linkSharingEnabled` gate at the call site). The token is minted per
-/// link and dies with the toggle, a rotation, or the share — the static
-/// caption says so, because a dead link fails silently on the other end.
+/// The "Share via Link" toggle, live token with Copy Link/Copy Token, New
+/// Link rotation, and guest count. Hidden when Settings -> Link Sharing is
+/// off. The token dies with the toggle, a rotation, or the share.
 ///
-/// Non-private because the hub window's share card renders it too: a link is
-/// how somebody gets in, and copying it shouldn't send the sharer hunting for
-/// the other surface.
+/// Non-private: the hub window's share card renders it too.
 struct ShareViaLinkSection: View {
     @EnvironmentObject var appState: AppState
 
@@ -693,9 +622,8 @@ struct ShareViaLinkSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if appState.isGuestOnlyShare {
-                // A guest-only share IS its link — there is no off position
-                // short of Stop Sharing, so a toggle here would be a switch
-                // that refuses to flip. State the mode instead.
+                // No off position short of Stop Sharing; state the mode
+                // instead of a toggle that refuses to flip.
                 Text(L("Sharing via link — the link is the only way in"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -795,12 +723,8 @@ struct ShareViaLinkSection: View {
     }
 }
 
-/// Compact input + output device pickers. Used inside the sharing card (both
-/// surfaces) and ViewingCard — anywhere voice playback is active.
-/// Refreshes the device list on appear so hot-plugged devices show
-/// up the next time the popover opens. `nil` selection means "follow
-/// system default"; that's also the initial value, so newly-launched
-/// instances inherit whatever the user has set in System Settings.
+/// Refreshes the device list on appear so hot-plugged devices show up next
+/// open. `nil` selection means "follow system default", also the initial value.
 struct AudioDevicePickers: View {
     @EnvironmentObject var appState: AppState
 
@@ -854,23 +778,14 @@ struct AudioDevicePickers: View {
     }
 }
 
-/// Viewer roster shown inside the SharingCard — one row per connected viewer
-/// with a leading health dot (green / yellow / orange) that reflects the
-/// server's per-viewer loss attribution: `good`, `degraded` (packet loss this
-/// window), or `throttled` (keyframe-only mode because that viewer's link was
-/// isolating the session). Hostnames come from the netmap lookup in
-/// `TailscaleScreenShareServer`; rows that haven't resolved yet (or whose peer
-/// isn't in the netmap) fall back to the raw Tailscale IP, truncated to keep
-/// the layout stable. Falls back to a single "No viewers yet" line when empty.
-/// Each row carries a trailing ✕ that disconnects that viewer one-time —
-/// nothing is remembered, so they can reconnect through the normal admission
-/// gate (the persistent variant stays "Deny & Block" on the pending row).
+/// One row per connected viewer with a health dot reflecting the server's
+/// per-viewer loss attribution: `good`, `degraded` (packet loss), or
+/// `throttled` (keyframe-only, that viewer was isolating the session).
+/// Trailing X disconnects one-time — nothing is remembered ("Deny & Block" is
+/// the persistent variant, on the pending row).
 ///
-/// Non-private, like `PendingViewersList` and `ControlRequestsList` beside it,
-/// so the hub window can render it too. Dropping a viewer is a *decision*
-/// about a person, and this app's position is that decision surfaces belong on
-/// both surfaces — it was menubar-only by omission, not by design, which made
-/// it the one sharer action with no path outside the popover.
+/// Non-private, like `PendingViewersList`/`ControlRequestsList`, so the hub
+/// window can render it too.
 struct ViewersList: View {
     @EnvironmentObject var appState: AppState
     let viewers: [ViewerInfo]
@@ -902,9 +817,6 @@ struct ViewersList: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            // Health is a colored dot with a mouse-only
-                            // tooltip; fold it into the name's spoken
-                            // label so it isn't color-only.
                             .accessibilityLabel(healthLabel(for: viewer))
                         if viewer.isGuest {
                             GuestBadge()
@@ -926,16 +838,13 @@ struct ViewersList: View {
         }
     }
 
-    /// "wisp, connection degraded — packet loss" — one spoken string, so
-    /// the health dot's meaning survives without color or a mouse.
     private func healthLabel(for viewer: ViewerInfo) -> String {
         let name = rowName(for: viewer)
         return L("\(name), \(Self.tooltip(for: viewer.health))")
     }
 
-    /// Guests have no hostname; their identity is the guest node key, so
-    /// the row shows its short fingerprint once the host's peer map has it
-    /// (falling back to the tunnel IP for the beat before it resolves).
+    /// Guests have no hostname; falls back to the tunnel IP before the
+    /// fingerprint resolves.
     private func rowName(for viewer: ViewerInfo) -> String {
         guard viewer.isGuest else { return viewer.displayName }
         return appState.guestFingerprint(forIP: viewer.tailscaleIP) ?? viewer.displayName
@@ -1002,26 +911,18 @@ struct NotificationsOffNotice: View {
     }
 }
 
-/// One row per pending viewer with inline Accept / Deny split buttons.
-/// The primary click acts once; each button's attached menu adds the
-/// remembered variant — "Always Allow" / "Deny & Block" — which persists
-/// the decision under the peer's StableNodeID so future HELLOs skip the
-/// prompt (or are silently rejected). Shown in the SharingCard whenever
-/// `requireViewerApproval` is on and at least one viewer is waiting for a
-/// decision. Hostnames (and the StableNodeID the remembered variants
-/// need) may take a moment to resolve via the netmap lookup; the row
-/// falls back to the raw Tailscale IP in the gap, and a remembered-allow
-/// peer may flash here briefly before auto-admission kicks in.
+/// Primary click acts once; each button's attached menu adds the remembered
+/// variant ("Always Allow"/"Deny & Block"), persisted under the peer's
+/// StableNodeID. Hostnames/StableNodeID may take a moment to resolve via the
+/// netmap lookup; falls back to the raw Tailscale IP meanwhile.
 struct PendingViewersList: View {
     @EnvironmentObject var appState: AppState
     let viewers: [PendingViewerInfo]
 
     var body: some View {
         listBody
-            // The approval prompt is the surface most worth knowing was on
-            // screen: "the sharer never saw it" and "the sharer saw it and did
-            // nothing" are the two halves of the commonest stuck session, and
-            // only this distinguishes them.
+            // Distinguishes "sharer never saw it" from "sharer saw it and did
+            // nothing" — the two halves of the commonest stuck session.
             .recordsDiagnosticSurface("PendingViewersList")
     }
 
@@ -1041,11 +942,9 @@ struct PendingViewersList: View {
                     }
                     Spacer(minLength: 4)
                     if viewer.isGuest {
-                        // No remembered variants for guests: those persist
-                        // under a Tailscale StableNodeID, which a guest never
-                        // has. Deny already denylists the guest's node key at
-                        // the tunnel for the life of this link — the guest
-                        // equivalent of "& Block".
+                        // No remembered variants for guests (no StableNodeID);
+                        // Deny already denylists the guest's node key at the
+                        // tunnel for this link's life.
                         Button(L("Deny")) {
                             appState.denyPendingViewer(viewer.id)
                         }
@@ -1064,8 +963,8 @@ struct PendingViewersList: View {
                         .accessibilityLabel(L("Accept \(viewer.displayName)"))
                     } else {
                         Menu {
-                            // Enabled even before the StableNodeID resolves: the
-                            // intent is queued and persisted the moment it lands.
+                            // Enabled before StableNodeID resolves: the intent
+                            // queues and persists once it lands.
                             Button(L("Deny & Block")) {
                                 appState.denyPendingViewerAndBlock(viewer.id)
                             }
@@ -1080,8 +979,7 @@ struct PendingViewersList: View {
                         .fixedSize()
                         .accessibilityLabel(L("Deny \(viewer.displayName)"))
                         Menu {
-                            // Enabled even before the StableNodeID resolves: the
-                            // intent is queued and persisted the moment it lands.
+                            // Same as Deny & Block above.
                             Button(L("Always Allow")) {
                                 appState.approvePendingViewerAlways(viewer.id)
                             }
@@ -1107,19 +1005,15 @@ struct PendingViewersList: View {
         )
     }
 
-    /// See `ViewersList.rowName(for:)` — same fingerprint stand-in, and a
-    /// pending guest's tunnel is already up, so the key usually resolves
-    /// before the sharer looks.
+    /// See `ViewersList.rowName(for:)`.
     private func rowName(for viewer: PendingViewerInfo) -> String {
         guard viewer.isGuest else { return viewer.displayName }
         return appState.guestFingerprint(forIP: viewer.tailscaleIP) ?? viewer.displayName
     }
 }
 
-/// Small capsule marking a roster/approval row as a share-by-token guest —
-/// someone outside the tailnet, identified by node key rather than a
-/// machine name, so the sharer can tell at a glance which kind of viewer
-/// they are deciding about.
+/// Marks a roster/approval row as a share-by-token guest, identified by node
+/// key rather than a machine name.
 struct GuestBadge: View {
     var body: some View {
         Text(L("Guest"))
@@ -1132,11 +1026,8 @@ struct GuestBadge: View {
     }
 }
 
-/// One row per viewer asking for remote control, with inline Grant / Deny
-/// buttons. Shown in the SharingCard whenever a viewer has requested control.
-/// Granting revokes any current grantee (single-holder). Granting without the
-/// Accessibility permission prompts for it and queues the grant: the row
-/// shows a waiting caption, and the grant completes automatically once the
+/// Granting revokes any current grantee (single-holder). Granting without
+/// Accessibility permission queues the grant, which completes once the
 /// permission lands (see `AppState.grantRemoteControl`).
 struct ControlRequestsList: View {
     @EnvironmentObject var appState: AppState
@@ -1175,9 +1066,7 @@ struct ControlRequestsList: View {
                         .accessibilityHint(
                             L("Gives full keyboard and mouse control of your entire Mac, not just the shared window"))
                     }
-                    // A Grant clicked without the Accessibility permission is
-                    // queued, not refused — say so on the row, or it looks
-                    // untouched and the eventual auto-grant is a surprise.
+                    // Queued, not refused — say so, or the auto-grant is a surprise.
                     if appState.pendingAccessibilityGrantRequestID == request.id {
                         Text(L("Waiting for Accessibility permission…"))
                             .font(.caption2)
@@ -1186,9 +1075,8 @@ struct ControlRequestsList: View {
                     }
                 }
             }
-            // Whole-Mac scope warning: keyboard input lands on the sharer's
-            // frontmost app (not confined to the shared window/app), so the
-            // sharer isn't surprised. Stated once at grant time.
+            // Keyboard input lands on the sharer's frontmost app, not
+            // confined to the shared window.
             Text(
                 L("Granting gives full keyboard and mouse control of your entire Mac — not just the shared window.")
             )
@@ -1240,11 +1128,8 @@ struct RemoteControlGranteeBanner: View {
     }
 }
 
-/// Compact toggle for the "Require approval for new viewers" preference.
-/// Backed by `AppState.requireViewerApproval` (persisted in UserDefaults
-/// and propagated to the live server). Rendered inside the SharingCard
-/// and the main window's idle share section (plus Settings) — the
-/// popover's idle picker row deliberately omits it to stay lean.
+/// Backed by `AppState.requireViewerApproval` (persisted, propagated to the
+/// live server).
 struct ApprovalToggle: View {
     @EnvironmentObject var appState: AppState
 
@@ -1264,8 +1149,6 @@ struct ApprovalToggle: View {
 private struct ViewingCard: View {
     @EnvironmentObject var appState: AppState
 
-    /// Same configurable-chord sourcing as the SharingCard mic tooltip:
-    /// the chord tracks the remappable hotkey, hidden when unspellable.
     private var micTooltip: String {
         guard let chord = appState.micShortcutDisplay else { return L("Toggle mic") }
         return L("Toggle mic (\(chord))")
@@ -1293,10 +1176,6 @@ private struct ViewingCard: View {
 
             RemoteControlViewerButton()
 
-            // Way back to the video: the viewer window can end up buried
-            // under other apps, and the popover is where people look while
-            // viewing. Bordered + small like the row below so Disconnect
-            // keeps its slot as the session-ending action.
             Button {
                 appState.focusViewerWindow()
             } label: {
@@ -1345,18 +1224,15 @@ private struct ViewingCard: View {
     }
 }
 
-/// Viewer-side remote-control control: request control, show the pending /
-/// active state, and stop controlling. State comes from
-/// `AppState.viewerControlState`; the sharer's Grant/Revoke drive the
-/// transitions. Full input injection needs the sharer's Accessibility grant.
+/// State comes from `AppState.viewerControlState`; the sharer's Grant/Revoke
+/// drive the transitions.
 private struct RemoteControlViewerButton: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
         switch appState.viewerControlState {
         case .none:
-            // Only offer the request when the sharer advertised it can inject
-            // input at all — otherwise the request is silently dropped.
+            // Only offer when the sharer advertised it can inject input.
             if appState.sharerSupportsRemoteControl {
                 Button {
                     appState.requestRemoteControl()
@@ -1404,25 +1280,18 @@ private struct RemoteControlViewerButton: View {
     }
 }
 
-/// Display picker shown when idle. A single button hands off to the macOS
-/// native `SCContentSharingPicker` (display / window / single-app /
-/// multi-app) running in the picker-helper subprocess. The OS owns the
-/// permission flow too — the TCC prompt fires inside the helper on first
-/// use, so the main process never preflights Screen Recording.
+/// Hands off to the native `SCContentSharingPicker` running in the
+/// picker-helper subprocess; the TCC prompt fires inside the helper, so the
+/// main process never preflights Screen Recording.
 private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
     @State private var isHovered = false
-    /// Icon gutter width. SF Symbols at `.body` scale with the text size,
-    /// so a hard 16pt slot clips them at large sizes.
+    /// SF Symbols at `.body` scale with text size; a hard 16pt slot clips
+    /// them at large sizes.
     @ScaledMetric(relativeTo: .body) private var iconSlot: CGFloat = 16
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // A start that failed, said where the button that retries it is.
-            // The alert fired once and is gone; without this the card is back
-            // to offering the picker with no trace of why the last attempt
-            // did not work. Same split as `nodeFailure` on the sign-in card,
-            // and the same wording the other two hubs' share cards carry.
             if let why = appState.sharingState.failureReason {
                 Text(L("Share failed: \(why)"))
                     .font(.subheadline)
@@ -1537,14 +1406,8 @@ struct MenuRow: View {
     }
 }
 
-/// Hover highlight shared by every clickable row in the menubar popover
-/// and the main window's list rows — peer rows, the "Choose what to
-/// share…" picker entry, the identity footer, and the trailing `MenuRow`
-/// entries. The visual matches macOS Control Center / system menus: a
-/// soft rounded fill that's clearly visible without competing with
-/// selected/active states elsewhere. `quaternaryLabelColor` adapts to
-/// light/dark mode and to the user's "Reduce transparency" setting
-/// automatically.
+/// Shared hover highlight, matching macOS Control Center/system menus.
+/// `quaternaryLabelColor` adapts to light/dark mode and Reduce Transparency.
 struct MenuRowHoverBackground: View {
     let isHovered: Bool
 

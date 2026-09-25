@@ -1,12 +1,9 @@
 import Foundation
 
-/// The device's PCM format, as a capture backend reports it.
-///
-/// A separate type from the viewer's `AudioOutputFormat` despite the identical
-/// fields, and deliberately so: that one lives in `TailscreenViewer` and names
-/// where audio is *going*, this one lives beside the codec and names where it
-/// is *coming from*. Sharing it would make the audio tier depend on the viewer
-/// tier for a pair of integers.
+/// The device's PCM format, as a capture backend reports it. A separate type
+/// from the viewer's `AudioOutputFormat` (identical fields, opposite
+/// direction) so the audio tier doesn't depend on the viewer tier for a pair
+/// of integers.
 public struct AudioInputFormat: Equatable, Sendable {
     /// Frames per second, as the device negotiated it — 44 100 and 48 000 are
     /// both common, and a backend must report what it actually got rather than
@@ -25,43 +22,28 @@ public struct AudioInputFormat: Equatable, Sendable {
     }
 }
 
-/// A microphone, as the portable voice path needs one.
+/// A microphone, as the portable voice path needs one. The third
+/// host-supplied backend seam alongside `CaptureEncoding`/`InputInjecting`:
+/// callbacks out, commands in, no platform type in the signature.
 ///
-/// The third host-supplied backend seam, alongside `CaptureEncoding` and
-/// `InputInjecting`, and shaped like them on purpose: callbacks out, commands
-/// in, no platform type anywhere in the signature. ALSA, WASAPI and
-/// AVAudioEngine differ in every detail of how they hand over samples and
-/// agree on the only thing that matters here — interleaved Float32 at a format
-/// they will tell you.
-///
-/// **Threading.** `onPCM` fires on whatever thread the backend captures on:
-/// ALSA's read loop, WASAPI's event thread, an audio unit's render thread.
-/// Implementations must not assume the main actor, and consumers must not do
-/// anything slow in the callback — which is why `MicrophonePipeline` does
-/// arithmetic only and hands the encoded result on.
+/// **Threading.** `onPCM` fires on whatever thread the backend captures on
+/// (ALSA's read loop, WASAPI's event thread, an audio unit's render thread) —
+/// never the main actor, and consumers must not do anything slow in it.
 ///
 /// **Capability, not configuration.** A host with no working microphone
-/// supplies no backend at all rather than one that silently produces nothing.
-/// That is the same rule `InputInjecting` follows on a machine with no XTEST:
-/// the absence is what makes the UI honest.
+/// supplies no backend at all, like `InputInjecting` on a machine with no XTEST.
 public protocol MicrophoneCapturing: AnyObject, Sendable {
     /// Interleaved Float32 frames at `format`.
     ///
-    /// **`format` describes the BUFFER, not the device.** That distinction is
-    /// the one way to misuse this seam, and it is invisible when you do: both
-    /// shipped backends fold to mono themselves and separately publish the
-    /// device's own channel count (`ALSA.PCMRecorder.format.channels`,
-    /// `WASAPI.Recorder.format`), because a sharer wants to know their
-    /// interface is 8-channel. An adapter that forwards *that* number alongside
-    /// already-mono samples makes `CapturePCMConverter` downmix a second time —
-    /// reading N mono samples as N/2 stereo frames, which halves the rate and
-    /// drops the pitch an octave. Nothing errors; the call just sounds wrong.
-    /// A backend handing over mono reports `channelCount: 1`, whatever its
-    /// hardware is.
+    /// **`format` describes the buffer, not the device.** Both shipped
+    /// backends fold to mono themselves but separately publish the device's
+    /// own channel count for UI purposes — forwarding *that* alongside
+    /// already-mono samples makes `CapturePCMConverter` downmix a second
+    /// time (halves the rate, drops the pitch an octave, with no error). A
+    /// mono-handing backend reports `channelCount: 1` regardless of hardware.
     ///
-    /// The format is passed with every buffer rather than read once, because a
-    /// device can be reconfigured underneath a running stream and a pipeline
-    /// that cached the old rate would resample against it forever.
+    /// Passed with every buffer, not read once, since a device can be
+    /// reconfigured mid-stream.
     var onPCM: (([Float], AudioInputFormat) -> Void)? { get set }
 
     /// The capture stopped. Nil means the caller asked; an error means the
@@ -73,52 +55,36 @@ public protocol MicrophoneCapturing: AnyObject, Sendable {
 }
 
 /// Device-native interleaved Float32 → 48 kHz mono, the inverse of the
-/// viewer's `MonoPCMConverter`.
-///
-/// Portable for the reason every other converter in this tier is: it is
-/// arithmetic that each backend would otherwise reimplement, and none of them
-/// can test it in place. The two directions are deliberately separate types
-/// rather than one parameterized by direction — downmixing several channels to
-/// one and spreading one channel across several are different operations, and
-/// a shared implementation would be a switch statement pretending to be reuse.
+/// viewer's `MonoPCMConverter`. A separate type, not one parameterized by
+/// direction — downmixing and spreading are different operations.
 public final class CapturePCMConverter {
     /// The format last seen from the device. Nil until the first buffer.
-    ///
-    /// Tracked rather than fixed at init so a mid-stream device change
-    /// reconfigures instead of silently resampling against a stale rate — the
-    /// reason `MicrophoneCapturing.onPCM` carries its format at all.
+    /// Tracked, not fixed at init, so a mid-stream device change reconfigures
+    /// instead of resampling against a stale rate.
     private var source: AudioInputFormat?
     /// The previous output sample, so a buffer boundary interpolates from
-    /// where the last one ended rather than restarting at silence and clicking
-    /// ~50×/s. Same role as `MonoPCMConverter.previous`, and the same bug if
-    /// omitted.
+    /// where the last one ended instead of clicking ~50×/s. Same role as
+    /// `MonoPCMConverter.previous`.
     private var previous: Float = 0
     private var phase: Double = -1
 
     public init() {}
 
-    /// Downmix to mono, then resample to 48 kHz.
-    ///
-    /// In that order because downmixing first is cheaper — it divides the
-    /// sample count by the channel count before the interpolation runs — and
-    /// because averaging channels after resampling would interpolate each
-    /// channel separately for a result that gets averaged away anyway.
+    /// Downmix to mono, then resample to 48 kHz — cheaper this order, and
+    /// resampling first would interpolate each channel for nothing.
     public func convert(_ interleaved: [Float], from format: AudioInputFormat) -> [Float] {
         guard !interleaved.isEmpty, format.channelCount > 0, format.sampleRate > 0 else {
             return []
         }
         if source != format {
-            // A genuine discontinuity: the carried neighbour belongs to the
-            // old rate and interpolating across it would produce a click at
-            // exactly the moment something already went wrong.
+            // A discontinuity: the carried neighbour belongs to the old rate.
             source = format
             previous = 0
             phase = -1
         }
         let mono = downmix(interleaved, channels: format.channelCount)
         guard format.sampleRate != AudioInputFormat.wire.sampleRate else {
-            // No resampling: still carry the last sample, so a later rate
-            // change starts from real audio rather than from silence.
+            // No resampling, but still carry the last sample for a later rate change.
             previous = mono.last ?? previous
             return mono
         }
@@ -132,11 +98,8 @@ public final class CapturePCMConverter {
         phase = -1
     }
 
-    /// Average the channels of one interleaved frame.
-    ///
-    /// Averaging rather than taking channel 0: a headset that presents a mono
-    /// mic as stereo may put the signal on either channel, and picking one
-    /// gives silence half the time on hardware nobody tested against.
+    /// Average the channels of one interleaved frame. Not channel 0: a mono
+    /// mic presented as stereo may put the signal on either channel.
     private func downmix(_ interleaved: [Float], channels: Int) -> [Float] {
         guard channels > 1 else { return interleaved }
         let frames = interleaved.count / channels
@@ -152,12 +115,9 @@ public final class CapturePCMConverter {
         return out
     }
 
-    /// Linear interpolation, buffer-boundary continuous.
-    ///
-    /// Linear rather than windowed-sinc for the same reason the viewer's
-    /// direction is: the realistic ratios are 44.1 k → 48 k and 96 k → 48 k,
-    /// where the artefacts sit far below what a lossy voice link already
-    /// carries. The correctness that matters is continuity across buffers.
+    /// Linear interpolation, buffer-boundary continuous. Linear, not
+    /// windowed-sinc: realistic ratios (44.1k→48k, 96k→48k) put the artefacts
+    /// well below what a lossy voice link already carries.
     private func resample(_ input: [Float], ratio: Double) -> [Float] {
         let n = input.count
         var out: [Float] = []
@@ -175,8 +135,7 @@ public final class CapturePCMConverter {
             position += ratio
         }
         previous = input[n - 1]
-        // Carry the fractional remainder into the next buffer, expressed
-        // relative to that buffer's index 0. Dropping it would re-align to a
+        // Carry the fractional remainder — dropping it would re-align to a
         // sample boundary every ~20 ms and smear the pitch.
         phase = position - Double(n)
         return out

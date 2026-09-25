@@ -4,23 +4,17 @@ import Foundation
 /// Screen capture through `org.freedesktop.portal.ScreenCast` and PipeWire —
 /// the Wayland-capable capture path for the Linux sharer.
 ///
-/// This is the capture half of a Linux `CaptureEncoding` backend, the same
-/// role `X11ScreenCapture` plays for X11 and `WGCCapture` plays on Windows.
-/// What it adds over the X11 path is everything the X11 path structurally
-/// cannot do: native Wayland surfaces, a single window, a single application.
+/// The capture half of a Linux `CaptureEncoding` backend, the same role
+/// `X11ScreenCapture` plays for X11 and `WGCCapture` on Windows. Adds what
+/// X11 structurally cannot: native Wayland surfaces, a single window, a
+/// single application.
 ///
-/// **It hands back BGRA and converts nothing.** The repo's portable
-/// `BGRAToI420` (TailscreenProtocol) owns colour, and the `CaptureEncoding`
-/// conformance that will consume this is where the two meet — the identical
-/// split `WGCCaptureKit` → `TailscreenSharerWGC` already uses on Windows.
-/// Writing a third BGRA→I420 here would be a third implementation to keep in
-/// step with the viewer's YUV shader, and getting that wrong does not fail: it
-/// washes out or crushes every frame.
+/// Hands back BGRA and converts nothing — the portable `BGRAToI420`
+/// (TailscreenProtocol) owns colour, the same split `WGCCaptureKit` uses on
+/// Windows.
 ///
-/// **There is no headless path and there never will be.** Every share starts
-/// with a dialog the compositor draws and a person clicks. That is not a
-/// limitation to route around — it is the user's control over their own
-/// screen, and this package contains nothing that tries to.
+/// There is no headless path and there never will be: every share starts with
+/// a dialog the compositor draws and a person clicks.
 public enum PortalCapture {
     /// libpipewire's version, and the reason `portal-probe` exists: a SwiftPM
     /// library target is compiled but never linked, so a missing
@@ -97,13 +91,10 @@ public final class PortalSession {
         public static let virtual = SourceTypes(rawValue: 4)
     }
 
-    /// How the pointer is delivered.
-    ///
-    /// ``embedded`` is what a screen share wants: the compositor composites the
-    /// pointer into the frames. ``metadata`` delivers position out-of-band and
-    /// would need a compositing step this package does not have — asking for it
-    /// yields frames with no visible cursor, which looks like a bug rather than
-    /// a choice.
+    /// How the pointer is delivered. ``embedded`` is what a screen share
+    /// wants: the compositor composites the pointer into the frames.
+    /// ``metadata`` delivers position out-of-band and needs a compositing
+    /// step this package doesn't have — asking for it yields no visible cursor.
     public enum CursorMode: UInt32, Sendable {
         case hidden = 1
         case embedded = 2
@@ -139,20 +130,16 @@ public final class PortalSession {
     }
 
     deinit {
-        // Synchronous teardown, no Task capturing self — the repo's rule, and
-        // here it also closes the portal session, which is what makes the
-        // compositor drop its "your screen is being shared" indicator.
+        // Synchronous teardown, no Task capturing self; also closes the
+        // portal session, which drops the compositor's sharing indicator.
         ts_portal_free(handle)
     }
 
     private var lastError: String { String(cString: ts_portal_last_error(handle)) }
 
-    /// Connect to the session bus and check a portal is present, **without**
-    /// putting anything on anybody's screen.
-    ///
-    /// This is the honest way for a host to answer "can this machine share?" —
-    /// a capability check that raises a consent dialog is not a capability
-    /// check.
+    /// Connect to the session bus and check a portal is present, without
+    /// putting anything on anybody's screen — a capability check that raises
+    /// a consent dialog is not a capability check.
     public func connect() throws {
         let rc = ts_portal_connect(handle)
         guard rc == TS_PORTAL_OK else { throw Failure.from(code: rc, detail: lastError) }
@@ -237,12 +224,9 @@ public final class PortalSession {
     }
 
     /// The `org.freedesktop.portal.Request` object path a `Response` for
-    /// `token` will arrive on, given a unique bus name.
-    ///
-    /// Exposed because it is the one piece of the handshake that is pure string
-    /// arithmetic and the one whose failure is silent: derive it wrong and the
-    /// client subscribes to a path nothing is emitted on, so every call times
-    /// out with no error anywhere.
+    /// `token` will arrive on, given a unique bus name. Exposed because
+    /// deriving it wrong subscribes to a path nothing is emitted on, so every
+    /// call times out with no error anywhere.
     public static func requestPath(uniqueName: String, token: String) -> String? {
         var buffer = [CChar](repeating: 0, count: 256)
         let rc = uniqueName.withCString { name in
@@ -284,15 +268,11 @@ public final class PortalStream: @unchecked Sendable {
         case connecting
         case streaming
         case failed(String)
-        /// The producer went away — on a real desktop, usually the user
-        /// clicking the compositor's own "stop sharing". A normal end to a
-        /// share, deliberately distinct from ``failed`` so a host tears down
-        /// quietly instead of trying to restart something that is gone.
-        ///
-        /// Delivered at most once, and derived from the PipeWire registry
-        /// rather than from the stream's state: a producer's death drops the
-        /// consumer stream to *paused*, which is what a renegotiation also
-        /// looks like.
+        /// The producer went away — usually the user clicking the
+        /// compositor's own "stop sharing." Distinct from ``failed`` so a
+        /// host tears down quietly. Delivered at most once, derived from the
+        /// PipeWire registry rather than the stream's state, since a
+        /// producer's death drops the consumer to *paused*, same as a renegotiation.
         case ended(String)
     }
 

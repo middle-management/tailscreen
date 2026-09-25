@@ -55,29 +55,22 @@ public enum TailscreenInstance {
     /// instances.
     public static let clientHostnamePrefix = "tailscreen-client-"
 
-    /// Hostname prefix the portable viewer (`Packages/TailscreenLinuxBackends`) registers its
-    /// ephemeral tsnet node under. Deliberately built on `clientHostnamePrefix`
-    /// so `isTailscreenServerHostname` excludes it — a transient viewer must not
-    /// appear as a connectable screen in peer discovery. (`TailscreenInstanceTests`
-    /// pins the `clientHostnamePrefix`-prefix invariant this relies on.)
+    /// Hostname prefix the portable viewer (`Packages/TailscreenLinuxBackends`)
+    /// registers its ephemeral tsnet node under. Built on
+    /// `clientHostnamePrefix` so `isTailscreenServerHostname` excludes it — a
+    /// transient viewer must not appear as a connectable screen. Pinned by
+    /// `TailscreenInstanceTests`.
     public static let viewerHostnamePrefix = clientHostnamePrefix + "viewer-"
 
-    /// The name to SHOW for a Tailscreen node: its hostname with the wire-level
-    /// prefix removed.
-    ///
-    /// Every node registers as `tailscreen-<machine>` (viewers as
-    /// `tailscreen-client-…`) because peer discovery identifies Tailscreen
-    /// installations by that prefix — it is a protocol marker, not part of
-    /// anybody's name. Rendered in a list it is the one span of characters
-    /// every row shares, so it carries no information and pushes the part that
-    /// does out of a truncated row. Strip it at the point of display only:
-    /// discovery, dialling and the policy store keep working on the real
-    /// hostname.
+    /// The name to SHOW for a Tailscreen node: its hostname with the
+    /// wire-level prefix removed. Every node registers as
+    /// `tailscreen-<machine>` because peer discovery identifies installs by
+    /// that prefix — a protocol marker, not part of anybody's name, so it's
+    /// stripped only at display time.
     ///
     /// The `TAILSCREEN_INSTANCE` suffix deliberately survives — `-1`/`-2` is
-    /// the only thing telling two local test instances apart. A hostname that
-    /// is nothing *but* a prefix falls back to itself, since an empty row is
-    /// worse than a redundant one.
+    /// the only thing telling two local test instances apart. A hostname
+    /// that's nothing *but* a prefix falls back to itself.
     public static func displayName(fromHostname hostname: String) -> String {
         // Longest first: the viewer prefix is built on the client prefix, which
         // is built on the server prefix.
@@ -96,20 +89,16 @@ public enum TailscreenInstance {
 
     /// Sanitize a machine name into a tailnet-legal node label.
     ///
-    /// tsnet hostnames are DNS labels: `[a-z0-9-]` only, no leading or
-    /// trailing hyphen, bounded length. Anything else is rejected or silently
-    /// mangled by the control plane. This is the ONE implementation both
-    /// swift-cross-ui hosts feed into `NodeRole.shareCapable(name:)` — it
-    /// used to exist per-app, and the Windows copy neither trimmed hyphens
-    /// nor capped length, so a `COMPUTERNAME` of `-lab-box` registered an
-    /// illegal label.
+    /// tsnet hostnames are DNS labels: `[a-z0-9-]` only, no leading/trailing
+    /// hyphen, bounded length. Shared by both swift-cross-ui hosts — the old
+    /// per-app Windows copy neither trimmed hyphens nor capped length, so
+    /// `COMPUTERNAME` of `-lab-box` registered an illegal label.
     ///
-    /// Strictly ASCII: `isLetter` would admit `é` or `漢`, which are just as
-    /// illegal in a DNS label as `_`. Non-ASCII maps to `-` like any other
-    /// disallowed scalar, so word boundaries survive ("Robert's PC" →
-    /// "robert-s-pc"). The 48-char cap leaves room for
-    /// `serverHostnamePrefix` under DNS's 63-char label limit, and the trim
-    /// runs after the cap too, so a name cut at a hyphen stays legal.
+    /// Strictly ASCII: `isLetter` would admit `é`/`漢`, just as illegal here
+    /// as `_`. Non-ASCII maps to `-` so word boundaries survive ("Robert's
+    /// PC" → "robert-s-pc"). The 48-char cap leaves room for
+    /// `serverHostnamePrefix` under DNS's 63-char limit; trim runs after the
+    /// cap too, so a name cut at a hyphen stays legal.
     public static func nodeLabel(from raw: String, fallback: String) -> String {
         let mapped = raw.lowercased().map { ch -> Character in
             ("a"..."z").contains(ch) || ("0"..."9").contains(ch) ? ch : "-"

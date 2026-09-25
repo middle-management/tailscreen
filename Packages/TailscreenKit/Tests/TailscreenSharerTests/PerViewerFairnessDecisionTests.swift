@@ -1,12 +1,9 @@
 import TailscreenSharer
 import XCTest
 
-/// Unit tests for the per-viewer fairness decisions extracted from
-/// `TailscaleScreenShareServer` — `lossAttribution` (is one viewer the
-/// problem, or is everyone suffering?) and `fairnessDecision` (who gets
-/// throttled to keyframe-only, and what PLI count drives the global bitrate).
-/// Pure functions, no tsnet, no encoder — same pattern as `AdaptiveBitrateTests`
-/// and `ViewerLifecycleDecisionTests`.
+/// Tests for `lossAttribution` (one bad viewer vs. everyone suffering) and
+/// `fairnessDecision` (who gets throttled to keyframe-only, what PLI count
+/// drives the global bitrate). Pure functions, no tsnet, no encoder.
 final class PerViewerFairnessDecisionTests: XCTestCase {
 
     // MARK: - lossAttribution

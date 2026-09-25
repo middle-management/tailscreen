@@ -3,21 +3,12 @@ import XCTest
 
 @testable import TailscreenViewerTsnet
 
-/// Pins the node-naming contract that decides whether other peers can see this
-/// host at all.
-///
-/// `TailscalePeerDiscovery` admits a peer only if
-/// `TailscreenInstance.isTailscreenServerHostname` says its hostname looks like
-/// a long-lived instance. That predicate is prefix-based, so the *name* a node
-/// registers under silently determines its visibility — get it wrong in either
-/// direction and the failure is invisible until someone opens a screen list:
-/// a viewer that names itself like a sharer clutters everyone's list with
-/// transient nodes, and a sharer that names itself like a viewer can never be
-/// picked by anyone.
-///
-/// Neither failure produces an error anywhere, which is exactly why it's worth
-/// a test rather than a comment. Bringing a real node up needs a tailnet
-/// (local-only), but the naming decision is pure.
+/// Pins the node-naming contract that decides whether other peers can see
+/// this host at all. `TailscalePeerDiscovery` admits a peer only if
+/// `TailscreenInstance.isTailscreenServerHostname` matches its hostname
+/// prefix — get it wrong and a viewer clutters the screen list, or a sharer
+/// is never pickable, with no error anywhere. Naming is pure and testable
+/// with no tailnet.
 final class NodeIdentityTests: XCTestCase {
 
     func testViewerOnlyNodeIsHiddenFromDiscovery() {
@@ -59,9 +50,7 @@ final class NodeIdentityTests: XCTestCase {
     }
 
     /// The prefixes overlap (`tailscreen-client-` starts with `tailscreen-`),
-    /// so the predicate depends on the *exclusion* half as much as the
-    /// inclusion half. Assert the relationship directly rather than trusting
-    /// the two string constants to stay compatible.
+    /// so the predicate depends on the exclusion half as much as inclusion.
     func testViewerPrefixIsDeliberatelyASubprefixOfTheServerPrefix() {
         XCTAssertTrue(
             TailscreenInstance.viewerHostnamePrefix.hasPrefix(TailscreenInstance.serverHostnamePrefix),

@@ -3,57 +3,41 @@ import Foundation
 /// One rung of the viewer's consecutive-decode-failure escalation ladder.
 ///
 /// Produced by `DecodeRecovery.action(consecutiveFailures:alreadyFired:)` —
-/// `>=` thresholds plus a per-episode fired-rung latch, so each rung fires once
-/// per failing episode even if the counter ever skips a value; counter and
-/// latches reset on the next successfully decoded frame.
+/// `>=` thresholds plus a per-episode fired-rung latch, so each rung fires
+/// once per episode even if the counter skips a value; both reset on the next
+/// successfully decoded frame.
 ///
-/// The ladder is the ONE escalation policy every viewer host shares. It was
-/// extracted from the macOS app's `VideoDecoder`, which still drives it for
-/// VideoToolbox (counting on its own serial queue, rebuilding its
-/// decompression session on `.recreateSession`); the portable `ViewerSession`
-/// drives the same rungs for hosts whose decoder reports per-frame failures
-/// through the `VideoDecoding.onDecodeFailure` seam (the FFmpeg-backed Linux
-/// and Windows viewers) — see `ViewerSession.onDecoderResetNeeded` /
-/// `.onDecodeFatal`.
+/// Shared by the macOS `VideoDecoder` (VideoToolbox) and the portable
+/// `ViewerSession` (FFmpeg-backed Linux/Windows, via
+/// `VideoDecoding.onDecodeFailure` → `onDecoderResetNeeded`/`onDecodeFatal`).
 public enum DecodeRecoveryAction: Hashable, Sendable {
-    /// Ask the sharer for a fresh keyframe — a new IDR often un-wedges a
-    /// decoder whose reference state was corrupted by loss, and it's cheap.
+    /// A fresh IDR often un-wedges a decoder whose reference state was
+    /// corrupted by loss, and it's cheap.
     case requestKeyframe
     /// Tear down and rebuild the decoder's internal state (mac: the
-    /// VideoToolbox decompression session, handled inside `VideoDecoder`;
-    /// portable hosts: `ViewerSession.onDecoderResetNeeded`, e.g. dropping the
-    /// lazy libavcodec context so the next access unit builds a fresh one).
+    /// VideoToolbox session; portable: drop the lazy libavcodec context).
     case recreateSession
-    /// Show a "Connection degraded" indication — the stream has been dead
-    /// for a second or two of wall-clock video.
+    /// Show a "Connection degraded" indication.
     case signalDegraded
     /// Surface the stall through the host's alert/error path.
     case surfaceError
 }
 
 /// The decode-failure escalation ladder: pure thresholds + decision function,
-/// CI-tested by the package's `DecodeRecoveryDecisionTests` (moved here from
-/// the macOS app target when the ladder went portable).
+/// tested by `DecodeRecoveryDecisionTests`.
 public enum DecodeRecovery {
-    /// Failures before the first rung: ask the sharer for a keyframe.
     public static let requestKeyframeFailureThreshold = 5
-    /// Failures before the decoder's internal state is torn down and rebuilt.
     public static let recreateSessionFailureThreshold = 30
-    /// Failures before the degraded indication (~1.5–3 s of dead video at
-    /// 30–60 fps).
+    /// ~1.5–3 s of dead video at 30–60 fps.
     public static let signalDegradedFailureThreshold = 90
-    /// Failures before the stall is surfaced as an error (~5–10 s).
+    /// ~5–10 s.
     public static let surfaceErrorFailureThreshold = 300
 
-    /// Pure escalation decision: the highest rung whose threshold
-    /// `consecutiveFailures` meets or exceeds — returned only if it hasn't
-    /// fired yet this episode, nil once it has. `>=` plus the `alreadyFired`
-    /// latch (instead of exact `==` matching) keeps the ladder moving even
-    /// when the counting is imperfect and a threshold value gets skipped.
-    /// Rungs below the highest met one are superseded, never fired late, so an
-    /// episode's rungs always fire in order and at most once. The caller
-    /// resets its latch set along with the counter on the first successful
-    /// frame.
+    /// The highest rung whose threshold `consecutiveFailures` meets, or nil
+    /// if it already fired this episode. `>=` + `alreadyFired` (rather than
+    /// `==`) keeps the ladder moving if a threshold value gets skipped; rungs
+    /// fire in order, at most once per episode. Caller resets `alreadyFired`
+    /// with the counter on the first successful frame.
     public static func action(
         consecutiveFailures: Int,
         alreadyFired: Set<DecodeRecoveryAction>
@@ -73,10 +57,8 @@ public enum DecodeRecovery {
 }
 
 extension DecodeRecoveryAction {
-    /// The stable spelling a `decode.recovery.action` event carries in its
-    /// `action` field. A registry-style string rather than
-    /// `String(describing:)`: the enum's case names are free to be renamed,
-    /// and a bundle written last year has to keep meaning what it said.
+    /// Stable spelling for the `decode.recovery.action` diagnostic event —
+    /// not `String(describing:)`, so renaming the case doesn't change old bundles.
     public var diagnosticName: String {
         switch self {
         case .requestKeyframe: return "request_keyframe"

@@ -5,15 +5,11 @@ import TailscreenSharer
 import TailscreenSharerLinux
 import TailscreenTransport
 
-// A headless Linux sharer: the portable `TailscaleScreenShareServer` driven by
-// the X11 `CaptureEncoding` backend, with no UI.
-//
-// It exists to prove the extraction end to end — a real sharer, on Linux,
-// serving real viewers over a real tailnet — and to be the thing an eventual
-// tray/desktop UI drives. Notice how little there is here: bringing up the
-// tsnet node, admitting viewers, RTP fan-out, NACK/FEC, congestion control and
-// the idle sweep are all `TailscaleScreenShareServer`, unchanged from what
-// macOS ships. This file only says *what* to capture and *where* to sign in.
+// A headless Linux sharer: the portable `TailscaleScreenShareServer` driven
+// by the X11 `CaptureEncoding` backend, with no UI. Node bring-up, admission,
+// RTP fan-out, NACK/FEC and congestion control are all
+// `TailscaleScreenShareServer`, unchanged from macOS; this file only says
+// what to capture and where to sign in.
 //
 // Usage:
 //   tailscreen-sharer-linux --hostname NAME --state-dir DIR
@@ -27,11 +23,10 @@ import TailscreenTransport
 // TAILSCREEN_TS_AUTHKEY / TAILSCREEN_TS_CONTROL_URL are honoured as defaults,
 // matching the rest of the repo's e2e tooling.
 //
-// `--link` is the share-by-token path with no tailnet at all: no tsnet node,
-// no sign-in, no control plane. A guest node bootstraps off a relay, the
-// share runs over that tunnel alone (`startGuestOnly`), and the minted token
-// is printed as `E2E_MARKER shareLink token=…` for a harness to hand to a
-// viewer — the browser spike (plans/browser-viewer.md, Phase 2) is the first.
+// `--link` is the share-by-token path with no tailnet at all: a guest node
+// bootstraps off a relay, the share runs over that tunnel alone
+// (`startGuestOnly`), and the minted token is printed as
+// `E2E_MARKER shareLink token=…` for a harness.
 
 struct Config: Sendable {
     var hostname = "tailscreen-sharer"
@@ -40,36 +35,26 @@ struct Config: Sendable {
     var authKey: String?
     var display: String?
     var fps = 15
-    /// Offer remote control to viewers.
-    ///
-    /// **Off by default, unlike the app.** This binary is what automation and
-    /// the e2e harness drive, often unattended and often on a box whose
-    /// display nobody is watching — inviting a peer to take the pointer is not
-    /// something an unattended process should do because it *can*. The GTK app
-    /// has a person in front of it and offers control whenever XTEST is
-    /// present; here it takes a flag. (Same asymmetry, same reasoning, as the
-    /// approval gate: the server default is right for automation and wrong for
-    /// anything with a user.)
+    /// Offer remote control to viewers. Off by default, unlike the GTK
+    /// app — this binary is what unattended automation drives, and inviting
+    /// a peer to take the pointer is not something unattended should do
+    /// because it can.
     var allowControl = false
-    /// Run for this long then stop. 0 = until killed. A bounded default keeps
-    /// an automated harness from leaking a sharer if the viewer never arrives.
+    /// Run for this long then stop. 0 = until killed. Keeps an automated
+    /// harness from leaking a sharer if the viewer never arrives.
     var seconds = 0
     /// Share by link only (see the header): a guest node instead of tsnet.
     var link = false
-    /// Where the guest node fetches its DERP map when linking. Nil = the
-    /// guest package's default (Tailscale's relays); a harness points it at a
-    /// local relay so the run needs no internet.
+    /// Where the guest node fetches its DERP map. Nil = Tailscale's relays; a
+    /// harness points it at a local relay so the run needs no internet.
     var linkRelayMapURL: String?
-    /// Approve every guest the moment it parks. Guest approval is mandatory
-    /// and per-join by policy (nothing StableNodeID-shaped exists to remember),
-    /// and an unattended harness has nobody to click Accept — so this is the
-    /// automation escape hatch, the guest-side twin of TAILSCREEN_OPEN_DOOR.
-    /// Never on by default.
+    /// Approve every guest the moment it parks — the automation escape hatch
+    /// for mandatory per-join guest approval (guest-side twin of
+    /// TAILSCREEN_OPEN_DOOR). Never on by default.
     var approveGuests = false
     /// Grant every control request the moment it arrives (needs
-    /// `--allow-control`, and XTEST). The same automation escape hatch as
-    /// `--approve-guests`, for the browser e2e's remote-control leg: nobody is
-    /// there to press Grant. Never on by default.
+    /// `--allow-control` + XTEST) — for the browser e2e's remote-control leg.
+    /// Never on by default.
     var grantControl = false
 
     static func parse() -> Config {
@@ -101,26 +86,22 @@ struct Config: Sendable {
 
 let config = Config.parse()
 
-/// Unbuffered by construction: `print` buffers when stdout is a pipe or file,
-/// which is exactly how a harness runs this, and `setvbuf(stdout, …)` isn't
-/// reachable under Swift 6 strict concurrency (`stdout` is shared mutable
-/// state). Writing the bytes straight to the file handle sidesteps both.
+/// Unbuffered by construction: `print` buffers when stdout is a pipe/file
+/// (how a harness runs this), and `setvbuf` isn't reachable under Swift 6
+/// strict concurrency. Writing bytes straight to the handle sidesteps both.
 func log(_ s: String) {
     FileHandle.standardOutput.write(Data("[sharer] \(s)\n".utf8))
 }
 
-// The selection the capture backend resolves. On X11 this means "the root
-// window of the display we were pointed at"; the display ID is carried for
-// shape only, since an X display is named by `$DISPLAY`, not by a number.
+// On X11 this means the root window of `$DISPLAY`; displayID is carried for shape only.
 let selection = PickerSelection(kind: .display, displayID: 0, windowID: nil, bundleIDs: [])
 guard let selectionData = try? JSONEncoder().encode(selection) else {
     log("could not encode the picker selection")
     exit(2)
 }
 
-// Built before the server because whether it exists is what the server
-// advertises. `isTrusted()` is the real question: XTEST is an OPTIONAL X11
-// extension, and without it every injected click silently vanishes.
+// Built before the server: whether it exists is what the server advertises.
+// XTEST is optional — without it every injected click silently vanishes.
 let injector: X11InputInjector? = {
     guard config.allowControl else { return nil }
     let candidate = X11InputInjector(display: config.display)
@@ -133,11 +114,7 @@ let injector: X11InputInjector? = {
 
 let server = TailscaleScreenShareServer(
     captureFactory: { X11CaptureEncoder(display: config.display) },
-    // Present only with `--allow-control`, and only when this X server
-    // actually has XTEST. The server derives `ScreenShareCaps.remoteControl`
-    // from this being non-nil, so in every other case viewers hide their
-    // Request Control affordance rather than sending requests nothing can
-    // serve.
+    // Server derives `ScreenShareCaps.remoteControl` from this being non-nil.
     inputInjector: injector
 )
 
@@ -153,9 +130,7 @@ quality.fpsCap = config.fps
 
 if config.approveGuests {
     // Hop off the callback before approving: it fires from inside the
-    // server's own notification path, and `approveViewer` re-enters the
-    // same state. Guests never auto-admit otherwise (mandatory per-join
-    // approval), so without this every viewer would park forever.
+    // server's own notification path, and `approveViewer` re-enters the same state.
     server.onPendingViewersChanged = { pending in
         for viewer in pending {
             log("auto-approving guest \(viewer.id)")
@@ -165,8 +140,7 @@ if config.approveGuests {
 }
 
 if config.grantControl {
-    // Same hop-off-the-callback shape as the approval above; `grantControl`
-    // returns false (and logs why) when no injector is present.
+    // Same hop-off-the-callback shape as above.
     server.onControlRequestsChanged = { requests in
         for request in requests {
             log("auto-granting control to \(request.viewerIP)")
@@ -175,18 +149,14 @@ if config.grantControl {
     }
 }
 
-/// The link's guest node, held for the life of the process. It must be
-/// retained somewhere: the server adopts only the node's *listeners*, and the
-/// node itself closes on deinit — releasing it after minting the token tears
-/// down the relay connection ("closing connection to derp-1, age 0s") and
-/// every guest's handshake then goes unanswered. `SharerLinkSession` keeps it
-/// in a property for the same reason.
+/// The link's guest node, held for the life of the process — the server
+/// adopts only its listeners, and the node itself closes on deinit, tearing
+/// down the relay connection.
 var linkNode: GuestServerNode?
 
 if config.link {
-    // Link-only share: guest node up, both listeners through the tunnel,
-    // then the server with those as its ONLY sockets. The same shape as
-    // `SharerLinkSession.enable`, minus a running tailnet share to attach to.
+    // Guest node up, both listeners through the tunnel, then the server with
+    // those as its ONLY sockets — same shape as `SharerLinkSession.enable`.
     let port = NetworkConfig.tailscreenPort
     do {
         let guestNode = try GuestServerNode(derpMapURL: config.linkRelayMapURL)
@@ -203,8 +173,7 @@ if config.link {
         )
         let token = try await guestNode.token()
         log("READY link-only fps=\(config.fps)")
-        // The one line a harness parses; same marker the macOS app prints
-        // under TAILSCREEN_AUTOSHARE_LINK.
+        // The one line a harness parses; same marker macOS prints under TAILSCREEN_AUTOSHARE_LINK.
         log("E2E_MARKER shareLink token=\(token)")
     } catch {
         log("failed to start link-only: \(error)")

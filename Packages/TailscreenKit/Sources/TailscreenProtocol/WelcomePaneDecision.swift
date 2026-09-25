@@ -3,19 +3,13 @@ import Foundation
 /// What the signed-out welcome pane offers, as pure functions of the flags
 /// that drive it.
 ///
-/// The pane itself is one card per way in — the tailnet (sign in once, then
-/// every Tailscreen shows up by name) and a share link (nothing to sign into,
-/// both directions, guest approval mandatory) — because they are not variants
-/// of each other. The macOS hub states that layout in SwiftUI and this states
-/// the one branch inside it that is a decision rather than a rendering.
+/// The pane itself is one card per way in — the tailnet and a share link —
+/// since they aren't variants of each other; this states the one branch
+/// inside that layout that's a decision rather than rendering.
 ///
-/// Portable because the GTK and WinUI hubs render the same pane out of
-/// `TailscreenHubUI`, and because a branch with three outcomes and two silent
-/// failure modes is worth pinning once rather than per host. All three hubs
-/// read this one — macOS through `AppState.welcomeLinkShareAction`, which is
-/// now an argument mapping rather than a second copy of the branch — so a
-/// pane that drifts is a compile error or a failing case, not a difference
-/// somebody notices in a screenshot months later.
+/// Portable so the GTK and WinUI hubs (via `TailscreenHubUI`) and macOS (via
+/// `AppState.welcomeLinkShareAction`) all read one pinned branch instead of
+/// three copies that could quietly drift.
 public enum WelcomePaneDecision {
     /// What the share-link card offers for the **sharing** half of the link
     /// feature. Its *joining* half is never gated — pasting a token is
@@ -36,32 +30,21 @@ public enum WelcomePaneDecision {
     }
 
     /// The card's three-way branch. `canShare` is the host's own answer to
-    /// "could I start a link share right now" — the capture backend on
-    /// Linux (a Wayland session with no portal cannot share at all), that
-    /// plus an idle window on Windows, the Settings link-sharing switch on
-    /// macOS — and the branch deliberately does not care which of those a
-    /// host means. `isIdle` is that no share is running or starting,
-    /// `isLinkOnlyShare` that the one that *is* running was started signed
-    /// out.
+    /// "could I start a link share right now" (capture backend availability,
+    /// idle window, Settings switch — the branch doesn't care which).
+    /// `isIdle` is no share running or starting; `isLinkOnlyShare` is that
+    /// the running one was started signed out.
     ///
-    /// The precedence matters and is not symmetric. **Idle is answered
-    /// first**, whatever the link flag says: a host that publishes idle
-    /// while a stale `isLinkOnlyShare` has not yet been cleared — the
-    /// window between one teardown write and the next — must not be told it
-    /// is sharing via a link that is being torn down, and if it also cannot
-    /// capture, the honest answer is that there is nothing to offer rather
-    /// than a live-share note about a share that does not exist. The case
-    /// that would be wrong the other way round is a link-only share
-    /// genuinely *running* on a host whose capture backend has since gone
-    /// (a portal session revoked, the Settings switch turned off): not
-    /// idle, so the note still renders — because a share the person cannot
-    /// see the link for is a share they cannot end from the surface they
-    /// are looking at.
+    /// **Idle is answered first**, whatever the link flag says: a stale
+    /// `isLinkOnlyShare` between one teardown write and the next must not
+    /// claim a share that's being torn down. But a link-only share genuinely
+    /// running on a host whose capture backend has since gone still renders
+    /// the note — a share the person can't see the link for is one they
+    /// can't end from the surface they're looking at.
     ///
-    /// Both wrong answers are silent, which is why this is a pinned decision
-    /// rather than an inline ternary: an offered button on a host that cannot
-    /// capture walks somebody into a refusal, and a dropped note leaves a
-    /// running share with nothing on screen saying where its link lives.
+    /// Both wrong answers are silent, so this is pinned rather than an
+    /// inline ternary: an offered button on a host that can't capture walks
+    /// someone into a refusal; a dropped note strands a running share.
     public static func linkShareAction(
         canShare: Bool,
         isIdle: Bool,

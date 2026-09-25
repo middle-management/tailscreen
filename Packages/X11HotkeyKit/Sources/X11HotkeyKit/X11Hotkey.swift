@@ -3,11 +3,9 @@ import Foundation
 import TailscreenProtocol
 
 /// The pre-flight decision, taken from the environment before any X call.
-///
-/// Pure and injected rather than reading `ProcessInfo` inline, because the one
-/// case that matters — a Wayland session, where the X path succeeds and then
-/// under-delivers — cannot be reproduced on a CI machine running Xvfb. A
-/// function over three strings can be.
+/// Pure and injected rather than reading `ProcessInfo` inline, since the case
+/// that matters — a Wayland session where the X path silently
+/// under-delivers — can't be reproduced on a CI machine running Xvfb.
 public enum X11HotkeySupport {
     /// `nil` when an X11 grab is worth attempting.
     ///
@@ -34,33 +32,25 @@ public enum X11HotkeySupport {
     }
 }
 
-/// A system-wide hotkey held with `XGrabKey`.
+/// A system-wide hotkey held with `XGrabKey`. Polled, not pushed: `drain()`
+/// is called from the host's existing main-thread tick and returns how many
+/// times the chord was pressed since the last call.
 ///
-/// Polled, not pushed: `drain()` is called from the host's existing main-thread
-/// tick and returns how many times the chord was pressed since the last call.
-/// That is the entire threading story — see the header comment on
-/// `ts_x11hotkey.h` for why it is not a thread with a callback.
-///
-/// Auto-repeat is collapsed by ``GlobalHotkeyRepeatFilter`` on the way out, so
-/// a chord held down is one activation. Without that, a *toggle* bound to a
-/// held key ends up wherever the repeat rate leaves it.
+/// Auto-repeat is collapsed by `GlobalHotkeyRepeatFilter` on the way out, so
+/// a chord held down is one activation.
 public final class X11Hotkey {
     private var handle: UnsafeMutableRawPointer?
     private var filter = GlobalHotkeyRepeatFilter()
     private var grabbed: ShortcutChord?
 
-    /// Test seam: when set, `drain()` reads from this instead of the X server.
-    /// The latch-and-count logic on top of the raw event stream is a decision;
-    /// the Xlib call under it is covered by `x11-hotkey-probe --live-check`.
+    /// Test seam: when set, `drain()` reads from this instead of the X
+    /// server. Latch-and-count is a decision; the Xlib call is covered by
+    /// `x11-hotkey-probe --live-check`.
     var pollForTesting: (() -> [GlobalHotkeyRepeatFilter.Event])?
 
-    /// Opens a dedicated grab connection, or fails.
-    ///
-    /// A second `Display *` rather than borrowing GTK's, for the reason the
-    /// GTK docs give themselves: a toolkit's connection is the toolkit's, and
-    /// pulling events off it with `XNextEvent` steals them from the widget
-    /// layer. This one is opened solely for the grab, so anything arriving on
-    /// it is ours by construction.
+    /// Opens a dedicated grab connection, or fails. Not GTK's connection —
+    /// pulling events off a toolkit's own connection with `XNextEvent`
+    /// steals them from the widget layer.
     public init?(displayName: String? = nil) {
         if let displayName {
             handle = displayName.withCString { ts_hotkey_open($0) }
@@ -80,24 +70,18 @@ public final class X11Hotkey {
         if let handle { ts_hotkey_close(handle) }
     }
 
-    /// Whether the server honoured `XkbSetDetectableAutoRepeat`.
-    ///
-    /// False means a held chord arrives as release/press pairs the latch
-    /// cannot distinguish from deliberate ones, so the toggle would flutter
-    /// while a key is held. Reported rather than swallowed; the grab is still
-    /// taken, because losing the shortcut entirely is the worse trade for a
-    /// case that only arises while somebody leans on a key.
+    /// Whether the server honoured `XkbSetDetectableAutoRepeat`. False means
+    /// a held chord arrives as release/press pairs the latch can't
+    /// distinguish from deliberate ones. Reported, not swallowed — but the
+    /// grab is still taken, since losing the shortcut is the worse trade.
     public var honoursDetectableAutoRepeat: Bool {
         guard let handle else { return true }
         return ts_hotkey_detectable_autorepeat(handle) != 0
     }
 
-    /// Take the chord system-wide. Returns nil on success.
-    ///
-    /// The grab is installed under every lock-key variant
-    /// (``X11HotkeyMapping/grabMasks(base:)``): `XGrabKey` matches modifier
-    /// state exactly, so grabbing the bare mask alone yields a hotkey that
-    /// stops working the moment Num Lock is on.
+    /// Take the chord system-wide. Returns nil on success. Installed under
+    /// every lock-key variant — `XGrabKey` matches modifier state exactly, so
+    /// the bare mask alone stops working once Num Lock is on.
     @discardableResult
     public func grab(_ chord: ShortcutChord) -> GlobalHotkeyUnavailability? {
         guard let handle else { return .noDisplay }
@@ -111,9 +95,8 @@ public final class X11Hotkey {
             return .alreadyOwned
         }
         grabbed = chord
-        // A fresh grab starts with no key held as far as we are concerned: the
-        // release that would have cleared the latch went to whoever held the
-        // grab before us.
+        // A fresh grab starts with no key held — the release that would have
+        // cleared the latch went to whoever held the grab before us.
         filter.reset()
         return nil
     }
@@ -128,11 +111,9 @@ public final class X11Hotkey {
         filter.reset()
     }
 
-    /// How many times the chord was pressed since the last call.
-    ///
-    /// Two presses inside one tick return 2 and the host toggles twice, which
-    /// for a mute means it lands back where it started — correct, and the
-    /// reason this counts rather than returning a Bool.
+    /// How many times the chord was pressed since the last call. Counts,
+    /// rather than returning a Bool, so two presses in one tick toggle twice
+    /// (correct for a mute — it lands back where it started).
     public func drain() -> Int {
         var activations = 0
         for event in rawEvents() where filter.shouldFire(event) {
@@ -145,8 +126,8 @@ public final class X11Hotkey {
         if let pollForTesting { return pollForTesting() }
         guard let handle else { return [] }
         var events: [GlobalHotkeyRepeatFilter.Event] = []
-        // Drain in batches until the server has nothing left, so a burst that
-        // exceeds one buffer is not left sitting until the next tick.
+        // Drain in batches until the server has nothing left, so a burst
+        // exceeding one buffer isn't left sitting until the next tick.
         var buffer = [Int32](repeating: 0, count: 32)
         while true {
             let written = buffer.withUnsafeMutableBufferPointer { pointer in
@@ -162,8 +143,6 @@ public final class X11Hotkey {
     }
 }
 
-/// `drain()` and `release()` were already exactly the shape the portable
-/// controller wants — the conformance only names that. Declared here rather
-/// than in the app so neither swift-cross-ui host needs a `@retroactive`
-/// conformance of an imported type to an imported protocol.
+/// `drain()`/`release()` already match the portable controller's shape.
+/// Declared here, not in the app, so neither host needs a `@retroactive` conformance.
 extension X11Hotkey: GlobalHotkeyHolding {}

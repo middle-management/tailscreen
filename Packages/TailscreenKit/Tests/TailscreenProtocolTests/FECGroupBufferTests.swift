@@ -9,7 +9,6 @@ import XCTest
 final class FECGroupBufferTests: XCTestCase {
     private let ms: UInt64 = 1_000_000
 
-    /// One packetized H.264 access unit (several packets, contiguous seqs).
     private func makeGroup(startSeq: UInt16 = 200, ssrc: UInt32 = 0x1234, ts: UInt32 = 900) -> [Data] {
         let packetizer = H264Packetizer()
         let nals = [
@@ -42,9 +41,8 @@ final class FECGroupBufferTests: XCTestCase {
     }
 
     func testParityBeforeReorderedMemberRecovers() {
-        // Parity outruns a reordered member: it arrives with two members
-        // still unseen (unsolvable, buffered); the reordered member's
-        // arrival makes the group one-missing and solves it.
+        // Parity arrives with two members unseen (unsolvable, buffered); the
+        // reordered member's arrival makes the group one-missing and solves it.
         let group = makeGroup()
         var buffer = FECGroupBuffer()
         for (i, packet) in group.enumerated() where i >= 2 {
@@ -54,7 +52,6 @@ final class FECGroupBufferTests: XCTestCase {
         XCTAssertNil(
             buffer.noteParity(baseSeq: par.base, count: par.count, body: par.body, nowNs: 6 * ms),
             "two missing members — not solvable yet")
-        // The reordered member (index 1) lands; index 0 is the true loss.
         let recovery = buffer.noteMedia(seq: seqOf(group[1]), packet: group[1], nowNs: 8 * ms)
         XCTAssertEqual(recovery?.seq, seqOf(group[0]))
         XCTAssertEqual(recovery?.packet, group[0])
@@ -68,9 +65,7 @@ final class FECGroupBufferTests: XCTestCase {
         }
         let par = parity(for: group)
         XCTAssertNil(buffer.noteParity(baseSeq: par.base, count: par.count, body: par.body, nowNs: 6 * ms))
-        // Past the linger window the parity is purged: even a member arrival
-        // that would have made the group solvable recovers nothing — NACK
-        // owns multi-loss groups.
+        // Past the linger window parity is purged; NACK owns multi-loss groups after that.
         let afterLinger = 6 * ms + buffer.parityLingerNs + ms
         XCTAssertNil(buffer.noteMedia(seq: seqOf(group[1]), packet: group[1], nowNs: afterLinger))
     }
@@ -94,17 +89,14 @@ final class FECGroupBufferTests: XCTestCase {
         let par = parity(for: group)
         let recovery = buffer.noteParity(baseSeq: par.base, count: par.count, body: par.body, nowNs: 8 * ms)
         XCTAssertEqual(recovery?.seq, seqOf(group[0]))
-        // The reordered original finally arrives: at-most-once guard — no
-        // second emission (the packet itself still flows to the depacketizer
-        // via the normal wire path, where the reorder buffer dedups it).
+        // At-most-once guard: the late original arriving must not re-emit (reorder buffer dedups the wire copy).
         XCTAssertNil(buffer.noteMedia(seq: seqOf(group[0]), packet: group[0], nowNs: 9 * ms))
-        // A duplicated parity for the same group is equally inert.
+        // A duplicated parity is equally inert.
         XCTAssertNil(buffer.noteParity(baseSeq: par.base, count: par.count, body: par.body, nowNs: 10 * ms))
     }
 
     func testMediaRingEvictsOldestUnderMemoryBound() {
-        // A tiny ring: old group members are evicted as fresh packets pour
-        // in, so its parity finds ≥ 2 missing and cannot mis-solve.
+        // Old group members get evicted as fresh packets pour in, so its parity finds ≥2 missing and can't mis-solve.
         let oldGroup = makeGroup(startSeq: 0)
         var buffer = FECGroupBuffer(maxHeldBytes: 8 * 1024, maxHeldPackets: 8)
         var now: UInt64 = 0

@@ -3,30 +3,26 @@ import CoreGraphics
 import Foundation
 import os
 
-/// Injects viewer input on the sharer's machine via `CGEvent`. Lives in the
-/// **main process** — `CGEvent` posting needs the process-level Accessibility
-/// TCC grant (distinct from Screen Recording) and has no `replayd` coupling,
-/// so unlike SCStream capture it needs no helper isolation.
+/// Injects viewer input via `CGEvent`. Lives in the **main process**:
+/// `CGEvent` posting needs the process-level Accessibility TCC grant (not
+/// Screen Recording) and has no `replayd` coupling, so unlike SCStream it
+/// needs no helper isolation.
 ///
-/// Events are applied on one serial queue so per-connection wire order is
-/// preserved, and each drain coalesces a burst of consecutive mouse-moves to
-/// its last (``RemoteControlPolicy/coalesceMouseMoves``) so a 120 Hz viewer
-/// can't flood the injector. Coordinate mapping is re-resolved per event, so a
-/// window share that moves is followed automatically.
+/// Applied on one serial queue to preserve wire order; each drain coalesces
+/// consecutive mouse-moves (``RemoteControlPolicy/coalesceMouseMoves``) so a
+/// 120Hz viewer can't flood the injector. Coordinate mapping is re-resolved
+/// per event, so a moved window share is followed automatically.
 ///
-/// Not `@MainActor`: `CGEvent.post` and the coordinate resolvers
-/// (`CGDisplayBounds`, `CGWindowListCopyWindowInfo`) are thread-safe, and
-/// keeping off the main actor lets the serial queue guarantee ordering without
-/// racing MainActor Task scheduling.
+/// Not `@MainActor`: `CGEvent.post` and the coordinate resolvers are
+/// thread-safe, and staying off the main actor lets the serial queue
+/// guarantee ordering without racing MainActor Task scheduling.
 final class RemoteControlInjector: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.tailscreen.remote-control-injector")
 
-    /// `active` + `pending` share one lock so the enqueue/drain gate is atomic
-    /// with `deactivate()`: once a revoke flips `active` false, no already-queued
-    /// or late-arriving event is injected — the drain re-checks `active` under
-    /// the same lock before taking a batch, closing the revoke TOCTOU where an
-    /// event that passed the server gate just before `grant = nil` could still
-    /// land afterwards.
+    /// `active`/`pending` share one lock so the gate is atomic with
+    /// `deactivate()`: the drain re-checks `active` before taking a batch,
+    /// closing the TOCTOU where an event passing the server gate just before
+    /// revoke could still land.
     private struct QueueState {
         var active = false
         var pending: [InputEvent] = []
@@ -36,28 +32,19 @@ final class RemoteControlInjector: @unchecked Sendable {
     private let selection = OSAllocatedUnfairLock<PickerSelection?>(initialState: nil)
 
     // Queue-confined pressed-button state so a mouse-move during a drag posts
-    // the matching `.leftMouseDragged` / `.rightMouseDragged` /
-    // `.otherMouseDragged` instead of a bare `.mouseMoved` (apps track drags
-    // off the dragged events). Also lets `deactivate()` synthesize the
-    // matching button-up so a revoke mid-drag never leaves a button stuck
-    // pressed on the sharer's Mac.
+    // the matching `.*Dragged` type instead of a bare `.mouseMoved`, and
+    // `deactivate()` can synthesize the matching button-up.
     private var leftDown = false
     private var rightDown = false
     private var middleDown = false
-    /// Last global point we posted a mouse event at — where a synthesized
-    /// button-up lands on revoke. Queue-confined.
+    /// Where a synthesized button-up lands on revoke. Queue-confined.
     private var lastPoint: CGPoint = .zero
-    /// Sub-line scroll remainder. Queue-confined like the button state, and
-    /// cleared on revoke so one controller's half-line never rides into the
-    /// next one's first scroll. See ``MacPointerMapping`` for why a plain
-    /// per-event round would drop most of a trackpad gesture on the floor.
+    /// Cleared on revoke so one controller's half-line doesn't ride into the
+    /// next controller's first scroll. See ``MacPointerMapping``.
     private var scrollAccumulator = MacPointerMapping.ScrollLineAccumulator()
 
-    /// Translate the wire's neutral ``KeyModifiers`` into `CGEventFlags` for
-    /// injection. Constructive (only the five known bits produce flags, and
-    /// unknown wire bits produce nothing), so no separate masking step is
-    /// needed — a hostile viewer can't set flags outside this set by
-    /// construction. Internal (not private) so it's unit testable.
+    /// Constructive: only the five known bits produce flags, so a hostile
+    /// viewer can't set flags outside this set. Internal so it's unit testable.
     static func eventFlags(_ modifiers: KeyModifiers) -> CGEventFlags {
         var out: CGEventFlags = []
         if modifiers.contains(.shift) { out.insert(.maskShift) }
@@ -68,69 +55,51 @@ final class RemoteControlInjector: @unchecked Sendable {
         return out
     }
 
-    /// What the injector *would* post, surfaced to tests. Lets a unit test
-    /// assert the gate/coalescing/button-release behavior without a real
-    /// `CGEventPost` (which needs Accessibility and would warp the CI cursor).
+    /// What the injector *would* post, surfaced to tests without a real
+    /// `CGEventPost` (needs Accessibility, would warp the CI cursor).
     enum InjectedAction: Equatable, Sendable {
         enum Side: Sendable { case left, right, middle }
-        /// Button events carry the translated `CGEventFlags` raw value so
-        /// tests can pin the modified-click path (⌘-click etc.) without a
-        /// real `CGEventPost`.
         case mouseDown(Side, flags: UInt64)
         case mouseUp(Side, flags: UInt64)
         case mouseMoved
         case drag(Side)
-        /// `wheelY`/`wheelX` are the accumulated WHOLE-LINE counts actually
-        /// handed to `CGEvent` — not the wire deltas — so a test can pin the
-        /// sub-line accumulation (`MacPointerMapping.ScrollLineAccumulator`)
-        /// rather than only the flags.
+        /// `wheelY`/`wheelX` are the accumulated whole-line counts handed to
+        /// `CGEvent`, not the raw wire deltas.
         case scroll(wheelY: Int32, wheelX: Int32, flags: UInt64)
-        /// `keyCode` is the translated **mac virtual keycode** (post
-        /// HID-usage reverse-mapping); `flags` the translated
-        /// `CGEventFlags` raw value.
+        /// `keyCode` is the translated mac virtual keycode.
         case keyDown(keyCode: UInt16, flags: UInt64)
         case keyUp(keyCode: UInt16, flags: UInt64)
     }
 
-    /// Test-only sink. When set, injected actions are recorded here and NO real
-    /// `CGEvent` is posted or cursor warped, so the injector's logic is testable
-    /// headlessly. Fires on the injector's serial queue. Never set in production.
+    /// Never set in production. Fires on the injector's serial queue.
     var onInjectForTesting: ((InjectedAction) -> Void)?
 
-    /// Test-only: block until the serial queue has drained everything enqueued
-    /// so far, so a test can assert on `onInjectForTesting` deterministically.
+    /// Test-only: blocks until everything enqueued so far has drained.
     func drainSyncForTesting() {
         queue.sync {}
     }
 
-    /// Whether the process currently holds the Accessibility grant `CGEvent`
-    /// posting requires. `CGEventPost` no-ops silently when untrusted, so the
-    /// grant flow checks this up front and refuses control rather than leaving
-    /// a dead grant.
+    /// `CGEventPost` no-ops silently when untrusted, so the grant flow checks
+    /// this up front rather than leaving a dead grant.
     func isTrusted() -> Bool {
         AXIsProcessTrusted()
     }
 
-    /// Trigger the system Accessibility prompt (and add the app to the
-    /// Privacy → Accessibility list). Returns the current trust state.
     @discardableResult
     func promptForAccess() -> Bool {
         // `kAXTrustedCheckOptionPrompt` imports inconsistently across SDKs
-        // (CFString vs. Unmanaged<CFString>); its value is stable, so build
-        // the options dictionary from the literal key to keep this portable.
+        // (CFString vs. Unmanaged<CFString>); the literal key is stable.
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Update the capture geometry the injector maps normalized coordinates
-    /// onto (a mid-share source change) without touching the active/pending
-    /// gate. No-op mapping change when no grant is live.
+    /// Mid-share source change, without touching the active/pending gate.
     func setSelection(_ selection: PickerSelection?) {
         self.selection.withLock { $0 = selection }
     }
 
-    /// Arm the injector for a fresh grant: set the mapping, clear any stale
-    /// queue, and open the gate. Called from `grantControl`.
+    /// Sets the mapping, clears any stale queue, and opens the gate. Called
+    /// from `grantControl`.
     func activate(selection: PickerSelection?) {
         self.selection.withLock { $0 = selection }
         state.withLock { s in
@@ -139,10 +108,8 @@ final class RemoteControlInjector: @unchecked Sendable {
         }
     }
 
-    /// Seal the injector on revoke/stop: close the gate (so no further event
-    /// injects, even one that raced the revoke), drop queued events, clear the
-    /// stale mapping, and synthesize a button-up for any button left pressed
-    /// mid-drag so revoke never leaves a stuck button on the sharer's Mac.
+    /// Closes the gate, drops queued events, clears the mapping, and
+    /// synthesizes a button-up for any button left pressed mid-drag.
     func deactivate() {
         state.withLock { s in
             s.active = false
@@ -152,8 +119,8 @@ final class RemoteControlInjector: @unchecked Sendable {
         queue.async { [weak self] in self?.releaseHeldButtons() }
     }
 
-    /// Enqueue one event for injection. Dropped when the gate is closed. The
-    /// event is applied on the serial queue in arrival order.
+    /// Dropped when the gate is closed; applied on the serial queue in
+    /// arrival order.
     func apply(_ event: InputEvent) {
         let accepted = state.withLock { s -> Bool in
             guard s.active else { return false }
@@ -165,9 +132,8 @@ final class RemoteControlInjector: @unchecked Sendable {
     }
 
     private func drain() {
-        // Take the batch only while still active — a deactivate() that ran
-        // between apply() and here leaves active=false, so the batch is
-        // dropped and nothing injects post-revoke.
+        // Take the batch only while still active, or a deactivate() racing
+        // apply() would still inject post-revoke.
         let batch = state.withLock { s -> [InputEvent] in
             guard s.active else {
                 s.pending.removeAll()
@@ -184,8 +150,6 @@ final class RemoteControlInjector: @unchecked Sendable {
         }
     }
 
-    /// Queue-confined: post a button-up for any button still held, so a revoke
-    /// mid-drag doesn't strand a pressed button on the sharer's machine.
     private func releaseHeldButtons() {
         scrollAccumulator.reset()
         if leftDown {
@@ -265,22 +229,19 @@ final class RemoteControlInjector: @unchecked Sendable {
     private func postMouse(
         type: CGEventType, at point: CGPoint, button: CGMouseButton, modifiers: KeyModifiers = []
     ) {
-        // Remember where we posted so a revoke can synthesize a button-up here.
-        lastPoint = point
+        lastPoint = point  // so a revoke can synthesize a button-up here
         let flags = Self.eventFlags(modifiers)
         if let hook = onInjectForTesting {
             hook(Self.testAction(for: type, button: button, flags: flags.rawValue))
             return
         }
-        // Warp the hardware cursor so it visibly tracks the viewer, then post
-        // the event so apps under the point receive it.
+        // Warp the hardware cursor so it visibly tracks the viewer.
         _ = CGWarpMouseCursorPosition(point)
         guard
             let event = CGEvent(
                 mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)
         else { return }
-        // Modified clicks (⌘-click, shift-click) need the flags on the mouse
-        // event itself — apps read them off the event, not the keyboard.
+        // Modified clicks (⌘-click) need flags on the event itself.
         event.flags = flags
         event.post(tap: .cghidEventTap)
     }
@@ -304,16 +265,12 @@ final class RemoteControlInjector: @unchecked Sendable {
     }
 
     private func postScroll(deltaX: Double, deltaY: Double, modifiers: KeyModifiers) {
-        // Wire deltas are viewer-controlled and usually a FRACTION of a line
-        // (a trackpad viewer scales points to lines), so they are banked
-        // rather than rounded per event — rounding drops every sub-line
-        // gesture, which is scrolling that does nothing at all. The
-        // accumulator also absorbs NaN / infinity / out-of-range, so nothing
-        // here can trap on the Int conversion.
+        // Wire deltas are usually a fraction of a line (trackpad scaling), so
+        // they're banked, not rounded per event — rounding drops every
+        // sub-line gesture. The accumulator also absorbs NaN/infinity/out-of-range.
         guard let wheel = scrollAccumulator.take(deltaX: deltaX, deltaY: deltaY) else {
-            // The only place that distinguishes "no scroll arrived" from "a
-            // scroll arrived and moved nothing yet" — the two look identical
-            // on screen, and telling them apart is the whole diagnosis.
+            // Distinguishes "no scroll arrived" from "arrived, moved nothing
+            // yet" — identical on screen otherwise.
             InputDebugLog.log(
                 String(
                     format: "sharer scroll wire dx=%.3f dy=%.3f → banked, nothing injected",
@@ -336,19 +293,15 @@ final class RemoteControlInjector: @unchecked Sendable {
                 scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: wheel.wheelY,
                 wheel2: wheel.wheelX, wheel3: 0)
         else { return }
-        // Shift-scroll (horizontal-scroll convention) and friends are
-        // interpreted app-side from the event flags.
+        // Shift-scroll and friends are interpreted app-side from event flags.
         event.flags = Self.eventFlags(modifiers)
         event.post(tap: .cghidEventTap)
     }
 
     private func postKey(hidUsage: UInt16, modifiers: KeyModifiers, keyDown: Bool) {
-        // The wire speaks USB HID usage IDs; translate to the mac virtual
-        // keycode CGEvent wants. Usages with no mac key (Insert, PrintScreen,
-        // …) are dropped rather than injected wrong.
+        // Usages with no mac key (Insert, PrintScreen, ...) are dropped
+        // rather than injected wrong.
         guard let keyCode = MacKeyCodeMapping.macKeyCode(forHIDUsage: hidUsage) else { return }
-        // Constructive translation: only the five known neutral bits can
-        // produce CGEventFlags, so no wire value reaches the event unmasked.
         let flags = Self.eventFlags(modifiers)
         if let hook = onInjectForTesting {
             let action: InjectedAction

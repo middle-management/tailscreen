@@ -2,17 +2,10 @@ import XCTest
 
 @testable import WASAPIKit
 
-/// Covers the microphone path's arithmetic — the whole of what is testable off
-/// Windows, and deliberately where the decisions live.
-///
-/// ALSAKit's `PCMPlayerTests` can open ALSA's `null` PCM and prove the real
-/// wrapper runs headlessly. WASAPI has no equivalent: there is no null endpoint,
-/// and more to the point no WASAPI at all on the machines that run CI. So the
-/// split here is the same one `MonoPCMConverter` and `I420Converter` were pulled
-/// out for — the sample-shuffling that every platform needs and no platform can
-/// test sits outside `#if os(Windows)`, and the COM lifetime that genuinely
-/// requires Windows is left to the link — the Windows app links this package,
-/// so its build resolves these symbols — and a human at a desk.
+/// Covers the microphone path's arithmetic — the whole of what is testable
+/// off Windows. No null WASAPI endpoint exists (unlike ALSAKit's), so the
+/// sample-shuffling that every platform needs sits outside `#if os(Windows)`,
+/// while the COM lifetime is left to the link and a human at a desk.
 final class MonoDownmixTests: XCTestCase {
     // MARK: - Downmix
 
@@ -27,9 +20,8 @@ final class MonoDownmixTests: XCTestCase {
         XCTAssertEqual(WASAPI.downmixToMono(interleaved, channels: 2), [0.5, 0, -1])
     }
 
-    /// The reason this averages instead of summing: a stereo microphone whose
-    /// channels carry the same signal must come out at the same level it went
-    /// in, not at twice full scale.
+    /// Averaging, not summing: identical stereo channels must come out at
+    /// the level they went in, not twice full scale.
     func testCorrelatedStereoDoesNotClip() {
         let loud: [Float] = [1, 1, -1, -1, 0.9, 0.9]
         let mono = WASAPI.downmixToMono(loud, channels: 2)
@@ -39,9 +31,8 @@ final class MonoDownmixTests: XCTestCase {
         }
     }
 
-    /// Every channel contributes, unlike the macOS path's explicit channel-0
-    /// pick — a WASAPI capture endpoint reports real microphone channels, not a
-    /// voice-processing loopback reference.
+    /// Every channel contributes, unlike macOS's explicit channel-0 pick —
+    /// WASAPI reports real microphone channels, not a loopback reference.
     func testSixChannelUsesAllChannels() {
         let frame: [Float] = [0.6, 0, 0, 0, 0, 0]
         let mono = WASAPI.downmixToMono(frame, channels: 6)
@@ -49,14 +40,11 @@ final class MonoDownmixTests: XCTestCase {
         XCTAssertEqual(mono[0], 0.1, accuracy: 1e-6)
 
         let quiet = WASAPI.downmixToMono([1, 0, 0, 0, 0, 0], channels: 6)
-        // The documented cost of averaging: one live input on a six-channel
-        // interface reads ~15 dB down. Pinned so the tradeoff cannot change by
-        // accident.
+        // Documented cost of averaging: ~15 dB down. Pinned so it can't change by accident.
         XCTAssertEqual(quiet[0], 1.0 / 6, accuracy: 1e-6)
     }
 
-    /// A slice of a reused scratch buffer does not start at index 0. Indexing it
-    /// as though it did reads the wrong samples — or traps.
+    /// A slice of a reused scratch buffer doesn't start at index 0.
     func testRebasedSliceIsIndexedFromItsOwnStart() {
         let backing: [Float] = [9, 9, 9, 9, 1, 1, 0.5, 0.5]
         let mono = WASAPI.downmixToMono(backing[4...], channels: 2)
@@ -78,8 +66,6 @@ final class MonoDownmixTests: XCTestCase {
         XCTAssertEqual(WASAPI.downmixToMono([0.5], channels: 2), [])
     }
 
-    /// A device claiming zero channels is nonsense, but it must not divide by
-    /// zero on the way to being nonsense.
     func testNonsensicalChannelCountPassesThroughInsteadOfTrapping() {
         XCTAssertEqual(WASAPI.downmixToMono([0.5, 0.25], channels: 0), [0.5, 0.25])
         XCTAssertEqual(WASAPI.downmixToMono([0.5, 0.25], channels: -3), [0.5, 0.25])
@@ -104,8 +90,6 @@ final class MonoDownmixTests: XCTestCase {
 
     // MARK: - Error mapping
 
-    /// The shim's negative codes and the HRESULTs it passes through share one
-    /// return channel, so the split between them is worth pinning.
     func testShimErrorCodesMapToTheirCases() {
         XCTAssertEqual(WASAPI.Error.from(code: -1), .unsupportedFormat)
         XCTAssertEqual(WASAPI.Error.from(code: -2), .invalidArgument)
@@ -131,13 +115,10 @@ final class MonoDownmixTests: XCTestCase {
     func testChunkEmptinessTracksItsSamples() {
         XCTAssertTrue(WASAPI.Chunk(mono: [], discontinuity: false).isEmpty)
         XCTAssertFalse(WASAPI.Chunk(mono: [0], discontinuity: false).isEmpty)
-        // An empty chunk still carries a glitch flag: nothing arrived, but the
-        // gap before the nothing is still real.
+        // An empty chunk still carries a glitch flag.
         XCTAssertTrue(WASAPI.Chunk(mono: [], discontinuity: true).discontinuity)
     }
 
-    /// Off Windows every entry point must fail rather than silently succeed and
-    /// record nothing.
     func testRecorderRefusesToOpenOffWindows() throws {
         #if os(Windows)
         throw XCTSkip("Windows has a real endpoint; opening it is not this test's business")

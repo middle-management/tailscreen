@@ -1,35 +1,26 @@
 import AppKit
 import SwiftUI
 
-/// SwiftUI renderer for the shared annotation canvas. Used by both the
-/// sharer's borderless overlay panel and the viewer's window overlay; the
-/// shape data is pulled from an ``AnnotationCanvasModel`` injected by the
-/// host.
+/// SwiftUI renderer for the shared annotation canvas, used by both the
+/// sharer's borderless overlay panel and the viewer's window overlay.
 ///
-/// Each annotation is its own SwiftUI view composed via `ForEach`, so the
-/// list diffs and only the changed shape re-renders during a drag (the
-/// in-progress stroke). Ephemeral tools (clicks today) live in the same
-/// `annotations` list and animate themselves via `withAnimation` in
-/// `onAppear` (held static under Reduce Motion); the model removes them
-/// from the list after their lifetime, at which point SwiftUI tears their
-/// views down.
+/// Each annotation is its own view via `ForEach`, so only the changed shape
+/// re-renders during a drag. Ephemeral tools (clicks) animate themselves via
+/// `withAnimation` in `onAppear` (static under Reduce Motion); the model
+/// removes them from the list after their lifetime.
 ///
-/// Pointer input arrives via a single zero-distance ``DragGesture``, which
-/// fires for both taps and drags. Keyboard and right-click are handled by
-/// the AppKit host (see ``AnnotationOverlayHostView``) — SwiftUI's gesture
-/// system has no `rightMouseDown` equivalent and `.onKeyPress` doesn't
-/// reliably receive events inside a borderless `NSPanel`.
+/// Pointer input is a single zero-distance ``DragGesture`` (fires for taps
+/// and drags). Keyboard and right-click go through the AppKit host (see
+/// ``AnnotationOverlayHostView``) — SwiftUI has no `rightMouseDown`
+/// equivalent, and `.onKeyPress` doesn't reliably fire in a borderless panel.
 struct AnnotationCanvasView: View {
     @ObservedObject var model: AnnotationCanvasModel
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // Fully transparent fill so the ZStack always occupies the
-                // GeometryReader. Without it, an empty annotations list
-                // would collapse the ZStack to zero size, leaving no hit
-                // area for the DragGesture — first click never lands and
-                // the canvas can never gain its first annotation.
+                // Without this fill, an empty annotations list collapses the
+                // ZStack to zero size — no hit area, first click never lands.
                 Color.clear
                 ForEach(model.annotations) { ann in
                     committedView(ann)
@@ -155,10 +146,8 @@ private struct AnnotationShape: Shape {
             guard let last = pts.last, pts.count >= 2 else { return path }
             path.move(to: first)
             path.addLine(to: last)
-            // Arrowhead: two short segments at ±150° from the shaft direction.
-            // Geometry comes from the portable `AnnotationGeometry` so the
-            // Linux/GTK viewer derives an identical head — both ends render
-            // each other's relayed strokes, and this used to drift.
+            // Shared `AnnotationGeometry` so the Linux/GTK viewer derives an
+            // identical arrowhead for relayed strokes.
             let barbs = AnnotationGeometry.arrowBarbs(
                 from: first, to: last,
                 headLength: AnnotationGeometry.arrowHeadLength(
@@ -205,8 +194,8 @@ private struct ClickMarker: View {
 
     var body: some View {
         let lineWidth = CGFloat(annotation.width)
-        // Radii from the portable `AnnotationGeometry`, shared with the
-        // Linux/GTK viewer so a relayed click marker is the same size on both.
+        // Shared `AnnotationGeometry` so a relayed click marker is the same
+        // size on both ends.
         let outerR = CGFloat(AnnotationGeometry.clickOuterRadius(strokeWidth: annotation.width))
         let innerR = CGFloat(AnnotationGeometry.clickInnerRadius(strokeWidth: annotation.width))
         let color = annotation.color.swiftUI
@@ -248,15 +237,12 @@ private struct EphemeralAnnotationView: View {
     }
 }
 
-/// Two staggered expanding rings + a fading center dot. Each component
-/// animates via `withAnimation` in `onAppear`; the model removes the
-/// annotation from the canvas list after the lifetime elapses, at which
-/// point SwiftUI tears this view down.
+/// Two staggered expanding rings + a fading center dot, each animated via
+/// `withAnimation` in `onAppear`.
 ///
-/// Under Reduce Motion the ripple never scales: the view holds the same
-/// static bullseye the in-progress preview draws (``ClickMarker``), and the
-/// model's lifetime removal makes it appear and disappear on the exact
-/// schedule the animated form has.
+/// Under Reduce Motion the ripple never scales: it falls back to the same
+/// static bullseye as the in-progress preview (``ClickMarker``), on the same
+/// lifetime-driven schedule.
 private struct ClickRippleView: View {
     let annotation: Annotation
 
@@ -268,9 +254,8 @@ private struct ClickRippleView: View {
 
     private static let totalDuration: Double = AnnotationCanvasModel.clickAnimationDuration
 
-    /// AppKit-side Reduce Motion check: this view lives inside the
-    /// borderless overlay panels' hosting views, so read the workspace
-    /// value directly rather than relying on the SwiftUI environment.
+    /// Read the workspace value directly rather than the SwiftUI environment:
+    /// this view lives inside the borderless overlay panels' hosting views.
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }

@@ -3,17 +3,12 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// The sharer's roster decisions — the layer between "who is watching" and the
-/// persistent allow/deny store.
-///
-/// Every case here is about a decision that is silent when wrong: a queued
-/// intent that never applies, one that applies to the wrong machine, a block
-/// that leaves the blocked person watching. None of them errors, and on two of
-/// the three platforms there is no test suite closer to the UI than this one.
+/// persistent allow/deny store. Every case here fails silently when wrong: a
+/// queued intent that never applies, one applied to the wrong machine, a
+/// block that leaves the blocked person watching.
 final class ViewerRosterActionsTests: XCTestCase {
     func testConnectedRowCanAlwaysBeKicked() {
-        // Keyed by "ip:port", which is known the instant the connection exists
-        // — so a sharer reaching for the ✕ in the first second of an unwanted
-        // connection always finds it.
+        // Keyed by "ip:port", known the instant the connection exists.
         XCTAssertTrue(ViewerRosterDecision.connectedActions(stableID: nil).canKick)
         XCTAssertTrue(ViewerRosterDecision.connectedActions(stableID: "nXYZ").canKick)
     }
@@ -24,9 +19,7 @@ final class ViewerRosterActionsTests: XCTestCase {
     }
 
     func testRememberIsOfferedBeforeIdentityResolvesButMarkedDeferred() {
-        // Offered rather than hidden: an affordance that blinks into existence
-        // a moment after someone connects reads as a glitch, and is missing at
-        // exactly the moment a sharer reaches for it.
+        // Offered rather than hidden: an affordance that blinks in later reads as a glitch.
         let unresolved = ViewerRosterDecision.connectedActions(stableID: nil)
         XCTAssertTrue(unresolved.canRemember)
         XCTAssertTrue(unresolved.rememberIsDeferred)
@@ -64,9 +57,8 @@ final class ViewerPendingIntentsTests: XCTestCase {
     }
 
     func testLastDecisionWins() {
-        // A sharer who clicks Deny & Block after Always Allow means the second
-        // one. Queueing both and replaying in arrival order would end on the
-        // first — which is the one they changed their mind about.
+        // Deny & Block after Always Allow means the second decision; replaying in
+        // arrival order would end on the one they changed their mind about.
         var intents = ViewerRosterDecision.PendingIntents()
         intents.queue(id: "a", policy: .allow)
         intents.queue(id: "a", policy: .deny)
@@ -90,8 +82,7 @@ final class ViewerPendingIntentsTests: XCTestCase {
     }
 
     func testQueuedExposesThePendingChoice() {
-        // So a host can show the row as already decided rather than leaving the
-        // button looking unpressed for as long as resolution takes.
+        // So a host can show the row as already decided rather than the button looking unpressed.
         var intents = ViewerRosterDecision.PendingIntents()
         intents.queue(id: "a", policy: .deny)
         XCTAssertEqual(intents.queued(id: "a"), .deny)
@@ -99,11 +90,8 @@ final class ViewerPendingIntentsTests: XCTestCase {
     }
 
     func testPruneForgetsRowsThatLeft() {
-        // The case that makes this more than tidiness: a peer that gets a
-        // Deny & Block and disconnects before its identity resolves would
-        // otherwise have that intent applied to THE NEXT CONNECTION FROM THE
-        // SAME ADDRESS — possibly a different machine behind one NAT, or the
-        // same one the sharer has since decided to allow.
+        // Otherwise a Deny & Block for a peer that disconnects before resolving would
+        // apply to the next connection from the same address — possibly a different machine.
         var intents = ViewerRosterDecision.PendingIntents()
         intents.queue(id: "100.64.0.5:1234", policy: .deny)
         intents.prune(presentIDs: [])
@@ -150,9 +138,7 @@ final class ViewerPolicyExpulsionTests: XCTestCase {
     }
 
     func testUnresolvedIdentityIsNotExpelled() {
-        // Nothing to match against. Expelling on a guess would drop whoever
-        // happened to be connecting at the moment a block was recorded for
-        // someone else entirely.
+        // Nothing to match against; expelling on a guess would drop an unrelated connecting peer.
         let expelled = ViewerRosterDecision.expelledByPolicy(
             policies: ["nA": .deny], connected: [identity("a:1", nil)])
         XCTAssertTrue(expelled.isEmpty)

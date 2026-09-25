@@ -21,18 +21,15 @@ final class ShareRequestInboxTests: XCTestCase {
         inbox.record(
             fromHostname: "robert-mac", sourceAddr: "100.64.0.9:41000",
             connectionID: first, nowNs: 0)
-        // A retry dials a FRESH ephemeral port. If the port participated in
-        // the key this would look like a second peer.
+        // A retry dials a fresh ephemeral port; the port must not be part of the coalescing key.
         inbox.record(
             fromHostname: "robert-mac", sourceAddr: "100.64.0.9:41001",
             connectionID: second, nowNs: 5 * self.second)
 
         XCTAssertEqual(inbox.requests.count, 1)
-        // The row keeps its identity so it does not flicker out of the
-        // sharer's window and back in…
+        // Row keeps its identity (no flicker in the sharer's UI) but takes the new
+        // connection — an answer sent down the old one reaches nobody.
         XCTAssertEqual(inbox.requests[0].id, inbox.requests[0].id)
-        // …but takes the NEW connection: the old one is most likely why the
-        // peer retried, and an answer sent down it reaches nobody.
         XCTAssertEqual(inbox.requests[0].connectionID, second)
         XCTAssertEqual(inbox.requests[0].receivedAtNs, 5 * self.second)
     }
@@ -49,17 +46,14 @@ final class ShareRequestInboxTests: XCTestCase {
 
     func testARenamingPeerStillCoalescesOntoOneRow() {
         var inbox = ShareRequestInbox()
-        // The hostname is chosen by the requester. Keying on it is the bug
-        // this test exists to prevent: one machine could stack sixteen rows
-        // and pin sixteen connections just by varying a string.
+        // Hostname is requester-chosen; keying on it would let one machine stack rows by varying a string.
         for i in 0..<20 {
             inbox.record(
                 fromHostname: "attacker-\(i)", sourceAddr: "100.64.0.9:\(4000 + i)",
                 connectionID: UUID(), nowNs: UInt64(i) * second)
         }
         XCTAssertEqual(inbox.requests.count, 1)
-        // The row shows the LATEST name it claimed — display follows the
-        // freshest request even though identity does not.
+        // Display shows the latest claimed name even though identity does not change.
         XCTAssertEqual(inbox.requests[0].fromHostname, "attacker-19")
     }
 
@@ -86,9 +80,7 @@ final class ShareRequestInboxTests: XCTestCase {
 
     func testMissingAddressFallsBackToTheHostnameKey() {
         var inbox = ShareRequestInbox()
-        // A legacy transport that never reported the peer address. Coalescing
-        // on the claimed hostname is worse than coalescing on the IP, but it
-        // still beats a row per retry.
+        // Legacy transport with no peer address: coalesce on hostname, worse than IP but better than a row per retry.
         inbox.record(fromHostname: "a", sourceAddr: nil, connectionID: nil, nowNs: 0)
         inbox.record(fromHostname: "a", sourceAddr: nil, connectionID: nil, nowNs: second)
         inbox.record(fromHostname: "b", sourceAddr: nil, connectionID: nil, nowNs: second)
@@ -122,9 +114,7 @@ final class ShareRequestInboxTests: XCTestCase {
                 connectionID: nil, nowNs: 0)
         }
         let fresh = UUID()
-        // Otherwise a flood that fills the inbox would freeze everyone in it:
-        // the sharer answers a row whose connection died, and the peer they
-        // meant to help never hears back.
+        // Otherwise a flood filling the inbox would freeze everyone in it on a dead connection.
         XCTAssertTrue(
             inbox.record(
                 fromHostname: "peer-0", sourceAddr: "100.64.1.0:2",
@@ -177,8 +167,7 @@ final class ShareRequestInboxTests: XCTestCase {
         inbox.record(
             fromHostname: "a", sourceAddr: "100.64.0.1:1", connectionID: nil,
             nowNs: 100 * second)
-        // `nowNs - receivedAtNs` on unsigned integers would wrap to an
-        // enormous age and expire everything. Nothing should be dropped.
+        // Unsigned `nowNs - receivedAtNs` would wrap to an enormous age and expire everything.
         XCTAssertFalse(inbox.pruneExpired(nowNs: 10 * second, ttlNs: 120 * second))
         XCTAssertEqual(inbox.requests.count, 1)
     }
@@ -187,8 +176,7 @@ final class ShareRequestInboxTests: XCTestCase {
 
     func testSourceKeyStripsPortsAndIPv6Brackets() {
         XCTAssertEqual(ShareRequestInbox.sourceKey(from: "100.64.0.9:41000"), "100.64.0.9")
-        // Split on the LAST colon, or every IPv6 address would lose most of
-        // itself and two different peers could collapse onto one row.
+        // Split on the last colon, or an IPv6 address loses most of itself and peers collapse onto one row.
         XCTAssertEqual(
             ShareRequestInbox.sourceKey(from: "[fd7a:115c:a1e0::1]:41000"),
             "fd7a:115c:a1e0::1")

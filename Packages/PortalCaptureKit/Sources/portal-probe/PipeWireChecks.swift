@@ -2,19 +2,15 @@ import CPipeWireFakeSource
 import Foundation
 import PortalCaptureKit
 
-// The PipeWire half's gates — the two checks that need a running `pipewire`
+// The PipeWire half's gates — the checks that need a running `pipewire`
 // daemon but no compositor, no consent dialog and no person.
 //
-// Everything else in this package's CI leg is a compile, link or D-Bus check.
-// These two are the first things here that put real pixels through
-// `portal_stream.c`. What they cover, and the three things they still do not,
-// is in Sources/CPipeWireFakeSource/include/pipewirefakesource.h — read that
-// before quoting a green run at anybody.
+// The first things here that put real pixels through `portal_stream.c`. What
+// they cover, and don't, is in
+// Sources/CPipeWireFakeSource/include/pipewirefakesource.h.
 //
-// Neither check SKIPS. A missing daemon is a FAIL, on purpose: the handshake
-// checks' `exit 0` when there is no session bus is the shape that lets a gate
-// pass by not running, and this leg starts its own daemon precisely so it never
-// has that excuse.
+// Neither check SKIPS: a missing daemon is a FAIL, since this leg starts its
+// own daemon and has no excuse not to run.
 
 private let checkWidth = 320
 private let checkHeight = 180

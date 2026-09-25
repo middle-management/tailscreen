@@ -13,15 +13,10 @@ extension WASAPI {
         /// ordinary answer between device periods.
         public let mono: [Float]
 
-        /// The endpoint flagged a glitch immediately before these samples: the
-        /// audio stream has a hole in it that is not represented by any gap in
-        /// `mono`.
-        ///
-        /// It is surfaced rather than swallowed because the consumer carries
-        /// state across buffers — a resampler holds the previous buffer's last
-        /// sample as its left neighbour — and interpolating across a
-        /// discontinuity smears an artefact over both sides of a cut that was
-        /// already going to be audible. Whoever holds that state resets it.
+        /// The endpoint flagged a glitch immediately before these samples —
+        /// a hole not represented by any gap in `mono`. Surfaced rather than
+        /// swallowed since a resampler holding cross-buffer state (the
+        /// previous buffer's last sample) must reset it here.
         public let discontinuity: Bool
 
         public init(mono: [Float], discontinuity: Bool) {
@@ -32,40 +27,27 @@ extension WASAPI {
         public var isEmpty: Bool { mono.isEmpty }
     }
 
-    /// A started capture session on the default microphone endpoint.
+    /// A started capture session on the default microphone endpoint. The
+    /// counterpart of `Player`, inheriting the same thread-affinity rule
+    /// (create and read on the SAME thread — COM apartment state is per-thread).
     ///
-    /// The counterpart of `Player`, and it inherits the same two rules.
+    /// **The format is the device's, not yours.** Channel adaptation happens
+    /// here (mixed to mono); rate adaptation does not — that belongs where
+    /// Linux CI can exercise it, `MonoPCMConverter` in TailscreenKit.
     ///
-    /// **Thread affinity:** create it and read from it on the SAME thread. COM
-    /// apartment state is per-thread and `init` initialises the calling thread's
-    /// apartment.
-    ///
-    /// **The format is the device's, not yours.** `format` reports what the
-    /// endpoint negotiated; the samples come back at that rate. The channel
-    /// adaptation is done here (an N-channel endpoint is mixed to mono, because
-    /// every consumer of a microphone in this app wants exactly one channel and
-    /// no consumer wants to reimplement that); the RATE adaptation is not, for
-    /// the same reason `Player` does not do it — the resampler belongs somewhere
-    /// Linux CI can exercise it, and `MonoPCMConverter` in TailscreenKit is that
-    /// place. Its 48 kHz-mono-in contract is the inverse of what a 44.1 kHz
-    /// microphone produces, so a capture path on such a device needs a
-    /// rate conversion this package deliberately does not smuggle in.
-    ///
-    /// **Reads do not block.** `read()` returns whatever has arrived since the
-    /// last call, which is frequently nothing. The caller owns the polling
-    /// cadence, because it also owns the 20 ms framing that Opus wants.
+    /// **Reads do not block.** `read()` returns whatever arrived since the
+    /// last call, often nothing. The caller owns the polling cadence (and
+    /// the 20ms framing Opus wants).
     public final class Recorder {
         public let format: Format
 
         #if os(Windows)
-        /// `ts_wasapi_capture` is incomplete in the header, so Swift imports
-        /// every pointer to it as `OpaquePointer` — nothing here can reach
-        /// inside it, which is the point.
+        /// `ts_wasapi_capture` is incomplete in the header, so this is
+        /// `OpaquePointer` — nothing here can reach inside it.
         private var handle: OpaquePointer?
-        /// Interleaved device-format scratch, allocated once and reused. Sized
-        /// to the engine buffer the shim reported, which is the largest a single
-        /// capture packet can be — so `TS_WASAPI_ERR_BUFFER_TOO_SMALL` is
-        /// unreachable from here by construction rather than by hoping.
+        /// Interleaved device-format scratch, allocated once and reused,
+        /// sized to the largest a single capture packet can be — so
+        /// `TS_WASAPI_ERR_BUFFER_TOO_SMALL` is unreachable by construction.
         private var scratch: [Float]
         private let capacityFrames: Int
         #endif
@@ -122,39 +104,23 @@ extension WASAPI {
         }
     }
 
-    /// Average interleaved device frames down to one channel.
+    /// Average interleaved device frames down to one channel. Pure
+    /// arithmetic, deliberately outside `#if os(Windows)` so it's testable anywhere.
     ///
-    /// Pure arithmetic, deliberately outside `#if os(Windows)`: it is the only
-    /// part of the capture path that can be tested anywhere, so it is the part
-    /// that carries the decisions.
+    /// **Average, not sum** — summing a stereo mic with identical channels
+    /// clips at 2.0. **Every channel, not just the first** — unlike macOS's
+    /// voice-processing tap (`[mic, ref_L, ref_R]`, where averaging in the
+    /// reference channels would mix the far end back in), WASAPI's shared-mode
+    /// capture has no reference channels: a 2-channel device is a 2-channel
+    /// microphone, and dropping half would throw audio away.
     ///
-    /// **Average, not sum.** Summing a stereo microphone whose two channels
-    /// carry the same signal clips at 2.0, which is how the macOS mic path
-    /// (`MicCapture`) came to pick channel 0 explicitly rather than let
-    /// `AVAudioConverter` sum a 3-channel voice-processing layout to a peak
-    /// of ~6.0. Averaging cannot clip, so this does not need that escape.
+    /// Known cost: an interface reporting 6 channels with one live input
+    /// reads ~15 dB quiet — compensating would mean guessing which channels
+    /// are live, worse than a predictable error.
     ///
-    /// **Every channel, not just the first.** macOS's channel-0 pick is right
-    /// for the layout it faces — a voice-processing tap delivers `[mic, ref_L,
-    /// ref_R]`, where channels 1+ are a loopback reference and averaging them in
-    /// would mix the far end back into the near end. WASAPI shared-mode capture
-    /// hands over the endpoint's own mix format with no such reference channels:
-    /// a 2-channel capture device is a 2-channel microphone, and dropping half
-    /// of it would be silently throwing audio away.
-    ///
-    /// The known cost: an interface that reports 6 channels with a single live
-    /// input reads about 15 dB quiet. Compensating would mean guessing which
-    /// channels are live from their content, and a gain that changes with what
-    /// the room is doing is worse than one that is predictably wrong.
-    ///
-    /// A trailing partial frame is dropped — an interleaved buffer that is not a
-    /// whole number of frames is already malformed, and inventing the missing
-    /// channels would put a fabricated sample into the stream.
+    /// A trailing partial frame is dropped rather than fabricated.
     static func downmixToMono(_ interleaved: ArraySlice<Float>, channels: Int) -> [Float] {
-        // Also the guard for a nonsensical zero or negative channel count, which
-        // would otherwise divide by zero. Passing the samples through matches
-        // `AudioOutputFormat`'s clamp-rather-than-refuse stance on the same
-        // input.
+        // Also guards a nonsensical zero/negative channel count.
         guard channels > 1 else { return Array(interleaved) }
 
         let frames = interleaved.count / channels
@@ -162,8 +128,7 @@ extension WASAPI {
 
         var mono = [Float](repeating: 0, count: frames)
         let scale = 1 / Float(channels)
-        // `interleaved` is frequently a slice of a reused scratch buffer, whose
-        // indices start wherever the slice does — never assume 0.
+        // `interleaved` is often a slice of a reused scratch buffer — never assume index 0.
         var index = interleaved.startIndex
         for frame in 0..<frames {
             var sum: Float = 0

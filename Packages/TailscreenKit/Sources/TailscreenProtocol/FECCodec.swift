@@ -1,30 +1,23 @@
 import Foundation
 
 /// Pure single-parity XOR FEC over groups of RTP packets (loss-recovery
-/// phase 2 — see `plans/fec-xor-recovery.md`). One parity datagram per group
-/// of ≤ `maxGroupSize` media packets lets the receiver reconstruct any *one*
-/// lost packet in the group with zero additional RTT; ≥ 2 losses per group
-/// fall through to the NACK path.
+/// phase 2, `docs/spec.md`). One parity datagram per group of
+/// ≤ `maxGroupSize` media packets recovers any *one* lost packet with zero
+/// extra RTT; ≥ 2 losses per group fall through to NACK.
 ///
-/// **What the parity covers.** Fan-out rewrites only header bytes 2-3 (seq)
-/// and 8-11 (SSRC); byte 0 is constant 0x80. Byte 1 (marker | PT) and bytes
-/// 4-7 (timestamp) are viewer-invariant but NOT group-invariant — the AU's
-/// last packet carries the marker bit — so the parity body is the XOR over
-/// each covered packet of:
+/// **What the parity covers.** Header bytes 0 (const 0x80) and bytes 2-3/8-11
+/// (seq/SSRC) are rewritten per viewer on fan-out, but byte 1 (marker | PT)
+/// and bytes 4-7 (timestamp) are NOT group-invariant (the AU's last packet
+/// carries the marker bit), so the parity body XORs, per covered packet:
 ///
 ///     [len:2 BE][byte1][timestamp bytes 4..7][payload bytes 12...]
 ///
-/// zero-padded to the longest member (`len` = that packet's total length, so
-/// the recovered packet truncates correctly). Recovery XORs the k−1 received
-/// members' same fields against the body and reconstructs the missing packet:
-/// byte 0 = 0x80, seq = the missing sequence number (known from the gap),
-/// SSRC = the stream SSRC (known from any member), byte 1 + timestamp +
-/// payload from the XOR. Computing the body on the seq=0/ssrc=0 broadcast
-/// templates makes it identical for every viewer — only the datagram's
-/// `baseSeq` is rewritten per viewer, the same economics as retransmits.
+/// zero-padded to the longest member. Recovery XORs the k−1 received members'
+/// same fields against the body; seq/SSRC for the rebuilt packet come from
+/// the gap and any member, not from the XOR. Computed on the seq=0/ssrc=0
+/// broadcast templates so the body is identical for every viewer.
 ///
-/// Everything here is pure and deterministic (no I/O, no clock), per the
-/// extract-the-decision rule — `FECCodecTests` pins it on CI.
+/// Pure and deterministic (no I/O, no clock) — `FECCodecTests` pins it.
 public enum FECCodec {
     /// Largest group one parity may cover. Bounded so `count` fits the wire
     /// byte comfortably and double-loss probability per group stays low.
@@ -44,24 +37,20 @@ public enum FECCodec {
     private static let payloadOffsetInBody = 7
 
     /// Partition a batch of `templateCount` packets (one access unit — groups
-    /// must never span batches, see the throttled-viewer seq-contiguity rule)
-    /// into `⌈count/groupSize⌉` **balanced** consecutive runs (sizes differ by
-    /// at most one). Balancing instead of greedy-chunking means a batch one
-    /// past a group boundary (e.g. 11 with N = 10) splits 6+5 rather than
-    /// 10+1: the same parity overhead, but no sub-`minGroupSize` remainder is
-    /// ever left uncovered — crucially the AU's **marker packet** always sits
-    /// inside a covered group. Batches smaller than `minGroupSize` get no
-    /// parity (a single-packet AU is the cheapest possible PLI).
+    /// must never span batches) into `⌈count/groupSize⌉` **balanced**
+    /// consecutive runs (sizes differ by at most one), so a batch one past a
+    /// group boundary (e.g. 11 with N=10) splits 6+5 rather than 10+1 — no
+    /// sub-`minGroupSize` remainder is ever left uncovered, and the AU's
+    /// marker packet always sits inside a covered group. Batches smaller than
+    /// `minGroupSize` get no parity.
     public static func groupRanges(
         templateCount: Int, groupSize: Int, minGroupSize: Int = FECCodec.minGroupSize
     ) -> [Range<Int>] {
         guard groupSize >= minGroupSize, templateCount >= minGroupSize else { return [] }
         let cap = min(groupSize, maxGroupSize)
         var groups = (templateCount + cap - 1) / cap  // ⌈count/cap⌉
-        // Degenerate tiny caps (cap < 2×minGroupSize) can balance below
-        // minGroupSize; shrink the group count until every group is legal.
-        // Sizes then exceed `cap` slightly but stay far under the wire's
-        // `maxGroupSize` (only reachable for cap = 2).
+        // Tiny caps (cap < 2×minGroupSize) can balance below minGroupSize;
+        // shrink until every group is legal (sizes then exceed `cap` slightly).
         while groups > 1 && templateCount / groups < minGroupSize {
             groups -= 1
         }
@@ -78,11 +67,9 @@ public enum FECCodec {
         return out
     }
 
-    /// Compute the XOR parity body over one group of packets (full RTP
-    /// packets — templates or received copies; the covered fields are
-    /// identical either way). Empty result if the group is degenerate
-    /// (fewer than `minGroupSize` members or any member shorter than an
-    /// RTP header).
+    /// Compute the XOR parity body over one group of full RTP packets
+    /// (templates or received copies — covered fields are identical either
+    /// way). Empty result if the group is degenerate.
     public static func parityBody(for packets: ArraySlice<Data>) -> Data {
         guard packets.count >= minGroupSize else { return Data() }
         var maxLen = 0
@@ -97,13 +84,10 @@ public enum FECCodec {
         return body
     }
 
-    /// XOR one packet's covered fields into `body` (in place). Shared by the
-    /// parity compute (XOR of all members) and the recovery solve (XOR of the
-    /// received members against the parity body). Uses raw-buffer access —
-    /// this runs on the broadcast path once per keyframe packet (megabytes
-    /// per keyframe), where per-byte `Data` subscripting is real overhead.
-    /// `withUnsafeBytes` on a `Data` slice exposes the slice's own bytes
-    /// zero-based, so both full `Data`s and re-based slices are safe here.
+    /// XOR one packet's covered fields into `body` (in place). Shared by
+    /// parity compute and recovery solve. Raw-buffer access: this runs on the
+    /// broadcast path once per keyframe packet, where per-byte `Data`
+    /// subscripting is real overhead.
     private static func xorPacket(_ packet: Data, into body: inout Data) {
         let len = UInt16(truncatingIfNeeded: packet.count)
         let payloadLen = packet.count - RTPHeader.size
@@ -127,21 +111,16 @@ public enum FECCodec {
     }
 
     /// Reconstruct the single missing packet of a group from the k−1 received
-    /// `members` and the group's parity `body`. `missingSeq` and `ssrc` come
-    /// from the receiver's own gap tracking / any member's header. Returns
-    /// nil on any inconsistency (member shorter than an RTP header, body too
-    /// short, recovered length out of the body's range, or a recovered length
-    /// below the RTP header size) — malformed parity must never emit a torn
-    /// packet into the depacketizer.
+    /// `members` and the group's parity `body`. Returns nil on any
+    /// inconsistency — malformed parity must never emit a torn packet into
+    /// the depacketizer.
     public static func recover(missingSeq: UInt16, ssrc: UInt32, members: [Data], body: Data) -> Data? {
         guard body.count >= minBodyBytes else { return nil }
         for member in members where member.count < RTPHeader.size {
             return nil
         }
         for member in members where member.count - RTPHeader.size > body.count - payloadOffsetInBody {
-            // A member's payload exceeds the parity's padded region: this
-            // parity can't have covered it — reject rather than mis-solve.
-            return nil
+            return nil  // payload exceeds the parity's padded region
         }
         var solved = body
         for member in members {

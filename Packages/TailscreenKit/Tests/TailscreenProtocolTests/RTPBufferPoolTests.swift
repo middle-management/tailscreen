@@ -79,26 +79,12 @@ final class RTPBufferPoolTests: XCTestCase {
 
     // MARK: - Concurrency
 
-    /// Hammer the pool from several threads at once.
-    ///
-    /// This suite's other cases are single-threaded, and the pool's own doc
-    /// comment argues at length that `acquire` / `handOver` / `recycledCount`
-    /// are safe from any thread — an argument nothing was checking. It exists
-    /// primarily to give the `linux-tsan` job something to *observe* on the
-    /// type: the sanitiser only reports a race it actually sees executed, so a
-    /// lock-guarded type with no concurrent test is invisible to the gate even
-    /// though the gate is green.
-    ///
-    /// That is also why the pool is on `Guarded` rather than
-    /// `Synchronization.Mutex` — under `Mutex` this test would report a
-    /// "Swift access race" inside the lock body on correct code. See
-    /// `Guarded.swift`.
-    ///
-    /// The assertions are the interleaving-independent ones: an acquired
-    /// buffer is always empty (a torn hand-off would show up as a non-zero
-    /// count, since every recycled buffer was written to before hand-over),
-    /// and the pool stays under its soft cap no matter how the batches
-    /// interleave.
+    /// Hammers the pool from several threads: gives `linux-tsan` something to
+    /// observe on this `Guarded`-locked type (an untested lock-guarded type is
+    /// invisible to the sanitizer even with a green gate; see `Guarded.swift`
+    /// for why `Guarded`, not `Synchronization.Mutex`). Assertions are
+    /// interleaving-independent: acquire always returns empty, and the pool
+    /// stays under its soft cap.
     func testConcurrentAcquireAndHandOverHoldsTheContract() {
         let softLimit = 64
         let pool = RTPPacketBufferPool(defaultCapacity: 1200, softLimit: softLimit)

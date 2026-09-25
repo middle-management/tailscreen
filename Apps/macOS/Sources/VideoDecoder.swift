@@ -6,89 +6,60 @@ import TailscreenViewer
 import VideoToolbox
 import os
 
-// The consecutive-decode-failure escalation ladder itself — the
-// `DecodeRecoveryAction` rungs, the 5/30/90/300 thresholds, and the pure
-// `DecodeRecovery.action(consecutiveFailures:alreadyFired:)` decision — lives
-// in the portable `TailscreenViewer` tier (`DecodeRecovery.swift`), shared
-// with the Linux/Windows viewers via `ViewerSession`. This decoder keeps the
-// mac-side application of it: the on-queue counter + latch set, the
-// VideoToolbox session rebuild on `.recreateSession`, and the pass-through
-// callbacks the client drives UI from.
+// The escalation ladder decision (`DecodeRecoveryAction` rungs, thresholds,
+// `DecodeRecovery.action`) lives in the portable `TailscreenViewer` tier,
+// shared via `ViewerSession`. This decoder is the mac-side application: the
+// on-queue counter/latch, the VideoToolbox session rebuild, and the
+// pass-through callbacks the client drives UI from.
 
 final class VideoDecoder: @unchecked Sendable {
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
 
-    /// Fires (once per codec) when VideoToolbox can't build a decompression
-    /// session — almost always an HEVC stream arriving on a Mac without HEVC
-    /// decode support. Without this the viewer sits on a silent black screen;
-    /// the client uses it to surface an error and ask the sharer to fall back
-    /// to H.264. Called on the decoder's serial `queue`.
+    /// Fires once per codec when VideoToolbox can't build a session — almost
+    /// always HEVC on a Mac without HEVC decode. Called on `queue`.
     var onDecodeFailure: ((VideoCodec) -> Void)?
 
-    /// Fires on the decoder's serial `queue` for every per-frame decode
-    /// failure (block-/sample-buffer creation, `DecodeFrame` errors, and bad
-    /// output-callback statuses). The client counts these into the stats
-    /// overlay.
+    /// Called on `queue` for every per-frame decode failure.
     var onFrameDecodeFailed: (() -> Void)?
 
-    /// Fires on the decoder's serial `queue` when the consecutive-failure
-    /// count crosses an escalation threshold — see `DecodeRecoveryAction`.
-    /// `.recreateSession` has already been handled internally by the time
-    /// this fires; the other rungs are the client's job.
+    /// Called on `queue` when the consecutive-failure count crosses an
+    /// escalation threshold. `.recreateSession` is already handled internally
+    /// by the time this fires; other rungs are the client's job.
     var onRecoveryAction: ((DecodeRecoveryAction) -> Void)?
 
-    /// Fires on the decoder's serial `queue` when a frame decodes
-    /// successfully after the ladder had reached `.signalDegraded`, so the
-    /// client can clear the degraded indication.
+    /// Called on `queue` after a successful frame following `.signalDegraded`.
     var onRecovered: (() -> Void)?
 
     private let queue = DispatchQueue(label: "com.tailscreen.decoder")
     private var session: VTDecompressionSession?
     private var formatDescription: CMFormatDescription?
-    /// Codec of the currently-installed parameter sets, so a session-create
-    /// failure can report *which* codec the viewer couldn't decode.
+    /// So a session-create failure can report *which* codec failed.
     private var currentCodec: VideoCodec?
-    /// Latched after we've reported a decode failure for `currentCodec`, so a
-    /// black-screened viewer doesn't fire `onDecodeFailure` once per frame.
-    /// Reset when the installed codec changes (e.g. the sharer falls back).
+    /// Latched so a black-screened viewer doesn't fire `onDecodeFailure` once
+    /// per frame. Reset when the installed codec changes.
     private var didReportDecodeFailure = false
-    /// Consecutive per-frame decode failures. Mutated only on `queue`;
-    /// reset by the first successful frame delivery. Drives the portable
-    /// escalation ladder (`DecodeRecovery`).
+    /// Mutated only on `queue`; drives the portable escalation ladder.
     private var consecutiveFailures = 0
-    /// Rungs that already fired during the current failing episode. Paired
-    /// with `DecodeRecovery.action`'s `>=` thresholds so each rung fires
-    /// once per episode even when the counter skips a value. Mutated only on
-    /// `queue`; cleared with the counter on the first successful frame.
+    /// Paired with `DecodeRecovery.action`'s `>=` thresholds so each rung
+    /// fires once per episode even when the counter skips a value.
     private var firedRecoveryActions: Set<DecodeRecoveryAction> = []
     /// True between `.recreateSession` tearing the session down and the next
-    /// successful rebuild. While set, a `createDecompressionSession` failure
-    /// only logs — `onDecodeFailure` (the codec-unsupported path, which the
-    /// client answers with CODEC_NO and a "lacks hardware decode" alert) is
-    /// reserved for the *initial* session creation; mid-session rebuild
-    /// failures keep counting through the ladder instead. Mutated only on
-    /// `queue`.
+    /// rebuild. While set, a create failure only logs — `onDecodeFailure`
+    /// (the codec-unsupported alert) is reserved for the initial create;
+    /// mid-session rebuild failures keep counting through the ladder instead.
     private var isRebuildingSession = false
-    /// True while a failing episode is live: set by the first counted
-    /// failure, cleared by the success-path reset. The VT output callback
-    /// reads it to skip dispatching a per-frame `recordDecodeSuccessOnQueue`
-    /// hop on the healthy path — at 60 fps that async would otherwise write
-    /// 0 over 0 all day. Locked because the callback reads on VideoToolbox's
-    /// thread while the decoder's serial `queue` writes.
+    /// Skips a per-frame `recordDecodeSuccessOnQueue` hop on the healthy path
+    /// — at 60fps that async would otherwise write 0 over 0 for nothing.
+    /// Locked: read on VideoToolbox's thread, written on `queue`.
     private let episodeActive = OSAllocatedUnfairLock<Bool>(initialState: false)
     private let logger = TSLogger()
 
     // MARK: - Decode-failure escalation ladder
 
-    /// Record one per-frame decode failure and act on any escalation
-    /// threshold it crosses (the pure decision is the portable
-    /// `DecodeRecovery.action`, CI-tested by the package's
-    /// `DecodeRecoveryDecisionTests`). `.recreateSession` is handled here (the
-    /// session is this class's own state); every rung is also forwarded to
-    /// `onRecoveryAction` so the client can request keyframes / update UI.
-    /// `reason` feeds a throttled log line — first failure of the run, then
-    /// every 60th, matching the client's AU-log idiom — so a stalled 60 fps
-    /// stream doesn't emit 60 lines/s. Must run on `queue`.
+    /// `.recreateSession` is handled here (the session is this class's own
+    /// state); every rung also forwards to `onRecoveryAction`. `reason` feeds
+    /// a throttled log line (first, then every 60th) so a stalled stream
+    /// doesn't emit 60 lines/s. Must run on `queue`.
     private func recordDecodeFailureOnQueue(reason: String) {
         consecutiveFailures += 1
         episodeActive.withLock { $0 = true }
@@ -107,9 +78,7 @@ final class VideoDecoder: @unchecked Sendable {
         onRecoveryAction?(action)
     }
 
-    /// Reset the failure run after a successful frame delivery; fires
-    /// `onRecovered` when the run had already fired the degraded rung so the
-    /// client can clear the indication. Must run on `queue`.
+    /// Must run on `queue`.
     private func recordDecodeSuccessOnQueue() {
         let wasDegraded = firedRecoveryActions.contains(.signalDegraded)
         consecutiveFailures = 0
@@ -121,38 +90,26 @@ final class VideoDecoder: @unchecked Sendable {
         }
     }
 
-    /// Tear the wedged decompression session down so the next `decode`
-    /// lazily rebuilds it from the installed `formatDescription`. Reuses
-    /// `shutdown()`'s drain-before-invalidate ordering (see that method's
-    /// comment for the teardown race it prevents) but keeps the format
-    /// description and callbacks — the stream itself is still live. Must
-    /// run on `queue`.
+    /// Reuses `shutdown()`'s drain-before-invalidate ordering but keeps the
+    /// format description and callbacks — the stream is still live. Must run
+    /// on `queue`.
     private func recreateSessionOnQueue() {
         guard let session = session else { return }
         logger.log("VideoDecoder: recreating decompression session after persistent decode failures")
         VTDecompressionSessionWaitForAsynchronousFrames(session)
         VTDecompressionSessionInvalidate(session)
         self.session = nil
-        // The next create is a mid-session rebuild: if it fails, keep
-        // counting through the ladder instead of firing the
-        // codec-unsupported path (see `isRebuildingSession`).
         isRebuildingSession = true
     }
 
-    /// Install codec parameter sets. The server sends these before any
-    /// frames, and re-sends them on every IDR so late joiners can recover
-    /// without guessing. Switching codecs (e.g. server reconnects with a
-    /// different codec) tears down the session and rebuilds.
     func setParameterSets(_ params: CodecParameterSets) {
         queue.async { [weak self] in
             self?.applyParameterSets(params)
         }
     }
 
-    /// Decode one AVCC-formatted access unit (length-prefixed NAL units).
     /// A frame arriving before parameter sets are installed counts as a
-    /// decode failure so the escalation ladder can request the keyframe
-    /// that carries them in-band.
+    /// decode failure so the ladder can request the keyframe that carries them.
     func decode(data: Data, isKeyframe: Bool) {
         queue.async { [weak self] in
             self?.decodeOnQueue(data: data, isKeyframe: isKeyframe)
@@ -176,8 +133,7 @@ final class VideoDecoder: @unchecked Sendable {
             return
         }
 
-        // New codec installed (e.g. sharer fell back HEVC→H.264): clear the
-        // failure latch so a fresh codec gets a fresh chance to be reported.
+        // New codec: clear the latch so it gets a fresh chance to be reported.
         if codec != currentCodec {
             currentCodec = codec
             didReportDecodeFailure = false
@@ -192,9 +148,8 @@ final class VideoDecoder: @unchecked Sendable {
             session = nil
         }
         formatDescription = desc
-        // A fresh format description means the next session create is the
-        // *initial* create for that stream config, not a mid-episode
-        // rebuild — restore the codec-unsupported reporting path.
+        // Fresh format description means the next create is initial, not a
+        // mid-episode rebuild.
         isRebuildingSession = false
     }
 
@@ -267,11 +222,8 @@ final class VideoDecoder: @unchecked Sendable {
     }
 
     private func decodeOnQueue(data: Data, isKeyframe: Bool) {
-        // Both early-outs below MUST count as failures. A silent return
-        // here froze the ladder at the recreate rung: `.recreateSession`
-        // nils the session, and if the rebuild kept failing the counter
-        // pinned at the recreate threshold and the degraded/alert rungs
-        // never fired.
+        // Both early-outs below MUST count as failures, or the ladder freezes
+        // at the recreate rung when the rebuild keeps failing.
         guard let formatDescription = formatDescription else {
             recordDecodeFailureOnQueue(reason: "no format description installed yet")
             return
@@ -362,9 +314,7 @@ final class VideoDecoder: @unchecked Sendable {
             decompressionOutputCallback: { refcon, _, status, _, imageBuffer, _, _ in
                 guard let refcon = refcon else { return }
                 let decoder = Unmanaged<VideoDecoder>.fromOpaque(refcon).takeUnretainedValue()
-                // The callback runs on VideoToolbox's own thread; the
-                // failure/success bookkeeping hops to the decoder's serial
-                // `queue` where `consecutiveFailures` lives.
+                // Runs on VideoToolbox's own thread; bookkeeping hops to `queue`.
                 if status != noErr {
                     decoder.queue.async {
                         decoder.recordDecodeFailureOnQueue(reason: "output callback reported status=\(status)")
@@ -378,9 +328,6 @@ final class VideoDecoder: @unchecked Sendable {
                     return
                 }
                 decoder.onDecodedFrame?(imageBuffer)
-                // Only pay the queue hop while a failing episode is live —
-                // on the healthy path the reset would write 0 over 0 at
-                // 60 fps for nothing.
                 if decoder.episodeActive.withLock({ $0 }) {
                     decoder.queue.async { decoder.recordDecodeSuccessOnQueue() }
                 }
@@ -403,11 +350,9 @@ final class VideoDecoder: @unchecked Sendable {
         } else {
             logger.log("VideoDecoder: failed to create decompression session (\(status))")
             if isRebuildingSession {
-                // Mid-session rebuild failure: the caller's session guard
-                // counts it and the ladder keeps escalating. Firing
-                // `onDecodeFailure` here would trigger the codec-unsupported
-                // path (CODEC_NO + "lacks hardware decode" alert), which is
-                // nonsensical mid-session on a stream that decoded fine.
+                // Mid-session rebuild failure: the ladder keeps escalating.
+                // Firing `onDecodeFailure` would trigger a nonsensical
+                // codec-unsupported alert on a stream that decoded fine.
                 return
             }
             if let codec = currentCodec, !didReportDecodeFailure {
@@ -418,13 +363,9 @@ final class VideoDecoder: @unchecked Sendable {
     }
 
     func shutdown() {
-        // Drain in-flight async decodes BEFORE invalidating. VT's
-        // Invalidate doesn't wait for submitted frames to finish; the
-        // output callback can fire after Invalidate returns, retain a
-        // CVPixelBuffer whose backing is gone, and SIGSEGV the caller
-        // (e.g. the VTVideoDecoderAdapter's onDecodedFrame boxing a dead
-        // pointer when the viewer's window-close button triggers disconnect
-        // mid-decode).
+        // Drain in-flight async decodes BEFORE invalidating. VT's Invalidate
+        // doesn't wait for submitted frames; a late callback could retain a
+        // CVPixelBuffer whose backing is gone and SIGSEGV the caller.
         queue.sync {
             if let session = session {
                 VTDecompressionSessionWaitForAsynchronousFrames(session)

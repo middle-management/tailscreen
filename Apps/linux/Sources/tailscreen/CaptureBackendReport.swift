@@ -4,17 +4,13 @@ import TailscreenProtocol
 /// `tailscreen --capture-backend-report`: print which capture backend this
 /// machine would use, and why.
 ///
-/// A diagnostic first and a CI gate second, and it earns both jobs by covering
-/// the one piece of `CaptureBackendSelection` that its unit tests structurally
-/// cannot: the **wiring**. The pure decision is tested exhaustively, but a
-/// decision fed the wrong environment is just as wrong as a wrong decision, and
-/// nothing else in this app reads `XDG_SESSION_TYPE` — so a regression there
-/// (reading `DISPLAY` again, say) would leave every unit test green while
-/// Wayland users silently went back to sharing an XWayland root.
+/// Also a CI gate: `CaptureBackendSelection`'s decision logic is unit-tested,
+/// but nothing else reads `XDG_SESSION_TYPE` — this covers the wiring, so a
+/// regression there (e.g. reading `DISPLAY` again) can't hide behind green
+/// unit tests while Wayland users silently fall back to an XWayland root.
 ///
-/// The portal probe is deliberately included. It puts nothing on screen, so
-/// this is safe to run unattended, and its result is what makes the report the
-/// truth about this machine rather than a restatement of the environment.
+/// Includes a real portal probe (puts nothing on screen, safe unattended) so
+/// the report reflects this machine, not just the environment.
 enum CaptureBackendReport {
     static let marker = "CAPTURE_BACKEND_REPORT"
 
@@ -57,9 +53,7 @@ enum CaptureBackendReport {
         return display
     }
 
-    /// Machine-readable on purpose — CI greps these, so they are a contract,
-    /// not a log line. A reason string would be unstable; the backend name is
-    /// the assertion.
+    /// Machine-readable on purpose — CI greps these as a contract, not a log.
     private static func describe(_ choice: CaptureBackendSelection.Choice) -> String {
         switch choice {
         case .x11(let display): return "x11(\(display))"

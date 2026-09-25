@@ -17,16 +17,11 @@ final class RemoteControlInputView: NSView {
     /// TCP back-channel.
     var onEvent: ((InputEvent) -> Void)?
 
-    /// Fires when the user presses the release chord (⌃⌥. unless remapped)
-    /// while input capture is live. Every other keystroke is forwarded to the
-    /// sharer; this one is the viewer's exit hatch and must never be — a
-    /// forwarded chord would be replayed on the sharer instead of releasing
-    /// the grant, stranding a keyboard-only user in capture mode.
+    /// The viewer's exit hatch, intercepted rather than forwarded — else a
+    /// keyboard-only user would strand themselves in capture mode.
     var onReleaseChord: (() -> Void)?
 
-    /// The chord `keyDown` intercepts — kept in lockstep with the remappable
-    /// revoke/release hotkey by `AppState` (set at creation, re-pushed from
-    /// `revokeHotkeyChord.didSet`).
+    /// Kept in lockstep with the remappable revoke hotkey by `AppState`.
     var releaseChord: HotkeyChord = .defaultRevokeControl
 
     private var trackingArea: NSTrackingArea?
@@ -41,16 +36,12 @@ final class RemoteControlInputView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
-    // Flipped so top-left origin matches the normalized video space.
-    //
-    // `nonisolated` because AppKit asks for this from its hit-test and
-    // tracking-area machinery on every mouse move over the view, and an
-    // `@objc` member of a `@MainActor` type carries a dynamic executor
-    // precondition that is pure overhead on a getter returning a literal —
-    // the same frame v0.10.0-rc.12 crashed in on the capture outline (see
-    // `CaptureOutlineWindow.OutlineView`, which simply dropped its override).
-    // Returning a constant touches no state, so dropping the isolation is
-    // safe by inspection; the rest of this view stays `@MainActor`.
+    // Flipped so top-left origin matches normalized video space.
+    // `nonisolated`: AppKit asks for this from hit-test/tracking-area
+    // machinery on every mouse move, and the dynamic executor precondition on
+    // an `@objc` member of a `@MainActor` type is pure overhead here (same
+    // crash class as `CaptureOutlineWindow.OutlineView`). Safe by inspection
+    // since this touches no state.
     nonisolated override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -132,10 +123,8 @@ final class RemoteControlInputView: NSView {
         let point = normalized(event)
         let x = Double(point.x)
         let y = Double(point.y)
-        // Each NSEvent carries the modifier state at event time — never a
-        // cached snapshot, which goes stale whenever a modifier is released
-        // while this view is hidden (revoke) or the app inactive (⌘-Tab)
-        // and would then inject a plain click as a modified one.
+        // Never a cached snapshot: it goes stale when a modifier is released
+        // while this view is hidden (revoke) or the app is inactive (⌘-Tab).
         let modifiers = Self.keyModifiers(from: event.modifierFlags)
         if down {
             onEvent?(.mouseDown(x: x, y: y, button: button, modifiers: modifiers))
@@ -161,9 +150,6 @@ final class RemoteControlInputView: NSView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
-        // Release Remote Control (⌃⌥. unless remapped — mirrors the
-        // File-menu item). Intercepted before forwarding; see
-        // `onReleaseChord`.
         if UInt32(event.keyCode) == releaseChord.keyCode,
             HotkeyChord.carbonModifiers(from: event.modifierFlags) == releaseChord.modifiers
         {
@@ -181,10 +167,8 @@ final class RemoteControlInputView: NSView {
         onEvent?(.keyUp(key: usage, modifiers: Self.keyModifiers(from: event.modifierFlags)))
     }
 
-    /// Map AppKit modifier flags to the wire's neutral ``KeyModifiers`` set.
-    /// Internal + `nonisolated` (pure — no main-actor state) so the mapping is
-    /// unit testable off the main actor. `.function` (fn) has no neutral bit —
-    /// see ``KeyModifiers``.
+    /// `nonisolated` (pure) so the mapping is unit testable off the main
+    /// actor. `.function` (fn) has no neutral bit.
     nonisolated static func keyModifiers(from flags: NSEvent.ModifierFlags) -> KeyModifiers {
         var out: KeyModifiers = []
         if flags.contains(.shift) { out.insert(.shift) }

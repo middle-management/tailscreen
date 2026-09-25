@@ -3,13 +3,11 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Pins the reconcile loop between live rows and posted notices — the
-/// sequencing both swift-cross-ui hosts' `SharerNotifications` now delegate to
-/// (`SharerNoticeReconciler`), driven through a fake poster. The *decision*
-/// halves (`noticesToPost`/`noticesToWithdraw`) are `SharerNoticeTests`'; what
-/// is pinned here is the bookkeeping around them: the label remembered for a
+/// Pins `SharerNoticeReconciler`'s bookkeeping around live rows vs. posted
+/// notices, driven through a fake poster: the label remembered for a
 /// departure, the withdraw-then-depart pairing, the answered-from-the-banner
-/// forget, and the reset that keeps teardown silent.
+/// forget, and the reset that keeps teardown silent. The *decision* halves
+/// (`noticesToPost`/`noticesToWithdraw`) are `SharerNoticeTests`'.
 final class SharerNoticeReconcilerTests: XCTestCase {
 
     /// Records what a platform backend would have delivered.
@@ -41,14 +39,13 @@ final class SharerNoticeReconcilerTests: XCTestCase {
         reconciler.applyAsk(kind: .viewerPending, candidates: [waiting], poster: poster)
         XCTAssertEqual(poster.events.count, 1)
 
-        // The row left — admitted from the window, or the peer gave up. A
-        // banner whose Accept button now does nothing must come down.
+        // Row left (admitted or gave up): a banner whose Accept now does nothing must come down.
         reconciler.applyAsk(kind: .viewerPending, candidates: [], poster: poster)
         XCTAssertEqual(
             poster.events.last,
             "withdraw:\(SharerNoticeKind.viewerPending.rawValue):100.64.0.5:1234")
 
-        // Forget-on-leave: the SAME peer genuinely asking again IS news.
+        // Forget-on-leave: the same peer asking again is news.
         reconciler.applyAsk(kind: .viewerPending, candidates: [waiting], poster: poster)
         XCTAssertEqual(
             poster.events.last,
@@ -57,8 +54,7 @@ final class SharerNoticeReconcilerTests: XCTestCase {
 
     @MainActor
     func testAskKindsKeepSeparateBooks() async throws {
-        // One identity can legitimately be both waiting to watch and asking
-        // for control; announcing one must not swallow the other.
+        // One identity can be both waiting to watch and asking for control; announcing one must not swallow the other.
         var reconciler = SharerNoticeReconciler()
         let poster = FakePoster()
         let identity = "100.64.0.5:1234"
@@ -80,8 +76,7 @@ final class SharerNoticeReconcilerTests: XCTestCase {
         let asker = NoticeCandidate(identity: "req-1", label: "studio-imac")
 
         reconciler.applyAsk(kind: .requestToShare, candidates: [asker], poster: poster)
-        // The press came back through app activation (the Windows path) —
-        // outside any reconcile pass — and the host withdrew the toast itself.
+        // The press came back via app activation (Windows), outside any reconcile pass.
         reconciler.forget(kind: .requestToShare, identity: "req-1")
 
         reconciler.applyAsk(kind: .requestToShare, candidates: [asker], poster: poster)
@@ -104,9 +99,8 @@ final class SharerNoticeReconcilerTests: XCTestCase {
             ["post:\(SharerNoticeKind.viewerJoined.rawValue):100.64.0.7:9000:living-room-tv"])
 
         reconciler.applyViewers([], poster: poster)
-        // The arrival banner goes; a departure banner replaces it — with the
-        // label remembered from the arrival, because the peer is gone from
-        // every live list by the time this fires.
+        // Departure banner replaces the arrival, carrying its remembered label
+        // (the peer is gone from every live list by the time this fires).
         XCTAssertEqual(
             Array(poster.events.dropFirst()),
             [
@@ -120,8 +114,7 @@ final class SharerNoticeReconcilerTests: XCTestCase {
         var reconciler = SharerNoticeReconciler()
         let poster = FakePoster()
 
-        // Never announced (e.g. the notifier came up mid-share on a fresh
-        // reconciler): an empty roster has nobody to say goodbye about.
+        // Never announced (notifier came up mid-share): nobody to say goodbye about.
         reconciler.applyViewers([], poster: poster)
         XCTAssertEqual(poster.events, [])
     }
@@ -137,9 +130,8 @@ final class SharerNoticeReconcilerTests: XCTestCase {
             ], poster: poster)
         let before = poster.events.count
 
-        // Stopping a share expels every viewer at once. The host clears the
-        // books BEFORE the empty rosters reconcile, so nobody gets a "stopped
-        // watching" banner at the exact moment the sharer decided to stop.
+        // The host must clear the books before the empty rosters reconcile, or a "stopped
+        // watching" banner fires at the exact moment the sharer stops.
         reconciler.reset()
         reconciler.applyViewers([], poster: poster)
         reconciler.applyAsk(kind: .viewerPending, candidates: [], poster: poster)

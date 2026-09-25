@@ -4,21 +4,14 @@ import WGCCaptureKit
 // Shows the capture picker, captures the chosen target for a moment, and
 // reports what it saw.
 //
-// Two jobs. The first is to make the LINKER run over the WinRT shim — a SwiftPM
-// library target is compiled but never linked, which is how WASAPIKit's GUID
-// mistake passed its own build step and failed eleven minutes later in the app.
-// This shim has more unresolved symbols than any other here (four import
-// libraries plus every activation factory), so the check is worth more.
+// First job: make the linker run over the WinRT shim (a library target is
+// compiled but never linked otherwise). Second: genuinely useful to run — it
+// prints the target's name, size and a green-channel spread over a sparse
+// grid, so "capture works" is checkable without standing up a whole share
+// (a non-zero spread rules out a flat rectangle, unlike a frame count alone).
 //
-// The second is that it is genuinely useful to run: it prints the picked
-// target's name, its size and a green-channel spread over a sparse grid, so
-// "capture works" can be checked without standing up a whole share. A real
-// desktop is never uniform, so a non-zero spread is the same evidence
-// `scripts/e2e-linux-sharer.sh` asserts on the Linux side — a frame COUNT alone
-// would happily accept a flat rectangle.
-//
-// It passes a null owner window, which the picker tolerates for a console
-// program. The app passes its real HWND.
+// Passes a null owner window, which the picker tolerates for a console
+// program; the app passes its real HWND.
 
 print("wgc-probe: supported = \(WGC.isSupported)")
 guard WGC.isSupported else {
@@ -37,8 +30,7 @@ do {
     var captured = 0
     var timeouts = 0
     // Ten attempts, not ten frames: WGC yields a frame only when the target
-    // changes, so a still window legitimately times out. Move something if this
-    // reports nothing.
+    // changes, so a still window legitimately times out.
     for attempt in 1...10 {
         let summary = try session.withFrame(timeoutMilliseconds: 250) { frame -> String in
             var minimum = UInt8.max

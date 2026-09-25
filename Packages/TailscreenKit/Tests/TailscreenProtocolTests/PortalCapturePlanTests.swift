@@ -2,23 +2,18 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// `PortalCapturePlan` — the decisions the ScreenCast-portal capture backend
-/// makes, which is every decision in it that can be *wrong* rather than merely
-/// unexercised.
+/// Pins `PortalCapturePlan`'s decisions for the ScreenCast-portal capture backend.
 ///
-/// This suite carries more weight than its size suggests. The portal has no
-/// headless path and cannot ever have one, so unlike X11 capture (whose CI leg
-/// grabs a real Xvfb root) nothing downstream of these functions is gated
-/// anywhere. If a branch here is wrong, the first person to find out is a
-/// person sharing their screen.
+/// The portal has no headless path, so unlike X11 capture (Xvfb in CI) nothing
+/// downstream of these functions is gated anywhere else — a wrong branch here
+/// is first found by a person sharing their screen.
 final class PortalCapturePlanTests: XCTestCase {
 
     // MARK: Stream conditions
 
-    /// The edge worth the whole file. Someone pressing "stop sharing" in their
-    /// compositor must reach `onUserStopped`, because `onUnexpectedExit` makes
-    /// the server respawn the backend — and respawning THIS backend means a
-    /// fresh consent dialog in the face of somebody who just said stop.
+    /// "Stop sharing" in the compositor must reach `onUserStopped`, not
+    /// `onUnexpectedExit` — the latter respawns the backend, forcing a fresh
+    /// consent dialog on someone who just said stop.
     func testTheProducerGoingAwayIsAUserStopAndNotAFailure() {
         XCTAssertEqual(PortalCapturePlan.action(for: .ended("node removed")), .userStopped)
     }
@@ -31,10 +26,10 @@ final class PortalCapturePlanTests: XCTestCase {
         XCTAssertTrue(reason.contains("no buffers"), "the detail must survive: \(reason)")
     }
 
-    /// The reason string is not free text: `classifyHelperExit` reads markers
-    /// out of it. `source-gone:` and `permanent:` both suppress the respawn,
-    /// and a respawn is exactly what should happen here — the host keeps the
-    /// negotiated session, so rebuilding the stream costs no second dialog.
+    /// The reason string isn't free text: `classifyHelperExit` reads markers
+    /// out of it (`source-gone:`, `permanent:` suppress respawn). This case
+    /// should respawn — the host keeps the negotiated session, so rebuilding
+    /// costs no second dialog.
     func testAStreamFailureStaysRetryableRatherThanSuppressingTheRespawn() {
         guard case .unexpectedExit(let reason) = PortalCapturePlan.action(for: .failed("pipe broke"))
         else {
@@ -63,9 +58,8 @@ final class PortalCapturePlanTests: XCTestCase {
         XCTAssertEqual(size?.height, 1080)
     }
 
-    /// A 1-pixel-tall window rounds to zero, and a zero-height encoder is not a
-    /// smaller share — it is an `avcodec_open2` failure or a divide by zero
-    /// somewhere in the conversion.
+    /// A zero-height encoder isn't a smaller share, it's an `avcodec_open2`
+    /// failure or a divide-by-zero in the conversion.
     func testADimensionThatRoundsToZeroIsRejected() {
         XCTAssertNil(PortalCapturePlan.encodableSize(width: 1920, height: 1))
         XCTAssertNil(PortalCapturePlan.encodableSize(width: 0, height: 1080))
@@ -81,10 +75,9 @@ final class PortalCapturePlanTests: XCTestCase {
         XCTAssertEqual(action, .encode)
     }
 
-    /// An odd-sized frame against an even-rounded encoder is the ORDINARY
-    /// case, not a mismatch: the encoder was opened at the rounded size in the
-    /// first place. Treating it as a resize would rebuild the encoder on every
-    /// single frame of a share whose window happens to be an odd width.
+    /// The ordinary case, not a mismatch: the encoder was opened at the
+    /// rounded size. Treating it as a resize would rebuild on every frame of
+    /// an odd-width share.
     func testAnOddFrameMatchesTheEvenEncoderItWasRoundedTo() {
         let action = PortalCapturePlan.frameAction(
             frame: (1919, 1081), encoder: (1918, 1080),
@@ -105,9 +98,9 @@ final class PortalCapturePlanTests: XCTestCase {
         XCTAssertEqual(action, .rebuildEncoder(width: 1280, height: 720))
     }
 
-    /// Dragging a window by its corner renegotiates the format continuously.
-    /// Rebuilding per frame would put the whole share inside `avcodec_open2`
-    /// for as long as the drag lasts.
+    /// Dragging a window's corner renegotiates the format continuously;
+    /// rebuilding per frame would stall the share inside `avcodec_open2`
+    /// for the whole drag.
     func testARapidlyResizingWindowDoesNotRebuildOnEveryFrame() {
         let action = PortalCapturePlan.frameAction(
             frame: (1281, 721), encoder: (1920, 1080),
@@ -118,9 +111,8 @@ final class PortalCapturePlanTests: XCTestCase {
         }
     }
 
-    /// The other half of the debounce, and the one that would strand a share:
-    /// once the interval has elapsed the rebuild must actually happen, or a
-    /// user who resized their window once is left looking at a frozen picture.
+    /// Once the interval elapses the rebuild must actually happen, or a user
+    /// who resized once is left with a frozen picture.
     func testTheRebuildHappensOnceTheDebounceElapses() {
         let action = PortalCapturePlan.frameAction(
             frame: (1280, 720), encoder: (1920, 1080),
@@ -129,12 +121,10 @@ final class PortalCapturePlanTests: XCTestCase {
         XCTAssertEqual(action, .rebuildEncoder(width: 1280, height: 720))
     }
 
-    /// The debounce is measured from the last REBUILD, never from the last
-    /// mismatch. Timing it from the mismatch restarts the clock on every
-    /// dropped frame, so a window resized continuously for longer than the
-    /// interval would never rebuild at all — the share stays frozen after the
-    /// user lets go, which is the exact failure the debounce exists to avoid
-    /// being worth having.
+    /// The debounce measures from the last rebuild, never the last mismatch —
+    /// timing it from the mismatch would restart the clock on every dropped
+    /// frame, so a continuous resize longer than the interval would never
+    /// rebuild at all.
     func testASustainedResizeStillRebuildsRatherThanStarvingForever() {
         var lastRebuild: UInt64 = 0
         var rebuilds = 0
@@ -161,8 +151,8 @@ final class PortalCapturePlanTests: XCTestCase {
         }
     }
 
-    /// A degenerate frame must not be allowed to trigger a rebuild either —
-    /// that would replace a working encoder with one that cannot open.
+    /// A degenerate frame must not trigger a rebuild either — that would
+    /// replace a working encoder with one that can't open.
     func testAnUnusableGeometryDoesNotRebuildTheEncoder() {
         let action = PortalCapturePlan.frameAction(
             frame: (1920, 1), encoder: nil, lastRebuildNs: nil, nowNs: 0)

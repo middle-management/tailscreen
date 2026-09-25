@@ -2,20 +2,15 @@ import AppKit
 import Foundation
 
 /// Single entry point for both Tailscreen modes:
-///   - Main: the SwiftUI app — docked main window + menubar sharer
-///     tool (default).
-///   - Capture helper: a headless child process that owns the
-///     `SCStream` + `VideoEncoder` pipeline and feeds encoded access
-///     units back to the main process over stdout. Selected by
-///     `--capture-helper`.
+///   - Main: the SwiftUI app — docked main window + menubar sharer tool.
+///   - Capture helper (`--capture-helper`): a headless child owning the
+///     `SCStream`+`VideoEncoder` pipeline, feeding AUs back over stdout.
 ///
-/// The helper mode is what makes Stop Sharing reliably clear macOS's
-/// screen-recording badge: the helper is a child process, and SIGTERM
-/// → process death → replayd definitively releases the SCStream slot
-/// every time, even when Apple's `stopCapture` completion handler
-/// would have leaked. Each share spawns a fresh helper, so no
-/// per-process state (replayd cool-downs, orphaned SCStreams) leaks
-/// between sessions.
+/// The helper is what makes Stop Sharing reliably clear macOS's
+/// screen-recording badge: SIGTERM → process death → replayd releases the
+/// SCStream slot every time, even when `stopCapture`'s completion handler
+/// would have leaked. A fresh helper per share means no state leaks between
+/// sessions.
 @main
 enum TailscreenEntry {
     @MainActor
@@ -25,34 +20,22 @@ enum TailscreenEntry {
             CaptureHelperMain.run()
         }
         if CommandLine.arguments.contains("--picker-helper") {
-            // Short-lived UI subprocess that presents the macOS
-            // native `SCContentSharingPicker`. Exits the moment the
-            // user picks (or cancels) so the picker's XPC state
-            // never lives in the long-running main process. -> Never.
+            // Presents the native `SCContentSharingPicker` and exits, so its
+            // XPC state never lives in the long-running main process. -> Never.
             PickerHelperMain.run()
         }
         installMainProcessSignalHandlers()
-        // Before the observers and the scene, so the session record opens with
-        // the build stamp rather than with whatever happened to be recorded
-        // first. Placed after the two helper routes above on purpose: the
-        // capture and picker helpers are short-lived subprocesses that never
-        // return, and a helper writing its own session record would produce a
-        // second bundle nobody asked for.
+        // After the two helper routes (which never return), so a helper
+        // never opens a second session record nobody asked for.
         AppDiagnostics.start()
         installLaunchNotificationObservers()
         TailscreenApp.main()
     }
 
     /// Launch-time AppKit setup that has to run AFTER SwiftUI's own scene
-    /// bring-up. The menu bar needs nothing here anymore — it is declared
-    /// through SwiftUI `Commands` (see `AppCommands`), so the scene
-    /// machinery re-asserting the menu re-asserts *ours*; the hand-built
-    /// `NSMenu` this used to install and defend on every activation is
-    /// gone with the menubar-only era it came from.
-    /// `@NSApplicationDelegateAdaptor` would have been tidier, but it
-    /// needs `@main` to be on the `App` type itself — and ours is on
-    /// `TailscreenEntry` so we can route to the picker / capture
-    /// helpers first.
+    /// bring-up. `@NSApplicationDelegateAdaptor` would be tidier, but it
+    /// needs `@main` on the `App` type itself, and ours is on
+    /// `TailscreenEntry` so it can route to the picker/capture helpers first.
     @MainActor
     private static func installLaunchNotificationObservers() {
         let nc = NotificationCenter.default
@@ -61,19 +44,15 @@ enum TailscreenEntry {
             object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated {
-                // Tailscreen is a regular docked app (main window + Dock
-                // icon + ⌘Tab). Assert `.regular` once, after SwiftUI's
-                // own launch setup, so a MenuBarExtra-bearing app can't
-                // drift to the `.accessory` default on any launch path.
+                // Assert `.regular` once, after SwiftUI's own launch setup,
+                // so a MenuBarExtra-bearing app can't drift to `.accessory`.
                 NSApp.setActivationPolicy(.regular)
-                // Must be set before anything posts, and Apple's guidance is
-                // "before the app finishes launching". Without it every
-                // notification posted while Tailscreen is frontmost is
-                // silently suppressed by the system.
+                // Must be set before anything posts (Apple's guidance:
+                // "before the app finishes launching"), or notifications
+                // posted while frontmost are silently suppressed.
                 TailscreenNotificationDelegate.install()
-                // A UI-preview launch is screenshotted from CI, where nobody
-                // clicks the Dock icon: activate so the capture shows
-                // Tailscreen's menu bar and a focused window, not Finder's.
+                // CI screenshots a UI-preview launch where nobody clicks the
+                // Dock icon; activate so the capture shows our window.
                 if AppState.isUIPreview {
                     NSApp.activate(ignoringOtherApps: true)
                 }
@@ -81,37 +60,26 @@ enum TailscreenEntry {
         }
     }
 
-    /// Trap SIGTERM (and SIGINT for direct-from-terminal launches)
-    /// so that `test-local.sh` killing our pgid still gives the
-    /// capture-helper child a chance to finish `SCStream.stopCapture`
-    /// before we vanish. Without this the green recording badge in
-    /// macOS Control Center hangs around after the test script exits
-    /// because the helper gets SIGKILL'd mid-stop and replayd never
-    /// sees the cleanup.
+    /// Trap SIGTERM/SIGINT so `test-local.sh` killing our pgid still gives
+    /// the capture-helper a chance to finish `SCStream.stopCapture` — else
+    /// it's SIGKILL'd mid-stop and the recording badge hangs around.
     private static func installMainProcessSignalHandlers() {
-        // Standard pattern: ignore the default action (`SIG_IGN`) so
-        // dispatch's signal source can take over without the kernel
-        // also killing us synchronously.
+        // Ignore the default action so dispatch's signal source can take
+        // over without the kernel also killing us synchronously.
         let signals: [Int32] = [SIGTERM, SIGINT]
         for sig in signals {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             src.setEventHandler {
-                // Handler runs on the main queue (per the source's
-                // queue argument above), so we're already on the
-                // main thread — `assumeIsolated` lets us reach the
-                // MainActor-isolated `NSApplication.shared.terminate`
-                // without a Task hop. Swift 6 strict concurrency
-                // requires the explicit assertion.
+                // Runs on the main queue, so `assumeIsolated` reaches
+                // MainActor-isolated `terminate` without a Task hop.
                 MainActor.assumeIsolated {
                     for src in Self.signalSources { src.cancel() }
                     Self.signalSources.removeAll()
                     NotificationCenter.default.post(
                         name: .tailscreenWillTerminateBySignal, object: nil)
-                    // Hand control to AppKit so the SwiftUI App can
-                    // run its normal shutdown path (which tears the
-                    // helper child down via Process.terminate before
-                    // returning).
+                    // Hand off to AppKit's normal shutdown path, which tears
+                    // the helper down via Process.terminate.
                     NSApplication.shared.terminate(nil)
                 }
             }
@@ -124,10 +92,8 @@ enum TailscreenEntry {
 }
 
 extension Notification.Name {
-    /// Posted from the main process's SIGTERM/SIGINT trap before we
-    /// hand off to `NSApplication.terminate`. AppState observes it
-    /// to fire a synchronous helper-process teardown so the helper
-    /// gets a clean `Process.terminate` (= SIGTERM) before the main
-    /// process exits.
+    /// Posted before handing off to `NSApplication.terminate`. AppState
+    /// observes it to synchronously tear the helper down (clean
+    /// Process.terminate) before the main process exits.
     static let tailscreenWillTerminateBySignal = Notification.Name("tailscreen.willTerminateBySignal")
 }

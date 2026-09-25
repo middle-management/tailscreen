@@ -5,59 +5,40 @@ import TailscaleKit
 
 /// Process-wide hotkey via Carbon `RegisterEventHotKey`. SwiftUI's
 /// `.keyboardShortcut` only fires while the app's window is key, and
-/// MenuBarExtra apps spend most of their time without a key window.
-/// Carbon hotkeys are the supported way to register a system-wide
-/// shortcut from a sandbox-friendly menubar app — no Accessibility
-/// permission required.
+/// MenuBarExtra apps spend most of their time without one; Carbon hotkeys are
+/// the supported sandbox-friendly system-wide alternative (no Accessibility
+/// permission needed).
 ///
-/// Not `@MainActor` so that `deinit` can clean up the Carbon handles
-/// without tripping Swift 6's non-Sendable deinit access check —
-/// Carbon's event handlers fire on the main thread already, and the
-/// action callback hops to `@MainActor` explicitly.
+/// Not `@MainActor`, so `deinit` can clean up the Carbon handles without
+/// tripping Swift 6's non-Sendable deinit check — Carbon's handlers already
+/// fire on the main thread, and the action callback hops to `@MainActor` explicitly.
 final class GlobalHotkey: @unchecked Sendable {
     private let action: @MainActor () -> Void
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
-    /// This hotkey's registered id. The Carbon event handler compares the
-    /// fired event's `EventHotKeyID.id` against this and only runs `action`
-    /// on a match — every `GlobalHotkey` installs its own handler on the
-    /// shared application event target, and Carbon dispatches a hotkey-pressed
-    /// event to each installed handler most-recent-first, stopping at the
-    /// first `noErr`. Without this filter the last-registered handler would
-    /// swallow *every* hotkey (returning `noErr` unconditionally) and starve
-    /// the others — e.g. the revoke hotkey killing the mic toggle.
+    /// Carbon dispatches a hotkey-pressed event to every installed handler
+    /// most-recent-first, stopping at the first `noErr` — without filtering
+    /// on this id, the last-registered handler swallows every hotkey.
     private let hotKeyIDValue: UInt32
     /// Signature shared by all Tailscreen hotkeys ('TSNH').
     static let signature = OSType(0x54534E48)
 
-    /// Whether the system actually gave us this combo.
-    ///
-    /// `RegisterEventHotKey` refuses a chord another app already holds, and
-    /// the refusal is a return code — the object constructs fine either way
-    /// and the key silently does nothing. Callers that *advertise* a shortcut
-    /// (the menu key equivalent, the cheat sheet, a future Settings pane)
-    /// should consult this so the app can admit the shortcut is unavailable
-    /// instead of printing a chord that will never fire.
+    /// `RegisterEventHotKey` refuses a chord another app already holds via a
+    /// silent return code — the object still constructs, the key just never
+    /// fires. Callers that advertise a shortcut should check this.
     var isRegistered: Bool { hotKeyRef != nil }
 
-    /// Pure dispatch predicate: should a handler registered for
-    /// `registeredSignature`/`registeredID` run for a fired event carrying
-    /// `eventSignature`/`eventID`? Extracted so the id-filtering is unit
-    /// testable without pressing real keys.
+    /// Pure dispatch predicate, extracted so id-filtering is unit testable
+    /// without pressing real keys.
     static func handlerShouldFire(
         eventSignature: OSType, eventID: UInt32, registeredSignature: OSType, registeredID: UInt32
     ) -> Bool {
         eventSignature == registeredSignature && eventID == registeredID
     }
 
-    /// `keyCode` is a Carbon virtual key (e.g. `kVK_ANSI_M = 46`).
-    /// `modifierFlags` is a Carbon mask (`controlKey`, `optionKey`,
-    /// `cmdKey`, `shiftKey` from `Carbon.HIToolbox.Events`). `id`
-    /// distinguishes concurrently-registered hotkeys — `RegisterEventHotKey`
-    /// needs a unique `(signature, id)` per registration, so each live
-    /// `GlobalHotkey` instance must pass a distinct value (the mic toggle
-    /// uses 1, the remote-control panic-revoke uses 2). The installed handler
-    /// filters on this id so one hotkey's handler never swallows another's.
+    /// `id` distinguishes concurrently-registered hotkeys — `RegisterEventHotKey`
+    /// needs a unique `(signature, id)` per registration (mic toggle uses 1,
+    /// panic-revoke uses 2).
     init(keyCode: UInt32, modifiers: UInt32, id: UInt32 = 1, action: @escaping @MainActor () -> Void) {
         self.action = action
         self.hotKeyIDValue = id
@@ -69,17 +50,11 @@ final class GlobalHotkey: @unchecked Sendable {
         if let handlerRef { RemoveEventHandler(handlerRef) }
     }
 
-    /// Hotkey id used by `probeAvailability` — well clear of the live
-    /// registrations (mic toggle 1, panic revoke 2) so a probe can never
-    /// collide with a real `(signature, id)` pair.
+    /// Clear of live registrations (mic toggle 1, panic revoke 2).
     static let probeHotkeyID: UInt32 = 0xFFFF
 
-    /// One-shot availability probe: transiently register the chord and
-    /// report whether the system granted it. The probe instance deallocates
-    /// on return, and its `deinit` unregisters — so a granted chord is held
-    /// for microseconds, never claimed. Used by Settings to warn about a
-    /// recorded chord another app owns *before* the moment it matters (the
-    /// panic-revoke hotkey only truly registers while a grant is live).
+    /// Transiently registers the chord and reports whether the system granted
+    /// it; the probe's `deinit` unregisters immediately, so nothing is claimed.
     static func probeAvailability(keyCode: UInt32, modifiers: UInt32) -> Bool {
         let probe = GlobalHotkey(keyCode: keyCode, modifiers: modifiers, id: probeHotkeyID) {}
         return probe.isRegistered
@@ -97,13 +72,9 @@ final class GlobalHotkey: @unchecked Sendable {
             &ref
         )
         guard regStatus == noErr, let ref else {
-            // `eventHotKeyExistsErr` (-9878) is the one that actually happens:
-            // another app already owns this combo system-wide, first
-            // registration wins, and ours is simply refused. The user then
-            // presses the key forever and nothing happens — which is why
-            // `isRegistered` is exposed rather than only logged. A shortcut
-            // the app advertises but did not get is worse than one it never
-            // claimed, because the user has no reason to doubt it.
+            // `eventHotKeyExistsErr` (-9878): another app already owns this
+            // combo, first registration wins. Hence `isRegistered` is exposed,
+            // not just logged.
             TSLogger().log(
                 "GlobalHotkey: RegisterEventHotKey failed (OSStatus=\(regStatus))"
                     + " — the combo is probably owned by another app")
@@ -111,12 +82,8 @@ final class GlobalHotkey: @unchecked Sendable {
         }
         self.hotKeyRef = ref
 
-        // Each instance installs its own handler bound to its own `self`.
-        // Carbon dispatches a hotkey-pressed event to every installed handler
-        // (most-recent-first, stopping at the first `noErr`), so the handler
-        // MUST filter on the fired event's `EventHotKeyID` and return
-        // `eventNotHandledErr` on a mismatch — otherwise it would swallow
-        // other hotkeys' events (e.g. the revoke handler eating ⌃⌥M).
+        // Must filter on `EventHotKeyID` and return `eventNotHandledErr` on a
+        // mismatch, or this handler swallows other hotkeys' events.
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         var spec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -139,8 +106,6 @@ final class GlobalHotkey: @unchecked Sendable {
                 )
                 guard status == noErr else { return status }
                 let me = Unmanaged<GlobalHotkey>.fromOpaque(userData).takeUnretainedValue()
-                // Only handle the hotkey this instance registered; let Carbon
-                // fall through to the next handler otherwise.
                 guard
                     GlobalHotkey.handlerShouldFire(
                         eventSignature: id.signature, eventID: id.id,
@@ -161,59 +126,44 @@ final class GlobalHotkey: @unchecked Sendable {
 }
 
 extension UInt32 {
-    /// ⌃⌥ — Ctrl+Option, the default Tailscreen mic-toggle modifiers.
-    /// Avoids ⌘ collisions with system-wide bindings (Cmd+M minimizes
+    /// ⌃⌥, avoiding ⌘ collisions with system-wide bindings (Cmd+M minimizes
     /// the front window).
     static let controlOptionMask = UInt32(controlKey | optionKey)
 }
 
 // MARK: - User-configurable chord
 
-/// A user-configurable global-hotkey chord: Carbon virtual keycode plus
-/// Carbon modifier mask — exactly the pair `RegisterEventHotKey` (and so
-/// `GlobalHotkey.init`) consumes, which is why it is stored raw rather
-/// than re-derived from a display string.
+/// Carbon virtual keycode + modifier mask, stored raw since that's exactly
+/// what `RegisterEventHotKey` consumes.
 ///
-/// Display goes the other way, through the tables the repo already audits
-/// instead of a fourth hand-written keycode list: keycode → HID usage via
-/// `MacKeyCodeMapping` (the remote-control wire table, pinned by
-/// `MacKeyCodeMappingTests`), HID usage → `ShortcutKey` by inverting
-/// `ShortcutKey.hidUsage` (the cross-platform hotkey vocabulary), then
-/// `ShortcutChord.display(.appleSymbols)` for the "⌃⌥M" spelling the menu
-/// bar and cheat sheet use. A key outside that vocabulary (F-keys, arrows,
-/// keypad) yields `nil` everywhere — the UI hides the chord rather than
-/// printing one it can't spell, and the recorder refuses to store one.
+/// Display goes the other way through audited tables rather than a fourth
+/// hand-written keycode list: keycode -> HID usage (`MacKeyCodeMapping`) ->
+/// `ShortcutKey` (inverting `ShortcutKey.hidUsage`) -> `ShortcutChord.display(.appleSymbols)`.
+/// A key outside that vocabulary (F-keys, arrows, keypad) yields `nil`
+/// everywhere; the UI hides the chord and the recorder refuses to store one.
 struct HotkeyChord: Codable, Equatable, Sendable {
-    /// Carbon virtual keycode (`kVK_*`) — the same space `NSEvent.keyCode`
-    /// reports, widened to the `UInt32` `RegisterEventHotKey` takes.
+    /// Same space as `NSEvent.keyCode`, widened to `UInt32`.
     var keyCode: UInt32
-    /// Carbon modifier mask (`controlKey` / `optionKey` / `shiftKey` /
-    /// `cmdKey` from `Carbon.HIToolbox.Events`).
     var modifiers: UInt32
 
-    /// ⌃⌥M — the shipped mic-toggle default (see `controlOptionMask`).
     static let defaultMicToggle = HotkeyChord(
         keyCode: UInt32(kVK_ANSI_M), modifiers: .controlOptionMask)
-    /// ⌃⌥. — the shipped panic-revoke default.
     static let defaultRevokeControl = HotkeyChord(
         keyCode: UInt32(kVK_ANSI_Period), modifiers: .controlOptionMask)
 
-    /// Whether the chord carries at least one of ⌃⌥⌘. Stricter than
-    /// `GlobalHotkeyMapping`'s no-modifiers rule on purpose: a shift-only
-    /// chord is just typing, and a bare key registered system-wide is
-    /// stolen from every other app on the machine.
+    /// Stricter than `GlobalHotkeyMapping`'s no-modifiers rule: a shift-only
+    /// chord is just typing, and a bare key registered system-wide steals
+    /// from every other app.
     var hasRequiredModifier: Bool {
         modifiers & UInt32(controlKey | optionKey | cmdKey) != 0
     }
 
-    /// What the recorder (and the persisted-blob validator) accepts: a
-    /// required modifier plus a key the display vocabulary can spell.
     var isValidUserChord: Bool {
         hasRequiredModifier && shortcutKey != nil
     }
 
-    /// The chord's key in the cross-platform `ShortcutCatalog` vocabulary,
-    /// or nil when it names a key that vocabulary doesn't cover.
+    /// The chord's key in the cross-platform `ShortcutCatalog` vocabulary, or
+    /// nil when that vocabulary doesn't cover it.
     var shortcutKey: ShortcutKey? {
         guard let code = UInt16(exactly: keyCode),
             let usage = MacKeyCodeMapping.hidUsage(forMacKeyCode: code)
@@ -221,9 +171,7 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         return Self.shortcutKeyByHIDUsage[usage]
     }
 
-    /// The chord in `ShortcutCatalog` terms, for display. ⌘ maps onto
-    /// `.primary` — on this platform that role *is* ⌘, and it's what
-    /// `display(.appleSymbols)` renders as the ⌘ glyph.
+    /// ⌘ maps onto `.primary`, which `display(.appleSymbols)` renders as ⌘.
     var displayChord: ShortcutChord? {
         guard let key = shortcutKey else { return nil }
         var mods: ShortcutModifiers = []
@@ -234,24 +182,21 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         return ShortcutChord(key, mods)
     }
 
-    /// "⌃⌥M"-style spelling (Apple glyph order), or nil for an unmappable
-    /// key — callers hide the chord rather than print a wrong one.
+    /// nil for an unmappable key — callers hide the chord rather than print a
+    /// wrong one.
     var displayString: String? {
         displayChord?.display(.appleSymbols)
     }
 
-    /// The chord as an `NSMenuItem` key equivalent (character + AppKit
-    /// modifier mask), or nil when the key can't map — the menu item then
-    /// keeps an empty equivalent instead of advertising a chord that won't
-    /// fire. The special-key characters follow the menu conventions already
-    /// AppKit expects ("\u{8}" renders as ⌫ in a key equivalent).
+    /// nil when the key can't map, so the menu item keeps an empty equivalent
+    /// rather than advertising a chord that won't fire.
     var menuKeyEquivalent: (key: String, mask: NSEvent.ModifierFlags)? {
         guard let shortcutKey else { return nil }
         let key: String
         switch shortcutKey {
         case .character(let raw):
-            // Lowercase: an uppercase key equivalent means "shift required"
-            // to AppKit, which would silently add ⇧ to the printed chord.
+            // Lowercase, or AppKit reads an uppercase equivalent as "shift
+            // required" and silently adds ⇧.
             key = raw.lowercased()
         case .delete:
             key = "\u{8}"
@@ -266,11 +211,7 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         return (key, mask)
     }
 
-    /// The chord as a SwiftUI `KeyboardShortcut`, for the `Commands`-built
-    /// menu items that mirror the global hotkeys. Same nil contract as
-    /// `menuKeyEquivalent`: an unmappable key yields no shortcut rather
-    /// than a chord that won't fire — `.keyboardShortcut(_:)` takes the
-    /// optional directly, so the item simply loses its printed chord.
+    /// Same nil contract as `menuKeyEquivalent`.
     var swiftUIShortcut: KeyboardShortcut? {
         guard let shortcutKey else { return nil }
         let key: KeyEquivalent
@@ -283,8 +224,7 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         case .escape:
             key = .escape
         }
-        // Qualified: Carbon's HIToolbox typedefs its own `EventModifiers`
-        // (UInt16), and this file imports both worlds.
+        // Qualified: Carbon's HIToolbox typedefs its own `EventModifiers` too.
         var mods: SwiftUI.EventModifiers = []
         if modifiers & UInt32(controlKey) != 0 { mods.insert(.control) }
         if modifiers & UInt32(optionKey) != 0 { mods.insert(.option) }
@@ -293,8 +233,7 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         return KeyboardShortcut(key, modifiers: mods)
     }
 
-    /// AppKit → Carbon modifier translation for the shortcut recorder
-    /// (`NSEvent.modifierFlags` is what a keyDown carries).
+    /// AppKit -> Carbon modifier translation for the shortcut recorder.
     static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
         var mask: UInt32 = 0
         if flags.contains(.control) { mask |= UInt32(controlKey) }
@@ -304,11 +243,8 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         return mask
     }
 
-    /// Inverse of `ShortcutKey.hidUsage`, derived from it rather than
-    /// hand-written so it inherits that table's audited constants: every
-    /// candidate the vocabulary can name is run through the forward map
-    /// once. Space is deliberately left out — it maps fine but renders as
-    /// an invisible glyph in a chord ("⌃⌥ "), so the recorder refuses it.
+    /// Inverse of `ShortcutKey.hidUsage`, derived rather than hand-written.
+    /// Space is deliberately left out — it renders as an invisible glyph.
     private static let shortcutKeyByHIDUsage: [UInt16: ShortcutKey] = {
         var candidates: [ShortcutKey] = [.escape, .delete]
         let characters = "abcdefghijklmnopqrstuvwxyz0123456789-=[]\\;'`,./"
@@ -324,12 +260,9 @@ struct HotkeyChord: Codable, Equatable, Sendable {
     }()
 }
 
-/// Persisted hotkey chords. Mirrors `ViewerApprovalPreference` — plain
-/// `UserDefaults` so non-SwiftUI call sites (`AppState.init`'s
-/// stored-property initialisers) can read the saved
-/// value without `@AppStorage`. A missing, corrupt, or invalid blob (no
-/// required modifier, unmappable key — e.g. hand-edited defaults) degrades
-/// to the shipped chord rather than to a hotkey the UI can't spell.
+/// Persisted hotkey chords. Plain `UserDefaults` (like `ViewerApprovalPreference`)
+/// so non-SwiftUI call sites can read without `@AppStorage`. A missing,
+/// corrupt, or invalid blob degrades to the shipped chord.
 enum HotkeyChordStore {
     static let micKey = "micHotkeyChord"
     static let revokeKey = "revokeControlHotkeyChord"

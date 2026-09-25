@@ -1,27 +1,20 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// WinHotkeyKit — a SYSTEM-WIDE hotkey on Windows, via `RegisterHotKey`. What
-// X11HotkeyKit is on Linux and `Apps/macOS/Sources/GlobalHotkey.swift` is on
-// macOS.
+// WinHotkeyKit — system-wide hotkey on Windows via `RegisterHotKey`. What
+// X11HotkeyKit is on Linux and Carbon's hotkey API is on macOS.
 //
-// C only because the mechanism is: a message pump on a thread this owns,
-// because `WM_HOTKEY` is a THREAD message and XAML's own pump would remove it
-// and dispatch it nowhere. Every decision — which virtual key, which
-// `fsModifiers`, `MOD_NOREPEAT` — lives in TailscreenProtocol's
-// `WindowsHotkeyMapping`, where Linux CI tests it.
+// C shim owns a message pump on its own thread: `WM_HOTKEY` is a THREAD
+// message, so XAML's own pump would swallow it. Decisions (virtual key,
+// `fsModifiers`, `MOD_NOREPEAT`) live in TailscreenProtocol's
+// `WindowsHotkeyMapping`, tested on Linux CI.
 //
-// Off Windows the shim stubs to failure, so `swift test --package-path
-// Packages/WinHotkeyKit` typechecks the wrapper and exercises the decisions on
-// Linux. Read the test file's header before trusting the coverage: there is no
-// `RegisterHotKey` here and nothing stands in for one, exactly as WASAPIKit
-// documents for its own Linux leg. Nothing installs; `RegisterHotKey` ships
-// with Windows.
+// Off Windows the shim stubs to failure — typechecks + exercises the
+// decisions on Linux, but nothing here actually calls `RegisterHotKey`.
 let package = Package(
     name: "WinHotkeyKit",
     products: [
         .library(name: "WinHotkeyKit", targets: ["WinHotkeyKit"]),
-        // See the target comment: this exists to be LINKED, on Windows.
         .executable(name: "winhotkey-probe", targets: ["winhotkey-probe"]),
     ],
     dependencies: [
@@ -40,14 +33,8 @@ let package = Package(
             ],
             path: "Sources/WinHotkeyKit"
         ),
-        // The link check. A SwiftPM library target is compiled but never
-        // LINKED, so a missing `user32.lib` symbol stays invisible until the
-        // app links it — the failure mode WASAPIKit's missing GUIDs shipped
-        // past its own CI step and hit eleven minutes later.
-        //
-        // On a real desktop it doubles as the manual gate this repository
-        // cannot automate: `winhotkey-probe --hold` takes the chord and prints
-        // each press, so a person can confirm it fires from another app.
+        // Link check (see WASAPIKit's probe comment); on a real desktop
+        // `--hold` takes the chord and prints each press as a manual gate.
         .executableTarget(
             name: "winhotkey-probe",
             dependencies: [

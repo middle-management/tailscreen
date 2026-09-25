@@ -2,16 +2,11 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// The CPU colour conversion the Windows renderer blits through. Pure maths, so
-/// it is verified here rather than by looking at a Windows screen — which is the
-/// point of keeping it in the portable tier.
+/// The CPU colour conversion the Windows renderer blits through. Pure maths,
+/// verified here rather than on a Windows screen.
 final class I420ConverterTests: XCTestCase {
-    /// One solid-colour I420 frame, as planes.
-    ///
-    /// Planes rather than a `DecodedVideoFrame` because the arithmetic lives in
-    /// this tier while that type belongs to the viewer's — the frame-shaped
-    /// overload in `TailscreenViewer` is a three-line forwarder onto exactly
-    /// what is exercised here.
+    /// Planes rather than `DecodedVideoFrame`: the arithmetic lives in this
+    /// tier, and that type's viewer-side overload is a thin forwarder onto this.
     private struct Frame {
         let width: Int
         let height: Int
@@ -44,21 +39,19 @@ final class I420ConverterTests: XCTestCase {
         return out
     }
 
-    /// Limited-range black is Y=16, not Y=0. Getting this wrong is the classic
-    /// washed-out-blacks bug, and it looks "nearly right" on screen.
+    /// Limited-range black is Y=16, not Y=0 — getting this wrong is the classic washed-out-blacks bug.
     func testLimitedRangeBlack() {
         let out = convert(solid(width: 2, height: 2, y: 16, u: 128, v: 128))
         XCTAssertEqual(Array(out[0..<4]), [0, 0, 0, 255])
     }
 
-    /// ...and limited-range white is Y=235, not 255.
+    /// Limited-range white is Y=235, not 255.
     func testLimitedRangeWhite() {
         let out = convert(solid(width: 2, height: 2, y: 235, u: 128, v: 128))
         XCTAssertEqual(Array(out[0..<4]), [255, 255, 255, 255])
     }
 
-    /// Y beyond the limited range must clamp rather than wrap. A wrap would turn
-    /// a superwhite highlight into a black hole.
+    /// A wrap would turn a superwhite highlight into a black hole.
     func testOutOfRangeClamps() {
         let low = convert(solid(width: 2, height: 2, y: 0, u: 128, v: 128))
         XCTAssertEqual(Array(low[0..<3]), [0, 0, 0])
@@ -66,8 +59,7 @@ final class I420ConverterTests: XCTestCase {
         XCTAssertEqual(Array(high[0..<3]), [255, 255, 255])
     }
 
-    /// Byte order is BGRA, not RGBA — swapping them is invisible on greys and
-    /// glaring on anything else, so it is pinned with a saturated colour.
+    /// Byte order is BGRA, not RGBA — pinned with a saturated colour since a swap is invisible on greys.
     func testRedIsInTheThirdByte() {
         // BT.709 red: high V, low U.
         let out = convert(solid(width: 2, height: 2, y: 63, u: 102, v: 240))
@@ -81,9 +73,7 @@ final class I420ConverterTests: XCTestCase {
         XCTAssertLessThan(g, 80)
     }
 
-    /// Chroma is half-resolution: both pixels of a 2×1 pair read the same
-    /// chroma sample. An off-by-one in the subsampling index shows up as colour
-    /// fringing on vertical edges.
+    /// Chroma is half-resolution; an off-by-one in the subsampling index shows up as fringing on vertical edges.
     func testChromaIsSharedAcrossThePair() {
         var frame = solid(width: 4, height: 2, y: 128, u: 128, v: 128)
         // Two chroma columns; make them differ.
@@ -101,14 +91,12 @@ final class I420ConverterTests: XCTestCase {
         XCTAssertNotEqual(pixel1, pixel2, "pixel 2 uses the next chroma sample")
     }
 
-    /// Odd dimensions round chroma up; the guard must not reject a valid frame.
     func testOddDimensions() {
         let out = convert(solid(width: 3, height: 3, y: 16, u: 128, v: 128))
         XCTAssertEqual(out.count, 3 * 3 * 4)
         XCTAssertEqual(Array(out[0..<4]), [0, 0, 0, 255])
     }
 
-    /// A frame whose planes are too small is refused rather than read past.
     func testTruncatedPlanesRefused() {
         var out = [UInt8](repeating: 7, count: 16 * 16 * 4)
         let ok = out.withUnsafeMutableBufferPointer {

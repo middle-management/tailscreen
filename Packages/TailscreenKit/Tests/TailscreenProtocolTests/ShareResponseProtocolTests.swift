@@ -45,8 +45,7 @@ final class ShareResponseProtocolTests: XCTestCase {
     }
 
     func testUnknownTypeByteStillSkippedBeforeShareResponse() throws {
-        // Old-peer compatibility both ways: a parser that doesn't know a
-        // type byte consumes and drops the whole frame, then keeps going.
+        // An unknown type byte is consumed and dropped whole; the parser keeps going.
         let bogus = frame(type: 0x7F, payload: Data([0xDE, 0xAD]))
         let good = ScreenShareMessage.shareResponse(accepted: true).encode()
 
@@ -59,8 +58,7 @@ final class ShareResponseProtocolTests: XCTestCase {
     }
 
     func testGarbageShareResponsePayloadIsDropped() throws {
-        // Undecodable JSON: the frame is consumed (returns nil) and the
-        // parser recovers on the next complete frame.
+        // Undecodable JSON: frame consumed (returns nil), parser recovers on the next frame.
         let garbage = frame(type: 0x05, payload: Data("not json at all".utf8))
         var parser = ScreenShareMessageParser()
         parser.append(garbage)
@@ -74,8 +72,7 @@ final class ShareResponseProtocolTests: XCTestCase {
     }
 
     func testRequestPayloadInsideResponseFrameIsRejected() throws {
-        // A `.requestToShare` TailscreenRequest smuggled into a 0x05 frame
-        // is malformed — it must decode to nothing, not to a response.
+        // A `.requestToShare` smuggled into a 0x05 frame must decode to nothing.
         let payload = try JSONEncoder().encode(TailscreenRequest.requestToShare(from: "mallory"))
         var parser = ScreenShareMessageParser()
         parser.append(frame(type: 0x05, payload: payload))
@@ -83,8 +80,7 @@ final class ShareResponseProtocolTests: XCTestCase {
     }
 
     func testShareResponsePayloadIsTailscreenRequestJSON() throws {
-        // Pin the wire payload shape: JSON-encoded TailscreenRequest, so
-        // the scaffolded .acceptShare/.declineShare cases stay the schema.
+        // Pin the wire payload shape: JSON-encoded TailscreenRequest.
         let encoded = ScreenShareMessage.shareResponse(accepted: true).encode()
         XCTAssertEqual(encoded.first, ScreenShareMessage.MessageType.shareResponse.rawValue)
         let payload = encoded.dropFirst(ScreenShareMessage.headerSize)

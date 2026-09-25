@@ -5,33 +5,22 @@ import TailscreenProtocol
 /// Swift face of X11's XTEST extension: the coordinate/keysym translation, the
 /// grant gate, and the serial ordering.
 ///
-/// The Linux sibling of `SendInputInjector`, deliberately down to the method
-/// names and the order of the sections below — the two solve the same problem
-/// and every hard-won decision in that file applies here. What differs is
-/// documented where it happens; the three that matter are scrolling (X11 has
-/// no wheel, only buttons), keys (a *keysym* is portable, a *keycode* is not,
-/// so the last hop needs a live display), and the fact that X11 requires an
-/// explicit flush or nothing is injected at all.
+/// The Linux sibling of `SendInputInjector`; differs in scrolling (X11 has no
+/// wheel, only buttons), keys (a *keysym* is portable, a *keycode* is not, so
+/// the last hop needs a live display), and the mandatory flush.
 ///
 /// Kept free of the `InputInjecting` conformance so this package does not
 /// depend on TailscreenSharer; the conformance is an empty extension in
-/// `TailscreenSharerLinux`, the same shape macOS and Windows use.
+/// `TailscreenSharerLinux`.
 public final class XTestInjector: @unchecked Sendable {
     /// A rectangle on screen — what normalized coordinates are mapped into.
-    ///
-    /// Supplied by the host rather than resolved here, for the same reason as
-    /// on Windows: "what am I sharing" is the host's question. On Linux today
-    /// it is always the whole root window, because the X11 backend captures
-    /// the root; the parameter exists so the ScreenCast portal's per-window
-    /// share (Phase 3.3) needs no change here.
+    /// Supplied by the host, not resolved here: today always the X11 root
+    /// window; the parameter exists so a future per-window portal share needs
+    /// no change here.
     public typealias Region = ScreenRegion
 
     /// Test seam: what would be injected, without touching the real desktop.
-    ///
-    /// Everything below is verifiable except the `XTestFake*` calls, and real
-    /// ones would fling the cursor across whatever machine runs the tests —
-    /// including a developer's own, since unlike the Windows tests these DO
-    /// run on the CI platform. Fires on the serial queue.
+    /// Runs on the serial queue.
     public enum InjectedAction: Equatable, Sendable {
         case motion(x: Int, y: Int)
         case button(number: Int, down: Bool)
@@ -55,8 +44,7 @@ public final class XTestInjector: @unchecked Sendable {
 
     /// The gate and the queue share one lock so a revoke is atomic with
     /// enqueueing: once `active` goes false, neither a queued event nor one
-    /// that raced the revoke can still be injected. Same TOCTOU fix the macOS
-    /// and Windows injectors carry.
+    /// that raced it can still be injected.
     private struct GateState {
         var active = false
         var pending: [InputEvent] = []
@@ -72,19 +60,14 @@ public final class XTestInjector: @unchecked Sendable {
     private var handle: UnsafeMutableRawPointer?
 
     /// The X display this injects into — nil for `$DISPLAY`.
-    ///
-    /// Public because the host needs it: the region normalized coordinates map
-    /// into is the *capture's* rectangle, not the root's, and only the host
-    /// knows how its capture backend rounds. See
+    /// Public: the region normalized coordinates map into is the *capture's*
+    /// rectangle, not the root's, and only the host knows how it rounds. See
     /// `TailscreenSharerLinux`'s `InputInjecting` conformance.
     public let displayName: String?
 
-    // Queue-confined pressed-button state. Exists for one reason:
-    // `deactivate()` must synthesize the matching release, or a revoke
-    // mid-drag leaves a button stuck down on the sharer's desktop with nobody
-    // able to let go of it. X11 makes this worse than the other platforms — a
-    // held button grabs the pointer, so a stuck one doesn't just misbehave, it
-    // makes the whole desktop unusable until something releases it.
+    /// Queue-confined. `deactivate()` must synthesize the matching release, or
+    /// a revoke mid-drag leaves a button stuck — worse than other platforms
+    /// since a held button grabs the X11 pointer, freezing the desktop.
     private var heldButtons: Set<Int> = []
 
     /// - Parameter displayName: `nil` for `$DISPLAY`, which is what the app
@@ -99,23 +82,10 @@ public final class XTestInjector: @unchecked Sendable {
 
     // MARK: Permission
 
-    /// Whether this host can inject at all.
-    ///
-    /// Unlike macOS there is no consent to request and unlike Windows there is
-    /// no integrity level — on X11 any client that can open the display can
-    /// synthesize input, which is a well-known property of the protocol rather
-    /// than something this app decides. So the one thing that actually varies
-    /// is whether the display opens AND carries the XTEST extension, and both
-    /// are answered by trying.
-    ///
-    /// The XTEST half is the reason this isn't hardcoded `true`: the extension
-    /// is optional, some remote and kiosk X servers ship without it, and
-    /// without this check the sharer would happily grant control to a viewer
-    /// whose every click silently vanishes.
-    ///
-    /// Under Wayland this returns whatever XWayland reports, which is honest
-    /// but limited: injection reaches X11 clients and not native Wayland ones.
-    /// The RemoteDesktop portal is the real answer there and is Phase 3.3.
+    /// Whether this host can inject at all: whether the display opens AND
+    /// carries the XTEST extension (optional; some kiosk/remote X servers omit
+    /// it, in which case injection would silently vanish). Under Wayland this
+    /// reflects XWayland only — reaches X11 clients, not native Wayland ones.
     public func isTrusted() -> Bool {
         ensureConnection() != nil
     }
@@ -137,14 +107,9 @@ public final class XTestInjector: @unchecked Sendable {
     }
 
     /// Where the pointer is right now, in root pixels. Nil when the display
-    /// won't open.
-    ///
-    /// The only way to observe that injection actually happened. Injection is
-    /// fire-and-forget: `XTestFakeMotionEvent` reports nothing, so without
-    /// reading the pointer back there is no way to distinguish "it worked"
-    /// from "XTEST is present and the server ignored us" — and a silent
-    /// failure is precisely what `isTrusted()` exists to prevent. Used by
-    /// `xtest-probe --live-check`, which is the CI gate.
+    /// won't open. `XTestFakeMotionEvent` is fire-and-forget, so this is the
+    /// only way to confirm injection actually happened; used by
+    /// `xtest-probe --live-check`.
     public func pointerPosition() -> (x: Int, y: Int)? {
         guard let handle = ensureConnection() else { return nil }
         var x: Int32 = -1
@@ -213,11 +178,8 @@ public final class XTestInjector: @unchecked Sendable {
         for event in RemoteControlPolicy.coalesceMouseMoves(batch) {
             inject(event, region: region)
         }
-        // Once per batch, not per event. X11 queues requests client-side, so
-        // without this NOTHING reaches the server — the single most likely way
-        // for this whole file to appear broken while every unit test passes.
-        // Per batch rather than per event also means a press and its release
-        // land together instead of a frame apart.
+        // Once per batch: X11 queues requests client-side, so without this
+        // nothing reaches the server, and a press/release land together.
         emit(.flush)
     }
 
@@ -254,17 +216,13 @@ public final class XTestInjector: @unchecked Sendable {
         }
     }
 
-    /// One scroll axis as the button presses that perform it.
+    /// One scroll axis as the button presses that perform it: X11 has no wheel
+    /// value, so a scroll is button 4/5 (vertical) or 6/7 (horizontal),
+    /// press-and-release per notch. `X11PointerMapping.scroll` owns the
+    /// delta → count arithmetic (incl. clamping an absurd delta).
     ///
-    /// The structural difference from both other platforms: X11's core
-    /// protocol has no wheel value at all, so a scroll IS a button
-    /// press-and-release — button 4/5 vertically, 6/7 horizontally, once per
-    /// notch. `X11PointerMapping.scroll` owns the delta → count arithmetic
-    /// (including the clamp that stops a peer's absurd delta becoming a
-    /// million synthetic clicks) and is tested without an X server.
-    ///
-    /// Held buttons are deliberately NOT tracked for these: each notch is a
-    /// complete press+release, so there is nothing a revoke could strand.
+    /// Held buttons are NOT tracked here: each notch is a complete
+    /// press+release, so a revoke has nothing to strand.
     private func emitScroll(delta: Double, axis: X11PointerMapping.Axis) {
         guard let scroll = X11PointerMapping.scroll(delta: delta, axis: axis) else { return }
         for _ in 0..<scroll.count {
@@ -273,27 +231,17 @@ public final class XTestInjector: @unchecked Sendable {
         }
     }
 
-    /// Modifiers are injected as REAL KEY EVENTS around the key itself.
+    /// Modifiers are injected as real key events around the key itself: X11,
+    /// like Win32, has no per-event modifier field, so Ctrl+C means press
+    /// Ctrl, press C, release C, release Ctrl. Pressed/released per key rather
+    /// than tracked across events, since there's no "modifier down" message to
+    /// pair with — costs a redundant press/release per held-modifier key, but
+    /// a dropped connection can never strand a modifier held on the sharer.
     ///
-    /// Same as Windows and for the same reason: X11, like Win32 and unlike
-    /// `CGEvent`, has no per-event modifier field — the server reports the
-    /// modifier state the keyboard is actually in, so the only way to deliver
-    /// Ctrl+C is to press Ctrl, press C, release C, release Ctrl.
-    ///
-    /// Pressed before and released after each key rather than tracked across
-    /// events, because the protocol sends modifier state as a snapshot on
-    /// every event instead of as separate key events — which keeps mid-stream
-    /// joins stateless, and means there is no "modifier down" message to pair
-    /// with. The cost is a redundant press/release per key in a held-modifier
-    /// sequence; the benefit is that a dropped connection can never strand a
-    /// modifier held down on the sharer's machine.
-    ///
-    /// Caps Lock is excluded — it is a toggle, so synthesizing a press would
-    /// flip the sharer's actual Caps state and leave it flipped.
+    /// Caps Lock is excluded — a toggle; synthesizing a press would flip the
+    /// sharer's actual state and leave it flipped.
     private func injectKey(hid: UInt16, modifiers: KeyModifiers, down: Bool) {
-        // An unmappable HID usage is dropped rather than guessed — the same
-        // rule the other two injectors follow, and why `deliberatelyUnmapped`
-        // exists in the table.
+        // Unmappable HID usage: dropped rather than guessed (see `deliberatelyUnmapped`).
         guard let keysym = X11KeyCodeMapping.keysym(forHIDUsage: hid) else { return }
         let held = X11KeyCodeMapping.modifierKeysyms(modifiers)
 
@@ -308,12 +256,8 @@ public final class XTestInjector: @unchecked Sendable {
         }
     }
 
-    /// Queue-confined: release anything still held.
-    ///
-    /// No position is replayed, unlike Windows: X11 releases the button
-    /// wherever the pointer currently is, which is the honest thing to do —
-    /// the pointer may have moved for reasons that have nothing to do with the
-    /// revoked viewer.
+    /// Queue-confined: release anything still held. No position is replayed —
+    /// X11 releases the button wherever the pointer currently is.
     private func releaseHeldButtons() {
         let held = heldButtons.sorted()
         heldButtons.removeAll()
@@ -339,25 +283,17 @@ public final class XTestInjector: @unchecked Sendable {
         case .button(let number, let down):
             ts_xtest_button(handle, Int32(number), down ? 1 : 0)
         case .key(let keysym, let down):
-            // The return value is deliberately ignored HERE rather than
-            // unchecked: a keysym this keymap cannot produce is a routine,
-            // expected outcome (a US layout has no key for most of Latin-1),
-            // and the shim already declines to inject. Surfacing it would mean
-            // a log line per keystroke on a layout mismatch.
+            // Return value ignored: an unproducible keysym (e.g. US layout vs
+            // Latin-1) is routine, and logging each would be noisy.
             _ = ts_xtest_key(handle, keysym, down ? 1 : 0)
         case .flush:
             ts_xtest_flush(handle)
         }
     }
 
-    /// Open the display on first use and keep it.
-    ///
-    /// Lazy rather than opened in `init` because the injector is constructed
-    /// at share start on hosts that may never grant control, and an X
-    /// connection held for a whole share for nothing is a file descriptor and
-    /// a server-side client slot. Nil is cached as "not available" only for
-    /// this call — a retry is cheap and the display can genuinely appear later
-    /// (an X server started after the app).
+    /// Open the display on first use and keep it. Lazy since the injector is
+    /// constructed at share start even when control may never be granted; nil
+    /// is not cached beyond one call, since the display can appear later.
     private func ensureConnection() -> UnsafeMutableRawPointer? {
         connectionLock.withLock {
             if let handle { return handle }

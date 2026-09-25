@@ -3,24 +3,18 @@ import XCTest
 
 @testable import X11CaptureKit
 
-/// Two halves, split by what CI can actually run.
-///
-/// The colour-conversion tests need no X server and always run: they pin the
-/// limited-range BT.709 contract by inverting the *viewer's own* shader math
-/// and checking the pixels come back. Getting that convention wrong doesn't
-/// fail loudly in production — every frame is just washed out or crushed — so
-/// it's worth an exact test rather than a smoke test.
-///
-/// The capture tests need a display and self-skip without one. Under Xvfb they
-/// run headlessly, which is the whole reason the X11 backend exists ahead of
-/// the ScreenCast portal.
+/// Two halves, split by what CI can actually run. The colour-conversion
+/// tests need no X server and pin the limited-range BT.709 contract by
+/// inverting the viewer's own shader math — getting that convention wrong
+/// doesn't fail loudly (every frame is just washed out), so it's worth an
+/// exact test. The capture tests need a display and self-skip without one,
+/// running headlessly under Xvfb.
 final class CaptureTests: XCTestCase {
 
     // MARK: - Colour conversion (no X server needed)
 
     /// The inverse of `Apps/linux/Sources/CGtkVideo/cgtkvideo.c`'s fragment
-    /// shader, transcribed. If this and the shader ever disagree, the picture
-    /// is wrong on the wire in a way no other test would catch.
+    /// shader, transcribed.
     private func shaderRGB(y: UInt8, u: UInt8, v: UInt8) -> (r: Double, g: Double, b: Double) {
         let yy = (Double(y) / 255.0 - 16.0 / 255.0) * (255.0 / 219.0)
         let uu = (Double(u) / 255.0 - 0.5) * (255.0 / 224.0)
@@ -60,9 +54,8 @@ final class CaptureTests: XCTestCase {
     }
 
     /// Primaries survive the round trip through the viewer's shader math.
-    /// Tolerance is generous (5/255) because 4:2:0 chroma and 8-bit fixed-point
-    /// both lose a little; what's being asserted is that the *convention*
-    /// matches, not that the pipeline is lossless.
+    /// Tolerance is generous (5/255) — asserting the convention matches, not
+    /// that the pipeline is lossless.
     func testPrimariesRoundTripThroughTheViewerShader() {
         let cases: [(name: String, b: UInt8, g: UInt8, r: UInt8)] = [
             ("red", 0, 0, 255),
@@ -83,8 +76,6 @@ final class CaptureTests: XCTestCase {
         }
     }
 
-    /// Plane sizes are the encoder's contract: luma `w×h`, chroma
-    /// `(w/2)×(h/2)`, tightly packed with no row padding.
     func testPlaneGeometry() {
         let p = X11ScreenCapture.convertBGRA(
             solid(10, 20, 30, width: 16, height: 10), stride: 16 * 4, width: 16, height: 10)
@@ -94,7 +85,7 @@ final class CaptureTests: XCTestCase {
     }
 
     /// The capture buffer's row stride exceeds the region being converted
-    /// whenever output is cropped to even dimensions — so the converter must
+    /// when output is cropped to even dimensions, so the converter must
     /// honour `stride`, not assume `width * 4`.
     func testStrideLargerThanWidthIsHonoured() {
         let srcW = 16
@@ -145,17 +136,14 @@ final class CaptureTests: XCTestCase {
         XCTAssertEqual(planes.y.count, cap.captureWidth * cap.captureHeight)
         XCTAssertEqual(planes.u.count, (cap.captureWidth / 2) * (cap.captureHeight / 2))
         XCTAssertEqual(planes.v.count, planes.u.count)
-        // A bare Xvfb root is uniform, so don't assert on content — assert the
-        // luma is in studio swing, which proves the conversion ran over every
-        // pixel rather than leaving the buffer at its initial zeroes.
+        // A bare Xvfb root is uniform, so assert luma is in studio swing —
+        // proof the conversion ran, not that the buffer stayed at zero.
         XCTAssertTrue(
             planes.y.allSatisfy { $0 >= 16 && $0 <= 235 },
             "luma outside studio swing — conversion did not cover the frame")
     }
 
-    /// Grabbing repeatedly must be stable: the SHM segment is reused across
-    /// frames, and a mistake there shows up as a second grab failing or
-    /// returning garbage rather than as a first-frame bug.
+    /// Grabbing repeatedly must be stable — the SHM segment is reused across frames.
     func testRepeatedGrabsAreStable() throws {
         let cap = try openCapture()
         var planes = cap.makePlanes()

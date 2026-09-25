@@ -6,24 +6,17 @@ import TailscreenSharer
 import TailscreenTransport
 
 /// Runs a share on Linux: the portable `TailscaleScreenShareServer` driven by
-/// whichever capture backend the app chose, plus everything around it that
-/// used to live untested in the GTK app — access control, the drawing latch,
-/// voice, the idle control listener and its ask-to-share inbox, and the
+/// whichever capture backend the app chose, plus access control, the drawing
+/// latch, voice, the idle control listener's ask-to-share inbox, and the
 /// server's whole lifecycle.
 ///
-/// The Linux twin of `TailscreenSharerWGC.WindowsShareSession`, and a package
-/// type for the same reason that one is: nothing here imports a UI toolkit, so
-/// Linux CI builds and tests it headless. The app keeps only the thin
-/// observable façade (`SharerModel`) — the `@Published` mirrors, the
-/// localized wording, the notification reconcile, and the portal negotiation
-/// whose consent dialog is inherently UI.
+/// The Linux twin of `TailscreenSharerWGC.WindowsShareSession` — a package
+/// type so Linux CI builds/tests it headless with no UI toolkit. The app
+/// keeps only the thin observable façade (`SharerModel`).
 ///
-/// **One deliberate difference from the Windows session:** this engine is
-/// `@MainActor` rather than lock-guarded. The GTK app services its transport
-/// and every callback on the main thread, the node already exists by the time
-/// a share starts (no bring-up to keep off the UI thread), and staying on the
-/// actor preserves the exact hop-and-reorder behavior the grant-generation
-/// guard below exists for. Do not "unify" the two shapes without re-reading
+/// **Deliberate difference from Windows:** this engine is `@MainActor` rather
+/// than lock-guarded — the node already exists by share start (no bring-up to
+/// keep off the UI thread). Do not "unify" the two shapes without re-reading
 /// `onControlGrantChanged`.
 @MainActor
 public final class LinuxShareSession {
@@ -46,11 +39,9 @@ public final class LinuxShareSession {
 
     /// Somebody currently watching, as the share card needs them.
     ///
-    /// `stableID` rides along because the roster's remember/forget actions are
-    /// about the PERSON, not the connection: the store is keyed by Tailscale
-    /// StableNodeID and nothing else is safe to key on. It is nil until the
-    /// netmap lookup lands, which is what `SharerAccessCoordinator` queues
-    /// around.
+    /// `stableID` rides along because remember/forget actions key on Tailscale
+    /// StableNodeID, not the connection. Nil until the netmap lookup lands
+    /// (`SharerAccessCoordinator` queues around that).
     public struct ConnectedViewer: Identifiable, Equatable, Sendable {
         public let id: String
         public let label: String
@@ -79,21 +70,16 @@ public final class LinuxShareSession {
     /// A viewer parked at the approval gate, as the share card needs it.
     ///
     /// `id` is the server's own viewer key — `"ip:port"`, not the bare IP.
-    /// That distinction is the whole reason this is a struct rather than a
-    /// string: `approveViewer` and `denyViewer` look the address up in the
-    /// pending map, and an IP with the port dropped matches nothing, so both
-    /// silently no-op. The sharer gets a row with two buttons that do nothing
-    /// and the viewer waits forever. `label` is the readable half — a hostname
-    /// once the netmap lookup lands, the IP until then.
+    /// `approveViewer`/`denyViewer` look it up in the pending map, and a
+    /// port-dropped IP matches nothing and silently no-ops. `label` is a
+    /// hostname once the netmap lookup lands, the IP until then.
     public struct PendingViewer: Identifiable, Equatable, Sendable {
         public let id: String
         public let label: String
-        /// See `ConnectedViewer.isGuest` — a pending guest's approval is the
-        /// only way one ever reaches the roster.
+        /// See `ConnectedViewer.isGuest`.
         public let isGuest: Bool
-        /// See `ConnectedViewer.stableID` — "Always Allow" / "Deny & Block" on
-        /// a pending row persists under this, not under the hostname a peer
-        /// sends.
+        /// "Always Allow" / "Deny & Block" on a pending row persists under
+        /// this, not the hostname a peer sends.
         public let stableID: String?
 
         public init(id: String, label: String, stableID: String?, isGuest: Bool = false) {
@@ -110,22 +96,17 @@ public final class LinuxShareSession {
     public var nodeProvider: (() -> TailscaleNode?)?
 
     /// Supplied by the host — opens a capture device, or throws if there is
-    /// none.
-    ///
-    /// A factory rather than an instance because a share is a session: the
-    /// device is opened when sharing starts and released when it stops. A
-    /// long-lived open would keep the OS microphone indicator lit while idle,
-    /// which is exactly the thing a person reads as "this app is listening".
-    /// Nil means this build has no capture backend at all.
+    /// none. A factory, not an instance: opened at share start, released at
+    /// stop, so the OS mic indicator isn't lit while idle. Nil means this
+    /// build has no capture backend.
     public var microphoneFactory: (() throws -> MicrophoneCapturing)?
     /// Supplied by the host — plays a viewer's decoded voice on the local
     /// device.
     public var playRemoteVoice: (([Float]) -> Void)?
 
     /// Supplied by the host — builds the annotation overlay at the capture's
-    /// exact pixel geometry, or nil if this session cannot host one. Called at
-    /// the start of every share, before the server exists, because whether it
-    /// exists is what the server advertises.
+    /// exact pixel geometry, or nil if this session cannot host one. Called
+    /// before the server exists, since whether it exists is what the server advertises.
     public var makeOverlay: (() -> SharerOverlaySurface?)?
 
     // MARK: Host callbacks — all invoked on the main actor
@@ -161,10 +142,9 @@ public final class LinuxShareSession {
 
     // MARK: Link sharing (share-by-token)
 
-    /// The live share link's token, nil while the link is off. Mirrors the
-    /// portable `SharerLinkSession`; published through `onLinkSharingChanged`
-    /// so the host's card can render toggle/link/count without owning any of
-    /// the lifecycle.
+    /// The live share link's token, nil while the link is off. Published
+    /// through `onLinkSharingChanged` so the host's card can render
+    /// toggle/link/count without owning the lifecycle.
     public private(set) var linkToken: String?
     /// True while the link is being created or rotated (the relay bootstrap
     /// blocks for the network). Toggle flips are ignored meanwhile.
@@ -182,9 +162,7 @@ public final class LinuxShareSession {
     /// its listener to the running server; `off` drops every guest and kills
     /// the token. No-op while idle — the link is minted per share.
     public func setLinkSharing(_ on: Bool) {
-        // A link-only share has nothing to toggle: the link IS the share, and
-        // turning it off would drop every guest and leave a running capture
-        // with no listener at all.
+        // A link-only share has nothing to toggle: the link IS the share.
         guard !linkBusy, !isLinkOnlyShare, let server else { return }
         linkBusy = true
         publishLink()
@@ -235,17 +213,14 @@ public final class LinuxShareSession {
     /// only the guest node is left to close. Synchronous state first so the
     /// card's toggle drops with the share rather than a beat later.
     private func teardownLink(server: TailscaleScreenShareServer?) {
-        // Captured before the state is blanked, and passed to the teardown:
-        // this task reaches the actor a hop later, and an immediate
-        // Stop → Start can have minted a replacement link by then. Scoped by
-        // token, it closes the link this share published or nothing at all.
+        // Captured before state is blanked: this task reaches the actor a
+        // hop later, and an immediate Stop → Start can have minted a
+        // replacement link by then. Scoped by token.
         //
-        // The SERVER goes with it, and that is the half a token cannot cover:
-        // `setLinkSharing(true)` has no `isCurrentShare` check of its own, so
-        // a stop landing after its `enable` attached the listener but before
-        // it returned a token would otherwise leave that mint free to publish
-        // onto an engine that is already idle. Passing the server invalidates
-        // the in-flight claim it owns — and only that one.
+        // Passing the SERVER too invalidates an in-flight `setLinkSharing(true)`
+        // whose `enable` attached the listener but hadn't yet returned a
+        // token when the stop landed — otherwise that mint would publish onto
+        // an already-idle engine.
         let minted = linkToken
         linkToken = nil
         linkBusy = false
@@ -254,9 +229,7 @@ public final class LinuxShareSession {
         guard server != nil || minted != nil else { return }
         Task { [link] in await link.teardown(for: server, mintedToken: minted) }
     }
-    /// The sharer's own drawing state — the same store the viewers run, so the
-    /// stroke geometry, the undo stack and the identity-derived colour are
-    /// shared code rather than a second implementation on the sharing side.
+    /// The sharer's own drawing state — the same store the viewers run.
     public let drawing = AnnotationStore()
     public private(set) var micAvailable = false
     public private(set) var micOn = false
@@ -266,78 +239,53 @@ public final class LinuxShareSession {
     private var viewers: [ConnectedViewer] = []
     private var pendingViewers: [PendingViewer] = []
 
-    /// The gate to apply to the next share, and to the running one. The host
-    /// persists the preference; this only asserts it at the server, because
-    /// the server's own default is OFF — right for the headless CLI sharer,
-    /// wrong for anything with a person in front of it.
+    /// The gate to apply to the next share, and the running one. The host
+    /// persists the preference; the server's own default is OFF (right for
+    /// the headless CLI sharer), so this must assert it explicitly.
     private var requireApproval = ViewerApprovalPreference.load()
 
     /// Viewers' strokes, drawn on this machine's own screen. Nil when the
-    /// session cannot host one — the host's factory said so.
+    /// session cannot host one.
     private var overlay: SharerOverlaySurface?
     /// Granted viewers' input, replayed on this machine. Nil when this X
-    /// server has no XTEST extension.
-    ///
-    /// Held for the share's lifetime rather than handed to the server and
-    /// forgotten, because the server's own teardown is asynchronous and the
-    /// grant must be sealed the moment sharing stops — see `teardownOverlay`,
-    /// which does the same for the same reason.
+    /// server has no XTEST extension. Held for the share's lifetime (not
+    /// handed to the server and forgotten) because the server's teardown is
+    /// async and the grant must be sealed the moment sharing stops.
     private var injector: X11InputInjector?
 
-    /// Which tool is armed and what a refusal to arm means.
-    ///
-    /// The decisions live in the portable tier — where Linux CI tests them
-    /// with no window, no compositor and no X server — because the Windows
-    /// sharer has the same hazard in a different shape and a second copy of
-    /// this ordering is where the two would drift. The consequence of drifting
-    /// is not a cosmetic difference; it is a desktop nobody can click.
+    /// Which tool is armed and what a refusal to arm means. Decisions live in
+    /// the portable tier (tested on Linux CI headless), shared with the
+    /// Windows sharer to avoid the two drifting.
     private var latch = SharerDrawingLatch()
 
-    /// The sharer's voice for this share — the route installed before the
-    /// server starts, the device opened only once it is up, and the mute latch
-    /// `micAvailable` / `micOn` mirror. Shared with the Windows engine, where
-    /// the same triple had the same ordering hazards; see `SharerVoiceSession`.
+    /// The sharer's voice for this share. Shared ordering (route before
+    /// device, `onStopped` before `start()`) with the Windows engine — see
+    /// `SharerVoiceSession`.
     private let voiceSession = SharerVoiceSession()
 
     /// Which share attempt the engine is on, which grant snapshot was last
     /// applied, and who was invited before there was a server to tell.
     ///
-    /// Held as an actor-isolated value rather than a shared object, which is
-    /// the point of `SharerSessionCore` being a struct: the Windows engine
-    /// holds the same state machine behind a lock, and neither host's isolation
-    /// model leaks into the other's. Every one of the server's callbacks
-    /// reaches this actor through a `Task { @MainActor }` hop, and so does
-    /// `beginShare`'s own continuation after `server.start()` — the actor is
-    /// released across that await, so a stop, or a whole second share, can land
-    /// in the middle. Each closure captures the generation it was created under
-    /// and drops itself when `isCurrentShare` says the engine has moved on.
+    /// A struct (not a shared object) because the Windows engine holds the
+    /// same state machine behind a lock instead, and neither isolation model
+    /// leaks into the other's. Server callbacks and `beginShare`'s own
+    /// continuation reach this actor through a hop the actor is released
+    /// across, so a stop or a second share can land mid-flight — each closure
+    /// captures its generation and drops itself when stale.
     private var core = SharerSessionCore()
 
-    /// Remembered allow/deny, and the queue for decisions made before a peer's
-    /// identity resolved. Portable and tested on Linux CI — the host only
-    /// renders rows and forwards taps.
-    ///
-    /// Built once and outliving each share on purpose: what a sharer decided
-    /// about somebody is not a property of the session they decided it in.
+    /// Remembered allow/deny, and the queue for decisions made before a
+    /// peer's identity resolved. Built once and outliving each share — what a
+    /// sharer decided about somebody is not a property of the session.
     private let access: SharerAccessCoordinator
 
-    /// The whole ask-to-share flow — the long-lived idempotent-per-node
-    /// listener, the inbox, and the answer sequencing (reply on the arrival
-    /// connection; accept ⇒ pre-approve, then start) — written once in
-    /// `TailscreenSharer` and shared with the Windows and macOS hosts. Wired
-    /// in `init`; what stays here is only what is this host's: holding the
-    /// invited IP for the next server, and the stderr note when the listener
-    /// cannot start.
+    /// The whole ask-to-share flow, shared with the Windows and macOS hosts.
     private let askToShare = SharerAskToShareCoordinator()
 
-    /// IPs accepted before there was a server to tell.
-    ///
-    /// Accepting an ask has to pre-approve the requester, or they arrive at
-    /// this machine's own approval gate a second later and get asked to wait —
-    /// having just been invited. But accept happens *before* the share starts,
-    /// so there is no server yet: the IP is held in `core` and replayed the
-    /// moment one exists. Internal so the package tests can pin the held-IP
-    /// contract with no server.
+    /// IPs accepted before there was a server to tell. Accept happens before
+    /// the share starts, so the IP is held in `core` and replayed once a
+    /// server exists — otherwise the invited peer would land at its own
+    /// approval gate a moment after being invited.
     var pendingPreApprovedIPs: Set<String> { core.heldInvites }
 
     /// - Parameters:
@@ -355,12 +303,9 @@ public final class LinuxShareSession {
         }
         askToShare.onPreApproveViewer = { [weak self] sourceKey in
             guard let self else { return }
-            // Pre-approve BEFORE starting, because the HELLO can arrive as
-            // soon as the share is up — and a peer this machine just invited
-            // must not then be parked at its approval gate. Accept usually
-            // happens before a server exists, in which case the IP is held for
-            // replay; when one is already running it is told directly and
-            // nothing is remembered, or the next share would admit them too.
+            // Pre-approve before starting: a peer just invited must not land
+            // at its own approval gate. Held for replay if no server exists
+            // yet; told directly (and not remembered) if one is already running.
             self.core.noteInvite(sourceKey, hasServer: self.server != nil)
             self.server?.preApproveViewer(ip: sourceKey)
         }
@@ -374,9 +319,6 @@ public final class LinuxShareSession {
             Task { @MainActor in self?.playRemoteVoice?(pcm) }
         }
         askToShare.onListenerError = { (error: Error) in
-            // Worth a line rather than silence: the share still works and
-            // this machine simply never hears an ask, which from the other
-            // end is indistinguishable from nobody being home.
             FileHandle.standardError.write(
                 Data("warning: could not listen for share requests: \(error)\n".utf8))
         }
@@ -387,16 +329,12 @@ public final class LinuxShareSession {
     /// Everything after "which backend": identical for both capture paths.
     ///
     /// - Parameters:
-    ///   - showsOutline: whether the overlay's rectangle is genuinely what is
-    ///     being captured — the host's `captureMatchesOverlay` answer. The
-    ///     outline must not lie, so a portal share passes false and gets no
-    ///     indicator rather than a wrong one.
-    ///   - node: the app's signed-in tsnet node, or **nil for a link-only
-    ///     share** — started signed out, with the guest tunnel as the
-    ///     server's only socket. Nil is not a degraded tailnet share: there
-    ///     is no tailnet listener, no ask-to-share channel and no LocalAPI
-    ///     identity, so every viewer arrives as a guest at the mandatory
-    ///     approval gate, and the link exists the moment the share does.
+    ///   - showsOutline: whether the overlay's rectangle genuinely matches
+    ///     what's captured — a portal share passes false rather than showing
+    ///     a wrong indicator.
+    ///   - node: the app's signed-in tsnet node, or nil for a **link-only
+    ///     share** (started signed out, guest tunnel as the only socket) —
+    ///     every viewer then arrives as a guest at the mandatory approval gate.
     public func beginShare(
         node: TailscaleNode?,
         selectionData: Data,
@@ -407,14 +345,10 @@ public final class LinuxShareSession {
         let generation = beginShareGeneration()
         setPhase(.starting)
 
-        // The annotation overlay has to exist BEFORE the server, because
-        // whether it exists is what the server advertises.
+        // Overlay must exist BEFORE the server — whether it exists is what
+        // the server advertises.
         let overlay = makeOverlay?() ?? nil
         if overlay == nil {
-            // Worth a line: the share works perfectly and viewers simply find
-            // their drawing tools greyed out, with nothing on either end
-            // saying why. Matches this engine's other diagnostics (stderr, not
-            // a logger — there is no TSLogger convention on this side).
             FileHandle.standardError.write(
                 Data(
                     """
@@ -424,11 +358,9 @@ public final class LinuxShareSession {
         }
         self.overlay = overlay
 
-        // Likewise the injector, and for the same reason: supplying one is
-        // what makes the server advertise `.remoteControl`. Nil when this X
-        // server has no XTEST extension — optional in the protocol, absent on
-        // some remote and kiosk servers — in which case every injected click
-        // would silently vanish, so viewers must not be invited to try.
+        // Likewise the injector: supplying one is what makes the server
+        // advertise `.remoteControl`. Nil when this X server has no XTEST
+        // extension — an injected click would otherwise silently vanish.
         let injector = Self.makeInjector(display: display)
         if injector == nil {
             FileHandle.standardError.write(
@@ -442,48 +374,30 @@ public final class LinuxShareSession {
 
         let server = TailscaleScreenShareServer(
             captureFactory: captureFactory,
-            // Present iff XTEST is: the server derives `.remoteControl` from
-            // whether this is non-nil, so a host that cannot inject withholds
-            // the bit and viewers hide Request Control rather than sending
-            // requests nothing can serve.
+            // Server derives `.remoteControl` from whether this is non-nil.
             inputInjector: injector,
-            // Claimed only when there is a real surface to draw on. Without a
-            // compositor there is none, and a sharer that claims
-            // `.annotations` it cannot render leaves every viewer drawing
-            // strokes that reach nobody — silently, which is exactly the
-            // failure Phase 0 flipped this default to prevent.
+            // Claimed only when there's a real surface to draw on — otherwise
+            // viewers' strokes would reach nobody, silently.
             rendersAnnotations: overlay != nil
         )
-        // The one recorder the host installed, if any. Same seam the macOS app
-        // and the WinUI engine use; nil when diagnostics are off, which is the
-        // stable-release default.
+        // Nil when diagnostics are off (stable-release default).
         DiagnosticsCenter.shared.recorder?.beginSession()
         server.recorder = DiagnosticsCenter.shared.recorder
         // Fires on the server's control-channel thread; the overlay marshals
         // onto the GTK main thread itself.
         server.onAnnotationReceived = { [overlay] op in overlay?.apply(op) }
         wireSharerDrawing(overlay: overlay, server: server)
-        // The server's own default is OFF — right for the headless CLI sharer
-        // that automation drives, wrong for anything with a person in front of
-        // it — so the gate has to be asserted here on every start. Assert the
-        // user's setting rather than a literal `true`, or the toggle would be
-        // a switch the share ignores.
+        // Server's own default is OFF; assert the user's setting on every start.
         server.setRequireApproval(requireApproval)
-        // Push what is already remembered BEFORE the first HELLO can arrive,
-        // so a blocked peer is rejected on its first attempt rather than
-        // admitted and then swept out a moment later.
+        // Push what's remembered BEFORE the first HELLO can arrive, so a
+        // blocked peer is rejected on its first attempt.
         server.setAccessPolicies(access.policies)
         access.onPoliciesChanged = { [weak server] policies in
             server?.setAccessPolicies(policies)
         }
-        // Every one of these hops to this actor, and a hop can land after the
-        // share it belongs to has ended — so each carries `generation` and
-        // drops itself when the engine has moved on. Without that, a snapshot
-        // from a stopped server repopulates a roster nobody is sharing to.
+        // Each hop carries `generation` and drops itself once stale, or a
+        // snapshot from a stopped server would repopulate a dead roster.
         server.onViewersChanged = { infos in
-            // Mapped off the main actor (the callback is not on it), then
-            // handed over whole. `stableID` travels with each row because the
-            // remember/forget actions key on it.
             let rows = infos.map {
                 ConnectedViewer(
                     id: $0.id, label: $0.displayName, stableID: $0.stableID,
@@ -508,9 +422,6 @@ public final class LinuxShareSession {
             }
         }
         server.onControlRequestsChanged = { [weak self] requests in
-            // Fires off the main actor; hop. No mapping needed — the card
-            // renders `ControlRequestInfo.displayName` directly, the same
-            // shape the Windows app passes through.
             Task { @MainActor [weak self] in
                 guard let self, self.core.isCurrentShare(generation) else { return }
                 self.onControlRequestsChanged?(requests)
@@ -529,79 +440,55 @@ public final class LinuxShareSession {
                 self.handleCaptureStopped(error)
             }
         }
-        // Tunnel-level eviction: a Deny (or remembered-deny expel) on a guest
-        // also closes their tunnel and denylists their node key for the
-        // link's life, so a denied guest can't keep knocking.
+        // Tunnel-level eviction: a Deny also closes the guest's tunnel and
+        // denylists their node key for the link's life.
         server.onGuestViewerDenied = { [link] ip in
             Task { await link.evict(ip: ip) }
         }
-        // Installed HERE, before `start()`, and never reassigned: the server's
-        // callbacks are bare stored vars its receive thread reads with no
-        // lock. `SharerVoiceSession` publishes into the route it hands back
-        // once the capture device is open — see `SharerVoiceRoute` for why the
-        // device is not opened this early.
+        // Installed HERE, before `start()`, and never reassigned: the
+        // server's callbacks are bare stored vars its receive thread reads
+        // with no lock.
         server.onAudioReceived = voiceSession.inboundHandler
-        // Anyone whose ask was accepted before this server existed. Replayed
-        // BEFORE start, so the gate already knows them when their HELLO lands.
+        // Anyone whose ask was accepted before this server existed, replayed
+        // BEFORE start so the gate already knows them.
         for ip in core.drainInvites() { server.preApproveViewer(ip: ip) }
         self.server = server
 
-        // Whatever else was parked is stale now: those askers wanted a share
-        // and there is one, but it is not the one they asked for and their
-        // connections have no answer coming. Leaving the rows would offer
-        // buttons that start a second share.
+        // Whatever else was parked is stale now — leaving the rows would
+        // offer buttons that start a second share.
         clearShareRequests()
 
         Task { @MainActor in
             do {
-                // Non-nil only on the link-only path, and published only
-                // once the share is known to still be the current one —
-                // a token on screen for a share that was stopped mid-start
-                // is a link that admits people to nothing.
+                // Non-nil only on the link-only path, published only once
+                // the share is still current.
                 var minted: String?
                 if let node {
                     try await server.start(
                         filterData: selectionData,
                         quality: quality,
                         existingNode: node,
-                        // The app's long-lived listener, so the share does not
-                        // create a second one competing for port 7447 — and so
-                        // `onRequestToShare` keeps pointing here rather than being
-                        // rebound to the share's own.
+                        // The app's long-lived listener, so the share doesn't
+                        // create a second one competing for port 7447.
                         controlListener: askToShare.controlListener
                     )
                 } else {
-                    // Link-only: the guest node comes up first because it is
-                    // the whole transport, and the token exists the moment
-                    // the share does. `startLinkOnly` unwinds its own node on
-                    // failure, so the catch below has only the server left to
-                    // clear — exactly as on the tailnet path.
+                    // Link-only: guest node comes up first (it's the whole
+                    // transport). `startLinkOnly` unwinds its own node on
+                    // failure, so the catch below has only the server to clear.
                     self.isLinkOnlyShare = true
                     self.linkBusy = true
                     self.publishLink()
                     minted = try await self.link.startLinkOnly(
                         on: server, filterData: selectionData, quality: quality)
                 }
-                // The actor is released across that await, so a stop — or a
-                // whole second `beginShare` — can have landed while the
-                // capture and the node were coming up. Publishing `.sharing`
-                // now would overwrite `.idle` for a share nobody asked to keep,
-                // arm an outline over somebody's screen, and open a microphone
-                // for it; and the server this closure holds is one the engine
-                // no longer references, so nothing else would ever stop it.
+                // The actor is released across that await, so a stop (or a
+                // second `beginShare`) can have landed meanwhile.
                 guard self.core.isCurrentShare(generation) else {
                     await server.stop()
-                    // The guest node belongs to the link session, not to the
-                    // server: a stop that landed inside the await tore down a
-                    // link that did not exist yet, so this one has to be
-                    // closed here or it outlives the share it was minted for
-                    // — a live token for a share nobody is running.
-                    //
-                    // Scoped to the token THIS attempt minted, and skipped
-                    // entirely when it minted none: the replacement share
-                    // that made this one stale may already have a link of
-                    // its own, and an unconditional teardown here would
-                    // close the live one instead of the dead one.
+                    // Scoped to the token THIS attempt minted: the
+                    // replacement share may already have its own link, so an
+                    // unconditional teardown would close the live one instead.
                     if let minted { await self.link.teardown(mintedToken: minted) }
                     return
                 }
@@ -611,16 +498,11 @@ public final class LinuxShareSession {
                     self.publishLink()
                 }
                 setPhase(.sharing)
-                // Only once the share is genuinely up: an indicator that
-                // appeared while the capture was still opening would say
-                // "they can see this" before anyone could.
+                // Only once genuinely up — an indicator during capture
+                // opening would claim "they can see this" too early.
                 overlay?.setShowsOutline(showsOutline)
                 startVoice(on: server)
             } catch {
-                // Same check: a start that failed for a share already stopped
-                // has nothing left to unwind — `stopSharing` did it — and
-                // reporting `.failed` over `.idle` would tell the person their
-                // share broke when they had ended it themselves.
                 guard self.core.isCurrentShare(generation) else { return }
                 endShareGeneration()
                 setPhase(.failed("\(error)"))
@@ -634,9 +516,8 @@ public final class LinuxShareSession {
     }
 
     /// Open a share generation: everything stamped with an older one is
-    /// ignored from here on. Internal so the engine suite can drive the guards
-    /// with no node and no server behind them; the rules are
-    /// `SharerSessionCore`'s and are pinned there for both hosts.
+    /// ignored from here on. Internal so the engine suite can drive the
+    /// guards with no node/server; rules are `SharerSessionCore`'s.
     @discardableResult
     func beginShareGeneration() -> UInt64 {
         core.beginShare()
@@ -649,21 +530,17 @@ public final class LinuxShareSession {
         core.endShare()
     }
 
-    /// Apply one grant snapshot, dropping it when it belongs to a share this
-    /// engine has moved on from or when a newer one was already applied.
-    ///
-    /// Both guards, not either — see `SharerSessionCore.shouldApplyGrant`,
-    /// which owns the pair. Internal so the engine suite can pin the wiring
-    /// without a server.
+    /// Apply one grant snapshot, dropping it when stale or superseded — both
+    /// guards live in `SharerSessionCore.shouldApplyGrant`.
     func applyControlGrant(share: UInt64, generation: UInt64, displayName: String?) {
         guard core.shouldApplyGrant(share: share, generation: generation) else { return }
         onControlGrantChanged?(displayName)
     }
 
     public func stopSharing() {
-        // First, and unconditionally: from here on, nothing the ending
-        // share's server says reaches this engine — including a `beginShare`
-        // continuation still parked inside `server.start()`.
+        // Unconditionally first: nothing the ending server says reaches this
+        // engine after this, including a `beginShare` continuation still
+        // parked inside `server.start()`.
         endShareGeneration()
         guard let server else {
             setPhase(.idle)
@@ -671,8 +548,6 @@ public final class LinuxShareSession {
             return
         }
         self.server = nil
-        // Before the rosters empty — the host stops its notifications here;
-        // see `onShareDidEnd`.
         onShareDidEnd?(.stopped)
         viewers = []
         onViewersChanged?([])
@@ -680,14 +555,11 @@ public final class LinuxShareSession {
         onPendingViewersChanged?([])
         clearControlState()
         setPhase(.idle)
-        // Queued decisions do not outlive the share they were made during:
-        // the rows are gone, and an intent that survived would land on whoever
-        // connects to the NEXT share from the same address.
+        // Queued decisions do not outlive the share — an intent that survived
+        // would land on whoever connects to the NEXT share from that address.
         access.reset()
         teardownOverlay()
         stopVoice()
-        // The token dies with the share; the server's stop() closes the
-        // guest listener and tells every guest, so only the node remains.
         teardownLink(server: server)
         Task { await server.stop() }
     }
@@ -702,8 +574,7 @@ public final class LinuxShareSession {
     ) async throws -> Bool {
         guard let server else { return false }
         // The new factory travels WITH the data: the portal backend is built
-        // against a PipeWire node id, so swapping the selection bytes alone
-        // would restart the old source.
+        // against a PipeWire node id, so the selection bytes alone aren't enough.
         return try await server.changeSource(
             filterData: filterData, captureFactory: captureFactory)
     }
@@ -711,19 +582,14 @@ public final class LinuxShareSession {
     /// The capture ended on its own — an error, or the person pressing stop in
     /// the compositor's own indicator.
     private func handleCaptureStopped(_ error: Error?) {
-        // The share is over — see `stopSharing`. `self.server` is deliberately
-        // left alone: the server drives its own teardown from here, and the
-        // engine's control/roster surface is emptied below.
+        // `self.server` is deliberately left alone: the server drives its own
+        // teardown, and this only empties the engine's control/roster surface.
         endShareGeneration()
         if let error {
             setPhase(.failed("\(error)"))
         } else {
             setPhase(.idle)
         }
-        // BEFORE the rosters empty: stopping a share expels every viewer at
-        // once, and reconciling against the resulting empty list would fire
-        // one "stopped watching" banner per viewer at the moment the sharer
-        // already decided to stop.
         onShareDidEnd?(.captureStopped)
         viewers = []
         onViewersChanged?([])
@@ -732,9 +598,8 @@ public final class LinuxShareSession {
         clearControlState()
         teardownOverlay()
         stopVoice()
-        // `self.server` is deliberately still set here (see the note at the
-        // top of this method), which is what lets the teardown invalidate a
-        // link mint this share started and has not finished.
+        // `self.server` is still set (see above), which lets teardown
+        // invalidate a link mint this share started and hasn't finished.
         teardownLink(server: server)
     }
 
@@ -746,29 +611,21 @@ public final class LinuxShareSession {
     // MARK: Drawing
 
     /// Connect the sharer's own strokes to the overlay and to the viewers.
-    ///
-    /// Two directions, and they are deliberately separate: the overlay shows
-    /// the stroke so the sharer can see what they are drawing, and the server
-    /// broadcasts it so viewers see the same thing. Neither is derived from the
-    /// other — a sharer whose viewers have all left still gets to see their own
-    /// pen, and a stroke reaching viewers does not depend on the overlay
-    /// existing.
+    /// Two independent directions: a sharer with no viewers still sees their
+    /// own pen, and a stroke reaching viewers doesn't depend on the overlay.
     private func wireSharerDrawing(
         overlay: SharerOverlaySurface?, server: TailscaleScreenShareServer
     ) {
         drawing.resetForNewSession()
         drawing.onLocalOp = { [weak overlay, weak server] op in
             overlay?.apply(op)
-            // Queued, never one task per op: separately-spawned tasks reach
-            // the fan-out in whatever order the runtime picks, and a `.undo`
-            // that overtakes its `.add` leaves the stroke on every viewer's
-            // canvas with nothing left to remove it.
+            // Queued, never one task per op — a reordered `.undo` overtaking
+            // its `.add` would leave the stroke stuck on every viewer's canvas.
             server?.enqueueAnnotationBroadcast(op)
         }
         overlay?.onPointer = { [weak self] phase, point in
-            // The C layer fires these on the GTK main thread, which is this
-            // actor's executor — so the hop is a formality the compiler wants
-            // rather than a real thread change.
+            // The C layer fires these on the GTK main thread, this actor's
+            // executor, so this hop is a formality.
             MainActor.assumeIsolated {
                 guard let self else { return }
                 switch phase {
@@ -788,24 +645,18 @@ public final class LinuxShareSession {
     }
 
     /// Arm a drawing tool, or disarm with nil. Selecting the armed tool again
-    /// disarms it, matching the viewer's toolbar.
+    /// disarms it.
     ///
-    /// **Arming makes the overlay swallow every click on this machine** — it is
-    /// a fullscreen, override-redirect window. That is the feature, and it is
-    /// why the overlay refuses to arm unless it can also take the keyboard:
-    /// Escape is then the way back out, and without it the sharer would be
-    /// stuck behind a window with no visible way to dismiss it. A refusal
-    /// leaves the tool unarmed and says so.
+    /// Arming makes the overlay (a fullscreen override-redirect window)
+    /// swallow every click — the feature — which is why it refuses to arm
+    /// unless it can also take the keyboard: Escape is the only way out.
     public func selectTool(_ tool: AnnotationTool?) {
         latch.select(tool, surface: armOverlay)
         publishLatch()
     }
 
-    /// The latch's surface seam on X11. `setInteractive(true)` is the call that
-    /// can half-succeed — it flips the input region and then checks with
-    /// `XGetInputFocus` whether the keyboard came too — so a false here is
-    /// exactly the `.noKeyboard` case, and the latch's response to it is to
-    /// disarm anyway.
+    /// `setInteractive(true)` can half-succeed — flips the input region, then
+    /// checks `XGetInputFocus` for the keyboard — so false means `.noKeyboard`.
     private func armOverlay(_ tool: AnnotationTool?) -> SharerDrawingArmResult {
         guard let overlay else { return tool == nil ? .armed : .refused(.noSurface) }
         guard tool != nil else {
@@ -831,25 +682,15 @@ public final class LinuxShareSession {
         overlay?.clear()
     }
 
-    /// Hide the overlay and seal the injector.
+    /// Hide the overlay and seal the injector, torn down explicitly rather
+    /// than left to `deinit` (the server's own teardown is async) — "Stop
+    /// Sharing" must mean the remote hands are off NOW.
     ///
-    /// Both are torn down explicitly rather than left to `deinit`, and for the
-    /// same reason: the server holds them too, and its own teardown is
-    /// asynchronous. Dropping only this reference would leave viewers' strokes
-    /// on screen and — much worse — a live control grant, for however long the
-    /// server took to finish stopping. "Stop Sharing" has to mean the remote
-    /// hands are off *now*.
-    ///
-    /// `deactivate()` also releases any button held mid-drag, so stopping a
-    /// share while a viewer is dragging cannot leave a button stuck down. On
-    /// X11 that matters more than elsewhere: a held button grabs the pointer,
-    /// so a stuck one makes the whole desktop unusable.
+    /// `deactivate()` also releases any button held mid-drag: on X11 a held
+    /// button grabs the pointer, so a stuck one makes the whole desktop unusable.
     private func teardownOverlay() {
-        // Disarm FIRST, and unconditionally. An interactive overlay that is
-        // merely dropped leaves a fullscreen click-swallowing window on screen
-        // for as long as it takes the reference to die — and the whole desktop
-        // is unusable meanwhile. Unconditional because an arm that half-
-        // succeeded leaves this engine believing nothing is armed.
+        // Disarm FIRST, unconditionally — a merely-dropped interactive
+        // overlay leaves a fullscreen click-swallowing window on screen.
         latch.teardown(surface: armOverlay)
         publishLatch()
         overlay?.setShowsOutline(false)
@@ -860,11 +701,8 @@ public final class LinuxShareSession {
     }
 
     /// Build the injector, or nil when this X server cannot inject.
-    ///
-    /// `isTrusted()` is the real question and it is asked HERE, before the
-    /// server exists, because its answer decides whether `.remoteControl` goes
-    /// out on the wire at all. Asking later would mean advertising a
-    /// capability and then declining every request that arrived because of it.
+    /// `isTrusted()` is asked HERE, before the server exists, since its
+    /// answer decides whether `.remoteControl` is advertised at all.
     private static func makeInjector(display: String?) -> X11InputInjector? {
         let injector = X11InputInjector(display: display)
         return injector.isTrusted() ? injector : nil
@@ -873,13 +711,8 @@ public final class LinuxShareSession {
     // MARK: Voice
 
     /// Open the microphone and start hearing viewers, for this share only.
-    ///
-    /// Best-effort: a machine with no capture device shares perfectly well and
-    /// simply shows no mic control. The failure is written to stderr for the
-    /// same reason the overlay's and the injector's are — the share works, so
-    /// nothing else would ever say why the button is missing. The ordering
-    /// inside — route before device, `onStopped` before `start()` — is
-    /// `SharerVoiceSession`'s and is shared with the Windows engine.
+    /// Best-effort: a machine with no capture device just shows no mic
+    /// control. Ordering (route before device) is `SharerVoiceSession`'s.
     private func startVoice(on server: TailscaleScreenShareServer) {
         guard let microphoneFactory else { return }
         do {
@@ -902,10 +735,8 @@ public final class LinuxShareSession {
         voiceSession.toggleMic()
     }
 
-    /// Mirror one latch transition onto this actor's published pair.
-    ///
-    /// Hopped: the transition can come from the capture thread reporting the
-    /// device gone, and both flags have to move together when it does.
+    /// Mirror one latch transition onto this actor's published pair (both
+    /// flags must move together — the device can go away mid-share).
     private func applyVoiceState(available: Bool, on: Bool) {
         micAvailable = available
         micOn = on
@@ -914,12 +745,9 @@ public final class LinuxShareSession {
 
     // MARK: Roster
 
-    /// Record a connected-roster snapshot and let the access layer see it.
-    ///
-    /// The roster is re-emitted whenever anything about it changes — including
-    /// a StableNodeID finishing resolution, which is precisely the event a
-    /// queued "Deny & Block" is waiting for. So feeding it here, rather than
-    /// only on join and leave, is what makes the queue drain at all.
+    /// Record a connected-roster snapshot and let the access layer see it —
+    /// re-emitted on any change (including StableNodeID resolving), which is
+    /// what drains a queued "Deny & Block".
     private func applyConnected(_ rows: [ConnectedViewer]) {
         viewers = rows
         onViewersChanged?(rows)
@@ -932,9 +760,8 @@ public final class LinuxShareSession {
         noteRoster()
     }
 
-    /// Both lists together: a peer moves between them (pending → connected on
-    /// Accept), and feeding one at a time would prune the other's queued
-    /// intents as "gone" the instant it moved.
+    /// Both lists together — feeding one at a time would prune the other's
+    /// queued intents the instant a peer moved between them.
     private func noteRoster() {
         let identities =
             viewers.map {
@@ -946,20 +773,14 @@ public final class LinuxShareSession {
                     id: $0.id, stableID: $0.stableID, displayName: $0.label)
             }
         if access.noteRoster(identities) {
-            // A queued decision just landed; the roster's own rows now render
-            // differently (the standing decision replaces the two buttons).
             onAccessChanged?()
         }
     }
 
     // MARK: Incoming asks to share
 
-    /// Bring up (or re-point) the idle control listener.
-    ///
-    /// Idempotent per node and safe to call on every node change — which is
-    /// how it is called, because there is no single moment when "the node is
-    /// ready" that this engine observes. A listener already bound to the same
-    /// node is left alone. The lifecycle itself is the shared coordinator's.
+    /// Bring up (or re-point) the idle control listener. Idempotent per
+    /// node, safe to call on every node change.
     public func ensureControlListener() {
         guard let node = nodeProvider?() else { return }
         askToShare.ensureListener(node: node)
@@ -973,9 +794,7 @@ public final class LinuxShareSession {
     }
 
     /// Answer an ask: reply on its own connection, and on accept pre-approve
-    /// the asker and have the host start sharing (the coordinator's contract;
-    /// the pre-approve half lands in this engine's `onPreApproveViewer`
-    /// wiring).
+    /// the asker and start sharing.
     public func answerShareRequest(id: UUID, accept: Bool) {
         askToShare.answer(id: id, accept: accept)
     }
@@ -996,11 +815,9 @@ public final class LinuxShareSession {
     /// Whether a decision on this row is queued behind identity resolution.
     public func isDeferred(rowID: String) -> Bool { access.isDeferred(rowID: rowID) }
 
-    /// "Always Allow" / "Deny & Block" on a roster row.
-    ///
-    /// Persisting fires `onPoliciesChanged`, which pushes the map at the live
-    /// server — which is what makes a block on somebody already watching
-    /// actually expel them, rather than merely stop them coming back.
+    /// "Always Allow" / "Deny & Block" on a roster row. Persisting fires
+    /// `onPoliciesChanged`, pushing the map at the live server — this is what
+    /// makes a block on someone already watching actually expel them.
     public func remember(rowID: String, stableID: String?, label: String, policy: PeerPolicy) {
         access.remember(
             rowID: rowID, stableID: stableID, displayName: label, policy: policy)
@@ -1013,11 +830,9 @@ public final class LinuxShareSession {
         onAccessChanged?()
     }
 
-    /// One-time disconnect of a connected viewer — the roster's Disconnect.
-    ///
-    /// Nothing is remembered: their next HELLO goes back through the normal
-    /// admission gate. That is the difference between this and Deny & Block,
-    /// and it is why both exist.
+    /// One-time disconnect of a connected viewer. Nothing is remembered —
+    /// their next HELLO goes back through the normal admission gate, unlike
+    /// Deny & Block.
     public func disconnect(_ addr: String) { server?.disconnectViewer(addr: addr) }
 
     /// Admit a viewer parked at the approval gate. `addr` is the
@@ -1028,15 +843,10 @@ public final class LinuxShareSession {
 
     // MARK: Remote control
 
-    /// Hand the pointer and keyboard to a viewer who asked for them.
-    ///
-    /// The server holds ONE grantee at a time and gates injection on that
-    /// exact connection id, so this is the whole of the decision — there is no
-    /// second switch to also set. It returns false when the request is already
-    /// gone (the viewer gave up, or disconnected), which is not an error worth
-    /// an alert: the row disappears on the next snapshot either way. On this
-    /// host false can also mean the injector stopped being trusted — XTEST
-    /// went away under a live share — which the host words for the person.
+    /// Hand the pointer and keyboard to a viewer who asked for them. The
+    /// server holds ONE grantee, gated on that exact connection id. Returns
+    /// false if the request is already gone, or if XTEST stopped being
+    /// trusted mid-share — the host words the refusal.
     @discardableResult
     public func grantControl(to requestID: UUID) -> Bool {
         server?.grantControl(toConnectionID: requestID) ?? false
@@ -1053,15 +863,11 @@ public final class LinuxShareSession {
         server?.revokeControl(reason: "the sharer took control back")
     }
 
-    /// Drop every control row on teardown.
-    ///
-    /// The high-water mark resets too: a fresh server starts its own sequence
-    /// at zero, so carrying the old mark forward would make `isStale` discard
-    /// the new share's first snapshots — a grant that silently never appears
-    /// in the UI. That reset is also why the mark alone is not enough to
-    /// reject a snapshot still in flight from the server that just ended: it
-    /// is not stale against zero. The share stamp is what rejects it — see
-    /// `SharerSessionCore.shouldApplyGrant`.
+    /// Drop every control row on teardown. The high-water mark resets too —
+    /// a fresh server starts its sequence at zero, so carrying the old mark
+    /// forward would discard the new share's first grant snapshots. The
+    /// share stamp (`SharerSessionCore.shouldApplyGrant`) rejects any
+    /// snapshot still in flight from the server that just ended.
     private func clearControlState() {
         onControlRequestsChanged?([])
         onControlGrantChanged?(nil)
@@ -1070,14 +876,10 @@ public final class LinuxShareSession {
 
     // MARK: Settings
 
-    /// Flip the approval gate and push it at a live share.
-    ///
-    /// Applied mid-share on purpose: `setRequireApproval(false)` drains
-    /// whoever is already parked (minus anyone remembered-deny), so turning
-    /// the gate off is also how you admit a queue in one click. Turning it on
-    /// mid-share affects the next HELLO — viewers already admitted stay
-    /// admitted, exactly as on macOS. Persistence is the host's — this engine
-    /// owns no preferences.
+    /// Flip the approval gate and push it at a live share. Applied mid-share
+    /// on purpose: turning it off drains whoever is parked (minus
+    /// remembered-deny) in one click; turning it on affects only the next
+    /// HELLO. Persistence is the host's.
     public func setRequireApproval(_ enabled: Bool) {
         requireApproval = enabled
         server?.setRequireApproval(enabled)

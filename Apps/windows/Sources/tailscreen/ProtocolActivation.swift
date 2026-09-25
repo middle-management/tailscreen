@@ -2,20 +2,15 @@ import Foundation
 
 /// Delivers a clicked `tailscreen:` join link into the app.
 ///
-/// The MSIX manifest's `uap:Protocol` extension is the registration half:
-/// Windows launches this app for a link click. Packaged Win32 apps are
-/// multi-instance and nothing here redirects, so each click starts a NEW
-/// process and the launch path is the whole story — the URI arrives via the
-/// AppLifecycle activation arguments, with the classic command line as the
-/// fallback (desktop-bridge protocol activation also passes the URI there).
-/// That is fine because a link launch runs a guest viewer session, which
-/// needs no tsnet node and so never contends with a running instance's
-/// state directory — the model skips its sign-in auto-resume for exactly
-/// this launch kind.
+/// The MSIX manifest's `uap:Protocol` extension is the registration half.
+/// Packaged Win32 apps are multi-instance and nothing here redirects, so each
+/// click starts a new process; the URI arrives via AppLifecycle activation
+/// arguments, with the classic command line as fallback. Fine because a link
+/// launch runs a guest viewer session, needing no tsnet node, so it never
+/// contends with a running instance's state directory.
 ///
-/// Third genuinely Windows-bound file, carrying the same `#if os(Windows)`
-/// + stub pattern as `WinUIVideoView` and `NotificationActivation`, so the
-/// call sites stay on the Linux typecheck path.
+/// Carries the same `#if os(Windows)` + stub pattern as `WinUIVideoView` and
+/// `NotificationActivation`, so call sites stay on the Linux typecheck path.
 enum ProtocolActivation {}
 
 #if os(Windows)
@@ -26,10 +21,8 @@ import WindowsFoundation
 
 extension ProtocolActivation {
     /// The `tailscreen:` link this process was launched with, or nil for an
-    /// ordinary launch. This is the counterpart of the notification
-    /// observer's warning about `getActivatedEventArgs()` — that method
-    /// answers only for the LAUNCH, which is exactly what a protocol
-    /// activation is, so here it is the right call rather than the trap.
+    /// ordinary launch. Unlike the notification observer, `getActivatedEventArgs()`
+    /// is the right call here — a protocol activation IS a launch.
     @MainActor
     static func launchJoinLink() -> String? {
         if let instance = AppInstance.getCurrent(),
@@ -47,9 +40,8 @@ extension ProtocolActivation {
 
     /// Redirected protocol activations while the app is running. Today
     /// nothing redirects — each click is a fresh process — but the handler
-    /// costs nothing installed (the same reasoning as the notification
-    /// observer's unconditional subscribe) and is the wire single-instance
-    /// redirection would use if it is ever added.
+    /// costs nothing installed, and is the wire single-instance redirection
+    /// would use if added later.
     @MainActor
     static func observe(_ handler: @escaping @MainActor (String) -> Void) {
         guard let instance = AppInstance.getCurrent() else { return }

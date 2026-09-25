@@ -3,45 +3,34 @@ import PortalCaptureKit
 
 /// Owns this app's `PortalSession` and is the only thing that ever touches it.
 ///
-/// **Every call goes through one serial queue, and that is not tidiness.** A
-/// `PortalSession` holds a private D-Bus connection libdbus expects to be
-/// driven from a single thread, and the three things this app does with it
-/// happen on three different ones: availability is probed at startup, consent
-/// is negotiated off the GTK main thread (the dialog can sit on screen for
-/// minutes and blocking the UI thread for that would freeze the app), and the
-/// PipeWire descriptor is opened by the screen-share server's capture factory
-/// on whichever thread it happens to be running. Funnelling them is what makes
-/// that safe.
+/// **Every call goes through one serial queue.** libdbus expects a
+/// `PortalSession`'s D-Bus connection driven from a single thread, but this
+/// app touches it from three (startup probe, consent negotiation off the GTK
+/// main thread, and the capture factory's PipeWire open) — funnelling them
+/// through one queue is what makes that safe.
 ///
-/// It also holds the session **for the life of the share**, which is the point:
-/// negotiating raises a consent dialog, so a restart that renegotiated would
-/// put one in front of somebody who is already sharing. The server's restart
-/// budget only reopens the PipeWire stream.
+/// Holds the session **for the life of the share**: negotiating raises a
+/// consent dialog, so a restart that renegotiated would put one in front of
+/// someone already sharing. The restart budget only reopens the PipeWire
+/// stream.
 final class PortalSessionHost: @unchecked Sendable {
     /// What happened when we asked the user to share.
     enum Outcome {
         case granted(nodeID: UInt32)
-        /// The person declined, or dismissed the dialog. **Not an error.**
-        /// A share that did not happen because somebody said no is a normal
-        /// end to the flow, and reporting it as a failure would put an error
-        /// in front of a person who made a deliberate choice.
+        /// Declined or dismissed — not an error, a normal end to the flow.
         case cancelled
         case failed(String)
     }
 
-    /// Serial, and dedicated: `negotiate` blocks its thread for as long as the
-    /// consent dialog is up, so this queue must not be shared with anything
-    /// that needs to make progress meanwhile.
+    /// Dedicated: `negotiate` blocks this thread for as long as the consent
+    /// dialog is up, so it can't be shared with anything needing to progress
+    /// meanwhile.
     private let queue = DispatchQueue(label: "tailscreen.portal-session")
     private var session: PortalSession?
 
-    /// Whether a portal answered — a capability check that puts **nothing** on
-    /// anyone's screen.
-    ///
-    /// This distinction is load-bearing: `CaptureBackendSelection` needs to
-    /// know whether the portal exists in order to choose a backend, and a
-    /// check that raised a dialog would mean asking the user for consent
-    /// before deciding whether to ask the user for consent.
+    /// Whether a portal answered — puts **nothing** on screen.
+    /// `CaptureBackendSelection` needs this to choose a backend without
+    /// raising a consent dialog just to decide whether to ask for consent.
     func probeAvailability() -> Bool {
         queue.sync {
             guard let probe = try? PortalSession() else { return false }
@@ -55,9 +44,8 @@ final class PortalSessionHost: @unchecked Sendable {
     }
 
     /// Raise the consent dialog and, if the user agrees, keep the session.
-    ///
-    /// Async because the dialog is a person: `negotiate` blocks until they
-    /// answer or the timeout elapses, and the caller is the GTK main thread.
+    /// Async: blocks until they answer or time out, called from the GTK main
+    /// thread.
     func negotiate(sources: PortalSession.SourceTypes) async -> Outcome {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
@@ -79,9 +67,8 @@ final class PortalSessionHost: @unchecked Sendable {
             guard let first = streams.first else {
                 return .failed("the portal granted the share but returned nothing to capture")
             }
-            // Held only on success. A declined or failed negotiation leaves
-            // no session behind, so the next attempt starts clean rather than
-            // reusing a handle the portal has already torn down.
+            // Held only on success, so a declined/failed attempt leaves no
+            // stale handle for the next try to reuse.
             session = opened
             return .granted(nodeID: first.nodeID)
         } catch PortalSession.Failure.cancelled {
@@ -91,11 +78,10 @@ final class PortalSessionHost: @unchecked Sendable {
         }
     }
 
-    /// Open a PipeWire descriptor on the negotiated session — what
-    /// `PortalCaptureEncoder` calls at every start, including after a restart.
-    ///
-    /// Synchronous on purpose: the capture factory that calls it is not async,
-    /// and this is a local D-Bus round trip rather than a dialog.
+    /// Opens a PipeWire descriptor on the negotiated session; called by
+    /// `PortalCaptureEncoder` at every start, including after a restart.
+    /// Synchronous: the caller isn't async, and this is a local D-Bus round
+    /// trip, not a dialog.
     func openPipeWireFileDescriptor() throws -> Int32 {
         try queue.sync {
             guard let session else {
@@ -105,8 +91,8 @@ final class PortalSessionHost: @unchecked Sendable {
         }
     }
 
-    /// End the session, which is what makes the compositor drop its "your
-    /// screen is being shared" indicator. Idempotent.
+    /// Ends the session, dropping the compositor's sharing indicator.
+    /// Idempotent.
     func close() {
         queue.sync {
             session?.close()

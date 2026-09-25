@@ -8,180 +8,117 @@ import os
 
 /// Screen-share viewer.
 ///
-/// Both the client and server use the new `PacketListener` (UDP via tsnet's
-/// `ListenPacket`). The Dial-UDP path through `OutgoingConnection` is
-/// unsuitable here: libtailscale's existing `TsnetDial` uses a SOCK_STREAM
-/// socketpair under the hood, which streams bytes without preserving
-/// datagram boundaries — multiple writes can coalesce, incoming datagrams
-/// can split. Going through `PacketListener` (SOCK_DGRAM socketpair, see
-/// patches 013-015) keeps every datagram intact in both directions.
+/// Uses `PacketListener` (UDP via tsnet's `ListenPacket`), not the Dial-UDP
+/// path: `TsnetDial` uses a SOCK_STREAM socketpair, which doesn't preserve
+/// datagram boundaries. `PacketListener` (SOCK_DGRAM) keeps every datagram
+/// intact.
 ///
-/// The receive-side data plane — HELLO/HELLO_ACK, NACK, receiver reports,
-/// PLI, FEC, RTP reassembly, and control demux — is the portable
-/// `ViewerSession` (shared with the Linux/Windows viewer). This class owns the
-/// mac-only shell around it: the UDP socket, the VideoToolbox/Metal adapters,
-/// the TCP annotation + remote-control channels, `VoiceChannel` audio, the
-/// decode-recovery escalation ladder, and the keepalive / idle-disconnect
-/// plumbing.
+/// The receive-side data plane (HELLO/HELLO_ACK, NACK, RR, PLI, FEC, RTP
+/// reassembly, control demux) is the portable `ViewerSession`, shared with
+/// Linux/Windows. This class is the mac-only shell around it: UDP socket,
+/// VideoToolbox/Metal adapters, TCP annotation + remote-control channels,
+/// `VoiceChannel` audio, decode-recovery ladder, keepalive/idle-disconnect.
 ///
-/// Flow on connect:
-///
-///   1. Bind a local UDP `PacketListener` on the node's tailnet IP at an
-///      ephemeral port. tsnet picks the port; the server learns it from
-///      the source address of the HELLO datagram.
-///   2. Build a `ViewerSession` and `start()` it — the session emits the
-///      extended HELLO (advertising NACK / receiver-report / FEC) via
-///      `onControlToSend`.
-///   3. Feed every inbound datagram to `ViewerSession.receiveRTP`; decoded
-///      frames flow decoder → `MetalSinkAdapter` → renderer, and the session
-///      emits its own NACK/PLI/RR feedback back over UDP.
-///   4. Periodically send KEEPALIVE so the server's idle sweeper doesn't
-///      drop us during quiet stretches.
-///
-/// The renderer (and the `NSWindow` it lives in) is owned by `AppState` for
-/// the process lifetime — see the long comment that used to live here for
-/// the AppKit teardown race that motivated that.
+/// Flow on connect: bind a UDP `PacketListener` at an ephemeral port -> build
+/// and start a `ViewerSession` (emits extended HELLO) -> feed inbound
+/// datagrams to `ViewerSession.receiveRTP` (decoded frames flow decoder ->
+/// `MetalSinkAdapter` -> renderer) -> periodic KEEPALIVE against the server's
+/// idle sweeper.
 @available(macOS 10.15, *)
 final class TailscaleScreenShareClient: @unchecked Sendable {
     var node: TailscaleNode?
-    /// True when this client created the tsnet node itself; false when it
-    /// borrowed AppState's node. Controls whether `disconnect()` tears the
-    /// node down or just releases its reference.
+    /// False when this client borrowed AppState's node instead of creating
+    /// its own; controls whether `disconnect()` tears the node down.
     private var ownsNode: Bool = true
 
     private var packetListener: PacketListener?
     private var serverAddr: String?
-    /// The guest (share-by-token) tunnel this session runs over, when it was
-    /// opened with `connectGuest` instead of a tailnet dial. Owned like a
-    /// self-created node: torn down in `disconnect()`.
+    /// Set when opened with `connectGuest` instead of a tailnet dial. Owned
+    /// like a self-created node: torn down in `disconnect()`.
     private var guestClient: GuestClientNode?
-    /// True for share-by-token sessions. Picks the guest tunnel's dial for
-    /// the TCP back-channel (annotations, remote control) and labels the
-    /// stats overlay; the affordances themselves are gated by the sharer's
-    /// advertised caps, same as tailnet sessions.
+    /// Picks the guest tunnel's dial for the TCP back-channel and labels the
+    /// stats overlay; affordances are still gated by the sharer's caps.
     private(set) var isGuestSession = false
     private let renderer: MetalViewerRenderer
     private var decoder: VideoDecoder?
 
-    /// The portable `ViewerSession` — the video / audio / loss-recovery data
-    /// plane (HELLO/HELLO_ACK, NACK, receiver reports, PLI, FEC, reassembly,
-    /// control demux) shared with the Linux/Windows viewer and covered by the
-    /// `linux-protocol` / `linux-viewer` CI. Built fresh per `connect()`. This
-    /// is the viewer's **sole** receive path: the mac client is now a socket +
-    /// the mac adapters (`VTVideoDecoderAdapter` / `MetalSinkAdapter`) + the
-    /// mac-only side channels (annotations, remote control, `VoiceChannel`
-    /// audio, the decode-recovery ladder) arranged *around* the session.
+    /// The viewer's **sole** receive path: the mac client is a socket + mac
+    /// adapters (`VTVideoDecoderAdapter`/`MetalSinkAdapter`) + mac-only side
+    /// channels (annotations, remote control, `VoiceChannel`, decode-recovery
+    /// ladder) arranged around this. Built fresh per `connect()`.
     private var viewerSession: ViewerSession?
-    /// Serial queue the VideoToolbox adapter hops decoded frames onto. The
-    /// frame path — adapter → sink → renderer — is not the receive task's
-    /// context, and the session tolerates that for exactly the two calls the
-    /// frame path makes (`noteDecodedFrame` and `noteHostDecodeFailure` are
-    /// its thread-safe entry points, a mailbox the receive side drains); it
-    /// just must be consistent.
+    /// The frame path (adapter -> sink -> renderer) isn't the receive task's
+    /// context; the session tolerates that only via its two thread-safe entry
+    /// points (`noteDecodedFrame`/`noteHostDecodeFailure`), a mailbox the
+    /// receive side drains.
     private let viewerFrameQueue = DispatchQueue(label: "com.tailscreen.viewer-session-frames")
     private var isConnected = false
-    /// Disconnect is a permanent cancellation request for this one-shot
-    /// client. The task is shared so overlapping callers await the same
-    /// teardown instead of returning while cleanup is still running.
+    /// Shared so overlapping disconnect callers await the same teardown
+    /// instead of returning while cleanup is still running.
     private let disconnectLock = NSLock()
     private var isDisconnecting = false
     private var disconnectTask: Task<Void, Never>?
 
-    /// Audio SSRC the sharer assigned via HELLO_ACK. nil until the ack
-    /// arrives; the VoiceChannel waits on this before sending mic audio.
+    /// nil until HELLO_ACK arrives; VoiceChannel waits on this before sending
+    /// mic audio.
     private(set) var assignedAudioSSRC: UInt32?
 
-    /// Where this viewer records its handshake, for later troubleshooting.
-    ///
-    /// Set by `AppState` at construction and forwarded to the portable
-    /// `ViewerSession`, which is where the handshake events are actually
-    /// recorded — this class is the mac host around it.
+    /// Forwarded to the portable `ViewerSession`, which actually records
+    /// handshake events — this class is the mac host around it.
     var recorder: DiagnosticsRecorder?
 
-    /// Fires when the sharer assigns us an audio SSRC. AppState uses this
-    /// to lazily build the local VoiceChannel.
+    /// AppState uses this to lazily build the local VoiceChannel.
     var onAudioSSRCAssigned: ((UInt32) -> Void)?
 
-    /// Fires when the sharer reports our HELLO is parked behind their
-    /// approval gate (HELLO_PENDING). AppState toggles a "Waiting for
-    /// sharer to accept" overlay; HELLO_ACK or disconnect clears it.
+    /// HELLO_PENDING. AppState toggles a "Waiting for sharer to accept"
+    /// overlay; HELLO_ACK or disconnect clears it.
     var onAwaitingApproval: (() -> Void)?
 
-    /// Fires when the sharer declines (or has blocked) this viewer
-    /// (HELLO_DENY). AppState surfaces an alert and disconnects. When
-    /// unset, the receive loop falls back to the generic peer-closed
-    /// teardown — same as the SERVER_BYE that follows on the wire.
+    /// HELLO_DENY. When unset, the receive loop falls back to the generic
+    /// peer-closed teardown (same as the SERVER_BYE that follows on the wire).
     var onDeniedBySharer: (() -> Void)?
 
-    /// Fires on every inbound audio RTP packet (PT=98). AppState pipes
-    /// this into VoiceChannel.receive(_:).
     var onAudioReceived: ((Data) -> Void)?
 
-    /// Test-only: fires on the decoder's output thread each time a frame is
-    /// decoded. Production presents frames via `MetalViewerRenderer`, whose
-    /// `onVideoSizeChanged` only fires once the renderer's `CADisplayLink` is
-    /// driving — and that link requires an on-screen `NSView` (`start(in:)`),
-    /// which doesn't exist under xctest. E2E tests assert on this instead so
-    /// they verify the capture→encode→RTP→tsnet→decode pipeline without a
-    /// windowed render surface.
+    /// Test-only: production presents via `MetalViewerRenderer`, whose
+    /// `onVideoSizeChanged` needs an on-screen `NSView`'s `CADisplayLink`,
+    /// unavailable under xctest. E2E tests assert on this instead to verify
+    /// the capture->encode->RTP->tsnet->decode pipeline headlessly.
     var onDecodedFrameForTesting: ((CVPixelBuffer) -> Void)?
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
 
-    /// TCP back-channel for annotation ops. Separate from the UDP video
-    /// stream because strokes need reliable, ordered delivery — a dropped
-    /// UDP datagram would leave a visual gap mid-stroke. Goes to the same
-    /// host:port as the peer-discovery probe. Existential over
-    /// `FramedControlChannel` because two tunnels can carry it: a tailnet
-    /// dial (`OutgoingConnection`) or a guest tunnel dial
-    /// (`GuestClientNode.dial`, an `IncomingConnection`).
+    /// Separate from the UDP video stream because strokes need reliable,
+    /// ordered delivery. Existential over `FramedControlChannel` since two
+    /// tunnels can carry it: a tailnet dial or a guest tunnel dial.
     private var annotationChannel: (any FramedControlChannel)?
 
-    /// Serializes writes on `annotationChannel` so concurrent
-    /// `sendAnnotationOp` calls (e.g. rapid stroke segments) don't
+    /// Serializes writes so concurrent `sendAnnotationOp` calls don't
     /// interleave framed-message bytes on the wire.
     private let annotationWriter = ConnectionWriter()
-    /// `TAILSCREEN_DEBUG_INPUT=1` send-duration statistics. Touched only from
-    /// `sendInputEvent`, which the viewer feeds from one serial outbox.
+    /// `TAILSCREEN_DEBUG_INPUT=1` stats, touched only from `sendInputEvent`.
     private var inputSendSampler = InputDebugLog.Sampler()
-    /// Background task draining inbound annotation ops fanned out by the
-    /// server (sharer-painted strokes, other viewers' strokes). Cancelled
-    /// in `disconnect()`.
+    /// Drains inbound ops fanned out by the server. Cancelled in `disconnect()`.
     private var annotationReceiveTask: Task<Void, Never>?
 
-    /// Fires for each inbound annotation op received on the back-channel.
     /// AppState wires this to the viewer's overlay so sharer + other-viewer
     /// strokes render alongside locally drawn ones.
     var onAnnotationReceived: ((AnnotationOp) -> Void)?
 
-    /// Fires when the sharer grants this viewer remote control
-    /// (`.controlGranted`). AppState flips the viewer into control mode and
-    /// starts capturing input.
     var onControlGranted: (() -> Void)?
 
-    /// Fires when the sharer's advertised remote-control support becomes known
-    /// or changes — `true` if the sharer's HELLO_ACK carried
-    /// `ScreenShareCaps.remoteControl`. AppState gates the viewer's "Request
-    /// Control" affordance on this so it isn't offered against a sharer whose
-    /// build/platform can't inject input at all (the request would otherwise
-    /// be silently dropped as an unknown TCP type). Static support only;
-    /// a live request is still subject to the sharer's runtime toggle +
-    /// Accessibility gate.
+    /// `true` if HELLO_ACK carried `ScreenShareCaps.remoteControl`. Gates the
+    /// "Request Control" affordance; static support only — a live request is
+    /// still subject to the sharer's runtime toggle + Accessibility gate.
     var onRemoteControlSupportChanged: ((Bool) -> Void)?
 
-    /// Fires when the sharer's advertised annotation support becomes known or
-    /// changes — `true` if the HELLO_ACK carried `ScreenShareCaps.annotations`.
-    /// AppState gates the viewer's annotation toolbar on this so the viewer
-    /// doesn't draw local-only strokes at a sharer that can't render/relay
-    /// them (they would reach neither the sharer nor other viewers). Sharer
-    /// capability only.
+    /// `true` if HELLO_ACK carried `ScreenShareCaps.annotations`. Gates the
+    /// annotation toolbar so the viewer doesn't draw local-only strokes at a
+    /// sharer that can't render/relay them.
     var onAnnotationSupportChanged: ((Bool) -> Void)?
 
-    /// Fires when the sharer revokes (or declines) control (`.controlRevoked`).
-    /// The argument is the sharer's short reason tag (English, for logs — the
-    /// viewer UI shows its own localized message). AppState leaves control
-    /// mode and stops capturing input.
+    /// Argument is the sharer's short reason tag (English, logs only).
     var onControlRevoked: ((String) -> Void)?
 
     init(renderer: MetalViewerRenderer) {
@@ -189,16 +126,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         self.logger = TSLogger()
     }
 
-    /// Transmit an annotation op to the sharer over the TCP back-channel.
     /// Safe to call concurrently; writes are serialized through
-    /// ``ConnectionWriter``. Drops silently if the back-channel isn't open.
+    /// ``ConnectionWriter``.
     func sendAnnotationOp(_ op: AnnotationOp) async {
         guard let conn = annotationChannel, isConnected else {
-            // Once per session, because the alternative is a silent return on
-            // a best-effort dial that reconnects in the background: a viewer
-            // drawing before the back-channel is up loses those strokes with
-            // nothing said anywhere, which from the sharer's seat is
-            // indistinguishable from the sharer having dropped them.
+            // Once per session: a viewer drawing before the back-channel is
+            // up loses those strokes silently otherwise.
             if Self.takeLatch(annotationDropLogged) {
                 logger.log("Client: annotation dropped — back-channel not open")
             }
@@ -207,9 +140,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         let data = ScreenShareMessage.annotation(op).encode()
         do {
             try await annotationWriter.send(data, over: conn)
-            // Likewise once: the question a bundle has to answer is whether
-            // this viewer's strokes ever reached the wire at all, and one
-            // line answers it without a row per stroke.
+            // Likewise once: answers whether strokes ever reached the wire,
+            // without a row per stroke.
             if Self.takeLatch(annotationSentLogged) {
                 logger.log("Client: first annotation op sent")
             }
@@ -218,14 +150,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// One-shot latches for the two annotation lines above — a bundle needs
-    /// to answer "did this viewer's strokes ever reach the wire", not to
-    /// carry a line per stroke at drag rate.
     private let annotationSentLogged = Guarded<Bool>(false)
     private let annotationDropLogged = Guarded<Bool>(false)
 
-    /// True the first time it is called for a given latch, false after —
-    /// the shape `TailscaleScreenShareServer.logDroppedAnnotation` uses.
+    /// True the first time called for a given latch, false after.
     private static func takeLatch(_ latch: Guarded<Bool>) -> Bool {
         latch.withLock { taken -> Bool in
             if taken { return false }
@@ -234,8 +162,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Ask the sharer for remote control (`.controlRequest`) over the TCP
-    /// back-channel. Best-effort; no-op if the channel isn't open.
+    /// Best-effort; no-op if the channel isn't open.
     func requestControl() async {
         guard let conn = annotationChannel, isConnected else { return }
         do {
@@ -245,10 +172,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Send one input event to the sharer for injection (`.inputEvent`). Rides
-    /// the same reliable, serialized TCP channel as annotations so a
-    /// `mouseDown` never arrives without its `mouseUp`. No-op if the channel
-    /// isn't open.
+    /// Rides the same reliable, serialized TCP channel as annotations so a
+    /// `mouseDown` never arrives without its `mouseUp`.
     func sendInputEvent(_ event: InputEvent) async {
         guard let conn = annotationChannel, isConnected else { return }
         let startNs = DispatchTime.now().uptimeNanoseconds
@@ -260,14 +185,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         noteInputSend(startNs: startNs)
     }
 
-    /// `TAILSCREEN_DEBUG_INPUT=1` readout: how long the framed write above
-    /// actually took. This is the measurement that separates "the sharer is
-    /// slow" from "our own send is queued behind something on this
-    /// connection" — the latter being the multi-second stall patch 027 fixed,
-    /// and it shows up here as a single four-figure millisecond line.
-    ///
-    /// Timed at this call site rather than inside the writer actor so the
-    /// number includes the wait FOR the actor, which is the whole point.
+    /// Separates "the sharer is slow" from "our send is queued behind
+    /// something on this connection". Timed at the call site, not inside the
+    /// writer actor, so the number includes the wait for the actor.
     private func noteInputSend(startNs: UInt64) {
         guard InputDebugLog.isEnabled else { return }
         let nowNs = DispatchTime.now().uptimeNanoseconds
@@ -280,14 +200,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// A send slower than this is called out on its own line. 100 ms is well
-    /// past any healthy framed write on a tailnet and well short of the
-    /// multi-second stall, so a healthy run prints only the 1 Hz summary.
+    /// 100ms is well past a healthy framed write and well short of the
+    /// multi-second stall this is meant to catch.
     private static let slowInputSendNs: UInt64 = 100_000_000
 
-    /// Tell the sharer we're done controlling (`.controlReleased`) so it
-    /// revokes the grant — keeping the sharer UI + gate in step with the
-    /// viewer leaving control mode. Best-effort; no-op if the channel is closed.
     func releaseControl() async {
         guard let conn = annotationChannel, isConnected else { return }
         do {
@@ -297,11 +213,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Drains framed annotation ops from the server's back-channel
-    /// fan-out (sharer-painted strokes + other viewers' strokes that the
-    /// server relays). Runs until the connection closes or `disconnect()`
-    /// cancels the task. Failures here only kill the inbound channel;
-    /// outbound `sendAnnotationOp` still works until the conn errors too.
+    /// Failures here only kill the inbound channel; outbound
+    /// `sendAnnotationOp` still works until the conn errors too.
     private func receiveAnnotationLoop(over connection: any FramedControlChannel) async {
         var parser = ScreenShareMessageParser()
         while !Task.isCancelled {
@@ -335,13 +248,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Owns the TCP annotation back-channel for the whole session: drain
-    /// inbound ops and reconnect with capped backoff if the connection drops
-    /// mid-session. Before this, a dropped back-channel stayed dead for the
-    /// rest of the call — annotations silently stopped even though video kept
-    /// flowing. `initial` is the connection `connect()` already dialed (nil if
-    /// that first dial failed). Best-effort; runs until `disconnect()` cancels
-    /// `annotationReceiveTask`.
+    /// Drains inbound ops and reconnects with capped backoff if the
+    /// connection drops mid-session — without this, a dropped back-channel
+    /// stayed dead while video kept flowing. `initial` is nil if the first
+    /// dial failed.
     private func runAnnotationChannel(
         initial: (any FramedControlChannel)?,
         redial: @escaping () async -> (any FramedControlChannel)?
@@ -354,8 +264,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 guard conn != nil else {
                     if Task.isCancelled || !isConnected { break }
                     reconnectAttempts += 1
-                    // Same 250 ms → 5 s capped doubling as the UDP receive
-                    // loops; the constants live in `ReceiveLoopPolicy`.
+                    // Same capped doubling as the UDP receive loops (`ReceiveLoopPolicy`).
                     try? await Task.sleep(
                         nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: reconnectAttempts))
                     continue
@@ -363,12 +272,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 reconnectAttempts = 0  // reset after a clean (re)connect
             }
             guard let live = conn else { break }
-            // Drains until the connection drops or the task is cancelled.
             await receiveAnnotationLoop(over: live)
             self.annotationChannel = nil
             conn = nil
-            // On shutdown, disconnect() owns closing the connection it still
-            // referenced; on a mid-session drop we close it and reconnect.
+            // On shutdown, disconnect() owns closing the connection; on a
+            // mid-session drop we close it and reconnect.
             if Task.isCancelled || !isConnected { break }
             await live.close()
             logger.log("Annotation back-channel dropped — reconnecting")
@@ -376,8 +284,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         self.annotationChannel = nil
     }
 
-    /// Dial the annotation back-channel once over the tailnet, publishing it
-    /// to `annotationChannel` on success. Returns nil (logged) on failure.
     private func dialAnnotation(to target: String) async -> (any FramedControlChannel)? {
         guard let node = self.node, let tailscale = await node.tailscale else { return nil }
         do {
@@ -393,8 +299,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// The guest twin of `dialAnnotation`: dial the sharer's framed TCP
-    /// channel through the guest tunnel. Same publish-on-success contract.
+    /// Guest twin of `dialAnnotation`; same publish-on-success contract.
     private func dialGuestAnnotation() async -> (any FramedControlChannel)? {
         guard let guest = guestClient else { return nil }
         do {
@@ -408,23 +313,16 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Tail of the audio send chain. Each call to `sendAudioRTP` parks
-    /// on the previous one's job before issuing its own send. Stops
-    /// detached `Task`s from piling up when `pl.send` stalls (poor link,
-    /// peer reachability change) — at 50 Hz a backed-up actor would
-    /// otherwise grow an unbounded queue.
+    /// Each `sendAudioRTP` call parks on the previous one's job before
+    /// sending, so detached Tasks don't pile up when `pl.send` stalls — at
+    /// 50Hz that would otherwise grow an unbounded queue.
     private let audioSendTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
 
-    /// Send one outbound audio RTP packet up to the sharer. VoiceChannel
-    /// calls this from its onSend closure. Fire-and-forget; serialised
-    /// internally via `audioSendTail`.
+    /// Fire-and-forget; serialized internally via `audioSendTail`.
     func sendAudioRTP(_ packet: Data) {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         let prev = audioSendTail.withLock { $0 }
-        // Explicit capture list keeps the 50 Hz chain from accidentally
-        // retaining `self` if a future edit ever reads an instance
-        // property inside the Task body. Each link holds `pl`, `addr`,
-        // and the previous task — never `self`.
+        // Explicit capture list: never retain `self` in this 50Hz chain.
         let job = Task { [pl, addr, packet] in
             await prev?.value
             try? await pl.send(packet, to: addr)
@@ -432,23 +330,19 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         audioSendTail.withLock { $0 = job }
     }
 
-    /// Test-only: send one PLI control packet to the server immediately. The
-    /// production PLI path fires from inside `ViewerSession` on detected packet
-    /// loss, which is hard to provoke deterministically; this drives the
-    /// viewer→server PLI path directly so a test can assert the server records it.
+    /// Test-only: the production PLI path fires from `ViewerSession` on
+    /// detected loss, hard to provoke deterministically; this drives the
+    /// path directly.
     func sendPLIForTesting() async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
     }
 
-    /// Ask the sharer to fall back to 8-bit (PROFILE_NO) — the lighter cousin
-    /// of the `codecUnsupported` H.264 fallback, for a viewer that decodes
-    /// HEVC but not its 10-bit Main 10 profile. Sent a few times since it
-    /// rides best-effort UDP. Reserved for the opt-in 10-bit/HDR path: the
-    /// production decoder can't cheaply tell "profile unsupported" from
-    /// "codec unsupported" pre-decode, so today's 8-bit-only streams never
-    /// trigger it; exposed so a test (and a future 10-bit capability probe)
-    /// can drive the server's `force8bit` latch.
+    /// Lighter cousin of the `codecUnsupported` fallback, for a viewer that
+    /// decodes HEVC but not Main 10. The production decoder can't cheaply
+    /// tell "profile unsupported" from "codec unsupported" pre-decode, so
+    /// today's 8-bit-only streams never trigger it; exposed for tests and a
+    /// future 10-bit capability probe.
     func sendBitDepthFallbackRequest() async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         for _ in 0..<3 {
@@ -467,9 +361,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// A listener can finish binding after an early disconnect already found
-    /// nothing to close. Install it atomically with the cancellation check so
-    /// either this path or the shared teardown owns closing it.
+    /// Installs atomically with the cancellation check, so either this path
+    /// or the shared teardown owns closing the listener.
     private func keepListenerUnlessDisconnecting(_ listener: PacketListener) async throws {
         let installed = disconnectLock.withLock {
             guard !isDisconnecting else { return false }
@@ -482,9 +375,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Atomically publish every media task before disconnect can begin. Once
-    /// this returns, teardown either sees the complete set or start was
-    /// rejected; it can never miss tasks installed just after it finished.
+    /// Teardown either sees the complete task set or start was rejected — it
+    /// can never miss tasks installed just after it finished.
     private func startMediaUnlessDisconnecting() throws {
         let started = disconnectLock.withLock {
             guard !isDisconnecting else { return false }
@@ -522,12 +414,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         guard !isConnected else { return }
         try throwIfDisconnectRequested()
 
-        // Fresh session — drop counters from the previous connection so
-        // the stats overlay doesn't inherit a stale drop-rate or codec
-        // label across reconnects.
+        // Fresh session, so the stats overlay doesn't inherit a stale
+        // drop-rate/codec label across reconnects.
         renderer.resetStats()
-        // Reset the per-session viewer UI support flags; the loss-recovery
-        // data plane is rebuilt fresh below as a new `ViewerSession`.
         resetViewerSupportState()
         isGuestSession = false
 
@@ -549,10 +438,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 }()
             logger.log("Starting Tailscale client…")
 
-            // Ephemeral with an undiscoverable client-prefixed hostname (a
-            // transient viewer, not a screen anyone should pick), and up()
-            // deliberately unbounded — this path has never bounded the
-            // auth-keyed case the way the server and AppState do.
+            // Ephemeral, undiscoverable client-prefixed hostname (a transient
+            // viewer, not a screen anyone should pick).
             let clientHostname = "\(TailscreenInstance.clientHostnamePrefix)\(UUID().uuidString.prefix(8))"
             let spec = TsnetNodeFactory.Spec(
                 hostName: clientHostname,
@@ -578,10 +465,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         try throwIfDisconnectRequested()
 
-        // tsnet's ListenPacket needs an explicit IP. Bind on this node's
-        // tailnet IPv4 (preferred) or IPv6 with port 0 → kernel picks an
-        // ephemeral port. The server learns where to send RTP back to from
-        // the source address of our HELLO.
+        // Port 0 -> kernel picks an ephemeral port; the server learns where
+        // to send RTP back from our HELLO's source address.
         let bindIP = ips.ip4 ?? ips.ip6 ?? "0.0.0.0"
         let bindAddr = ips.ip4 != nil ? "\(bindIP):0" : "[\(bindIP)]:0"
         let pl = try await PacketListener(
@@ -596,22 +481,16 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         let decoder = VideoDecoder()
         self.decoder = decoder
-        // The mac adapters own the decoder's callbacks; the portable
-        // ViewerSession drives the receive path (built here, run below).
         buildViewerSession(decoder: decoder, addr: addr)
 
-        // The session advertises NACK + receiver-report + FEC in its extended
-        // HELLO (via `onControlToSend`). Old servers read byte 0 only and reply
-        // with a legacy 5-byte ack (caps `[]`), so the viewer degrades to the
-        // PLI path against them; a NACK-era server's ack simply lacks `.fec`.
+        // Old servers read byte 0 only and reply with a legacy 5-byte ack
+        // (caps `[]`); a NACK-era server's ack simply lacks `.fec`.
         try startMediaUnlessDisconnecting()
         logger.log("HELLO sent via ViewerSession to \(addr)")
 
-        // Annotation back-channel: dial inline (so it's ready by the time
-        // connect() returns), then hand the connection to a task that drains it
-        // and reconnects with backoff if it drops mid-session. Best-effort — a
-        // failure here never breaks video. Spawned after isConnected=true so
-        // the reconnect loop's `isConnected` guard doesn't trip immediately.
+        // Dial inline so it's ready by the time connect() returns, then hand
+        // off to a reconnecting task. Best-effort — a failure here never
+        // breaks video.
         var initialAnnotationConn: (any FramedControlChannel)?
         do {
             let conn = try await OutgoingConnection(
@@ -647,16 +526,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         guard started else { throw CancellationError() }
     }
 
-    /// Connect over a share-by-token guest tunnel instead of the tailnet:
-    /// no tsnet node, no sign-in — the token names the DERP relay and the
-    /// sharer's node key, and the sharer must approve this viewer before
-    /// video flows (guest approval is mandatory on their side, so the
-    /// awaiting-approval placard is the expected first state). The dial
-    /// blocks for the tunnel bring-up (relay connect, handshake, NAT
-    /// traversal in the background). Everything downstream — the
-    /// `ViewerSession` data plane, keepalives, voice, and the framed TCP
-    /// back-channel (annotations, remote control) — is the tailnet path's;
-    /// only the dials differ.
+    /// No tsnet node, no sign-in — the token names the DERP relay and the
+    /// sharer's node key. Guest approval is mandatory, so the
+    /// awaiting-approval placard is the expected first state. Everything
+    /// downstream is the tailnet path's; only the dials differ.
     func connectGuest(token: String) async throws {
         guard !isConnected else { return }
         try throwIfDisconnectRequested()
@@ -683,11 +556,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         try startMediaUnlessDisconnecting()
         logger.log("HELLO sent via ViewerSession to \(addr) (guest)")
 
-        // The annotation/control back-channel, through the guest tunnel —
-        // same framed protocol, same reconnect loop as the tailnet path;
-        // only the dial differs. Best-effort: a sharer that predates the
-        // guest TCP channel simply never accepts, the redial loop keeps
-        // retrying quietly, and its advertised caps still gate the UI.
+        // Same framed protocol/reconnect loop as the tailnet path; a sharer
+        // that predates the guest TCP channel simply never accepts, and the
+        // redial loop keeps retrying quietly.
         var initialConn: (any FramedControlChannel)?
         do {
             let conn = try await guest.dial(port: NetworkConfig.tailscreenPort)
@@ -720,9 +591,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         guard started else { throw CancellationError() }
     }
 
-    /// IPv6 literals must be bracketed: "[::1]:7447", not "::1:7447". IPv4
-    /// addresses don't need brackets. Detection: presence of ":" outside a
-    /// trailing port is the IPv6 signal.
+    /// IPv6 literals must be bracketed: "[::1]:7447", not "::1:7447".
     private func formatAddr(host: String, port: UInt16) -> String {
         if host.contains(":") && !host.hasPrefix("[") {
             return "[\(host)]:\(port)"
@@ -730,17 +599,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         return "\(host):\(port)"
     }
 
-    /// The decoder couldn't build a session for `codec` (typically HEVC on a
-    /// Mac without HEVC decode). Ask the sharer to fall back to H.264 — sent a
-    /// few times since CODEC_NO rides best-effort UDP and a single drop would
-    /// strand us on a black screen — and surface the failure to the user. The
-    /// decoder fires this at most once per codec, so this isn't a hot path.
+    /// Sent a few times since CODEC_NO rides best-effort UDP and a single
+    /// drop would strand us on a black screen. Fires at most once per codec.
     private func handleDecodeFailure(_ codec: VideoCodec) {
         logger.log("Decode failure for \(codec) — requesting H.264 fallback from sharer")
-        // The mac-only failure shape: VideoToolbox could not build a session
-        // for this codec at all. Per-frame failures are the other shape, and
-        // reach the recorder from the adapter's episode hook (see
-        // `buildViewerSession`), so `reason` is what tells the two apart.
+        // `reason` distinguishes this (VideoToolbox couldn't build a session
+        // at all) from per-frame failures, recorded elsewhere.
         recorder?.record(
             .decodeFailed,
             role: .viewer,
@@ -760,20 +624,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         )
     }
 
-    /// One rung of the decoder's consecutive-failure escalation ladder (see
-    /// `DecodeRecoveryAction`). Fires on the decoder's serial queue, so the
-    /// PLI sends hop into a Task. Ladder PLIs deliberately bypass the 100 ms
-    /// throttle: each rung fires at most once per failing episode (rare by
-    /// construction, so no amplification risk), and letting the throttle
-    /// swallow one would leave the wedged decoder waiting on the next rung
-    /// for another chance. Loss-driven PLIs stay throttled.
+    /// Ladder PLIs deliberately bypass the 100ms throttle: each rung fires at
+    /// most once per failing episode, and the throttle swallowing one would
+    /// leave the wedged decoder waiting for the next rung. Loss-driven PLIs
+    /// stay throttled.
     private func handleDecodeRecoveryAction(_ action: DecodeRecoveryAction) {
         logger.log("Client: decode-recovery action \(action)")
-        // Same two events, same field spellings, as the portable session
-        // records for the GTK and WinUI viewers — the mac ladder runs inside
-        // `VideoDecoder` rather than in `ViewerSession`, so it has to record
-        // its own rungs or a mac viewer bundle would show a stall as nothing
-        // but a `fault.surfaced` with no ladder leading up to it.
+        // Mac ladder runs inside `VideoDecoder`, not `ViewerSession`, so it
+        // records its own rungs with the same event/field names as the
+        // portable session.
         recorder?.record(
             .decodeRecoveryAction,
             role: .viewer,
@@ -783,10 +642,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         switch action {
         case .requestKeyframe, .recreateSession:
-            // The decoder handles the session rebuild itself; either way a
-            // fresh IDR is what un-wedges decoding, so ask the sharer for
-            // one. This also feeds the server's adaptive-bitrate PLI window,
-            // so a genuinely lossy link steps its rate down.
+            // A fresh IDR un-wedges decoding either way; also feeds the
+            // server's adaptive-bitrate PLI window.
             Task { [weak self] in
                 await self?.sendPLIUnthrottled()
             }
@@ -799,17 +656,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     // MARK: - ViewerSession receive path
 
-    /// Assemble the portable `ViewerSession` wired to the mac adapters: the
-    /// VideoToolbox decoder (frames hop onto `viewerFrameQueue`, then to the
-    /// Metal renderer via `MetalSinkAdapter`), raw audio forwarded to the host's
-    /// `VoiceChannel` (`onAudioReceived`), and control feedback (HELLO / NACK /
-    /// PLI / receiver reports) sent back over UDP. Built once per `connect()`.
     private func buildViewerSession(decoder: VideoDecoder, addr: String) {
         let adapter = VTVideoDecoderAdapter(decoder: decoder, callbackQueue: viewerFrameQueue)
-        // Mac decode-recovery + codec-fallback paths. These ride the adapter's
-        // pass-through hooks (bypassing ViewerSession, which never inspects a
-        // decoded frame) so the CODEC_NO H.264 fallback and the decode-recovery
-        // escalation ladder run mac-side.
+        // Ride the adapter's pass-through hooks (bypassing ViewerSession,
+        // which never inspects a decoded frame) so codec fallback and the
+        // decode-recovery ladder run mac-side.
         adapter.onCodecUnsupported = { [weak self] codec in
             self?.handleDecodeFailure(codec)
         }
@@ -828,44 +679,30 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         let sink = MetalSinkAdapter(renderer: renderer)
         let session = ViewerSession(
             // `.tenBit`: VideoToolbox decodes HEVC Main 10 on every Mac that
-            // can run this app (the 15.2 deployment floor rules out the
-            // pre-Main10 Intel hardware `PROFILE_NO` was written for), and the
-            // decoder asks for 32BGRA output, so a 10-bit stream is
-            // down-converted for the renderer rather than refused. Advertising
-            // it is what lets a mac-to-mac share actually use the sharer's
-            // Settings → Color opt-in — the sharer drops any share to 8-bit
-            // the moment a viewer without this bit joins.
+            // can run this app, down-converting for the 32BGRA renderer
+            // rather than refusing. Advertising it lets a mac-to-mac share use
+            // the sharer's 10-bit opt-in — one viewer without this bit drops
+            // the whole share to 8-bit.
             caps: [.nack, .receiverReport, .fec, .tenBit],
             decoder: adapter,
             videoSink: sink,
             audioSink: nil,
             onControlToSend: { [weak self] data in
-                // Fire-and-forget async send on the tsnet listener. Cross-message
-                // ordering isn't guaranteed, but control bytes tolerate it (HELLO
-                // is the first, and the only order-critical one).
+                // Cross-message ordering isn't guaranteed, but control bytes
+                // tolerate it (HELLO is the only order-critical one).
                 Task { [weak self] in try? await self?.packetListener?.send(data, to: addr) }
             },
             onAudioDatagram: { [weak self] datagram in
-                // The host owns audio decode: pipe PT-98/99 straight into the
-                // mac VoiceChannel, exactly as the legacy loop's onAudioReceived.
                 self?.onAudioReceived?(datagram)
             }
         )
-        // Per-frame decode failures: the stats overlay's counter, plus the
-        // session's own count. `VideoDecoder` runs the escalation ladder
-        // itself, so this must NOT reach the session's `onDecodeFailure`
-        // (that would double-ladder one episode); `noteHostDecodeFailure` is
-        // the counting-only entry, safe from the decoder's queue, and it is
-        // what puts `decode_failures` in this viewer's `transport.summary`
-        // rows and records `decode.failed` once per failing run — the same
-        // rule, from the same place, as the GTK and WinUI viewers.
+        // `VideoDecoder` runs its own escalation ladder, so this must NOT
+        // reach the session's `onDecodeFailure` (double-ladders one episode).
+        // `noteHostDecodeFailure` is the counting-only entry.
         adapter.onFrameDecodeFailed = { [weak self, weak session] in
             self?.renderer.noteDecodeFailure()
             session?.noteHostDecodeFailure()
         }
-        // Stats overlay: feed the renderer's loss-recovery counters as the
-        // session emits feedback. These fire on the receive task (where
-        // receiveRTP/tick run), same as the legacy loop's note* calls.
         session.recorder = recorder
         session.onPLISent = { [weak self] in self?.renderer.notePLISent() }
         session.onNACKSent = { [weak self] in self?.renderer.noteNACKSent() }
@@ -873,10 +710,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         viewerSession = session
     }
 
-    /// Stats-overlay bookkeeping for the ViewerSession receive path: account for
-    /// every video byte off the wire and report the codec on first sight,
-    /// mirroring the legacy loop. The loss-recovery counters (PLI/NACK/FEC) are
-    /// fed via the session's observation hooks wired in `buildViewerSession`.
     private func noteReceivedVideoStats(_ datagram: Data) {
         guard let (header, _) = RTPHeader.decode(from: datagram) else { return }
         switch header.payloadType {
@@ -908,14 +741,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         var firedAwaiting = false
 
         while isConnected {
-            // Re-fetch the (non-Sendable) session each iteration and use it only
-            // in this synchronous block, so it's never held across the await
-            // below. `receiveRTP` after the await reads the property fresh.
+            // Re-fetched each iteration and used only in this synchronous
+            // block, so it's never held across the await below.
             guard let session = viewerSession else { break }
             session.tick(nowNs: DispatchTime.now().uptimeNanoseconds)
 
-            // Translate one-shot session-state transitions into the client's
-            // callbacks (the bespoke loop fires these inline on the control bytes).
             if !firedAwaiting, session.isPendingApproval {
                 firedAwaiting = true
                 awaitingApproval = true
@@ -926,9 +756,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if let onDeniedBySharer {
                     onDeniedBySharer()
                 } else {
-                    // No deny handler installed — fall back to the generic
-                    // peer-closed teardown, attributed to the sharer since
-                    // a HELLO_DENY is their explicit decision.
                     postPeerClosed(.sharerStopped)
                 }
                 break
@@ -993,9 +820,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Post `.tailscreenViewerPeerClosed` with this client as the source and
-    /// the reason riding along. AppState rejects a close from a replaced
-    /// client before explaining the current session's ending.
+    /// AppState rejects a close from a replaced client before explaining the
+    /// current session's ending.
     private func postPeerClosed(_ reason: ViewerCloseReason) {
         NotificationCenter.default.post(
             name: .tailscreenViewerPeerClosed,
@@ -1004,9 +830,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     private func keepaliveLoop() async {
-        // 500 ms cadence so a dropped UDP keepalive (or a one-off Task
-        // scheduling stall) doesn't push us past the server's 15 s idle
-        // sweep. Two missed sends in a row still leaves ~14 s of slack.
+        // 500ms cadence: two missed sends in a row still leaves ~14s of
+        // slack against the server's 15s idle sweep.
         while isConnected {
             try? await Task.sleep(nanoseconds: TransportTuning.keepaliveIntervalNs)
             guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
@@ -1014,22 +839,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Send a PLI to the sharer immediately. Used by the decode-recovery ladder
-    /// (`handleDecodeRecoveryAction`) — its rungs fire at most once per failing
-    /// episode, so there's no loss-amplification risk. Loss-driven PLIs are the
-    /// session's own concern now (emitted from `ViewerSession` via its NACK
-    /// scheduler), so the old receive-task throttle went with the legacy loop.
+    /// Loss-driven PLIs are `ViewerSession`'s own concern (via its NACK
+    /// scheduler); this is only for the decode-recovery ladder's rungs, which
+    /// fire at most once per failing episode.
     private func sendPLIUnthrottled() async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         renderer.notePLISent()
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
     }
 
-    /// Reset the per-session viewer UI support flags on a fresh `connect()` so a
-    /// reused client instance doesn't carry the previous session's advertised
-    /// remote-control / annotation support into the new one before its HELLO_ACK
-    /// re-establishes them. The loss-recovery state proper now lives in the
-    /// freshly-built `ViewerSession`, so there's nothing else to clear here.
+    /// So a reused client doesn't carry the previous session's advertised
+    /// support into a new one before HELLO_ACK re-establishes it.
     private func resetViewerSupportState() {
         onRemoteControlSupportChanged?(false)
         onAnnotationSupportChanged?(true)
@@ -1093,8 +913,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         self.node = nil
 
-        // Guest tunnel teardown mirrors the owned-node case: the tunnel dies
-        // with the session (the fd was already closed with the listener).
         if let guest = guestClient {
             await guest.close()
             self.guestClient = nil
@@ -1108,16 +926,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             decoder.shutdown()
             self.decoder = nil
         }
-        // Release the session (and, through it, the VT adapter's hold on the
-        // now-shut-down decoder) once the receive task that drove it has been
-        // cancelled and awaited above.
         viewerSession = nil
 
-        // Teardown owns clearing the degraded indication — the ladder that
-        // set it is gone with the decoder, and leaving it latched kept the
-        // toolbar triangle + overlay banner up through the disconnected
-        // state and into the next session's first paint. The remaining
-        // counters reset on the next connect via `resetStats()`.
+        // Leaving this latched would keep the toolbar triangle/overlay banner
+        // up through disconnect and into the next session's first paint.
         renderer.setDegraded(false)
 
         logger.log("Client disconnected")
@@ -1129,30 +941,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         keepaliveTask?.cancel()
     }
 
-    /// Stable identity string used to derive this viewer's drawing color.
-    /// Mirrors SharerOverlayWindow.localIdentity() so a process that's
-    /// both a sharer and (separately) a viewer uses the *same* color in
-    /// both surfaces.
+    /// Mirrors `SharerOverlayWindow.localIdentity()` so a process that's both
+    /// sharer and viewer uses the same color in both surfaces.
     static func localIdentity() -> String {
         let host = Host.current().localizedName ?? "tailscreen"
         return "\(host)\(TailscreenInstance.hostnameSuffix)"
     }
 }
 
-/// The viewer's own log sink. Prints like the package's `PrintLogSink` and,
-/// like it, tees every line into the process recorder as a `log.line` event.
-///
-/// The tee is not optional here: `PrintLogSink` is `package`-scoped, so this
-/// app cannot use it, and until this struct teed on its own the sharer's
-/// lines reached a bundle while the viewer's — the decode-failure, recovery
-/// and idle-timeout lines above — did not. A viewer bundle then explained the
-/// handshake and nothing after it. Same `"Tailscale"` source tag as the
-/// sharer's sink, so a merged timeline files both sides' lines alike.
-///
-/// Nothing this sink logs is an identity the bundle header disclaims (tailnet
-/// IPs and device names are recorded on purpose, see
-/// `.claude/rules/diagnostics.md`); a line that named an account would need
-/// the `TailscaleAuth` treatment instead — a separate, non-teeing sink.
+/// `PrintLogSink` is `package`-scoped, so this app can't use it; this struct
+/// tees the same way, under the same `"Tailscale"` source tag, so a merged
+/// timeline files both sides' lines alike.
 private struct TSLogger: LogSink {
     var logFileHandle: Int32?
     func log(_ message: String) {
@@ -1161,36 +960,26 @@ private struct TSLogger: LogSink {
     }
 }
 
-/// Why the viewer's receive loop declared the session over is the shared
-/// tier-4 `ViewerCloseReason` (TailscreenViewer) — the former app-local
-/// `ViewerPeerCloseReason` with the same cases and raw values, now portable so
-/// the GTK and WinUI viewers report the same endings. It rides
-/// `.tailscreenViewerPeerClosed` as `userInfo[ViewerCloseReason.userInfoKey]`
-/// (the raw value — Notification userInfo stays property-list-friendly) so
-/// AppState can tell the user *which* ending happened. The key itself is
-/// mac-only plumbing, so it lives here rather than in the portable enum.
+/// `ViewerCloseReason` rides `.tailscreenViewerPeerClosed` as
+/// `userInfo[ViewerCloseReason.userInfoKey]` (raw value, since userInfo stays
+/// property-list-friendly). The key is mac-only plumbing, so it lives here
+/// rather than in the portable enum.
 extension ViewerCloseReason {
-    /// The `userInfo` key the raw value travels under.
     static let userInfoKey = "reason"
 }
 
 extension Notification.Name {
-    /// Posted from the viewer's receive loop when the session is over —
-    /// sharer stop, idle timeout, or a socket-error storm, told apart by
-    /// the `ViewerCloseReason` in `userInfo`. AppState observes this
-    /// and ends the session with an in-window explanation.
+    /// Sharer stop, idle timeout, or a socket-error storm — told apart by
+    /// `ViewerCloseReason` in `userInfo`.
     static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
 
-    /// Posted from the viewer's decoder when VideoToolbox can't build a
-    /// decompression session for the stream's codec. AppState surfaces an
-    /// alert; the client has already asked the sharer to fall back to H.264.
-    /// `userInfo["codec"]` carries the codec name as a String.
+    /// VideoToolbox couldn't build a decompression session; the client has
+    /// already asked the sharer to fall back to H.264. `userInfo["codec"]`
+    /// carries the codec name as a String.
     static let tailscreenViewerDecodeFailed = Notification.Name("tailscreen.viewer.decodeFailed")
 
-    /// Posted from the decode-failure escalation ladder's last rung: frames
-    /// are arriving but decoding has been failing for several seconds
-    /// despite a keyframe request and a decoder-session rebuild. AppState
-    /// surfaces an alert so a frozen frame isn't a silent mystery.
+    /// The decode-failure ladder's last rung: frames arrive but decoding has
+    /// failed for several seconds despite a keyframe request and session rebuild.
     static let tailscreenViewerVideoStalled = Notification.Name("tailscreen.viewer.videoStalled")
 }
 

@@ -2,40 +2,26 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// "Press ⇧⌘/" cheat-sheet listing every keyboard shortcut and pointer
-/// gesture the app responds to, with the remote-control shortcuts split by
-/// role. Modelled on ``ViewerStatsOverlay``: a SwiftUI view bound to a small
-/// ObservableObject, wrapped in an `NSHostingView` so AppKit code in
-/// `AppState.ensureViewer()` can pin it as a subview of the viewer's content
-/// view. The same content also renders standalone (``ViewerShortcutsPanelHost``)
-/// so ⌘? answers while *sharing*, when no viewer window exists.
-///
-/// Toggled by the toolbar's `questionmark.circle` button, the Help menu's
-/// "Keyboard Shortcuts" item, Esc, or by clicking on the overlay itself to
-/// dismiss it. Backdrop covers the entire content view so a click anywhere
-/// closes it.
+/// "Press ⇧⌘/" cheat-sheet, with the remote-control shortcuts split by role.
+/// Renders both as a viewer-window overlay and standalone while sharing
+/// (``ViewerShortcutsPanelHost``).
 final class ViewerShortcutsModel: ObservableObject, @unchecked Sendable {
     @Published var isVisible: Bool = false
-    /// Display chords for the two remappable global hotkeys, refreshed by
-    /// `AppState.syncShortcutChordDisplays()` so a Settings remap shows up
-    /// in the sheet. nil = the stored chord can't be spelled — the affected
-    /// rows are dropped rather than misprinted.
+    /// Refreshed by `AppState.syncShortcutChordDisplays()`. nil = the stored
+    /// chord can't be spelled — the affected rows are dropped rather than
+    /// misprinted.
     @Published var micChord: String? = "⌃⌥M"
     @Published var controlChord: String? = "⌃⌥."
 }
 
 struct ViewerShortcutsOverlay: View {
     @ObservedObject var model: ViewerShortcutsModel
-    /// The in-window overlay draws a dimmed tap-to-dismiss backdrop over the
-    /// video; the standalone sharing-time panel is just the card and skips it.
+    /// The standalone sharing-time panel skips the backdrop.
     var showsBackdrop: Bool = true
-    /// Footer line telling the user how to leave — the two hosts dismiss
-    /// differently (tap-anywhere vs. Esc / close), so the host supplies it.
+    /// The two hosts dismiss differently (tap-anywhere vs. Esc/close).
     var dismissHint: String = L("Click anywhere or press Esc to dismiss.")
 
-    /// The full-screen chord, mentioned only here (its menu item carries
-    /// the real key equivalent). Not remappable, unlike the mic/control
-    /// chords, which come off the model so Settings remaps show up live.
+    /// Not remappable, unlike the mic/control chords (which come off the model).
     private static let fullScreenChord = "⌃⌘F"
 
     /// Fixed key-column width scales with the monospaced text it holds.
@@ -53,10 +39,8 @@ struct ViewerShortcutsOverlay: View {
         let items: [Shortcut]
     }
 
-    /// Computed (not static) because the mic/control rows print the
-    /// *current* chords off the model — a Settings remap re-renders the
-    /// sheet. A chord the display vocabulary can't spell drops its rows
-    /// (and an emptied section) rather than misprinting the default.
+    /// Computed, not static: the mic/control rows print the current chords
+    /// off the model, so a Settings remap re-renders the sheet.
     private var sections: [Section] {
         var out: [Section] = [
             Section(
@@ -96,11 +80,8 @@ struct ViewerShortcutsOverlay: View {
                         Shortcut(keys: micChord, description: L("Toggle microphone (system-wide)"))
                     ]))
         }
-        // Both roles keep the same exit chord (⌃⌥. unless remapped) — the
-        // viewer releases the control it holds, the sharer revokes the
-        // control it granted. Split into role-labelled sections: the old
-        // single "Remote Control" heading listed only the sharer's revoke,
-        // in the sheet the *viewer* is most likely to be reading.
+        // Both roles keep the same exit chord; split into role-labelled
+        // sections since a single heading would only describe one of them.
         if let controlChord = model.controlChord {
             out.append(
                 Section(
@@ -211,10 +192,6 @@ struct ViewerShortcutsOverlay: View {
     }
 }
 
-/// Wraps `ViewerShortcutsOverlay` in an `NSHostingView` pinned to the full
-/// content view of the viewer window. Visibility is driven off
-/// `model.isVisible` via Combine, matching the pattern in
-/// `ViewerStatsOverlayHost`.
 @MainActor
 final class ViewerShortcutsOverlayHost {
     let view: NSHostingView<ViewerShortcutsOverlay>
@@ -234,18 +211,15 @@ final class ViewerShortcutsOverlayHost {
             }
     }
 
-    /// Pin the overlay to fill `parent`. Caller adds `view` as a subview
-    /// before calling.
     func layout(in parent: NSView) {
         view.frame = parent.bounds
         view.autoresizingMask = [.width, .height]
     }
 }
 
-/// Standalone ⌘? panel used while SHARING, when there is no viewer window
-/// to overlay: the same SwiftUI card in a borderless floating panel,
-/// centered on the screen the mouse is on. Owned by AppState for the
-/// process lifetime, mirroring the settings window.
+/// Standalone ⌘? panel used while sharing, when there's no viewer window to
+/// overlay: the same card in a borderless floating panel centered on the
+/// screen the mouse is on.
 @MainActor
 final class ViewerShortcutsPanelHost {
     let model = ViewerShortcutsModel()
@@ -270,8 +244,8 @@ final class ViewerShortcutsPanelHost {
             return
         }
         let panel = ensurePanel()
-        // Center on the screen the user is working on — while sharing
-        // that's wherever the mouse is, not necessarily the main display.
+        // While sharing, "the screen the user is on" is wherever the mouse
+        // is, not necessarily the main display.
         let screen =
             NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
             ?? NSScreen.main
@@ -287,8 +261,6 @@ final class ViewerShortcutsPanelHost {
 
     private func ensurePanel() -> ShortcutsPanel {
         if let panel { return panel }
-        // No backdrop: the card carries its own material + shadow, so the
-        // panel itself is a transparent shell around it.
         let hosting = NSHostingView(
             rootView: ViewerShortcutsOverlay(
                 model: model,
@@ -305,11 +277,9 @@ final class ViewerShortcutsPanelHost {
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        // The card's own SwiftUI shadow fits inside its 40 pt padding.
         panel.hasShadow = false
         panel.level = .floating
-        // Reachable over a full-screen app being shared, and it must not
-        // vanish when the user clicks back into the app they're sharing
+        // Must not vanish when the user clicks back into the shared app
         // (NSPanel hides on deactivate by default).
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false

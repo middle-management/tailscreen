@@ -10,11 +10,8 @@ import TailscreenProtocol
 /// TailscreenSharerWGC, the same shape macOS uses in `ScreenShareBackends.swift`.
 public final class SendInputInjector: @unchecked Sendable {
     /// A rectangle on screen — what normalized coordinates are mapped into.
-    ///
-    /// Supplied by the host rather than resolved here, because "what am I
-    /// sharing" is the host's question: it holds the `WGC.CaptureItem`, and an
-    /// item does not expose the monitor or window it came from. The host
-    /// re-supplies it when the share's geometry changes.
+    /// Supplied by the host, since "what am I sharing" is the host's
+    /// question (a `WGC.CaptureItem` doesn't expose its own monitor/window).
     public typealias Region = WindowsPointerMapping.ScreenRect
 
     /// Test seam: what would be injected, without touching the real desktop.
@@ -62,14 +59,9 @@ public final class SendInputInjector: @unchecked Sendable {
     private var heldButtons: Set<Int32> = []
     private var lastAbsolute: (x: Int32, y: Int32) = (0, 0)
 
-    /// Where the virtual desktop's bounds come from.
-    ///
-    /// Injectable for the same reason `RemoteControlMapping.captureRect` takes
-    /// resolvers on macOS: read straight from `GetSystemMetrics`, the mapping
-    /// cannot be checked on ANY machine — not Linux CI, where the stub reports
-    /// nothing, and not a Windows runner either, whose desktop is whatever
-    /// size the runner image happens to have. A closure makes the geometry an
-    /// input instead of an ambient fact.
+    /// Where the virtual desktop's bounds come from. Injectable so the
+    /// geometry is an input rather than an ambient `GetSystemMetrics` fact,
+    /// which can't be checked on any test machine.
     ///
     /// Called per event rather than cached: monitors are hot-plugged and
     /// rearranged mid-share, and a stale desktop rect silently sends the
@@ -82,26 +74,17 @@ public final class SendInputInjector: @unchecked Sendable {
 
     // MARK: Permission
 
-    /// Windows has no Accessibility-style consent to request.
-    ///
-    /// Injection is governed by UIPI, which silently discards input aimed at a
-    /// window running at a HIGHER integrity level than the sender. There is no
-    /// prompt and no capability to acquire — an unelevated process simply
-    /// cannot drive an elevated one, and never will be able to. So this
-    /// reports the one thing that actually varies.
-    ///
-    /// It returns true when NOT elevated as well, and that is deliberate:
-    /// ordinary apps are the overwhelming majority of what a viewer will want
-    /// to click, and refusing the grant outright would make remote control
-    /// unavailable on every normal desktop to protect against a case the user
-    /// will notice immediately (a click that does nothing over one window).
+    /// Windows has no Accessibility-style consent to request. Injection is
+    /// governed by UIPI, which silently discards input aimed at a window at a
+    /// HIGHER integrity level — there's no prompt to acquire, and an
+    /// unelevated process simply can't drive an elevated one. Returns true
+    /// even when not elevated, since refusing the grant outright would break
+    /// remote control on every normal desktop.
     public func isTrusted() -> Bool { true }
 
-    /// Whether this process can also drive elevated windows.
-    ///
-    /// Not part of the permission decision — see `isTrusted()` — but worth
-    /// surfacing, because "the remote pointer works everywhere except Task
-    /// Manager" is otherwise a mystery.
+    /// Whether this process can also drive elevated windows. Not part of the
+    /// permission decision — worth surfacing since "works everywhere except
+    /// Task Manager" is otherwise a mystery.
     public var canDriveElevatedWindows: Bool { ts_input_is_elevated() != 0 }
 
     /// Nothing to prompt for. Returns `isTrusted()` so callers written against
@@ -207,24 +190,20 @@ public final class SendInputInjector: @unchecked Sendable {
         }
     }
 
-    /// Modifiers are injected as REAL KEY EVENTS around the key itself.
+    /// Modifiers are injected as REAL KEY EVENTS around the key itself —
+    /// unlike macOS, where a `CGEvent` carries modifier flags as a field.
+    /// `SendInput` reports the actual keyboard state, so Ctrl+C means press
+    /// Ctrl, press C, release C, release Ctrl.
     ///
-    /// This is the structural difference from macOS, where a `CGEvent` carries
-    /// its modifier flags as a field. Windows has no such field: `SendInput`
-    /// reports the modifier state the keyboard is actually in, so the only way
-    /// to deliver Ctrl+C is to press Ctrl, press C, release C, release Ctrl.
+    /// Pressed before and released after each key rather than tracked across
+    /// events, since the wire sends modifier state as a snapshot on every
+    /// event (keeping mid-stream joins stateless) with no "modifier down"
+    /// message to pair with. Costs a redundant press/release per key in a
+    /// held-modifier sequence, but a dropped connection can never strand a
+    /// modifier held down.
     ///
-    /// Pressed before and released after each key, rather than tracked across
-    /// events, because the protocol deliberately sends modifier state as a
-    /// snapshot on every event instead of as separate key events — which keeps
-    /// mid-stream joins stateless, and means there is no "modifier down"
-    /// message to pair with. The cost is a redundant press/release per key in
-    /// a held-modifier sequence; the benefit is that a dropped connection can
-    /// never strand a modifier held down on the sharer's machine.
-    ///
-    /// Caps Lock is excluded: it is a toggle rather than a held modifier, so
-    /// synthesizing a press would flip the sharer's actual Caps state and
-    /// leave it flipped.
+    /// Caps Lock is excluded: it's a toggle, so synthesizing a press would
+    /// flip the sharer's actual Caps state.
     private func injectKey(hid: UInt16, modifiers: KeyModifiers, down: Bool) {
         // An unmappable HID usage is dropped rather than guessed — the same
         // rule the macOS injector follows, and why `deliberatelyUnmapped`
@@ -277,22 +256,14 @@ public final class SendInputInjector: @unchecked Sendable {
             in: region, virtualDesktop: virtualDesktopProvider())
     }
 
-    /// Opt this process into per-monitor DPI awareness. Call once, at startup,
-    /// before any window exists. Returns whether the process ended up aware.
+    /// Opt this process into per-monitor DPI awareness. Call once, at
+    /// startup, before any window exists. Returns whether it ended up aware.
     ///
-    /// Every coordinate in this file — the monitor rects, the virtual desktop,
-    /// a window's bounds — is meaningless without it. A process that has not
-    /// asked is told a 150 %-scaled 3840 × 2160 display is 2560 × 1440, while
-    /// Windows.Graphics.Capture reports that same display's capture item as
-    /// 3840 × 2160, because item sizes are physical. The two never match, so
-    /// `WindowsCaptureRegion` cannot tell which display it is looking at and
-    /// the share silently loses remote control AND annotations — both of which
-    /// need to know where the shared content is.
-    ///
-    /// Lives on the injector because this is the injector's coordinate space:
-    /// the same call fixes the overlay's window position and the capture-region
-    /// match, and having one owner is better than three callers each hoping
-    /// someone else made it.
+    /// Every coordinate here is meaningless without it: an unaware process is
+    /// told a 150%-scaled 3840x2160 display is 2560x1440, while
+    /// Windows.Graphics.Capture reports the physical size, so
+    /// `WindowsCaptureRegion` can't match them and the share silently loses
+    /// remote control and annotations.
     @discardableResult
     public static func enablePerMonitorDPIAwareness() -> Bool {
         ts_input_enable_per_monitor_dpi() != 0
@@ -310,14 +281,9 @@ public final class SendInputInjector: @unchecked Sendable {
     }
 
     /// Every monitor's bounds, in virtual-desktop coordinates.
-    ///
-    /// `WindowsCaptureRegion` matches a capture item's size against these to
-    /// work out which display it is. The buffer grows until the shim stops
-    /// reporting more monitors than fit: the shim returns how many EXIST, not
-    /// how many were written, precisely so a truncated list is detectable
-    /// rather than silently passing as complete — and a truncated list is the
-    /// one thing that could turn "two identical monitors, decline" into "one
-    /// monitor, pick it".
+    /// `WindowsCaptureRegion` matches a capture item's size against these.
+    /// The buffer grows until it fits: the shim returns how many monitors
+    /// EXIST, not how many were written, so a truncated list is detectable.
     public static func monitors() -> [Region] {
         var capacity = 8
         for _ in 0..<4 {

@@ -3,18 +3,13 @@ import XCTest
 @testable import TailscreenAudio
 
 /// Pins `PlaybackQueueAccounting`, the pending-buffer bookkeeping behind
-/// the macOS `MicCapture`'s two player nodes — extracted so the decisions
-/// that decide whether inbound voice is heard at all can be checked with
-/// no audio engine.
+/// `MicCapture`'s two player nodes, so it can be checked with no audio engine.
 ///
-/// The case to read first is `testResetHealsACountPinnedAtTheCap`. It is
-/// the 0.10.0-rc.14 failure: the engine is stopped to enable voice
-/// processing, the queued buffers are discarded without their completions,
-/// and a count that is not reset stays at the cap — every later arrival is
-/// then dropped as an overrun and the other side is never heard again,
-/// with `overruns=` climbing in the stats line. The reset is what makes the
-/// count self-healing; the generation is what keeps the reset safe against
-/// a completion the old queue fires late.
+/// Read `testResetHealsACountPinnedAtTheCap` first: without the reset, a
+/// count pinned at the cap when the engine stops for VPIO never heals, and
+/// every later arrival is dropped as an overrun for the rest of the session.
+/// The generation keeps the reset safe against a completion the old queue
+/// fires late.
 final class PlaybackQueueAccountingTests: XCTestCase {
     private let target = 3
     private let slack = 3
@@ -41,8 +36,7 @@ final class PlaybackQueueAccountingTests: XCTestCase {
         var q = PlaybackQueueAccounting()
         _ = prime(&q, count: target + slack, playing: true)
         XCTAssertEqual(q.schedule(targetDepth: target, slack: slack, playerIsPlaying: true), .drop)
-        // The channel raised its jitter target: the same queue depth is
-        // now under the cap and the arrival is scheduled.
+        // Jitter target raised: the same depth is now under the cap.
         XCTAssertEqual(
             q.schedule(targetDepth: target + 1, slack: slack, playerIsPlaying: true),
             .schedule(kickPlayback: false))
@@ -52,12 +46,10 @@ final class PlaybackQueueAccountingTests: XCTestCase {
 
     func testResetHealsACountPinnedAtTheCap() {
         var q = PlaybackQueueAccounting()
-        // The other side's voice is queued to the cap when the local mic
-        // comes on and the engine is stopped for VPIO. Nothing completes.
+        // Queued to the cap as the local mic comes on and the engine stops for VPIO; nothing completes.
         _ = prime(&q, count: target + slack, playing: true)
         XCTAssertEqual(q.schedule(targetDepth: target, slack: slack, playerIsPlaying: true), .drop)
 
-        // Without the reset this is the rest of the session.
         let healed = q.reset()
 
         XCTAssertEqual(healed, target + slack, "the reset reports what it discarded")
@@ -73,8 +65,8 @@ final class PlaybackQueueAccountingTests: XCTestCase {
         _ = prime(&q, count: 2, playing: true)
         let oldGeneration = q.generation
         q.reset()
-        // `AVAudioPlayerNode.stop()` invokes the discarded buffers'
-        // completions after the reset. They must not touch the fresh count.
+        // AVAudioPlayerNode.stop() fires the discarded buffers' completions
+        // after the reset; they must not touch the fresh count.
         XCTAssertFalse(q.consumed(generation: oldGeneration, playerIsPlaying: true, nowNs: s))
         XCTAssertFalse(q.consumed(generation: oldGeneration, playerIsPlaying: true, nowNs: s))
         XCTAssertEqual(q.pending, 0, "stale completions never drive the count negative")
@@ -90,9 +82,7 @@ final class PlaybackQueueAccountingTests: XCTestCase {
         var q = PlaybackQueueAccounting()
         _ = prime(&q, count: target)
         q.reset()
-        // The players were stopped with their queues: the kick has to
-        // wait for a full target depth again, not fire on the first
-        // arrival because an old priming count carried over.
+        // Kick waits for a full target depth again; a carried-over priming count must not fire it early.
         let verdicts = prime(&q, count: target)
         XCTAssertEqual(
             verdicts,
@@ -122,7 +112,7 @@ final class PlaybackQueueAccountingTests: XCTestCase {
         let verdicts = prime(&q, count: target + 1)
         XCTAssertEqual(verdicts[target - 2], .schedule(kickPlayback: false))
         XCTAssertEqual(verdicts[target - 1], .schedule(kickPlayback: true))
-        // The host called play(); a playing player is not kicked again.
+        // Already playing: not kicked again.
         XCTAssertEqual(
             q.schedule(targetDepth: target, slack: slack, playerIsPlaying: true),
             .schedule(kickPlayback: false))
@@ -131,8 +121,7 @@ final class PlaybackQueueAccountingTests: XCTestCase {
     func testKicksAgainWhenThePlayerStoppedOnItsOwn() {
         var q = PlaybackQueueAccounting()
         _ = prime(&q, count: target)
-        // Primed once already: an idle player is restarted on the next
-        // arrival rather than waiting for a whole new target depth.
+        // Primed once already: an idle player restarts on the next arrival, not after a whole new target depth.
         XCTAssertEqual(
             q.schedule(targetDepth: target, slack: slack, playerIsPlaying: false),
             .schedule(kickPlayback: true))
@@ -181,9 +170,7 @@ final class PlaybackQueueAccountingTests: XCTestCase {
 
     func testCompletionNeverDrivesTheCountNegative() {
         var q = PlaybackQueueAccounting()
-        // Defensive: a completion the count did not expect (nothing was
-        // scheduled) clamps at zero rather than opening negative headroom
-        // that would let the queue exceed its cap.
+        // An unexpected completion clamps at zero rather than going negative, which would let the queue exceed its cap.
         XCTAssertTrue(q.consumed(generation: q.generation, playerIsPlaying: true, nowNs: s))
         XCTAssertEqual(q.pending, 0)
     }

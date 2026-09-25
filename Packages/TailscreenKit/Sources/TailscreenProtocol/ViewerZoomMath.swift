@@ -41,18 +41,17 @@ public enum ViewerZoomMath {
     /// Fully zoomed out == aspect-fit. Zooming below fit is not supported;
     /// the window-sizing presets (⌘0 / ⌘- / ⌘+) cover "smaller than fit".
     public static let minScale: CGFloat = 1.0
-    /// Preview-style ceiling — deep enough to read small text on a 5K
-    /// share squeezed into a laptop-sized viewer window.
+    /// Deep enough to read small text on a 5K share squeezed into a
+    /// laptop-sized viewer window.
     public static let maxScale: CGFloat = 8.0
     /// Target scale for the double-tap (smart-magnify) toggle.
     public static let smartMagnifyScale: CGFloat = 2.0
     /// Multiplicative step for the View-menu Zoom In item; Zoom Out uses
     /// its reciprocal.
     public static let menuZoomStep: CGFloat = 1.25
-    /// Conservative ceiling on the zoomed content's pixel extent. The
-    /// annotation overlay is a layer-backed NSHostingView framed at the
-    /// zoomed rect; Core Animation textures top out around 16384 px per
-    /// axis, and exceeding that blanks the layer.
+    /// Conservative ceiling on the zoomed content's pixel extent: Core
+    /// Animation textures top out around 16384px per axis, and exceeding
+    /// that blanks the layer-backed annotation overlay.
     public static let safeMaxContentPixels: CGFloat = 16_384
 
     /// The largest scale the current fit rect can support without the
@@ -96,11 +95,9 @@ public enum ViewerZoomMath {
         let oldScale = clampedScale(state.scale)
         let newScale = min(max(oldScale * delta, minScale), maxScale)
         let factor = newScale / oldScale
-        // Re-clamp the incoming offset against the *current* fit first —
-        // a window resize between gestures can leave `state.offset` stale
-        // (legal for the old fit only), and anchoring against the stale
-        // center would make the first gesture jump away from the rect
-        // `videoRect` is actually displaying.
+        // Re-clamp the incoming offset against the current fit first — a
+        // window resize between gestures can leave `state.offset` stale,
+        // and anchoring against it would jump away from what's displayed.
         let oldOffset = clampedOffset(state.offset, scale: oldScale, fit: fit)
         // Anchor invariance in center form: with the video rect's center
         // c = fitCenter + offset, the anchor's center-relative position
@@ -118,11 +115,8 @@ public enum ViewerZoomMath {
 
     /// State after panning the content by `delta`, in viewport points. A
     /// positive `width` moves the video right; a positive `height` moves it
-    /// up (non-flipped AppKit coordinates). No-ops at fit — the offset
-    /// clamp collapses to zero when there is nothing to pan over. The
-    /// scale passes through unclamped: panning never changes it, every
-    /// producer already clamps it, and `videoRect`'s defensive re-clamp
-    /// remains the single stale-state barrier.
+    /// up (non-flipped AppKit coordinates). No-ops at fit, since the offset
+    /// clamp collapses to zero when there's nothing to pan over.
     public static func panned(state: ViewerZoomState, by delta: CGSize, fit: CGRect) -> ViewerZoomState {
         guard fit.width > 0, fit.height > 0 else { return state }
         let offset = CGPoint(x: state.offset.x + delta.width, y: state.offset.y + delta.height)
@@ -152,10 +146,9 @@ public enum ViewerZoomMath {
         min(max(scale, minScale), maxScale)
     }
 
-    /// Keep the zoomed rect covering the fit rect on both axes: the zoomed
-    /// size is `fit.size × scale ≥ fit.size`, so the center may stray at
-    /// most half the size difference from the fit center before an edge
-    /// would detach and expose a letterbox gap.
+    /// Keep the zoomed rect covering the fit rect on both axes: the center
+    /// may stray at most half the size difference from the fit center
+    /// before an edge would detach and expose a letterbox gap.
     private static func clampedOffset(_ offset: CGPoint, scale: CGFloat, fit: CGRect) -> CGPoint {
         let maxX = (scale - 1) * fit.width / 2
         let maxY = (scale - 1) * fit.height / 2

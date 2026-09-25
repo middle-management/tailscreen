@@ -1,9 +1,7 @@
 import ALSAKit
 import Foundation
-// The Linux-only backend adapted to the portable `ViewerSession` seam. The
 // VIDEO half moved to Packages/TailscreenVideoFFmpeg so the Windows viewer can
-// take the decoder without also taking ALSA and X11; it is re-exported below so
-// existing `import TailscreenViewerCore` call sites keep working unchanged.
+// take the decoder without ALSA/X11; re-exported so existing call sites keep working.
 @_exported import TailscreenVideoFFmpeg
 import TailscreenViewer
 

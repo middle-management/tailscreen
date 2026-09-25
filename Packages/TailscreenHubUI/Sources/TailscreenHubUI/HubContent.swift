@@ -5,18 +5,16 @@ import TailscreenL10n
 /// then either the "Screens" list or a centered status pane.
 ///
 /// Constrained to `HubStyle.contentMaxWidth` and centered, like the macOS
-/// window: the hub is a single column, and letting it stretch across a
-/// maximized window turns every row into an unreadable ribbon with the IP a
-/// foot away from the hostname it belongs to.
+/// window — otherwise a maximized window stretches every row into an
+/// unreadable ribbon.
 public struct PickerContent: View {
     let statusLine: String
     /// True once discovery has settled and there is a list to show; false while
     /// the node is coming up, discovering, or connecting.
     let isPicking: Bool
     /// The first peer list is being built right now — render placeholder rows
-    /// rather than a lone status line. Distinct from `!isPicking`, which is
-    /// also true while the node is still coming up, when there is nothing to
-    /// promise rows about yet.
+    /// rather than a status line. Distinct from `!isPicking`, also true while
+    /// the node is still coming up.
     var isDiscovering = false
     let screens: [HubScreen]
     let loginURL: String?
@@ -26,9 +24,8 @@ public struct PickerContent: View {
     /// Ask the tapped screen's machine to start sharing. Nil ⇒ no host support
     /// (or nothing to ask through right now), and no button on any row.
     var onAskToShare: (@MainActor @Sendable (String) -> Void)?
-    /// Screen ids with an outstanding ask. A set rather than a single id
-    /// because nothing stops a person asking two machines — and a flag that
-    /// assumed one would show the second ask's state on the first row.
+    /// Screen ids with an outstanding ask. A set, not a single id, since
+    /// nothing stops asking two machines at once.
     var askingIDs: Set<String> = []
     /// How the last ask to each screen ended, by screen id.
     var askNotes: [String: String] = [:]
@@ -37,22 +34,18 @@ public struct PickerContent: View {
     /// viewer-only hub — a build with no capture backend, or a screenshot.
     var shareCard: ShareCard?
     /// The share-by-token way in, when this host wires it. Rendered in every
-    /// phase — including before sign-in — because joining by token is exactly
-    /// the path that needs no Tailscale account.
+    /// phase, including before sign-in, since joining by token needs no
+    /// Tailscale account.
     var joinCard: HubJoinCard?
-    /// What to say when discovery found nothing. Both apps mean the same thing
-    /// and neither should have to guess at the wording.
+    /// What to say when discovery found nothing.
     var emptyMessage = L("No Tailscreen screens found on your tailnet.")
-    /// A way OUT of the empty state, when the host has one — the macOS hub's
-    /// install link. Every machine that could appear in an empty list is one
-    /// that doesn't run Tailscreen yet, so the message alone is a dead end.
-    /// Nil renders the message by itself.
+    /// A way out of the empty state, when the host has one (the macOS hub's
+    /// install link). Nil renders the message by itself.
     var emptyAction: HubAction?
     /// How many discovered screens the host's `PeerListFilter` removed before
-    /// handing `screens` over. Purely for the footnote under the list: rows that
-    /// vanish with no explanation read as a broken discovery, which is the
-    /// complaint the macOS hub's identical line answers. `screens` stays the
-    /// already-filtered projection — this chrome never filters anything itself.
+    /// handing `screens` over — for the footnote under the list, so filtered
+    /// rows don't read as a broken discovery. `screens` is already filtered;
+    /// this chrome never filters anything itself.
     var hiddenByFilter = 0
 
     /// Transient search text narrowing the list (the macOS hub's search field).
@@ -93,8 +86,7 @@ public struct PickerContent: View {
         self.onOpenLogin = onOpenLogin
         self.shareCard = shareCard
         self.joinCard = joinCard
-        // Preview/screenshot affordance: open the first row's detail pane so the
-        // expanded state is visible without a click.
+        // Preview/screenshot affordance: expand the first row with no click.
         _expandedID = State(wrappedValue: autoExpandFirst ? screens.first?.id : nil)
     }
 
@@ -146,21 +138,14 @@ public struct PickerContent: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The per-row ask action, or nil when asking this machine makes no sense.
+    /// The per-row ask action, or nil for a machine already sharing (View
+    /// Screen is the useful action there). `sharingName == nil` also covers
+    /// "asked, no reply yet" — offering the ask there errs toward a redundant
+    /// banner rather than a feature that silently isn't there.
     ///
-    /// Withheld from a machine that is ALREADY sharing: the useful action
-    /// there is View Screen, and "ask them to do the thing they are doing" is
-    /// a banner on somebody's desk for nothing. Note this keys on
-    /// `sharingName`, which is nil both for "not sharing" and for "we asked
-    /// and got no reply" — offering the ask in the unknown case is the right
-    /// way round, because the cost of a redundant ask is one dismissed banner
-    /// while the cost of hiding it is a feature that silently isn't there.
-    ///
-    /// A method rather than an inline ternary because the expression form —
-    /// an optional closure produced by a conditional inside a `flatMap` — is
-    /// one swift-cross-ui's result builder cannot typecheck, and it fails as
-    /// "failed to produce diagnostic for expression" pointing at the whole
-    /// property rather than at anything real.
+    /// A method, not an inline ternary: an optional closure from a
+    /// conditional nested in `flatMap` is a shape swift-cross-ui's result
+    /// builder fails to typecheck with a useless diagnostic.
     private func askAction(for screen: HubScreen) -> (@MainActor @Sendable () -> Void)? {
         guard let onAskToShare, screen.sharingName == nil else { return nil }
         let id = screen.id
@@ -169,9 +154,7 @@ public struct PickerContent: View {
 
     @ViewBuilder private var listContent: some View {
         if screens.isEmpty && hiddenByFilter > 0 {
-            // Machines were found and the filter hid all of them. Saying "none
-            // found" here would send someone debugging their tailnet over a
-            // toggle they set.
+            // Filter hid every match; "none found" would misdirect debugging.
             Text(L("No screens match your filters."))
                 .font(.callout)
                 .foregroundColor(HubStyle.secondaryText)

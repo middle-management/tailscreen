@@ -4,28 +4,19 @@ import Foundation
 extension ALSA {
     /// A blocking PCM **capture** stream — the microphone counterpart to
     /// `ALSA.PCMPlayer`. One instance per input stream, driven from a single
-    /// thread, for the same reason: libasound's PCM handle is not thread-safe.
+    /// thread — libasound's PCM handle is not thread-safe.
     ///
-    /// Same format choice as playback (interleaved `FLOAT_LE`, soft resampling
-    /// on), and it hands the caller **mono** Float32 in `[-1, 1]` — the shape
-    /// `OpusVoiceEncoder` takes — by averaging the device's channels itself.
+    /// Same format choice as playback (interleaved `FLOAT_LE`, soft
+    /// resampling on), and hands the caller **mono** Float32 in `[-1, 1]` by
+    /// averaging the device's channels itself.
     ///
-    /// Where it deliberately differs from `PCMPlayer`: the player *dictates* its
-    /// format via `snd_pcm_set_params`, and that's fine for output because a
-    /// share always has 48 kHz mono to play and the `default` PCM is a plug
-    /// chain that will convert anything. A capture device is the other way
-    /// round — it has a format and you get it. Asking a stereo-only mic for one
-    /// channel through `snd_pcm_set_params` is an `-EINVAL` at open, i.e. "no
-    /// microphone", when the honest answer is "a stereo microphone". So the
-    /// recorder negotiates with `snd_pcm_hw_params_set_channels_near` /
-    /// `_set_rate_near`, publishes what it actually got as ``format``, and
-    /// folds the channels down in Swift.
-    ///
-    /// The **rate** half is not folded here: `MonoPCMConverter` (in
-    /// TailscreenKit, where Linux CI tests it) already does 48 kHz mono ↔ a
-    /// device rate for the playback direction, and duplicating a resampler
-    /// behind libasound would put it on a path only a non-48 kHz machine ever
-    /// runs. Hence ``format`` reports the rate rather than hiding it.
+    /// Unlike `PCMPlayer`, which dictates its format, a capture device has a
+    /// format and you get it: asking a stereo-only mic for one channel via
+    /// `snd_pcm_set_params` is `-EINVAL` at open ("no microphone"), when the
+    /// honest answer is "a stereo microphone." So the recorder negotiates
+    /// with `_set_channels_near`/`_set_rate_near`, publishes what it got as
+    /// ``format``, and folds the channels down in Swift. Rate is not folded
+    /// here — `MonoPCMConverter` already handles that for playback.
     public final class PCMRecorder {
         /// What the device actually gave us, which is not necessarily what was
         /// asked for. `channels` is what the recorder folds to mono — it's
@@ -140,10 +131,9 @@ extension ALSA {
             var period: snd_pcm_uframes_t = 0
             try check(snd_pcm_hw_params_get_period_size(hw, &period, nil))
 
-            // Software params: start the stream on the first frame requested,
-            // and wake the reader once a period is available. alsa-lib's
-            // defaults happen to match, but a capture stream that never starts
-            // is a silent hang with nothing to see in a log, so it's stated.
+            // Software params: start on the first frame requested, wake the
+            // reader once a period is available. Stated explicitly since a
+            // stream that never starts is a silent hang.
             var sw: OpaquePointer?
             try check(snd_pcm_sw_params_malloc(&sw))
             guard let sw else { throw Error(-ENOMEM) }

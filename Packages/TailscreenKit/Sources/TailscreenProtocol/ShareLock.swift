@@ -13,22 +13,16 @@ import Glibc
 // models simply does not exist there. See the Windows variant at the bottom.
 #if !os(Windows)
 
-/// File-lock advisory mutex shared across Tailscreen instances on the
-/// same Mac. macOS's `replayd` enforces a per-bundle constraint that
-/// only one SCStream session can run on the bundle at a time; without
-/// coordination, a 2nd-instance share-button click is dead on arrival
-/// (replayd returns -3805). The lockfile lets one instance know
-/// another is already sharing so the UI can grey out its Share button
-/// preemptively instead of putting the user through a failed bring-up
-/// + alert.
+/// File-lock advisory mutex shared across Tailscreen instances on the same
+/// Mac. macOS's `replayd` enforces a per-bundle limit of one SCStream
+/// session at a time; without coordination a 2nd-instance share click fails
+/// with replayd -3805. The lockfile lets the UI grey out Share preemptively
+/// instead of a failed bring-up + alert.
 ///
-/// Implementation: open a file at `/tmp/tailscreen-sharing.lock` and
-/// `flock(LOCK_EX | LOCK_NB)` it. The lock is auto-released when the
-/// fd is closed or the process exits — no orphan-lock recovery
+/// `flock(LOCK_EX | LOCK_NB)` on `/tmp/tailscreen-sharing.lock`,
+/// auto-released on fd close or process exit — no orphan-lock recovery
 /// needed even on SIGKILL.
 public final class ShareLock: @unchecked Sendable {
-    /// Path is /tmp because every short-lived/test scenario should
-    /// see the lock land somewhere obvious and tmpfs-cleanable.
     public static let path = "/tmp/tailscreen-sharing.lock"
 
     private var fd: Int32 = -1
@@ -48,9 +42,8 @@ public final class ShareLock: @unchecked Sendable {
             return false
         }
         fd = f
-        // Drop our PID into the file so anyone tailing it knows who
-        // holds the lock. Best-effort; truncation + write isn't
-        // load-bearing for correctness, the flock alone is.
+        // Drop our PID into the file for anyone tailing it. Best-effort;
+        // the flock alone is what's load-bearing.
         let pid = "\(getpid())\n"
         _ = ftruncate(f, 0)
         _ = pid.withCString { cstr in
@@ -69,12 +62,10 @@ public final class ShareLock: @unchecked Sendable {
     /// True if we currently hold the lock.
     public var isHeldBySelf: Bool { fd >= 0 }
 
-    /// Probe whether *some* process on this Mac currently holds the
-    /// lock. Doesn't tell us who — just whether the slot is taken.
-    /// Tries a non-destructive `LOCK_SH | LOCK_NB`: if it fails with
-    /// `EWOULDBLOCK`, the file is exclusively locked elsewhere. If
-    /// it succeeds, no one's holding it; we drop the shared lock
-    /// before returning.
+    /// Probe whether *some* process on this Mac holds the lock (not who).
+    /// A non-destructive `LOCK_SH | LOCK_NB` fails with `EWOULDBLOCK` if the
+    /// file is exclusively locked elsewhere; on success, drop the shared
+    /// lock and report free.
     public static func isHeldByAnyone() -> Bool {
         let f = open(path, O_RDONLY)
         guard f >= 0 else { return false }
@@ -90,17 +81,10 @@ public final class ShareLock: @unchecked Sendable {
 
 #else
 
-/// Windows stand-in.
-///
-/// `ShareLock` exists to coordinate around macOS `replayd`'s per-bundle limit
-/// of one `SCStream` session. Windows has no `replayd` and no such limit, so
-/// there is nothing to coordinate and the lock always succeeds.
-///
-/// This is a deliberate no-op, not an unimplemented stub: callers use it to
-/// grey out a Share button pre-emptively, and on Windows the honest answer to
-/// "is another process already sharing?" is "that isn't a constraint here".
-/// If Windows ever grows a real single-capture constraint, this is where a
-/// named mutex (`CreateMutexW`) would go.
+/// Windows stand-in. `ShareLock` exists for macOS `replayd`'s per-bundle
+/// SCStream limit; Windows has no such constraint, so this is a deliberate
+/// no-op (not an unimplemented stub) that always succeeds. A real
+/// single-capture constraint would use a named mutex (`CreateMutexW`) here.
 public final class ShareLock: @unchecked Sendable {
     public static let path = "(unused on Windows)"
 

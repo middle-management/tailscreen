@@ -2,15 +2,9 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Round-trip the parent → helper framed protocol with focus on the
-/// new `contentFilter` message type. We can't exercise a real
-/// `SCContentFilter` in CI (no display, no UI), so the tests use
-/// arbitrary `Data` payloads — the framing layer is opaque to the
-/// payload anyway.
+/// Round-trips the parent ↔ helper framed protocol. Uses arbitrary `Data`
+/// payloads (no real `SCContentFilter` in CI) since framing is payload-opaque.
 final class CaptureHelperWireTests: XCTestCase {
-    /// `contentFilter` round-trip with a small payload. Validates the
-    /// new InType raw value (0x03) and that the writer + reader agree
-    /// on framing.
     func testContentFilterFrameRoundTrip() throws {
         let pipe = Pipe()
         let writer = HelperControlWriter(handle: pipe.fileHandleForWriting)
@@ -44,12 +38,9 @@ final class CaptureHelperWireTests: XCTestCase {
         XCTAssertEqual(frame.payload.count, 0)
     }
 
-    /// 64 KB exercises the chunked-read path inside `readExactly` and
-    /// is plausibly the largest archived `SCContentFilter` we'd see
-    /// (multi-app sets with thumbnails and bundle metadata). The
-    /// write happens on a background queue because macOS pipe
-    /// buffers default to ~16 KB; a synchronous write would block
-    /// before the reader gets a chance to drain.
+    /// 64 KB exercises `readExactly`'s chunked-read path. Write happens on a
+    /// background queue: pipe buffers default to ~16 KB, so a synchronous
+    /// write would block before the reader can drain.
     func testLargeContentFilter() throws {
         let pipe = Pipe()
         let reader = HelperControlReader(handle: pipe.fileHandleForReading)
@@ -77,10 +68,6 @@ final class CaptureHelperWireTests: XCTestCase {
         XCTAssertEqual(frame.payload, payload)
     }
 
-    /// The message types should not collide on the wire — interleave
-    /// `requestKeyframe`, `setBitrate`, and `contentFilter` and
-    /// confirm the reader recovers each in order with the right type
-    /// and payload.
     func testInterleavedMessages() throws {
         let pipe = Pipe()
         let writer = HelperControlWriter(handle: pipe.fileHandleForWriting)
@@ -126,9 +113,7 @@ final class CaptureHelperWireTests: XCTestCase {
         XCTAssertEqual(f4.payload.count, 0)
     }
 
-    /// `InType` raw values are part of the wire contract; pin them so
-    /// a refactor that reorders the enum doesn't silently break helper
-    /// communication.
+    /// Pins the wire contract against an enum reorder.
     func testInTypeRawValuesAreStable() {
         XCTAssertEqual(CaptureHelperWire.InType.requestKeyframe.rawValue, 0x01)
         XCTAssertEqual(CaptureHelperWire.InType.setBitrate.rawValue, 0x02)
@@ -137,15 +122,12 @@ final class CaptureHelperWireTests: XCTestCase {
         XCTAssertEqual(CaptureHelperWire.InType.shutdown.rawValue, 0xFF)
     }
 
-    /// System-audio wire raw values are part of the contract too.
     func testSystemAudioWireRawValuesAreStable() {
         XCTAssertEqual(CaptureHelperWire.OutType.audioAccessUnit.rawValue, 0x07)
     }
 
     // MARK: - System-audio frame round-trips
 
-    /// `writeAudioAccessUnit` (helper → main) round-trips the raw Opus AU
-    /// bytes through `HelperFrameReader`.
     func testAudioAccessUnitFrameRoundTrip() throws {
         let pipe = Pipe()
         let writer = HelperFrameWriter(handle: pipe.fileHandleForWriting)
@@ -163,7 +145,6 @@ final class CaptureHelperWireTests: XCTestCase {
         XCTAssertEqual(frame.payload, au)
     }
 
-    /// `sendAudioEnabled` (main → helper) round-trips the 1-byte flag.
     func testSetAudioEnabledFrameRoundTrip() throws {
         let pipe = Pipe()
         let writer = HelperControlWriter(handle: pipe.fileHandleForWriting)
@@ -190,9 +171,7 @@ final class CaptureHelperWireTests: XCTestCase {
 
     // MARK: - PickerSelection captureAudio field
 
-    /// The new `captureAudio` field round-trips and is backward compatible:
-    /// JSON produced by an older picker-helper (no such key) still decodes,
-    /// defaulting `captureAudio` to `false`.
+    /// Backward compatible: JSON from an older picker-helper (no such key) decodes with `captureAudio == false`.
     func testPickerSelectionCaptureAudioRoundTrip() throws {
         let original = PickerSelection(
             kind: .display, displayID: 1, windowID: nil, bundleIDs: [], captureAudio: true)
@@ -216,12 +195,8 @@ final class CaptureHelperWireTests: XCTestCase {
 
     // MARK: - PickerSelection JSON contract
 
-    /// `PickerSelection`'s JSON shape is the contract between the
-    /// picker-helper subprocess and the capture-helper subprocess —
-    /// neither side imports the other's code, they only agree on the
-    /// JSON. Round-trip all three kinds so a field rename or
-    /// CodingKeys regression surfaces here instead of in a runtime
-    /// "couldn't decode picker selection" alert.
+    /// `PickerSelection`'s JSON is the only contract between the picker-helper
+    /// and capture-helper subprocesses — neither imports the other's code.
 
     func testPickerSelectionDisplayRoundTrip() throws {
         let original = PickerSelection(
@@ -272,9 +247,7 @@ final class CaptureHelperWireTests: XCTestCase {
         XCTAssertEqual(decoded.bundleIDs.count, 3)
     }
 
-    /// `Kind` raw values are also part of the wire contract — they
-    /// serialize as JSON strings. Pin them so a future enum reorder
-    /// or rename surfaces here instead of in a runtime decode error.
+    /// Raw values serialize as JSON strings; pin against enum reorder/rename.
     func testPickerSelectionKindRawValuesAreStable() {
         XCTAssertEqual(PickerSelection.Kind.display.rawValue, "display")
         XCTAssertEqual(PickerSelection.Kind.window.rawValue, "window")

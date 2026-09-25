@@ -8,29 +8,21 @@ import Foundation
 /// node at a time.
 struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
-    /// Signed-in identity, copied from `TailscaleUserProfile` after the
-    /// first successful login so the account menu can label the profile
-    /// while it's inactive. Empty until then.
+    /// Copied from `TailscaleUserProfile` after first login, so the account
+    /// menu can label the profile while inactive. Empty until then.
     var displayName: String
     var loginName: String
-    /// Profile-picture URL from the signed-in identity (e.g. a GitHub
-    /// avatar). Empty when unknown; the UI falls back to a monogram.
-    /// Stored per profile so inactive accounts keep their picture in the
-    /// account menu.
+    /// Empty when unknown; the UI falls back to a monogram.
     var profilePicURL: String
-    /// Tailnet (organization) name, e.g. "example.com" or "slaskis.github".
-    /// The disambiguator when two profiles share a login name — a GitHub
-    /// identity used across orgs yields the identical `loginName` on every
-    /// tailnet. Empty until known; blobs stored before this field existed
-    /// decode to empty via the custom decoder below.
+    /// Disambiguates a login name shared across tailnets (e.g. one GitHub
+    /// identity, several orgs). Empty until known.
     var tailnetName: String
-    /// State-dir path relative to the Tailscreen app-support directory,
-    /// WITHOUT the `TAILSCREEN_INSTANCE` suffix. The migrated default
-    /// profile owns the pre-profiles `"tailscale"` root; new profiles get
+    /// Relative to the Tailscreen app-support directory, WITHOUT the
+    /// `TAILSCREEN_INSTANCE` suffix. Migrated default profile owns the
+    /// pre-profiles `"tailscale"` root; new profiles get
     /// `"profiles/<uuid>/tailscale"`.
     let stateDirectory: String
 
-    /// Whether this profile has completed a login at least once.
     var hasSignedIn: Bool { !loginName.isEmpty }
 
     /// Menu row title: tailnet-qualified once known, since the login name
@@ -56,10 +48,9 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
         self.stateDirectory = stateDirectory
     }
 
-    /// Custom decode solely for `tailnetName`'s missing-key default —
-    /// registries persisted by builds predating the field must keep
-    /// decoding (the store's corrupt-blob fallback would otherwise reset
-    /// the profile list). Encoding stays synthesized.
+    /// Custom decode solely so registries persisted before `tailnetName`
+    /// existed keep decoding, instead of hitting the store's corrupt-blob
+    /// fallback and resetting the profile list.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -70,11 +61,9 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
         stateDirectory = try container.decode(String.self, forKey: .stateDirectory)
     }
 
-    /// Absolute tsnet state path:
-    /// `<appSupport>/Tailscreen/<stateDirectory><instanceSuffix>`.
-    /// The instance suffix is appended at resolve time (not stored) so
-    /// `test-local.sh` instances keep isolated machine keys per profile
-    /// while sharing the profile registry.
+    /// `<appSupport>/Tailscreen/<stateDirectory><instanceSuffix>`. Suffix
+    /// appended at resolve time (not stored) so `test-local.sh` instances
+    /// keep isolated machine keys per profile.
     func statePath(appSupport: URL, instanceSuffix: String) -> String {
         appSupport
             .appendingPathComponent("Tailscreen/\(stateDirectory)\(instanceSuffix)")
@@ -82,11 +71,9 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-/// UserDefaults-backed registry of account profiles plus the active
-/// selection. Injected suite for tests (same pattern as
-/// `ViewerAccessPolicyStore`). Invariants: at least one profile always
-/// exists, the active id always refers to an existing profile, and the
-/// active (or last remaining) profile can't be removed.
+/// Invariants: at least one profile always exists, the active id always
+/// refers to an existing profile, and the active (or last remaining) profile
+/// can't be removed.
 @MainActor
 final class ProfileStore: ObservableObject {
     @Published private(set) var profiles: [TailscreenProfile]
@@ -96,9 +83,8 @@ final class ProfileStore: ObservableObject {
     private static let profilesKey = "tailscreenProfiles"
     private static let activeKey = "tailscreenActiveProfileID"
 
-    /// The pre-profiles state directory name. The first profile is rooted
-    /// here so existing single-account installs keep their login without
-    /// any file moves.
+    /// The first profile is rooted here so existing single-account installs
+    /// keep their login without file moves.
     static let legacyStateDirectory = "tailscale"
 
     init(defaults: UserDefaults = .standard) {
@@ -107,8 +93,7 @@ final class ProfileStore: ObservableObject {
         var loaded =
             data.flatMap { try? JSONDecoder().decode([TailscreenProfile].self, from: $0) } ?? []
         if loaded.isEmpty {
-            // First launch, or a corrupt blob: degrade to a single default
-            // profile on the legacy directory rather than resetting state.
+            // First launch or corrupt blob: degrade to a single default profile.
             loaded = [
                 TailscreenProfile(
                     id: UUID(), displayName: "", loginName: "",
@@ -137,16 +122,16 @@ final class ProfileStore: ObservableObject {
         return profile
     }
 
-    /// Select a different profile. Unknown ids are ignored so a stale menu
-    /// click can never point the store at a directory that doesn't exist.
+    /// Unknown ids are ignored so a stale menu click can't point at a
+    /// nonexistent directory.
     func setActive(_ id: UUID) {
         guard profiles.contains(where: { $0.id == id }) else { return }
         activeProfileID = id
         persist()
     }
 
-    /// Copy the signed-in identity onto the active profile. No-op when
-    /// nothing changed, so callers can invoke it after every login/restore.
+    /// No-op when nothing changed, so callers can invoke it after every
+    /// login/restore.
     func updateActiveIdentity(
         displayName: String, loginName: String, tailnetName: String, profilePicURL: String = ""
     ) {
@@ -163,9 +148,8 @@ final class ProfileStore: ObservableObject {
         persist()
     }
 
-    /// Remove a profile from the registry. Refuses the active profile and
-    /// the last remaining one (the invariants above). Returns the removed
-    /// entry so the caller can delete its on-disk state.
+    /// Refuses the active profile and the last remaining one. Returns the
+    /// removed entry so the caller can delete its on-disk state.
     @discardableResult
     func remove(_ id: UUID) -> TailscreenProfile? {
         guard id != activeProfileID, profiles.count > 1,

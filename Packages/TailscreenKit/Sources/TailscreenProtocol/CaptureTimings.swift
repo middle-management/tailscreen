@@ -1,17 +1,11 @@
 import Foundation
 
-/// Where a sharer's frame time actually goes.
-///
-/// A viewer's stats overlay can say the picture is arriving at 1.4 fps over a
-/// 17 ms link with no loss — which proves the network is innocent and says
-/// nothing at all about which part of the sharer is slow. Capture, colour
-/// conversion and encode are three very different problems with three very
-/// different fixes, and guessing between them from a frame rate is how an
-/// afternoon disappears.
-///
-/// So the sharer times each stage and reports the split. Pure arithmetic, in
-/// the portable tier, because every `CaptureEncoding` backend has the same
-/// three stages and none of them can test this on the machine it runs on.
+/// Where a sharer's frame time actually goes. A viewer's stats overlay can
+/// show low fps over a clean link, which proves the network innocent but says
+/// nothing about which sharer stage is slow — capture, colour conversion and
+/// encode are different problems with different fixes. So the sharer times
+/// each stage and reports the split. Pure arithmetic in the portable tier,
+/// since every `CaptureEncoding` backend has the same three stages.
 public struct CaptureTimings: Sendable, Equatable {
     /// Frames actually encoded per second over the window — the number a
     /// viewer sees, measured at the source.
@@ -24,10 +18,9 @@ public struct CaptureTimings: Sendable, Equatable {
     public let encodeMs: Double
     /// Frames encoded in the window.
     public let frames: Int
-    /// Acquire attempts that timed out with no new frame. **Not** a fault:
-    /// WGC delivers only on change, so a still screen times out by design. It
-    /// is here to distinguish "the sharer is slow" from "nothing moved",
-    /// which look identical from the viewer's end.
+    /// Acquire attempts that timed out with no new frame. Not a fault — WGC
+    /// delivers only on change — but distinguishes "sharer is slow" from
+    /// "nothing moved", which look identical to the viewer.
     public let timeouts: Int
 
     public init(
@@ -42,9 +35,8 @@ public struct CaptureTimings: Sendable, Equatable {
         self.timeouts = timeouts
     }
 
-    /// The stage taking the most time, or nil when nothing was encoded.
-    ///
-    /// The one thing a person actually wants off this: *what do I fix?*
+    /// The stage taking the most time, or nil when nothing was encoded — the
+    /// one thing a person actually wants off this.
     public var slowestStage: String? {
         guard frames > 0 else { return nil }
         let stages = [("capture", acquireMs), ("convert", convertMs), ("encode", encodeMs)]
@@ -59,26 +51,19 @@ public struct CaptureTimings: Sendable, Equatable {
         let stages = String(
             format: "%.1f fps · capture %.0f ms · convert %.0f ms · encode %.0f ms",
             framesPerSecond, acquireMs, convertMs, encodeMs)
-        // The idle count is what separates "this sharer is slow" from "nothing
-        // on screen moved" — the distinction this whole type exists for, and
-        // one the numbers above cannot make on their own: a low frame rate
-        // looks identical either way. Omitted when zero so a busy screen reads
-        // cleanly.
+        // The idle count separates "sharer is slow" from "nothing moved" —
+        // omitted when zero so a busy screen reads cleanly.
         guard timeouts > 0 else { return stages }
         return "\(stages) · \(timeouts) idle"
     }
 }
 
 /// Accumulates per-frame stage timings and emits a `CaptureTimings` once per
-/// window.
-///
-/// Deliberately a value type with an injected clock: a capture loop calls
-/// `record` on every iteration from its own thread and asks for a snapshot in
-/// the same breath, so the whole thing has to be cheap and has to be testable
-/// without waiting a real second.
+/// window. A value type with an injected clock, so a capture loop can call
+/// `record` and snapshot cheaply and testably without waiting a real second.
 public struct CaptureTimingAccumulator: Sendable {
-    /// How often a snapshot is produced. One second: long enough that a single
-    /// slow frame doesn't dominate, short enough to watch a change take effect.
+    /// How often a snapshot is produced. One second: long enough that a
+    /// single slow frame doesn't dominate, short enough to see a change take effect.
     public static let windowNs: UInt64 = 1_000_000_000
 
     private var windowStartNs: UInt64?
@@ -92,10 +77,9 @@ public struct CaptureTimingAccumulator: Sendable {
 
     /// Record one pass of the capture loop.
     ///
-    /// - Parameter producedFrame: false when the acquire timed out, so the
-    ///   pass counts as a timeout and its (zero) convert/encode times are not
-    ///   averaged in. Including them would drag every average toward zero on a
-    ///   still screen and report a fast sharer that is doing nothing.
+    /// - Parameter producedFrame: false when the acquire timed out; its
+    ///   (zero) convert/encode times are excluded from the average, or a
+    ///   still screen would report a falsely fast sharer.
     public mutating func record(
         nowNs: UInt64,
         acquireNs: UInt64,
@@ -125,9 +109,7 @@ public struct CaptureTimingAccumulator: Sendable {
         let seconds = Double(elapsed) / 1_000_000_000
         let timings = CaptureTimings(
             framesPerSecond: seconds > 0 ? Double(frames) / seconds : 0,
-            // Acquire is averaged over every pass, the other two over encoded
-            // frames only: a timeout still spent time waiting, but converted
-            // and encoded nothing.
+            // Acquire averages over every pass; convert/encode over encoded frames only.
             acquireMs: passes > 0 ? Double(acquireNs) / Double(passes) / 1_000_000 : 0,
             convertMs: frames > 0 ? Double(convertNs) / Double(frames) / 1_000_000 : 0,
             encodeMs: frames > 0 ? Double(encodeNs) / Double(frames) / 1_000_000 : 0,

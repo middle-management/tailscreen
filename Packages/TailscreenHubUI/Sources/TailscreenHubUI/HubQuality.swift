@@ -3,21 +3,16 @@ import TailscreenL10n
 import TailscreenProtocol
 
 /// The quality knobs, as the hub needs them: the current value, and one
-/// setter that persists.
-///
-/// A reference type for the same reason `HubFilter` is: the menu below is
-/// rebuilt on every redraw, and a value copied into each rebuild would hand
-/// stale settings back to the host's setter.
+/// setter that persists. A reference type like `HubFilter`, so a rebuild
+/// doesn't hand the setter stale settings.
 public final class HubQuality {
     public var settings: QualitySettings
-    /// Applies AND persists. One call per change, with the whole struct — the
-    /// knobs interact (a preset is a combination, and setting one knob makes
-    /// the preset `.custom`), so a per-field setter would need the host to
-    /// reassemble them and get that relationship right twice.
+    /// Applies and persists. One call, with the whole struct — the knobs
+    /// interact (setting one makes the preset `.custom`), so a per-field
+    /// setter would need the host to get that relationship right twice.
     public let onChange: @MainActor @Sendable (QualitySettings) -> Void
-    /// True while a share is running. Only changes the caption: the knobs stay
-    /// live because a sharer fiddling with quality mid-call is exactly when
-    /// they care, and a disabled control would just look broken.
+    /// True while a share is running. Only changes the caption — the knobs
+    /// stay live since mid-call is exactly when a sharer wants to change them.
     public let isSharing: Bool
 
     public init(
@@ -31,23 +26,17 @@ public final class HubQuality {
     }
 }
 
-/// Human labels for the portable enums.
-///
-/// Here rather than on the enums themselves: `QualitySettings` lives in
-/// `TailscreenProtocol`, which is Foundation-only and deliberately carries no
-/// presentation. macOS localizes its own copies through `L(…)`, and putting
-/// English in the protocol tier would make that the one place a translator
-/// cannot reach.
+/// Human labels for the portable enums. Kept off the enums themselves since
+/// `QualitySettings` lives in the Foundation-only `TailscreenProtocol`, which
+/// carries no presentation.
 extension QualitySettings.Preset {
     var hubLabel: String {
         switch self {
         case .low: return L("Save bandwidth")
         case .balanced: return L("Balanced")
         case .high: return L("Best quality")
-        // Never offered as a CHOICE — you cannot pick "custom", you arrive at
-        // it by moving a knob — but it is a state the menu title must be able
-        // to name, or a sharer who changed the frame rate sees a title
-        // claiming a preset they are no longer on.
+        // Never a pickable choice — reached by moving a knob — but the menu
+        // title must still be able to name it.
         case .custom: return L("Custom")
         }
     }
@@ -72,20 +61,13 @@ extension QualitySettings.CodecPreference {
     }
 }
 
-/// The share card's quality control: a `Menu` of checked rows.
+/// The share card's quality control: a `Menu` of checked rows, not a
+/// `Picker` — swift-cross-ui's `Picker` renders options by string-
+/// interpolating the value (`low`/`balanced`/`high` enum case names).
 ///
-/// A menu of `Toggle`s rather than a `Picker`, which is the same conclusion
-/// `HubFilterMenu` reached and for a sturdier reason than taste.
-/// swift-cross-ui's `Picker` labels its options by **string-interpolating the
-/// value** (`options.map { "\($0)" }`), so a `Preset` would render as `low` /
-/// `balanced` / `high` — enum case names, in a user-facing control — and its
-/// availability is backend-conditional (`PickerStyle.isSupported`). Menus of
-/// checked rows are what both backends are already proven to render here.
-///
-/// The rows are radio-shaped even though `Toggle` is a checkbox: picking one
-/// selects it, and un-picking the active one does nothing, because "no preset"
-/// and "no frame rate" are not states this model has. That is why each row's
-/// binding ignores `false`.
+/// Rows are radio-shaped despite `Toggle` being a checkbox: un-picking the
+/// active row does nothing, since "no preset"/"no frame rate" aren't states
+/// this model has — each binding ignores `false`.
 public struct HubQualityMenu: View {
     let model: HubQuality
 
@@ -96,8 +78,7 @@ public struct HubQualityMenu: View {
     public var body: some View {
         Menu(L("Quality: \(model.settings.preset.hubLabel)")) {
             Text(L("Preset"))
-            // `.custom` is excluded: it names "any other combination", so
-            // offering it would be a row that cannot do anything.
+            // `.custom` excluded — a row that could never do anything.
             ForEach(QualitySettings.Preset.allCases.filter { $0 != .custom }, id: \.self) {
                 preset in
                 Toggle(preset.hubLabel, isOn: presetBinding(preset))
@@ -115,13 +96,9 @@ public struct HubQualityMenu: View {
         }
     }
 
-    /// Radio-shaped bindings: turning a row ON selects it, turning the active
-    /// row off is ignored. Each mutates a COPY and hands the whole struct to
-    /// the host, so persistence fires exactly once per change — the same shape
-    /// as `HubFilterMenu.bind`.
-    ///
-    /// The closures are non-`Sendable` and formed in this main-actor `body`,
-    /// so they inherit its isolation and may call `onChange`.
+    /// Radio-shaped: turning a row on selects it, turning the active row off
+    /// is ignored. Mutates a copy and hands the whole struct to the host, like
+    /// `HubFilterMenu.bind`.
     private func presetBinding(_ preset: QualitySettings.Preset) -> Binding<Bool> {
         let model = self.model
         return Binding(

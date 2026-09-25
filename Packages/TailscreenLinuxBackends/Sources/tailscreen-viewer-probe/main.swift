@@ -7,14 +7,11 @@ import TailscreenViewerCore
 import TailscreenViewerTsnet
 
 // A headless viewer: dials a sharer over tsnet, decodes what arrives, and
-// reports. No window, no GTK, no audio device — so it runs anywhere the GTK
-// viewer can't, which is what makes it usable as an automated end-to-end probe
-// against a real sharer.
-//
-// It is deliberately the *real* receive path: `TsnetTransport` +
-// `ViewerSession` + the FFmpeg decoder the desktop viewer uses. Only the sink
-// is different — instead of uploading to a GL texture it counts frames and
-// checks they aren't blank.
+// reports. No window, no GTK, no audio device — an automated end-to-end
+// probe. Deliberately the real receive path (`TsnetTransport` +
+// `ViewerSession` + the desktop viewer's FFmpeg decoder); only the sink
+// differs, counting frames and checking they aren't blank instead of
+// uploading to a GL texture.
 //
 // Usage:
 //   tailscreen-viewer-probe --host SHARER --state-dir DIR
@@ -57,10 +54,9 @@ struct Config: Sendable {
 
 let config = Config.parse()
 
-/// Unbuffered by construction: `print` buffers when stdout is a pipe or file,
-/// which is exactly how a harness runs this, and `setvbuf(stdout, …)` isn't
-/// reachable under Swift 6 strict concurrency (`stdout` is shared mutable
-/// state). Writing the bytes straight to the file handle sidesteps both.
+/// Unbuffered by construction: `print` buffers when stdout is a pipe/file
+/// (how a harness runs this), and `setvbuf` isn't reachable under Swift 6
+/// strict concurrency. Writing bytes straight to the handle sidesteps both.
 func log(_ s: String) {
     FileHandle.standardOutput.write(Data("[probe] \(s)\n".utf8))
 }
@@ -80,9 +76,8 @@ final class CountingSink: VideoSink, @unchecked Sendable {
     func present(_ frame: any DecodedFrame) {
         var uniform = true
         if let f = frame as? DecodedVideoFrame, let first = f.yPlane.first {
-            // A blank capture (or a decoder handing back an empty buffer) is
-            // still "a frame"; sampling the luma is what distinguishes real
-            // screen content from a grey rectangle.
+            // A blank capture is still "a frame" — luma sampling distinguishes
+            // real screen content from a grey rectangle.
             uniform = !f.yPlane.contains { $0 != first }
         }
         lock.withLock {
@@ -115,8 +110,7 @@ let viewerConfig = ViewerConfig(
     statePath: config.stateDir
 )
 
-// Watchdog: the run loop only ends when `shouldClose` says so, so a sharer that
-// never sends video would otherwise hang forever.
+// Watchdog: a sharer that never sends video would otherwise hang forever.
 let deadline = Date().addingTimeInterval(config.timeout)
 
 Task {
@@ -142,11 +136,8 @@ do {
         audioSink: nil,
         shouldClose: { done.isSet },
         onAdmitted: { caps in
-            // Named, not just the raw value: this line is what
-            // `scripts/e2e-linux-sharer.sh` asserts on, and a bitmask in a log
-            // makes "which capability went missing" a puzzle rather than a
-            // grep. The names are the contract — keep them in step with
-            // `ScreenShareCaps`.
+            // Named, not just the raw value: `scripts/e2e-linux-sharer.sh`
+            // asserts on this line — keep names in step with `ScreenShareCaps`.
             var names: [String] = []
             if caps.contains(.nack) { names.append("nack") }
             if caps.contains(.receiverReport) { names.append("receiverReport") }

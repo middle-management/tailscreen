@@ -9,10 +9,9 @@ import Foundation
 /// caller to serialize `packetize(au:)` calls. `VoiceChannel` confines
 /// every call to its internal serial queue.
 public final class AudioRTPPacketizer {
-    /// RTP timestamp step per packet: samples in one Opus 20 ms frame at
-    /// 48 kHz. Kept here (not imported from OpusKit) so this stays a
-    /// Foundation-only, Linux-buildable protocol file; it must equal
-    /// `OpusVoiceEncoder.frameSamples`.
+    /// RTP timestamp step per packet: samples in one Opus 20ms frame at
+    /// 48kHz. Kept here, not imported from OpusKit, to stay Foundation-only;
+    /// must equal `OpusVoiceEncoder.frameSamples`.
     public static let samplesPerFrame: UInt32 = 960
 
     public let ssrc: UInt32

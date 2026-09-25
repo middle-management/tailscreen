@@ -7,21 +7,12 @@ import enum TailscreenProtocol.VideoColorRange
 @testable import TailscreenViewer
 
 /// `makeColorBarsFrame()` put through `I420Converter` — the CPU reference the
-/// two GPU render self-tests are compared against.
+/// GL/D3D11 GPU render self-tests (which must use relative predicates, since
+/// shader rounding/filtering/sRGB move values a few counts) are compared
+/// against. This is the one place the bars' colours can be asserted exactly.
 ///
-/// The fixture and the converter are both in the portable tier, so this is the
-/// one place the bars' colours can be asserted EXACTLY. That is the whole point
-/// of it: the GL (Xvfb) and D3D11 (WARP) self-tests must use relative predicates
-/// — a shader's own rounding, texture filtering and any sRGB handling move
-/// values by a few counts — but nothing sits between these planes and these
-/// bytes. If a self-test's relative predicate ever passes while this fails, the
-/// disagreement is in the maths, not in a driver.
-///
-/// **Bars 2 and 3 are mid-luma, maximum-chroma colours, not saturated red and
-/// blue** — read `makeColorBarsFrame()`'s doc comment before touching the
-/// expectations here. The first Windows self-test asserted rgb(235,16,16) ±24
-/// for bar 2 and would have failed a perfectly correct render by 47 on the
-/// green channel.
+/// **Bars 2 and 3 are mid-luma, maximum-chroma, not saturated red/blue** —
+/// read `makeColorBarsFrame()`'s doc comment before touching expectations.
 final class ColorBarsConversionTests: XCTestCase {
     /// Byte order out of `I420Converter` is BGRA; these read as (r, g, b) so
     /// the expectations below match the doc comment's table verbatim.
@@ -73,12 +64,9 @@ final class ColorBarsConversionTests: XCTestCase {
             ])
     }
 
-    /// The same planes read as FULL range, which is what a macOS sharer sends
-    /// by default: no 16..235 expansion, so the bars land on their raw sample
-    /// values instead. White is the load-bearing one — 235 stays 235 rather
-    /// than being stretched to 255 — because it is the direction that shipped
-    /// wrong: a full-range stream through limited-range maths clips everything
-    /// above 235 to white and crushes everything below 16 to black.
+    /// Full range (macOS sharer default): no 16..235 expansion. White is the
+    /// load-bearing case — 235 must stay 235, not stretch to 255, since a
+    /// full-range stream through limited-range math is the bug that shipped.
     func testFullRangeSkipsTheLimitedRangeExpansion() {
         let (pixels, width, height) = converted(range: .full)
         let barWidth = width / 4
@@ -93,16 +81,14 @@ final class ColorBarsConversionTests: XCTestCase {
                 RGB(r: 255, g: 69, b: 128),
                 RGB(r: 128, g: 104, b: 255)
             ])
-        // And the two readings genuinely differ — a range parameter that was
-        // accepted and ignored would pass every assertion above by accident.
+        // Confirms the range parameter isn't silently ignored.
         let (limitedPixels, _, _) = converted(range: .limited)
         XCTAssertNotEqual(pixels, limitedPixels)
     }
 
     func testEachBarIsFlatAllTheWayAcrossAndDown() {
-        // Chroma is half-resolution, so a subsampling off-by-one shows up as a
-        // fringe at a bar edge rather than as a wrong colour in the middle —
-        // invisible to the centre samples above.
+        // A subsampling off-by-one shows up as an edge fringe, invisible to
+        // the centre samples above.
         let (pixels, width, height) = converted()
         let barWidth = width / 4
         for bar in 0..<4 {
@@ -118,8 +104,8 @@ final class ColorBarsConversionTests: XCTestCase {
     }
 
     func testTheBarsAreFourDISTINCTColours() {
-        // A converter that ignored chroma entirely would still pass a "white is
-        // white, black is black" check and turn bars 2 and 3 into the same grey.
+        // A converter ignoring chroma entirely would still pass the black/
+        // white checks, turning bars 2 and 3 into the same grey.
         let (pixels, width, height) = converted()
         let barWidth = width / 4
         let sampled = (0..<4).map {

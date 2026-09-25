@@ -70,11 +70,9 @@ extension Annotation.RGBA {
         .init(r: 0.85, g: 0.75, b: 0.10, a: 1.0)  // yellow
     ]
 
-    /// Pick a palette color deterministically from any string identity.
-    /// Uses the truncated SipHash-style hash Swift exposes via String.hashValue
-    /// (per-launch random salt) — *don't* use this here. Instead fold the
-    /// UTF-8 bytes ourselves so the same identity → the same color across
-    /// process launches and across machines.
+    /// Pick a palette color deterministically from a string identity. Folds
+    /// UTF-8 bytes ourselves (FNV-1a) rather than `String.hashValue`, whose
+    /// per-launch random salt would give a different color each run.
     public static func paletteColor(forIdentity identity: String) -> Annotation.RGBA {
         var h: UInt64 = 1469598103934665603  // FNV-1a offset basis
         for byte in identity.utf8 {

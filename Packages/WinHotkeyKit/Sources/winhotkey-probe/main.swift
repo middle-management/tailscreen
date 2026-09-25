@@ -2,20 +2,16 @@ import Foundation
 import TailscreenProtocol
 import WinHotkeyKit
 
-// winhotkey-probe — the link check, and the manual gate this repository cannot
-// automate.
+// winhotkey-probe — the link check, and the manual gate this repository
+// cannot automate.
 //
-//   winhotkey-probe          report whether the chord could be registered, then
-//                            release it. This is the CI shape: it proves the
-//                            binary LINKS and that `RegisterHotKey` answered.
-//   winhotkey-probe --hold   hold the chord and print every press until Ctrl+C.
-//                            The only way to confirm the hotkey fires while
-//                            ANOTHER application is focused, which is the whole
-//                            point of it and needs a person at a desk.
+//   winhotkey-probe          report whether the chord could be registered,
+//                            then release it (the CI shape).
+//   winhotkey-probe --hold   hold the chord and print every press until
+//                            Ctrl+C — the only way to confirm it fires while
+//                            ANOTHER application is focused.
 //
-// Off Windows both paths report `unsupportedPlatform` and exit 0: this file
-// exists there to be typechecked, not to pass judgment on a platform it is not
-// running on.
+// Off Windows both paths report `unsupportedPlatform` and exit 0.
 
 let args = Array(CommandLine.arguments.dropFirst())
 

@@ -37,18 +37,13 @@ public enum CaptureHelperWire {
         /// (~280 px wide). Helper emits roughly once per second; we
         /// don't need 60 fps for a popover preview.
         case previewJPEG = 0x04
-        /// User clicked the macOS Control Center's "Stop" button.
-        /// Distinct from `fatal` because the main process should
-        /// tear the share down rather than respawn the helper —
-        /// respawning would immediately reopen the very recording
-        /// the user just turned off.
+        /// User clicked the macOS Control Center's "Stop" button. Distinct
+        /// from `fatal`: main should tear the share down, not respawn the
+        /// helper (which would reopen the recording just turned off).
         case userStopped = 0x05
-        /// Liveness ping (~1 Hz). Emitted while the SCStream is delivering
-        /// samples — including `.idle` frames for a static screen — so the
-        /// parent can distinguish a wedged capture (SCStream silently stopped
-        /// while the helper process is still alive, which process-death
-        /// detection never catches) from a screen that simply isn't changing.
-        /// Payload empty.
+        /// Liveness ping (~1 Hz), emitted while the SCStream delivers
+        /// samples (including `.idle` frames), so the parent can tell a
+        /// wedged capture from a screen that just isn't changing. Payload empty.
         case heartbeat = 0x06
         /// Encoded system/computer-audio access unit (Opus, mono 48 kHz).
         /// Payload is the raw Opus packet bytes — no keyframe flag, unlike video.
@@ -73,13 +68,11 @@ public enum CaptureHelperWire {
         case requestKeyframe = 0x01
         /// `[4 bytes bitrate BE]` — adaptive-bitrate sweep nudge.
         case setBitrate = 0x02
-        /// JSON-encoded `PickerSelection`. Sent once at startup; the
-        /// helper waits on stdin for this message before bringing
-        /// the SCStream up. Carries primitive IDs (display / window
-        /// / bundle) rather than an archived `SCContentFilter`
-        /// because `SCContentFilter` doesn't conform to NSCoding.
-        /// The helper resolves the IDs to live SC* objects via
-        /// `SCShareableContent` and rebuilds the filter on its side.
+        /// JSON-encoded `PickerSelection`. Sent once at startup; the helper
+        /// waits on stdin for it before bringing the SCStream up. Carries
+        /// primitive IDs (display/window/bundle), not an archived
+        /// `SCContentFilter` (doesn't conform to NSCoding) — the helper
+        /// resolves IDs via `SCShareableContent` and rebuilds the filter.
         case contentFilter = 0x03
         /// `[1 byte: 0=off 1=on]` — enable/disable system-audio *emission*.
         /// The audio SCStream output is configured at start time (see

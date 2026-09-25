@@ -15,15 +15,11 @@ type NACKAction struct {
 	PLI bool
 }
 
-// NACKSchedulerConfig carries the scheduler's tunables. The zero value of any
-// field selects the default — which means an explicit zero is NOT
-// representable at construction, unlike the Swift initializer, where 0 is
-// taken literally. For the two fields where zero is genuinely meaningful —
-// ReorderToleranceNs and ReorderPacketTolerance, whose zeros mean "every gap
-// is instantly NACK-eligible" — call SetReorderTolerances(0, 0) after
-// construction; it takes its arguments literally. The remaining fields have
-// no useful zero (a scheduler with MaxAttempts 0 or MaxGaps 0 is the plain
-// PLI path wearing a costume), so 0-means-default costs nothing there.
+// NACKSchedulerConfig carries the scheduler's tunables. A zero field selects
+// its default — unlike the Swift initializer, where 0 is literal. For the two
+// fields where zero is meaningful (ReorderToleranceNs and
+// ReorderPacketTolerance, whose zeros make every gap instantly
+// NACK-eligible), call SetReorderTolerances(0, 0) after construction instead.
 type NACKSchedulerConfig struct {
 	// ReorderToleranceNs is how old a gap must be before it is NACK-eligible;
 	// below it a reordered packet still fills the gap with no NACK

@@ -41,9 +41,7 @@ final class ReceiveLoopPolicyTests: XCTestCase {
 
     func testGiveUpThresholdBoundsTotalRetryTime() {
         XCTAssertEqual(ReceiveLoopPolicy.maxConsecutiveErrors, 10)
-        // A loop that ultimately gives up sleeps through retries 1..<max;
-        // the whole death spiral must resolve well within a minute so the
-        // teardown isn't itself a hang.
+        // The give-up spiral must resolve within a minute, or teardown itself hangs.
         var totalNs: UInt64 = 0
         for n in 1..<ReceiveLoopPolicy.maxConsecutiveErrors {
             totalNs += delay(n)
@@ -112,9 +110,7 @@ final class ReceiveLoopPolicyTests: XCTestCase {
     }
 
     func testAlternatingErrorsReachTheWindowedThreshold() {
-        // The backstop's whole point: errors spaced out by timeouts (which
-        // reset the consecutive counter) still accumulate in the window.
-        // 30 errors 1 s apart all fit inside 60 s.
+        // Errors spaced by timeouts (which reset the consecutive counter) still accumulate in the window.
         var stamps: [UInt64] = []
         var worst = 0
         for t in 0..<ReceiveLoopPolicy.maxErrorsPerWindow {

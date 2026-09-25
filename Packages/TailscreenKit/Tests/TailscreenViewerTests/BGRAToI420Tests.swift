@@ -3,10 +3,9 @@ import XCTest
 @testable import TailscreenProtocol
 @testable import TailscreenViewer
 
-/// The sharer's capture-side colour conversion, and — more usefully — its
-/// agreement with the viewer's. Pure arithmetic, so it is checked here rather
-/// than by looking at a shared screen, which is the point of keeping it in the
-/// portable tier.
+/// The sharer's capture-side colour conversion and its agreement with the
+/// viewer's. Pure arithmetic, checked here rather than by eyeballing a
+/// shared screen.
 final class BGRAToI420Tests: XCTestCase {
     /// One solid colour, `width × height`, with an optional extra row padding
     /// so the stride is not `width * 4`.
@@ -87,18 +86,11 @@ final class BGRAToI420Tests: XCTestCase {
 
     // MARK: - The round trip
 
-    /// Convert BGRA → I420 → BGRA and require the colour to survive.
-    ///
-    /// This is the check neither converter can make alone. `BGRAToI420` could
-    /// be self-consistently wrong about the range and every test above it would
-    /// still pass; so could `I420Converter`. Agreeing with each other on
-    /// saturated colours pins both to the same BT.709 limited-range contract —
-    /// and that contract is also what `CX11Capture` and `CGtkVideo` implement,
-    /// so a drift here is a drift against all four.
-    ///
-    /// The tolerance is loose on purpose: two fixed-point conversions in
-    /// opposite directions, plus 4:2:0 chroma subsampling, cannot be exact.
-    /// What must survive is the *colour*, not the exact byte.
+    /// Convert BGRA → I420 → BGRA and require the colour to survive. Neither
+    /// converter alone can catch a self-consistently-wrong range; agreeing
+    /// with each other pins both to the same BT.709 limited-range contract
+    /// (also implemented by `CX11Capture`/`CGtkVideo`). Loose tolerance: two
+    /// opposite fixed-point conversions plus 4:2:0 subsampling can't be exact.
     func testRoundTripPreservesColour() {
         let cases: [(name: String, b: UInt8, g: UInt8, r: UInt8)] = [
             ("black", 0, 0, 0),
@@ -133,8 +125,7 @@ final class BGRAToI420Tests: XCTestCase {
         }
     }
 
-    /// A greyscale ramp must come back monotonic. Banding or inversion in the
-    /// middle of the range is invisible on solid-colour tests.
+    /// Banding/inversion mid-range is invisible on solid-colour tests.
     func testRoundTripKeepsAGreyRampMonotonic() {
         let width = 16
         let height = 4

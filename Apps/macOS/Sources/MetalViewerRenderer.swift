@@ -4,61 +4,35 @@ import Foundation
 import Metal
 import QuartzCore
 
-/// Snapshot of viewer-side health metrics shown by the optional stats
-/// overlay. Plain value type so it can be diffed for `@Published` updates
-/// without touching the renderer's internal bookkeeping. All counters are
-/// "since this session began rendering" — they reset on `resetStats()`.
+/// Snapshot of viewer-side health metrics for the stats overlay. All counters
+/// are "since this session began rendering" — reset on `resetStats()`.
 ///
-/// `codec` and `bitrateBps` are best-effort: the codec is detected from
-/// the first RTP packet's payload type and the bitrate is a 1-second
-/// sliding window over received-from-network bytes (so it captures the
-/// actual wire load, not the encoder's internal target).
+/// `codec`/`bitrateBps` are best-effort: codec from the first RTP packet's
+/// payload type, bitrate a 1s sliding window over received bytes (wire-level,
+/// not the encoder's internal target).
 struct ViewerStats: Sendable, Equatable {
-    /// Most recent receive-to-present latency in milliseconds, or `nil`
-    /// if no frame has been presented yet.
     var latencyMs: Double?
-    /// Frames presented per second, averaged over a 1 s window. Updates
-    /// on the display link tick.
     var fps: Double
-    /// Percentage of dropped frames in the last reporting window.
-    /// `replacePendingBuffer` overwrites a not-yet-rendered buffer; that
-    /// counts as a drop. `nil` if not yet sampled.
+    /// `replacePendingBuffer` overwriting a not-yet-rendered buffer counts as
+    /// a drop.
     var droppedPct: Double?
-    /// Rolling 1 s bitrate in bits/sec measured from the receive socket,
-    /// or `nil` if not yet sampled. Server-side encoder target lives on
-    /// the sharer, not the viewer, so this is the wire-level approximation.
     var bitrateBps: Double?
-    /// Codec carried on the wire, learned from the RTP payload type.
-    /// `nil` until the first video packet lands.
     var codec: VideoCodec?
-    /// Total frames presented since the stats were last reset.
     var framesPresented: Int
-    /// Total frames dropped (overwritten before render) since reset.
     var framesDropped: Int
-    /// Per-frame decode failures reported by the viewer's decoder since
-    /// reset (see `VideoDecoder.onFrameDecodeFailed`).
     var decodeFailures: Int
-    /// PLIs (keyframe requests) sent to the sharer since reset — both
-    /// loss-driven and decode-ladder-driven, post-throttle.
+    /// Both loss-driven and decode-ladder-driven, post-throttle.
     var plisSent: Int
-    /// True while the decode-failure escalation ladder considers the
-    /// connection degraded; cleared when decoding recovers.
     var isDegraded: Bool
-    /// NACK datagrams sent to the sharer since reset (selective-retransmit
-    /// requests). On a lossy link this should rise while `plisSent` stays low —
-    /// the whole point of the retransmit path vs. the old keyframe storm.
+    /// Should rise while `plisSent` stays low on a lossy link — the point of
+    /// retransmit vs. the old keyframe storm.
     var nacksSent: Int
-    /// Packets reconstructed from XOR parity (FEC) since reset. On a lossy
-    /// high-RTT link this should rise while `nacksSent` AND `plisSent` stay
-    /// near zero — the net-impair validation signal for the FEC path.
+    /// Should rise while `nacksSent`/`plisSent` stay near zero on a lossy
+    /// high-RTT link — the net-impair validation signal for FEC.
     var fecRecovered: Int
-    /// The stream's colour description, read off the decoded buffer's
-    /// attachments (`ColorInfo.statsLabel`) — "P3", "BT.2020 · PQ". Nil until a
-    /// frame carries one, and nil for a plain BT.709 stream that tags nothing.
-    ///
-    /// No range here: the mac decoder outputs 32BGRA, so a decoded buffer has
-    /// no YCbCr range left to report. The GTK and WinUI viewers show one
-    /// because their decoder hands back the planes it decoded.
+    /// "P3", "BT.2020 · PQ" (`ColorInfo.statsLabel`). No range: the mac
+    /// decoder outputs 32BGRA, so no YCbCr range survives to report (the GTK/
+    /// WinUI viewers show one since their decoder hands back raw planes).
     var colorLabel: String?
 
     static let empty = ViewerStats(
@@ -78,41 +52,26 @@ struct ViewerStats: Sendable, Equatable {
     )
 }
 
-/// Observable wrapper around `ViewerStats` so SwiftUI views can subscribe
-/// with `@ObservedObject`. The renderer pushes new snapshots in from the
-/// display-link tick (already on the main thread); the client pushes codec
-/// + byte-counter updates from the receive task via a `DispatchQueue.main`
-/// hop so all `@Published` writes happen on main.
-///
-/// Not annotated `@MainActor` so it can be stored as a `let` on the
-/// non-isolated `MetalViewerRenderer`; `@unchecked Sendable` carries the
-/// invariant that all mutating calls hop to main first.
+/// Not `@MainActor` so it can be a `let` on the non-isolated
+/// `MetalViewerRenderer`; `@unchecked Sendable` carries the invariant that
+/// all mutating calls hop to main first.
 final class ViewerStatsModel: ObservableObject, @unchecked Sendable {
     @Published var stats: ViewerStats = .empty
 
-    /// Toggled by the toolbar's "Show Stats" button. Bound directly into
-    /// the overlay's hosting view's `isHidden`.
+    /// Bound into the overlay's hosting view's `isHidden`.
     @Published var isVisible: Bool = false
 
-    /// True while the session runs over a share-by-token guest tunnel
-    /// (no tailnet). Set by AppState at connect; drives the overlay's
-    /// Connection row. Survives `reset()` on purpose — it is session
-    /// identity, not a counter.
+    /// Survives `reset()` on purpose — session identity, not a counter.
     @Published var isGuestSession: Bool = false
 
-    /// Rolling history of the last `historyCapacity` per-second snapshots:
-    /// latency in ms, bitrate in bps, drop percentage. Drives the sparkline
-    /// chart in `ViewerStatsOverlay`. Appended to on every 1 s flush from
-    /// `publishStatsTick`; oldest sample evicted on overflow.
+    /// Drives the sparkline chart in `ViewerStatsOverlay`.
     @Published var history: [HistorySample] = []
 
-    /// Number of 1 s buckets retained for the sparkline. 60 ≈ one minute,
-    /// matches the width budget of the overlay (~180 px / 3 px-per-sample).
+    /// 60 ≈ one minute, matching the overlay's width budget (~180px / 3px-per-sample).
     static let historyCapacity = 60
 
     func update(_ next: ViewerStats) {
-        // Avoid spurious SwiftUI re-renders on identical snapshots.
-        if next != stats { stats = next }
+        if next != stats { stats = next }  // avoid spurious SwiftUI re-renders
     }
 
     func appendHistory(_ sample: HistorySample) {
@@ -138,37 +97,27 @@ struct HistorySample: Sendable, Equatable {
     var droppedPct: Double?
 }
 
-/// Displays decoded `CVPixelBuffer` frames on a `CAMetalLayer`, driven by a
-/// `CADisplayLink`. Replaces `AVSampleBufferDisplayLayer`, whose background
-/// renderer autoreleased work into the main-queue autorelease pool and
-/// produced a zombie-pointer SIGSEGV on teardown.
+/// Replaces `AVSampleBufferDisplayLayer`, whose background renderer
+/// autoreleased work into the main-queue pool and produced a zombie-pointer
+/// SIGSEGV on teardown.
 ///
-/// Owned by `AppState` for the process lifetime — the disconnect race we
-/// hit when this owned its own window/Metal layer pair was bad enough that
-/// we now never tear either down. Between sessions, callers `clearPendingBuffer`
-/// to drop the last presented frame; the display link stays attached to the
-/// host view for the lifetime of the process.
+/// Owned by `AppState` for the process lifetime — a prior disconnect race with
+/// its own window/Metal layer pair was bad enough that neither is ever torn
+/// down; callers `clearPendingBuffer` between sessions instead.
 @available(macOS 14.0, *)
 final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     let metalLayer: CAMetalLayer
 
-    /// Latency from frame arrival on the socket to presentation, in
-    /// milliseconds. Snapshot at the last presented frame; -1 if never set.
+    /// -1 if never set.
     private(set) var lastPresentLatencyMs: Double = -1
 
-    /// Native video resolution of the most recent decoded frame.
-    /// `(0,0)` until the first frame lands. Used by the host view to keep
-    /// the annotation overlay aligned to the letterboxed video rect — a
-    /// click at "the centre of the video" must still hit the same pixel
-    /// after the window is resized to a different aspect ratio.
+    /// `(0,0)` until the first frame lands. Used by the host view to keep the
+    /// annotation overlay aligned to the letterboxed video rect after a resize.
     private(set) var videoSize: CGSize = .zero
-    /// Fires (on the main thread) whenever `videoSize` changes.
+    /// Fires on the main thread.
     var onVideoSizeChanged: ((CGSize) -> Void)?
 
-    /// Last color-primaries attachment string applied to the layer's
-    /// colorspace, so `render` only re-tags the `CAMetalLayer` when the
-    /// stream's primaries actually change. Touched only from the display-link
-    /// tick (main thread), so it needs no lock. `nil` until the first frame.
+    /// Touched only from the display-link tick (main thread), so no lock needed.
     private var lastColorPrimaries: String?
 
     private let device: MTLDevice
@@ -184,69 +133,42 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     private var isInvalidated = false
     private var framesPresented: Int = 0
 
-    /// Observable model the stats overlay binds to. Updated on the main
-    /// thread from the display-link tick and from client-side packet
-    /// hand-offs (see `noteReceivedBytes` / `noteCodec`).
     let statsModel = ViewerStatsModel()
 
-    // MARK: stats counters (display-link/lock protected)
+    // MARK: stats counters (display-link/lock protected), all reset on `resetStats`
 
-    /// Frames overwritten before they could be rendered. A drop happens
-    /// when `setPixelBuffer` is called while `pendingBuffer` is still
-    /// non-nil. Reset on `resetStats`.
     private var framesDroppedTotal: Int = 0
-    /// Frames presented in the current 1 s bucket.
     private var bucketFramesPresented: Int = 0
-    /// Frames dropped in the current 1 s bucket.
     private var bucketFramesDropped: Int = 0
-    /// Bytes received in the current 1 s bucket (set by the client via
-    /// `noteReceivedBytes`).
     private var bucketBytesReceived: Int = 0
-    /// Start of the current 1 s sampling window, in mach uptime ns.
+    /// Mach uptime ns.
     private var bucketStartNs: UInt64 = 0
 
-    /// Codec observed on the wire. Set by the client when it detects the
-    /// RTP payload type. Pure metadata — the renderer doesn't act on it.
     private var observedCodec: VideoCodec?
 
-    /// Colour description read off the decoded buffers, formatted for the
-    /// overlay. Kept here rather than written straight into the stats model
-    /// because the 1 Hz snapshot rebuilds `ViewerStats` from scratch — a value
-    /// set only on the model would survive for one second and then vanish.
+    /// Kept here rather than written straight into the stats model, since the
+    /// 1Hz snapshot rebuilds `ViewerStats` from scratch and a model-only value
+    /// would vanish after a second.
     private var observedColorLabel: String?
 
-    /// Set by `resetStats` so the next frame re-derives the colour label even
-    /// when its primaries are unchanged.
-    ///
-    /// Without it, `lastColorPrimaries` — which exists to keep the attachment
-    /// read off the per-frame path — silently defeats the reset: reconnecting
-    /// to the SAME sharer clears the label and then never repopulates it,
-    /// because nothing about the stream changed. A stats row that is right for
-    /// the first session and blank for every one after is exactly the kind of
-    /// wrong readout this row was added to prevent.
+    /// Forces the next frame to re-derive the color label even with unchanged
+    /// primaries — else `lastColorPrimaries` defeats the reset on a reconnect
+    /// to the same sharer (nothing about the stream changed, so the label
+    /// stays blank).
     private var colorNeedsRepublish = true
 
-    /// Decode failures reported via `noteDecodeFailure`. Reset on `resetStats`.
     private var decodeFailuresTotal: Int = 0
-    /// True while a decode-failure publish is already queued on main.
-    /// `noteDecodeFailure` fires per failing frame (60 Hz during exactly the
-    /// stress episodes), so publishes are coalesced: at most one main-queue
-    /// block in flight, reading the then-current total when it runs.
+    /// `noteDecodeFailure` fires per failing frame (60Hz during a stress
+    /// episode), so publishes coalesce to one in-flight main-queue block.
     /// Guarded by `lock`.
     private var decodeFailurePublishPending = false
-    /// PLIs reported via `notePLISent`. Reset on `resetStats`.
     private var plisSentTotal: Int = 0
-    /// NACK datagrams reported via `noteNACKSent`. Reset on `resetStats`.
     private var nacksSentTotal: Int = 0
-    /// FEC-recovered packets reported via `noteFECRecovered`. Reset on
-    /// `resetStats`.
     private var fecRecoveredTotal: Int = 0
-    /// Degraded indication driven via `setDegraded`. Reset on `resetStats`.
     private var degraded: Bool = false
 
-    /// Traps if the machine has no Metal device (very old Macs) or the
-    /// shader library fails to compile — both indicate a misconfigured
-    /// install rather than anything a caller could recover from.
+    /// Traps on no Metal device or a shader compile failure — both indicate a
+    /// misconfigured install, not something a caller can recover from.
     override init() {
         guard let device = MTLCreateSystemDefaultDevice() else {
             fatalError("MetalViewerRenderer: no Metal device")
@@ -295,23 +217,17 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         layer.isOpaque = true
         layer.contentsGravity = .resizeAspect
         layer.backgroundColor = NSColor.black.cgColor
-        // Tag the layer with sRGB so the compositor doesn't fall back to
-        // generic-RGB gamma assumptions on the captured BT.709 stream.
-        // Without this tag the same pixels can render visibly different
-        // shades of red on Display P3 displays vs sRGB displays. This is the
-        // initial default; `render` re-tags the layer from each decoded
-        // buffer's actual color primaries (Display P3 / BT.2020) so
-        // wide-gamut streams aren't clipped to sRGB.
+        // Initial default; without it the compositor falls back to
+        // generic-RGB gamma, rendering visibly different reds on P3 vs sRGB
+        // displays. `render` re-tags from each buffer's actual primaries.
         layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         self.metalLayer = layer
 
         super.init()
     }
 
-    /// Start driving this renderer from `view`'s display link. The view
-    /// must be in a window — `NSView.displayLink` picks up the screen the
-    /// view is currently on and re-targets if the window moves. Must be
-    /// called on the main thread.
+    /// `view` must be in a window — `NSView.displayLink` picks up its current
+    /// screen and re-targets if the window moves.
     @MainActor
     func start(in view: NSView) {
         guard displayLink == nil, !isInvalidated else { return }
@@ -321,10 +237,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         self.displayLink = link
     }
 
-    /// Hand in the latest decoded frame. Called from the decoder's output
-    /// callback thread. The renderer only keeps the most recent buffer;
-    /// older ones are dropped on the floor — those drops are counted into
-    /// `ViewerStats.framesDropped` so the overlay can surface them.
+    /// Keeps only the most recent buffer; older ones are dropped and counted
+    /// into `ViewerStats.framesDropped`.
     func setPixelBuffer(_ buffer: CVPixelBuffer, receiveUptimeNs: UInt64) {
         lock.lock()
         if pendingBuffer != nil {
@@ -336,18 +250,14 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Client hook: account for `byteCount` bytes that just landed on the
-    /// receive socket. Used to compute the live bitrate shown in the stats
-    /// overlay. Safe to call from any thread.
+    /// Safe to call from any thread.
     func noteReceivedBytes(_ byteCount: Int) {
         lock.lock()
         bucketBytesReceived &+= byteCount
         lock.unlock()
     }
 
-    /// Client hook: record the codec carried on the wire, as detected from
-    /// the RTP payload type. Cheap to call repeatedly — only forwards an
-    /// update when the codec actually changes.
+    /// Only forwards an update when the codec actually changes.
     func noteCodec(_ codec: VideoCodec) {
         lock.lock()
         let changed = observedCodec != codec
@@ -363,11 +273,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Client hook: one per-frame decode failure reported by the decoder.
-    /// Safe to call from any thread. Published without waiting for the
-    /// display-link flush — a stalled stream stops rendering, so the flush
-    /// stops firing — but coalesced to one pending main-queue publish at a
-    /// time so a 60 Hz failure storm doesn't drive 60 Hz SwiftUI updates.
+    /// Published without waiting for the display-link flush — a stalled
+    /// stream stops rendering, so the flush stops firing.
     func noteDecodeFailure() {
         lock.lock()
         decodeFailuresTotal &+= 1
@@ -387,8 +294,6 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Client hook: one PLI (keyframe request) actually sent to the sharer
-    /// (post-throttle). Safe to call from any thread.
     func notePLISent() {
         lock.lock()
         plisSentTotal &+= 1
@@ -397,8 +302,6 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishCounterUpdate { $0.plisSent = total }
     }
 
-    /// Client hook: one NACK datagram sent to the sharer (a selective
-    /// retransmit request). Safe to call from any thread.
     func noteNACKSent() {
         lock.lock()
         nacksSentTotal &+= 1
@@ -407,9 +310,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishCounterUpdate { $0.nacksSent = total }
     }
 
-    /// Client hook: one packet reconstructed from FEC parity (never on the
-    /// wire, so `noteReceivedBytes` is deliberately NOT called for it).
-    /// Safe to call from any thread.
+    /// Never on the wire, so `noteReceivedBytes` is deliberately not called
+    /// for it.
     func noteFECRecovered() {
         lock.lock()
         fecRecoveredTotal &+= 1
@@ -418,9 +320,6 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishCounterUpdate { $0.fecRecovered = total }
     }
 
-    /// Client hook: flip the degraded-connection indication driven by the
-    /// decoder's escalation ladder. Safe to call from any thread; no-ops
-    /// when the flag hasn't changed.
     func setDegraded(_ isDegraded: Bool) {
         lock.lock()
         let changed = degraded != isDegraded
@@ -430,9 +329,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishCounterUpdate { $0.isDegraded = isDegraded }
     }
 
-    /// Push a small mutation of the current stats snapshot to the model on
-    /// the main thread. Used by the counter hooks above, which can't wait
-    /// for the next display-link flush — during a stall there isn't one.
+    /// Used by the counter hooks above, which can't wait for the next
+    /// display-link flush — during a stall there isn't one.
     private func publishCounterUpdate(_ mutate: @escaping @Sendable (inout ViewerStats) -> Void) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -442,8 +340,7 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Reset the stats counters. Call on connect so the new session
-    /// doesn't inherit a 30 % drop rate from a previous flaky connection.
+    /// Call on connect so the new session doesn't inherit a stale drop rate.
     func resetStats() {
         lock.lock()
         framesDroppedTotal = 0
@@ -465,8 +362,7 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Drop the latest frame so the next display-link tick presents a black
-    /// drawable. Safe to call from main; doesn't stop the link.
+    /// Next display-link tick presents a black drawable; doesn't stop the link.
     @MainActor
     func clearPendingBuffer() {
         lock.lock()
@@ -475,9 +371,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         lock.unlock()
     }
 
-    /// No-op. Renderer is owned by `AppState` for the process lifetime; the
-    /// display link stays attached so reconnects can resume rendering without
-    /// reattaching to the host view. Kept for source compatibility.
+    /// No-op — kept for source compatibility; the display link stays attached
+    /// for the process lifetime.
     @MainActor
     func invalidate() {}
 
@@ -490,11 +385,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     @objc private func displayLinkTick(_ sender: CADisplayLink) {
         if isInvalidated { return }
 
-        // Consume the pending buffer: take it out under the lock so the next
-        // `setPixelBuffer` call observes an empty slot and does NOT count its
-        // frame as dropped. Leaving the buffer in place after presenting was
-        // the prior behavior and made every subsequent decoder frame look
-        // like a drop, inflating `droppedPct` toward 50% on a steady stream.
+        // Take the buffer under the lock so the next `setPixelBuffer` observes
+        // an empty slot; leaving it in place inflated droppedPct toward 50%.
         lock.lock()
         let buffer = pendingBuffer
         let receiveNs = pendingReceiveUptimeNs
@@ -506,11 +398,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         render(buffer: buffer, receiveUptimeNs: receiveNs)
     }
 
-    /// Read the decoded buffer's `kCVImageBufferColorPrimariesKey` attachment
-    /// and, when it differs from what's currently applied, re-tag the
-    /// `CAMetalLayer` colorspace to match (Display P3 / BT.2020, else sRGB).
-    /// Runs on the display-link tick (main thread); `lastColorPrimaries`
-    /// short-circuits the common case where the primaries never change.
+    /// `lastColorPrimaries` short-circuits the common case where primaries
+    /// never change.
     private func applyColorSpaceIfNeeded(from buffer: CVPixelBuffer) {
         let raw = CVBufferCopyAttachment(buffer, kCVImageBufferColorPrimariesKey, nil)
         let primaries = raw as? String
@@ -521,9 +410,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         lastColorPrimaries = primaries
         let name = ColorInfo.layerColorSpaceName(forPrimaries: primaries)
         metalLayer.colorspace = CGColorSpace(name: name)
-        // Same attachments, second consumer: the stats overlay. Sampled here
-        // rather than per frame because it changes at most once per stream,
-        // which is exactly when this runs; the next 1 Hz flush publishes it.
+        // Second consumer of the same attachments: the stats overlay. Sampled
+        // here since it changes at most once per stream, same as the colorspace.
         let transferRaw = CVBufferCopyAttachment(buffer, kCVImageBufferTransferFunctionKey, nil)
         let label = ColorInfo.statsLabel(primaries: primaries, transfer: transferRaw as? String)
         lock.lock()
@@ -536,11 +424,6 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
 
-        // Re-tag the layer's colorspace from the decoded buffer's color
-        // primaries (VideoToolbox populated them from the SPS VUI). Display P3
-        // and BT.2020 streams would otherwise be clipped to the sRGB tag set
-        // at init. Only touched when the primaries change (rare — once per
-        // stream), so it stays off the per-frame hot path.
         applyColorSpaceIfNeeded(from: buffer)
 
         var cvTexture: CVMetalTexture?
@@ -619,17 +502,11 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishStatsTick(latencyMsThisFrame: latencyMsThisFrame)
     }
 
-    /// Set by `--ui-preview-video` to pin whatever snapshot that mode seeded
-    /// into the stats model. The preview presents ONE frame and then sits
-    /// there, so the 1 s flush below would immediately overwrite the seeded
-    /// numbers with the honest measurements of a still image -- 0 fps, no
-    /// codec, no bitrate -- and the overlay in the screenshot would read as a
-    /// dead session. Nothing outside the preview path sets this.
+    /// Set by `--ui-preview-video` to pin the seeded snapshot: that mode
+    /// presents one frame and sits there, so the flush below would otherwise
+    /// overwrite it with a dead-looking 0fps/no-codec reading.
     var suppressStatsPublishing = false
 
-    /// Update the 1 s rolling bucket and, when it fills, hand a fresh
-    /// `ViewerStats` snapshot to the observable model. Called once per
-    /// rendered frame from the display-link tick (main thread).
     private func publishStatsTick(latencyMsThisFrame: Double?) {
         if suppressStatsPublishing { return }
         let nowNs = DispatchTime.now().uptimeNanoseconds
@@ -660,9 +537,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         lock.unlock()
 
         guard shouldFlush else {
-            // Between flushes still publish the latency on every frame so
-            // the overlay's ms readout doesn't sit at a stale value for
-            // up to a full second.
+            // Publish latency on every frame between flushes so the ms
+            // readout doesn't sit stale for up to a second.
             if let latency = latencyMsThisFrame {
                 let totalForUpdate = totalPresented
                 let droppedForUpdate = totalDropped

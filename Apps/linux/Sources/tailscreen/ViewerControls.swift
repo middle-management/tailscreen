@@ -16,8 +16,6 @@ final class ViewerControls {
         self.ui = ui
     }
 
-    /// Called from the transport's `onBackChannelReady` (any thread) — hops to
-    /// the main actor to publish the reference the button actions read.
     nonisolated func attach(_ channel: ViewerBackChannel) {
         Task { @MainActor in self.backChannel = channel }
     }

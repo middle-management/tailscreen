@@ -4,11 +4,10 @@ import XCTest
 
 @testable import TailscreenSharerFFmpegBase
 
-/// The base's pure decisions: the encoder-attempt ladder, the source-gone
-/// failure budget, the bitrate anchor, the start-time quality decode, the
-/// pacing math, and the shared error texts. These used to live — three
-/// times over — inside the X11, WGC and portal backends' capture files,
-/// where none of them had a deterministic test.
+/// The base's pure decisions: the encoder-attempt ladder, source-gone
+/// failure budget, bitrate anchor, start-time quality decode, pacing math,
+/// and shared error texts. These used to live three times over across the
+/// X11, WGC and portal backends, untested.
 final class FFmpegCaptureEncoderBaseTests: XCTestCase {
     private typealias Base = FFmpegCaptureEncoderBase
 
@@ -76,10 +75,6 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
     }
 
     func testDefaultEncoderLaddersAreSoftwareOnly() {
-        // The hardware names (h264_vaapi, h264_nvenc, h264_qsv, h264_amf,
-        // hevc_*) consume hardware frames this path never allocates — listing
-        // one would pick an encoder that fails avcodec_open2 on any machine
-        // without the device. See the rationale on the properties.
         XCTAssertEqual(Base.defaultH264Encoders, ["libx264", "libopenh264"])
         XCTAssertEqual(Base.defaultHEVCEncoders, ["libx265"])
         for name in Base.defaultH264Encoders + Base.defaultHEVCEncoders {
@@ -142,10 +137,7 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
     }
 
     /// No ceiling means `QualitySettings.automaticCeilingBps`, not "whatever
-    /// the formula said". These two sharers derive their own anchor rather
-    /// than going through `QualitySettings.cappedBitrate`, so the automatic
-    /// bound has to be asserted here too or Linux and Windows keep the
-    /// unbounded behaviour after the mac path loses it.
+    /// the formula said".
     func testAnchoredBitrateBoundsAnUncappedAnchorAtTheAutomaticCeiling() {
         // A 6K capture at 60 — the resolution that anchored near 98 Mbps.
         let anchored = Base.anchoredBitrate(
@@ -256,11 +248,8 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
         XCTAssertTrue(base.sentParameterSets)
     }
 
-    /// The latch is CLAIMED, not merely set. The cheap "have we sent?" read
-    /// and the flip used to be two separate critical sections, so two encode
-    /// threads could both pass the read and both emit — and the server's
-    /// bitrate anchor re-anchors on a second set, undoing whatever the
-    /// congestion controller had done.
+    /// The latch is CLAIMED, not merely set — the read and the flip used to
+    /// be two separate critical sections, letting two encode threads both pass.
     func testConcurrentEmissionsStillEmitExactlyOnce() {
         for _ in 0..<20 {
             let base = Base()
@@ -306,10 +295,7 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
         wait(for: [ran], timeout: 30)
     }
 
-    /// A backend that is not running must not get a capture loop. `stop()`
-    /// drops `running` and then clears `thread`, so a thread started after
-    /// that would be one nothing is left to wind down — and the record that
-    /// followed it used to resurrect a stopped backend's `thread` field.
+    /// A backend that is not running must not get a capture loop.
     func testCaptureThreadIsNotStartedWhenNotRunning() {
         let base = Base()
         let started = Counter()
@@ -324,8 +310,6 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
     // MARK: Error texts
 
     func testStartErrorSharedDescriptions() {
-        // The two texts that were byte-identical across all three backends
-        // live in the shared enum; a probe or a person greps for these.
         XCTAssertEqual(
             "\(Base.StartError.malformedSelection)",
             "could not decode the picker selection")

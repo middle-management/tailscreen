@@ -16,12 +16,8 @@ public struct PendingShareRequest: Identifiable, Sendable, Equatable {
     public let receivedAtNs: UInt64
     public let connectionID: UUID?
     /// The coalescing key: the requester's source IP with the port stripped.
-    ///
-    /// Deliberately NOT the wire-claimed hostname. A peer picks its own
-    /// hostname, so keying on it lets one machine vary the string to stack
-    /// unbounded rows — each pinning a 120-second connection on the far side —
-    /// past every cap in this file. The IP is the one identifier the requester
-    /// does not choose.
+    /// Deliberately NOT the wire-claimed hostname, which a peer picks itself
+    /// and could vary to stack unbounded rows past every cap in this file.
     public let sourceKey: String
 
     public init(
@@ -36,32 +32,22 @@ public struct PendingShareRequest: Identifiable, Sendable, Equatable {
     }
 }
 
-/// The sharer's side of "somebody wants me to share": who has asked, coalesced
-/// and bounded.
+/// The sharer's side of "somebody wants me to share": who has asked,
+/// coalesced and bounded.
 ///
-/// Portable because all three hosts need exactly this and macOS grew it inside
-/// an AppKit-bound service (`TailscreenMetadataService`), where `NSScreen` and
-/// `Host.current()` kept it from being reused — so the Linux and Windows apps
-/// had no incoming-request path at all. The logic is arithmetic over a small
-/// array and has two ways to be quietly wrong, both of which are only visible
-/// under an adversary:
+/// Portable because all three hosts need it; macOS had grown it inside an
+/// AppKit-bound service, leaving Linux/Windows with no incoming-request path
+/// at all. Two ways to be quietly wrong, both only visible under an
+/// adversary: coalescing on the peer-chosen hostname instead of source IP,
+/// or growing unbounded (each row pins an open connection).
 ///
-///   * **Coalescing on the wrong key.** A retry after a flaky dial must replace
-///     the existing row rather than add one, and the natural-looking key — the
-///     hostname in the payload — is chosen by the peer.
-///   * **Growing without a bound.** Each row corresponds to a connection the
-///     requester holds open awaiting an answer, so an uncapped inbox is a way
-///     to make a sharer's window unusable from off-machine.
-///
-/// A value type with an injected clock, so both are testable with no node, no
+/// Value type with an injected clock, so both are testable with no node, no
 /// network and no window.
 public struct ShareRequestInbox: Sendable {
-    /// Cap on distinct requesters parked at once.
-    ///
-    /// Sixteen is well past any real use — it is a bound, not a budget. Past
-    /// it, new *distinct* requesters are dropped while retries from peers
-    /// already in the list still coalesce, so a flood cannot push out somebody
-    /// the sharer was about to answer.
+    /// Cap on distinct requesters parked at once — a bound, not a budget.
+    /// Past it, new *distinct* requesters are dropped while retries from
+    /// peers already listed still coalesce, so a flood can't push out
+    /// someone the sharer was about to answer.
     public static let maxPending = 16
 
     public private(set) var requests: [PendingShareRequest] = []
@@ -70,13 +56,12 @@ public struct ShareRequestInbox: Sendable {
 
     /// Record an incoming request, coalescing a retry from the same peer.
     ///
-    /// - Returns: whether the inbox changed, so a host can skip republishing
-    ///   (and re-notifying) when a flood is being dropped.
+    /// - Returns: whether the inbox changed, so a host can skip
+    ///   republishing when a flood is being dropped.
     ///
-    /// A retry keeps the original `id` — the row does not flicker out and back
-    /// in the sharer's window — but takes the new connection ID, because the
-    /// old connection is most likely why the peer retried and an answer sent
-    /// down it would reach nobody.
+    /// A retry keeps the original `id` (the row doesn't flicker in the
+    /// sharer's window) but takes the new connection ID, since the old
+    /// connection is likely why the peer retried.
     @discardableResult
     public mutating func record(
         fromHostname: String, sourceAddr: String?, connectionID: UUID?, nowNs: UInt64
@@ -114,12 +99,9 @@ public struct ShareRequestInbox: Sendable {
         requests.removeAll()
     }
 
-    /// Drop requests older than `ttlNs`.
-    ///
-    /// The requester waits a bounded time and then gives up, so a row that has
-    /// outlived that window is a button which silently does nothing. Expiring
-    /// it is more honest than leaving it: a sharer who presses Share for a peer
-    /// that stopped listening gets a share nobody joins, and no clue why.
+    /// Drop requests older than `ttlNs`. The requester gives up after a
+    /// bounded time, so an outlived row is a button that silently does
+    /// nothing — expiring it is more honest than leaving it.
     ///
     /// - Returns: whether anything was dropped.
     @discardableResult
@@ -129,13 +111,10 @@ public struct ShareRequestInbox: Sendable {
         return requests.count != before
     }
 
-    /// Strip the trailing `:port` (and IPv6 brackets) from a transport address.
-    ///
-    /// Retries dial a fresh ephemeral source port, so the port is exactly the
-    /// part that must not participate in the key. Same split-on-LAST-colon rule
-    /// the screen-share server uses, which is what makes it right for IPv6:
-    /// `[fd7a::1]:9999` has colons throughout and only the final one separates
-    /// the port.
+    /// Strip the trailing `:port` (and IPv6 brackets) from a transport
+    /// address — retries dial a fresh ephemeral port, so it must not
+    /// participate in the key. Splits on the LAST colon (same rule as the
+    /// screen-share server), correct for IPv6 like `[fd7a::1]:9999`.
     public static func sourceKey(from addr: String) -> String {
         guard let lastColon = addr.lastIndex(of: ":") else { return addr }
         var ip = String(addr[..<lastColon])

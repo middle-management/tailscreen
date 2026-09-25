@@ -1,40 +1,30 @@
 import Foundation
 
-// Glibc only, deliberately. Importing WinSDK here would drag the Windows SDK's
-// `#define uuid_t UUID` into the module and make every mention of `UUID`
-// ambiguous against Foundation's — including the continuation keys in the
-// `Published` shim below. Nothing in this file needs a platform module on
-// Windows, so it doesn't ask for one.
+// Glibc only, deliberately: importing WinSDK here would drag its
+// `#define uuid_t UUID` into the module and make every `UUID` mention
+// ambiguous against Foundation's.
 #if canImport(Glibc)
 import Glibc
 #endif
 
-// Combine stand-ins for platforms that don't have it (Linux), so the
-// portable transport classes (`TailscalePeerDiscovery`,
-// `TailscaleIPNWatcher`) can keep their `ObservableObject` conformance and
-// `@Published` state untouched. On Apple platforms this whole file compiles
-// to nothing — Combine's real types win, and the mac build is byte-for-byte
-// unaffected.
+// Combine stand-ins for platforms without it (Linux), so portable transport
+// classes (`TailscalePeerDiscovery`, `TailscaleIPNWatcher`) keep their
+// `ObservableObject`/`@Published` untouched. Compiles to nothing on Apple
+// platforms.
 //
-// The `Published` shim is not inert: `$property.values` must behave like
-// Combine's `AsyncPublisher` (current value on subscribe, then updates),
-// because `TailscalePeerDiscovery` consumes `watcher.$peers.values` to merge
-// IPN-bus peers. There is no `objectWillChange`/SwiftUI machinery here —
-// non-Apple UIs observe state their own way.
+// `$property.values` must behave like Combine's `AsyncPublisher` (current
+// value on subscribe, then updates) since `TailscalePeerDiscovery` consumes
+// `watcher.$peers.values` to merge IPN-bus peers.
 #if !canImport(Combine)
 
 /// Marker stand-in for Combine's `ObservableObject`. Carries no
 /// `objectWillChange`; it exists so conformance clauses compile.
 public protocol ObservableObject: AnyObject {}
 
-/// Stand-in for Combine's `@Published`. The projected value (`$prop`)
-/// exposes `values`, an `AsyncStream` that yields the current value on
-/// subscription and every subsequent assignment — the same shape as
-/// Combine's `AsyncPublisher` that portable consumers rely on. A class (not
-/// a struct wrapping reference storage) so assignment through the wrapper
-/// mutates shared state directly; finished subscribers are pruned via
-/// `onTermination` so long-lived publishers don't accumulate dead
-/// continuations.
+/// Stand-in for Combine's `@Published`. `$prop.values` yields the current
+/// value on subscription then every assignment, matching `AsyncPublisher`.
+/// A class so assignment mutates shared state directly; subscribers are
+/// pruned via `onTermination` to avoid accumulating dead continuations.
 @propertyWrapper
 public final class Published<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
@@ -86,13 +76,9 @@ public final class Published<Value: Sendable>: @unchecked Sendable {
 #endif  // !canImport(Combine)
 
 // Glibc stand-in for the `Darwin.`-qualified syscalls portable files use
-// (currently `ShareLock`). Internal, so any file in this module reaches it;
-// on Apple platforms the real Darwin module wins and this compiles away.
-//
-// Gated on Glibc rather than on "not Darwin": Windows has neither, and its
-// only consumer — ShareLock — has a Windows variant that touches no POSIX at
-// all, so there is nothing here for Windows to stand in for. Adding a
-// WinSDK branch would mean inventing a `write(2)` no caller wants.
+// (currently `ShareLock`). On Apple platforms the real Darwin module wins.
+// Gated on Glibc, not "not Darwin": Windows's `ShareLock` variant touches no
+// POSIX, so there's nothing here for it to stand in for.
 #if !canImport(Darwin) && canImport(Glibc)
 enum Darwin {
     @discardableResult

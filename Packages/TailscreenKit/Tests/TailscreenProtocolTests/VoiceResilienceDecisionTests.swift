@@ -3,16 +3,10 @@ import XCTest
 
 @testable import TailscreenAudio
 
-/// Unit tests for the voice-path resilience decisions
-/// (`VoiceReceiveDecisions`, extracted from the macOS `VoiceChannel` and now
-/// shared with `VoiceDownlink`). Pure functions, no tsnet, no audio hardware —
-/// the extract-the-decision pattern from `AdaptiveBitrateTests`. Covers the
-/// payload-type demux, the decoder-failure cooldown gate, wrap-aware
-/// sequence-gap concealment, adaptive jitter-buffer sizing, the clamp-log
-/// throttle, the single-pass clamp helper, idle-SSRC eviction, the
-/// concealment emission cap and fade-out shape, the underrun
-/// starve-then-resume verdict, the jitter-estimator pause detector, and
-/// the stats change-detection compare.
+/// Pure-function tests for `VoiceReceiveDecisions` (shared by `VoiceChannel`
+/// and `VoiceDownlink`): payload-type demux, decoder-failure cooldown,
+/// wrap-aware gap concealment, jitter-buffer sizing, clamp/eviction/fade-out
+/// helpers, underrun and pause detection, stats change-detection.
 final class VoiceResilienceDecisionTests: XCTestCase {
     private let s: UInt64 = 1_000_000_000
 
