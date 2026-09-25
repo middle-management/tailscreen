@@ -12,13 +12,6 @@ enum OpenLinkEntry {
         return OpenLinkPayload.isAcceptable(trimmed) ? trimmed : nil
     }
 
-    /// The sheet's initial text: the pasteboard string only when it is
-    /// already a sendable link, so arbitrary clipboard contents (a password,
-    /// a paragraph) never land in a field the user might send by reflex.
-    static func prefill(fromPasteboard string: String?) -> String {
-        string.flatMap(sendable) ?? ""
-    }
-
     /// The URL a sharer's Open click hands the browser. Re-checks the wire
     /// rules and the parsed scheme so nothing but http(s) can ever reach
     /// `NSWorkspace.open`, whatever the server let through.

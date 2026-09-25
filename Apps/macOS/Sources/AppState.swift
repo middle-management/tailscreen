@@ -4859,17 +4859,14 @@ class AppState: ObservableObject {
     private var openLinkSheet: NSWindow?
 
     /// Viewer clicks "Open Link on Sharer…" (popover or viewer toolbar).
-    /// Pre-fills from the pasteboard only when that already holds a link
-    /// the sharer would accept.
+    /// Starts empty: reading the pasteboard unasked trips macOS's paste
+    /// privacy prompt, and ⌘V is one keystroke.
     func presentOpenLinkSheet() {
         guard connectionState == .viewing, sharerSupportsOpenLink, let viewerWindow else { return }
         focusViewerWindow()
         guard openLinkSheet == nil else { return }
-        let prefill = OpenLinkEntry.prefill(
-            fromPasteboard: NSPasteboard.general.string(forType: .string))
         let hosting = NSHostingController(
             rootView: OpenLinkSheet(
-                initialURL: prefill,
                 onSend: { [weak self] url in self?.sendOpenLink(url) },
                 onCancel: { [weak self] in self?.dismissOpenLinkSheet() }))
         // Grows the sheet when the inline error line appears.

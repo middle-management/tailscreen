@@ -4,8 +4,8 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// The wire rules themselves are pinned portably (`OpenLinkTests`); these pin
-/// what the mac app layers on top: trimming, the pasteboard gate, and the
-/// last check before `NSWorkspace.open`.
+/// what the mac app layers on top: trimming, and the last check before
+/// `NSWorkspace.open`.
 final class OpenLinkEntryTests: XCTestCase {
     func testSendableTrimsSurroundingWhitespaceOnly() {
         XCTAssertEqual(
@@ -19,15 +19,6 @@ final class OpenLinkEntryTests: XCTestCase {
         XCTAssertNil(OpenLinkEntry.sendable("file:///etc/passwd"))
         XCTAssertNil(OpenLinkEntry.sendable("javascript:alert(1)"))
         XCTAssertNil(OpenLinkEntry.sendable("https://trusted.example@evil.example/"))
-    }
-
-    /// Both directions: a link pre-fills, anything else leaves the field
-    /// empty — a clipboard password must never sit one Return from sending.
-    func testPrefillTakesOnlyASendableLink() {
-        XCTAssertEqual(OpenLinkEntry.prefill(fromPasteboard: "https://example.com\n"), "https://example.com")
-        XCTAssertEqual(OpenLinkEntry.prefill(fromPasteboard: "hunter2"), "")
-        XCTAssertEqual(OpenLinkEntry.prefill(fromPasteboard: "see https://example.com"), "")
-        XCTAssertEqual(OpenLinkEntry.prefill(fromPasteboard: nil), "")
     }
 
     func testOpenableURLAllowsOnlyHTTPAndHTTPS() {

@@ -7,18 +7,13 @@ struct OpenLinkSheet: View {
     let onSend: @MainActor (String) -> Void
     let onCancel: @MainActor () -> Void
 
-    @State private var text: String
+    @State private var text = ""
     @State private var rejected = false
     @FocusState private var fieldFocused: Bool
 
-    init(
-        initialURL: String,
-        onSend: @escaping @MainActor (String) -> Void,
-        onCancel: @escaping @MainActor () -> Void
-    ) {
+    init(onSend: @escaping @MainActor (String) -> Void, onCancel: @escaping @MainActor () -> Void) {
         self.onSend = onSend
         self.onCancel = onCancel
-        _text = State(initialValue: initialURL)
     }
 
     var body: some View {
