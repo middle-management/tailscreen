@@ -13,6 +13,7 @@ import enum TailscreenProtocol.AnnotationTool
 import enum TailscreenProtocol.CaptureBackendSelection
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import struct TailscreenProtocol.LinkOfferInfo
 import struct TailscreenProtocol.NoticeCandidate
 import enum TailscreenProtocol.PeerPolicy
 import struct TailscreenProtocol.PendingShareRequest
@@ -65,6 +66,11 @@ final class SharerModel: ObservableObject {
     /// `ScreenShareCaps.remoteControl` (offering Request Control at all) when
     /// XTEST gives it an `X11InputInjector`.
     @Published private(set) var controlRequests: [ControlRequestInfo] = []
+
+    /// Links viewers sent with `.openLink`, awaiting Open / Dismiss. The
+    /// engine only offers these when `.openLink` was advertised, which this
+    /// host always does (`LinuxShareSession` passes `promptsForLinks: true`).
+    @Published private(set) var linkOffers: [LinkOfferInfo] = []
 
     /// Who is driving this machine right now, by display name, or nil. Drives
     /// "Take back control". Already stale-guarded by the engine's generation
@@ -240,7 +246,7 @@ final class SharerModel: ObservableObject {
             case .requestToShare:
                 guard let requestID = UUID(uuidString: identity) else { return }
                 self.answerShareRequest(id: requestID, accept: accept)
-            case .viewerJoined, .viewerLeft:
+            case .viewerJoined, .viewerLeft, .linkOffered:
                 // Reports carry no buttons, so nothing can arrive here.
                 break
             }
@@ -280,6 +286,17 @@ final class SharerModel: ObservableObject {
                 })
         }
         engine.onControlGrantChanged = { [weak self] name in self?.controlGrantedTo = name }
+        engine.onLinkOffersChanged = { [weak self] offers in
+            guard let self else { return }
+            self.linkOffers = offers
+            // Informational (`.linkOffered.actions` is empty) — the banner
+            // may truncate the URL, so Open/Dismiss only happen in-app.
+            self.notifications.applyAsk(
+                kind: .linkOffered,
+                candidates: offers.map {
+                    NoticeCandidate(identity: $0.id.uuidString, label: $0.displayName)
+                })
+        }
         engine.onLinkSharingChanged = { [weak self] token, busy, isLinkOnly in
             self?.linkToken = token
             self?.linkBusy = busy
@@ -694,6 +711,21 @@ final class SharerModel: ObservableObject {
     /// moving reads as a decision rather than a fault.
     func revokeControl() {
         engine.revokeControl()
+    }
+
+    // MARK: Open link on sharer
+
+    /// The sharer clicked Open: take the offer and open it in the default
+    /// browser (TS-LNK-010 — this click is the only thing that ever opens
+    /// anything; there is no auto-open setting).
+    func openLinkOffer(_ id: UUID) {
+        guard let offer = engine.takeLinkOffer(id: id) else { return }
+        openInBrowser(offer.url)
+    }
+
+    /// The sharer clicked Dismiss: drop the offer unopened.
+    func dismissLinkOffer(_ id: UUID) {
+        engine.dismissLinkOffer(id: id)
     }
 
     /// Change the encoder knobs and remember them. Deliberately does NOT

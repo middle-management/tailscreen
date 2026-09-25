@@ -38,6 +38,23 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// gates the annotation toolbar (the drawing surface itself is a follow-up).
     @Published public var annotationsAvailable = false
 
+    /// True once the sharer advertised `ScreenShareCaps.openLink` (bit6) —
+    /// gates "Open Link on Sharer…". Never auto-opens anything on its own;
+    /// the sharer's own click is the only thing that opens a link.
+    @Published public var openLinkAvailable = false
+
+    /// Whether the inline "send a link" composer is open.
+    @Published public var openLinkComposerOpen = false
+    /// The composer's text field contents.
+    @Published public var openLinkText = ""
+    /// Set when Send is pressed on something `OpenLinkPayload.isAcceptable`
+    /// rejects; shown inline rather than as an alert since it's a validation
+    /// error, not a failure.
+    @Published public var openLinkError: String?
+    /// True right after a link is sent, replacing the composer with a
+    /// confirmation line until it's opened again.
+    @Published public var openLinkSent = false
+
     /// Remote-control lifecycle for the toolbar: idle → requested → active, plus
     /// a transient revoked reason. Drives the button label + a small status line.
     @Published public var controlState: ControlState = .idle
@@ -161,6 +178,11 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.notice = nil
             self.remoteControlAvailable = false
             self.annotationsAvailable = false
+            self.openLinkAvailable = false
+            self.openLinkComposerOpen = false
+            self.openLinkText = ""
+            self.openLinkError = nil
+            self.openLinkSent = false
             self.controlState = .idle
             self.sessionPhase = .connecting
             self.closeRequested = false
@@ -202,12 +224,13 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     }
 
     /// Record the sharer's advertised capabilities (from admission) on the main
-    /// thread. `remoteControl` / `annotations` are the two sharer-only bits the
-    /// viewer gates its chrome on.
-    public func setCaps(remoteControl: Bool, annotations: Bool) {
+    /// thread. `remoteControl` / `annotations` / `openLink` are the
+    /// sharer-only bits the viewer gates its chrome on.
+    public func setCaps(remoteControl: Bool, annotations: Bool, openLink: Bool) {
         DispatchQueue.main.async {
             self.remoteControlAvailable = remoteControl
             self.annotationsAvailable = annotations
+            self.openLinkAvailable = openLink
         }
     }
 
