@@ -5,12 +5,10 @@ import Foundation
 /// and USB HID keyboard-page (0x07) usage IDs — the platform-neutral keycode
 /// vocabulary ``InputEvent`` carries on the wire.
 ///
-/// Foundation-only on purpose: it's part of the portable TailscreenProtocol
-/// set even though its *values* are mac-specific, because every non-mac peer
-/// implementation needs this exact reference table to interoperate with mac
-/// endpoints (and gets its correctness tests for free on Linux CI). Other
-/// platforms pair it with their own native↔HID table (evdev and Windows
-/// virtual-key equivalents ship with those systems).
+/// Foundation-only and portable despite mac-specific values: every non-mac
+/// peer needs this exact table to interoperate with mac endpoints (and gets
+/// its tests for free on Linux CI). Other platforms pair it with their own
+/// native↔HID table.
 ///
 /// Coverage: the full ANSI/ISO/JIS key set Apple defines in HIToolbox
 /// `Events.h`. Deliberately absent:

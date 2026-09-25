@@ -6,40 +6,24 @@ import CoreGraphics
 
 /// Where a pointer inside a viewer's video pane lands in the sharer's frame.
 ///
-/// One function, and it is here rather than in a host because **every** viewer
-/// needs exactly this arithmetic and none of them can test it: the GTK viewer
-/// letterboxes in its GL shader, the WinUI viewer letterboxes via
-/// `Image.stretch = .uniform`, and macOS via `AspectFitHostView` — three
-/// different mechanisms producing the same geometry, because aspect-fit is
-/// aspect-fit.
-///
-/// Getting it wrong does not error. It offsets every click and every stroke by
-/// the letterbox bar, which reads as "remote control is inaccurate" rather than
-/// as a coordinate bug — and it is wrong only on panes whose aspect differs
-/// from the video's, so a developer testing on a matching window sees nothing.
-///
-/// It lived in `TailscreenViewerCore.ViewerInputMapping` (Linux-only, since
-/// that target pulls FFmpeg and ALSA) until the Windows viewer needed it. That
-/// target still re-exposes it, so no GTK caller changed.
+/// Shared because every viewer needs this arithmetic (GTK letterboxes in its
+/// GL shader, WinUI via `Image.stretch = .uniform`, macOS via
+/// `AspectFitHostView` — three mechanisms, one geometry). Getting it wrong
+/// offsets every click by the letterbox bar, which reads as "remote control
+/// is inaccurate" rather than a coordinate bug, and only shows up on panes
+/// whose aspect differs from the video's.
 public enum ViewerPointerMapping {
     /// Map a pane-space pointer position to normalized `[0, 1]` over the
-    /// aspect-fit **video content rect** — letterbox bars excluded — with the
-    /// origin top-left, which is the space `InputEvent` and `Annotation` use.
+    /// aspect-fit **video content rect** — letterbox bars excluded — origin
+    /// top-left, the space `InputEvent`/`Annotation` use.
     ///
-    /// The result is clamped, so a position inside a letterbox bar lands on the
-    /// nearest content edge rather than outside the frame. The sharer clamps
-    /// identically (`ScreenRegion.point`), so this can never produce a click
-    /// the sharer has to reject.
+    /// Clamped so a position inside a letterbox bar lands on the nearest
+    /// content edge; the sharer clamps identically (`ScreenRegion.point`).
+    /// Ratio-based throughout, independent of display scaling.
     ///
-    /// Ratio-based throughout, so it is independent of display scaling: a
-    /// HiDPI pane and its logical size share an aspect, which is the only thing
-    /// that matters here.
-    /// Grouped as three pairs rather than six scalars, which is what the
-    /// arithmetic actually takes: a position, the pane it was in, and the frame
-    /// being shown. Six positional `Double`s next to each other is also an
-    /// invitation to transpose a width and a height at a call site — a mistake
-    /// that compiles, and whose symptom is the same silent offset this whole
-    /// type exists to prevent.
+    /// Grouped as three pairs, not six scalars: six positional `Double`s
+    /// invite transposing a width and height at a call site, a mistake that
+    /// compiles and produces the same silent offset this type prevents.
     public static func normalize(
         point: (x: Double, y: Double),
         paneSize: (width: Double, height: Double),
@@ -58,23 +42,16 @@ public enum ViewerPointerMapping {
 
     /// The aspect-fit **content rect** the video occupies inside a pane of
     /// `paneSize`: centered, bars split evenly, in the pane's own coordinate
-    /// space (origin at the pane's origin — the arithmetic is
-    /// orientation-agnostic, so y-down GTK/WinUI panes and y-up AppKit views
-    /// both read it directly; a host whose pane has a nonzero origin offsets
-    /// the result itself).
+    /// space (orientation-agnostic, so y-down and y-up views both read it
+    /// directly).
     ///
-    /// This is the rect ``normalize(point:paneSize:videoSize:)`` maps against,
-    /// exposed because every host also needs it *as a rect*: zoom anchoring
-    /// and pan clamping (`ViewerZoomMath`'s `fit:` parameter) and layout of
-    /// the video surface itself must agree with pointer mapping about where
-    /// the bars are, or a click lands in one place and zooms about another.
-    /// Each host used to re-derive it — the GTK GL view, the WinUI image
-    /// view, and macOS's `AspectFitHostView` — three chances for the same
-    /// formula to drift.
+    /// Exposed as a rect (not just via `normalize`) because zoom anchoring,
+    /// pan clamping (`ViewerZoomMath`'s `fit:`), and video-surface layout
+    /// must all agree with pointer mapping about where the bars are, or a
+    /// click lands in one place and zooms about another.
     ///
     /// Degenerate input (a pane or video dimension ≤ 0) returns the whole
-    /// pane rect: there is nothing to letterbox against, and "the content is
-    /// the pane" is the fallback the hosts already used.
+    /// pane rect: nothing to letterbox against.
     public static func fitRect(
         paneSize: (width: Double, height: Double),
         videoSize: (width: Int, height: Int)

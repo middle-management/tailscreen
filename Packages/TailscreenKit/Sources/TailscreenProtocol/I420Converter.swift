@@ -1,34 +1,24 @@
 import Foundation
 
-/// I420 → BGRA8, for renderer backends that have no GPU colour conversion.
+/// I420 → BGRA8, for renderer backends with no GPU colour conversion (the
+/// Windows `WriteableBitmap` surface, and any future software fallback). In
+/// the portable tier so all renderers agree on colour, not just their own.
 ///
-/// The GL and Metal renderers convert in a shader; a CPU blit path (the Windows
-/// `WriteableBitmap` surface, and any future software fallback) needs the same
-/// maths on the CPU. It lives in the portable tier rather than beside a
-/// particular backend for the same reason `AnnotationGeometry` does: two
-/// renderers disagreeing about colour would show the same stream in two
-/// different sets of colours, and the constants below are the agreement.
+/// **BT.709, either range** — getting the range wrong washes blacks to grey
+/// (full-range maths on limited input) or crushes blacks/clips highlights
+/// (reverse). `X11CaptureKit`/`BGRAToI420` produce limited range; macOS
+/// capture is full-range 8-bit by default. Caller states which via
+/// `Source.range` (defaults to limited, the codec-mandated default).
 ///
-/// **BT.709, either range.** Getting the range wrong is not subtle: full-range
-/// maths on limited-range input washes blacks to grey, and limited-range maths
-/// on full-range input crushes blacks and clips highlights. Both sharers exist:
-/// `X11CaptureKit` and `BGRAToI420` produce limited range, while the macOS
-/// capture path is full-range 8-bit by default (`ColorInfo.bt709FullRange8`).
-/// The caller says which it has via `Source.range`, defaulting to limited —
-/// what a decoder must assume when the bitstream is silent.
-///
-/// BGRA byte order with opaque alpha is what `WriteableBitmap` wants
-/// (BGRA8, premultiplied — and premultiplying by an alpha of 255 is identity,
-/// so nothing extra is needed).
+/// BGRA byte order, opaque alpha — what `WriteableBitmap` wants.
 public enum I420Converter {
-    /// Fixed-point coefficients, scaled by 2^16.
+    /// Fixed-point coefficients, scaled by 2^16 — integer maths since this
+    /// runs per pixel, per frame, on the UI thread, and the rounding is
+    /// indistinguishable at 8 bits per channel.
     ///
-    /// Integer maths rather than Float: this runs per pixel, per frame, on the
-    /// UI thread, and the rounding is indistinguishable at 8 bits per channel.
-    ///
-    /// The two sets are the same BT.709 matrix with and without the
-    /// limited-range expansion folded in: limited scales luma by 255/219 after
-    /// subtracting 16 and chroma by 255/224, full range does neither.
+    /// Same BT.709 matrix with and without the limited-range expansion
+    /// folded in (limited scales luma by 255/219 after subtracting 16 and
+    /// chroma by 255/224; full does neither).
     private struct Coefficients {
         let lumaOffset: Int
         let yCoeff: Int
@@ -59,29 +49,21 @@ public enum I420Converter {
     }
 
     /// Half a unit in the fixed-point scale, added before the shift so the
-    /// result rounds instead of truncating.
-    ///
-    /// Not cosmetic: without it, limited-range white (Y=235) lands on 254
-    /// rather than 255, so a fully white frame is imperceptibly grey and
-    /// nothing ever reaches the top of the range. A test pins that exact value.
+    /// result rounds instead of truncating. Without it limited-range white
+    /// (Y=235) lands on 254, not 255. A test pins the exact value.
     private static let rounding = 1 << 15
 
-    /// The three source planes and the geometry they describe.
-    ///
-    /// A value rather than five arguments, mirroring `BGRAToI420.Source` — the
-    /// two converters are inverses and reading like inverses is worth
-    /// something. It also keeps the entry point under the parameter-count lint,
-    /// which is what surfaced the asymmetry.
+    /// The three source planes and the geometry they describe. A value
+    /// rather than five arguments, mirroring `BGRAToI420.Source` (the two
+    /// converters are inverses).
     public struct Source {
         public let yPlane: [UInt8]
         public let uPlane: [UInt8]
         public let vPlane: [UInt8]
         public let width: Int
         public let height: Int
-        /// How the samples use their code space. Defaults to `.limited` — both
-        /// the codec-mandated default for a silent bitstream and what every
-        /// caller predating this parameter was implicitly passing, so the
-        /// default is bit-for-bit the old behaviour rather than a new guess.
+        /// How the samples use their code space. Defaults to `.limited`, the
+        /// codec-mandated default for a silent bitstream.
         public let range: VideoColorRange
 
         public init(
@@ -98,20 +80,13 @@ public enum I420Converter {
     }
 
     /// Convert I420 planes into `destination`, which must have room for
-    /// `width × height × 4` bytes.
+    /// `width × height × 4` bytes. Returns `false` without writing anything
+    /// if the planes are smaller than the declared dimensions.
     ///
-    /// Returns `false` without writing anything if the planes are smaller than
-    /// the declared dimensions — a truncated frame should show the previous
-    /// picture rather than garbage or a crash, and whatever produced it is
-    /// broken in a way this cannot paper over.
-    ///
-    /// The plane-based entry point, which is where the arithmetic lives.
-    ///
-    /// Takes planes rather than a `DecodedVideoFrame` because that type belongs
-    /// to the VIEWER tier and this conversion has two callers on opposite sides
-    /// of the app: the viewer's CPU blit, and the SHARER's preview thumbnail,
-    /// whose planes come straight off a capture backend and were never a
-    /// decoded frame. `TailscreenViewer` adds the frame-shaped overload.
+    /// Takes planes rather than a `DecodedVideoFrame` (VIEWER-tier type)
+    /// because this also serves the SHARER's preview thumbnail, whose planes
+    /// come straight off a capture backend. `TailscreenViewer` adds the
+    /// frame-shaped overload.
     @discardableResult
     public static func convert(
         _ source: Source,
@@ -148,7 +123,7 @@ public enum I420Converter {
                             let g = (luma + coefficients.uToG * cb + coefficients.vToG * cr) >> 16
                             let b = (luma + coefficients.uToB * cb) >> 16
 
-                            // BGRA, opaque.
+                            // BGRA, opaque
                             destination[out] = clamp(b)
                             destination[out + 1] = clamp(g)
                             destination[out + 2] = clamp(r)

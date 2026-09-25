@@ -5,14 +5,12 @@ import Foundation
 /// moment a group has exactly one member missing. Sits in front of the
 /// depacketizer on the client's receive task (owned like `nackScheduler`).
 ///
-/// Pure and deterministic — no I/O, no wall clock (the caller injects
-/// `nowNs`) — so `FECGroupBufferTests` pins every path on CI. Plain
-/// `Sendable` value type; the receive task is the only mutator.
+/// Pure and deterministic — caller injects `nowNs` — so `FECGroupBufferTests`
+/// pins every path on CI. Value type; the receive task is the only mutator.
 public struct FECGroupBuffer: Sendable {
     /// A parity datagram whose group wasn't solvable on arrival (≥ 2 members
-    /// missing, or members not yet seen — parity can outrun a reordered
-    /// member). Held for one reorder tolerance, then discarded: multi-loss
-    /// groups belong to NACK.
+    /// missing, or parity outran a reordered member). Held for one reorder
+    /// tolerance, then discarded: multi-loss groups belong to NACK.
     private struct PendingParity {
         let baseSeq: UInt16
         let count: Int
@@ -38,10 +36,9 @@ public struct FECGroupBuffer: Sendable {
     private var heldOrder: [UInt16] = []
     private var heldBytes = 0
     private var pending: [PendingParity] = []
-    /// Sequence numbers already recovered once — a late original after
-    /// recovery must not be double-fed by us (the original itself still
-    /// flows to the depacketizer, whose reorder buffer drops it as a
-    /// behind-us duplicate, same as any network dup).
+    /// Sequence numbers already recovered once, so a late-arriving original
+    /// isn't double-fed by us (the depacketizer's reorder buffer drops it as
+    /// a duplicate on its own).
     private var recovered: [UInt16] = []
     private var recoveredSet: Set<UInt16> = []
 
@@ -146,8 +143,8 @@ public struct FECGroupBuffer: Sendable {
         else { return nil }
 
         markRecovered(missingSeq)
-        // The recovered packet joins the held set like a received one, so a
-        // hypothetical overlapping parity sees a complete group (and drops).
+        // Joins the held set like a received one, so an overlapping parity
+        // sees a complete group and drops.
         if held[missingSeq] == nil {
             held[missingSeq] = packet
             heldOrder.append(missingSeq)
@@ -158,11 +155,8 @@ public struct FECGroupBuffer: Sendable {
     }
 
     /// Re-run buffered parities after a media arrival: solve the first group
-    /// that just became one-missing, drop every fully-received parity, and
-    /// keep the rest — a single scan over a rebuilt array, so removing a
-    /// satisfied parity never skips or delays the others. At most one
-    /// recovery per call (a media packet belongs to exactly one group per
-    /// batch, so one arrival can complete at most one group).
+    /// that just became one-missing, drop every fully-received parity, keep
+    /// the rest. At most one recovery per call.
     private mutating func solvePending(nowNs: UInt64) -> Recovery? {
         purgeAgedParities(nowNs: nowNs)
         guard !pending.isEmpty else { return nil }

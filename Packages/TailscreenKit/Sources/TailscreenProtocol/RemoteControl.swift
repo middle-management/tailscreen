@@ -2,11 +2,9 @@ import Foundation
 
 /// Platform-neutral modifier-key state carried by ``InputEvent``. Encodes as
 /// its raw bitmask in JSON. Deliberately NOT `CGEventFlags`: the wire speaks
-/// a fixed five-bit vocabulary every platform can produce and consume, and
-/// each endpoint translates to/from its native flags (mac:
-/// `RemoteControlInputView` on capture, `RemoteControlInjector.eventFlags`
-/// on injection). Because injection *constructs* native flags from these
-/// bits — rather than trusting a raw native bitmask off the wire — a hostile
+/// a fixed five-bit vocabulary, and each endpoint translates to/from its
+/// native flags. Because injection *constructs* native flags from these
+/// bits, rather than trusting a raw native bitmask off the wire, a hostile
 /// viewer can never set flags outside this set.
 public struct KeyModifiers: OptionSet, Codable, Sendable, Hashable {
     public let rawValue: UInt16
@@ -31,18 +29,9 @@ public struct KeyModifiers: OptionSet, Codable, Sendable, Hashable {
     public static let capsLockHIDUsage: UInt16 = 0x39
 
     /// The held modifier a USB HID keyboard-page usage names, or nil if the
-    /// usage is an ordinary key.
-    ///
-    /// The eight modifier usages are 0xE0–0xE7, left and right of each pair.
-    /// The wire vocabulary has no left/right distinction on purpose: it names
-    /// the modifier's ROLE, and the sharer reconstructs whichever native key
-    /// its own platform wants.
-    ///
-    /// Shared because "these usages are the modifiers" had been written twice
-    /// in two different shapes — a range check in the GTK viewer's
-    /// `ViewerInputMapping.isModifierUsage`, an exhaustive switch in the WinUI
-    /// view's modifier tracker — and two spellings of one table is one edit
-    /// away from disagreeing about a key.
+    /// usage is an ordinary key. The eight modifier usages are 0xE0–0xE7,
+    /// left and right of each pair; the wire vocabulary has no left/right
+    /// distinction on purpose, naming the modifier's ROLE instead.
     public static func heldModifier(forHIDUsage usage: UInt16) -> KeyModifiers? {
         switch usage {
         case 0xE1, 0xE5: return .shift
@@ -54,18 +43,14 @@ public struct KeyModifiers: OptionSet, Codable, Sendable, Hashable {
     }
 
     /// Fold a key event into a tracked modifier set, for a host whose pointer
-    /// and key events carry no modifier snapshot of their own and must
-    /// maintain one.
+    /// and key events carry no modifier snapshot of their own.
     ///
     /// - Returns: true when the usage WAS a modifier, so the caller can drop
-    ///   the event rather than forwarding it — held modifier state rides every
-    ///   event's `modifiers` field, which is what keeps a mid-stream join
-    ///   stateless.
+    ///   the event rather than forwarding it.
     ///
-    /// Caps Lock is the case worth reading twice: it is a toggle, so its
-    /// down-event means the state FLIPPED and there is no up-event to clear
-    /// it. Treating it as a held key latches a phantom Caps Lock forever,
-    /// which silently upper-cases everything typed on somebody else's machine.
+    /// Caps Lock is a toggle, not a held key: its down-event means the state
+    /// FLIPPED and there's no up-event to clear it. Treating it as held would
+    /// latch a phantom Caps Lock forever.
     public mutating func trackHIDKeyEvent(usage: UInt16, down: Bool) -> Bool {
         if usage == Self.capsLockHIDUsage {
             if down { formSymmetricDifference(.capsLock) }
@@ -83,22 +68,18 @@ public struct KeyModifiers: OptionSet, Codable, Sendable, Hashable {
 
 /// One viewer→sharer input event in the opt-in remote-control path. Rides
 /// the reliable, ordered TCP control channel (`ScreenShareMessage.inputEvent`)
-/// alongside annotations — never the lossy UDP video path — so a `mouseDown`
-/// is never delivered without its matching `mouseUp`.
+/// — never the lossy UDP video path — so a `mouseDown` is never delivered
+/// without its matching `mouseUp`.
 ///
 /// Pointer coordinates are normalized to `[0, 1]` in the video frame's space
-/// with origin top-left, matching ``Annotation`` (`Annotation.swift`). The
-/// sharer maps them onto the captured region's live rect per share kind (see
-/// ``RemoteControlMapping``).
+/// with origin top-left, matching ``Annotation``. The sharer maps them onto
+/// the captured region's live rect (see ``RemoteControlMapping``).
 ///
-/// Key events are platform-neutral: `key` is a **USB HID keyboard-page
-/// (0x07) usage ID** — the one keycode vocabulary every platform ships
-/// translation tables for — and `modifiers` is a ``KeyModifiers`` snapshot
-/// of the held modifier state. Keyboard-layout interpretation stays on the
-/// sharer's machine (the sharer translates HID usage → its native keycode;
-/// see `MacKeyCodeMapping`). Modifier keys themselves are not sent as
-/// standalone key events; their state rides every key/button/scroll event,
-/// which keeps mid-stream joins and lost-connection recovery stateless.
+/// Key events are platform-neutral: `key` is a USB HID keyboard-page (0x07)
+/// usage ID, `modifiers` a ``KeyModifiers`` snapshot. Keyboard-layout
+/// interpretation stays on the sharer's machine (see `MacKeyCodeMapping`).
+/// Modifier keys are not sent as standalone key events; their state rides
+/// every key/button/scroll event, keeping mid-stream joins stateless.
 ///
 /// `mouseDown`/`mouseUp`/`scroll` carry `modifiers` too, so modified clicks
 /// (⌘-click, shift-scroll) work; `mouseMove` doesn't (it's the coalescable
@@ -130,12 +111,11 @@ public enum InputEvent: Codable, Sendable, Equatable {
 }
 
 /// The live single-viewer control grant held by the sharer. The gate that
-/// admits an inbound `InputEvent` matches purely on `connectionID` (the TCP
-/// control connection the grantee dialed) — authoritative and unspoofable,
-/// and a NAT rebind produces a fresh connection with a new UUID so a grant
-/// can never be inherited. `stableID` pins the grant to the consent
-/// allow-list identity for UI + bookkeeping; `viewerIP` labels the sharer UI
-/// and lets the UDP-disconnect revoke hooks match by source IP.
+/// admits an inbound `InputEvent` matches purely on `connectionID` — a NAT
+/// rebind produces a fresh connection with a new UUID, so a grant can never
+/// be inherited. `stableID` pins the grant to the consent allow-list
+/// identity; `viewerIP` labels the sharer UI and lets UDP-disconnect revoke
+/// hooks match by source IP.
 public struct ControlGrant: Equatable, Sendable {
     public let connectionID: UUID
     public let viewerIP: String
@@ -165,9 +145,8 @@ public struct ControlGrantInfo: Sendable, Equatable {
         self.hostname = hostname
     }
 
-    /// Label for the sharer's UI: the resolved hostname minus the
-    /// `tailscreen-` marker every node registers under
-    /// (`TailscreenInstance.displayName(fromHostname:)`), or the tailnet IP
+    /// Label for the sharer's UI: resolved hostname (see
+    /// `TailscreenInstance.displayName(fromHostname:)`), or the tailnet IP
     /// while the netmap lookup is still outstanding.
     public var displayName: String {
         hostname.map { TailscreenInstance.displayName(fromHostname: $0) } ?? viewerIP
@@ -200,9 +179,7 @@ public struct ControlRequestInfo: Sendable, Identifiable, Hashable {
         self.arrivedAt = arrivedAt
     }
 
-    /// Label for the sharer's UI: the resolved hostname minus the
-    /// `tailscreen-` marker every node registers under
-    /// (`TailscreenInstance.displayName(fromHostname:)`), or the tailnet IP
+    /// Label for the sharer's UI: resolved hostname, or the tailnet IP
     /// while the netmap lookup is still outstanding.
     public var displayName: String {
         hostname.map { TailscreenInstance.displayName(fromHostname: $0) } ?? viewerIP

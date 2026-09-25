@@ -1,29 +1,20 @@
 import Foundation
 
-/// The words a sharer notice is rendered with, and the two ways a notification
-/// backend can quietly drop half of them.
+/// The words a sharer notice is rendered with, and the two ways a
+/// notification backend can quietly drop half of them.
 ///
-/// Separate from `SharerNotice` because it depends on what the *daemon* can
-/// render, which the notice itself has no business knowing. Separate from the
-/// hosts because three of them composing their own strings is three sets that
-/// agree on the day they are written and never again — the same argument that
-/// put `ShortcutCatalog`'s labels here.
+/// Separate from `SharerNotice` since it depends on what the *daemon* can
+/// render; separate from the hosts so three of them don't each compose
+/// strings that drift apart.
 ///
-/// **The two capability gaps this exists to survive.** A freedesktop
-/// notification daemon advertises what it can render, and the honest ones
-/// admit to less than you would expect:
+/// **Two capability gaps this exists to survive**, neither producing an
+/// error anywhere (both pinned by tests):
 ///
-/// - **No `actions`.** The daemon silently DROPS the buttons rather than
-///   failing the call. An Accept/Deny pair then renders as a sentence stating
-///   a decision with no way to make it — strictly worse than a plain notice,
-///   because the person waits for something that is not coming. So the text
-///   changes: it says where to answer instead.
-/// - **No `body`.** Only the summary is shown. Every notice here names a
-///   *person*, and the name lives in the body, so a summary-only daemon
-///   produces "Someone wants to watch" with the someone missing. So the name
-///   folds up into the summary.
-///
-/// Neither failure produces an error anywhere. Both are pinned by tests.
+/// - **No `actions`.** The daemon silently drops the buttons. An Accept/Deny
+///   pair would then render as a sentence stating a decision with no way to
+///   make it, so the text changes to say where to answer instead.
+/// - **No `body`.** Only the summary shows, and every notice here names a
+///   *person* in the body — so the name folds up into the summary instead.
 public enum SharerNoticeText {
     /// One button.
     public struct Button: Equatable, Sendable {
@@ -53,42 +44,30 @@ public enum SharerNoticeText {
         }
     }
 
-    /// Action keys. Constants rather than literals because they cross a
-    /// process boundary — the daemon hands the key back verbatim, and a typo
-    /// on one side is a button that does nothing.
-    ///
-    /// Derived from `NoticeAction` rather than spelled out, because the way
-    /// back is `NoticeAction(rawValue:)` — a host puts one of these on a
-    /// button and gets a `NoticeAction` out the other side. Two independent
-    /// literals for one string would work on the day they were written and
-    /// then quietly stop routing the moment either moved, with no error
-    /// anywhere. The macOS backend takes the same keys straight off
-    /// `NoticeAction.rawValue`; this is the same constant under the name the
-    /// freedesktop renderer needs it by.
+    /// Action keys. Constants, not literals, since they cross a process
+    /// boundary and a typo on one side is a dead button. Derived from
+    /// `NoticeAction` (not spelled out) so the way back,
+    /// `NoticeAction(rawValue:)`, can't silently stop routing if either
+    /// moved. The macOS backend takes the same keys straight off
+    /// `NoticeAction.rawValue`.
     public static let approveKey = NoticeAction.approve.rawValue
     public static let denyKey = NoticeAction.deny.rawValue
 
-    /// What to say when the buttons cannot be shown.
-    ///
-    /// Names the app, because a notification is read out of context: by the
-    /// time somebody sees it they may not remember which of several things on
-    /// their tailnet is asking.
+    /// What to say when the buttons cannot be shown. Names the app, since a
+    /// notification is read out of context.
     public static let answerInAppHint = "Open Tailscreen to answer."
 
     /// What a returned action key means.
     ///
-    /// The two answer keys map to answers; **everything else maps to
-    /// `.dismiss`**, and that is the load-bearing half. Platforms deliver more
-    /// than button presses through the same channel: clicking a Windows toast's
-    /// BODY activates the app carrying `WindowsToastPayload.openActionKey`, and
-    /// a freedesktop daemon can invoke a `"default"` action nobody asked for.
-    /// Reading either as a deny would decide about a peer because somebody
-    /// looked at the notification — which is exactly what `NoticeAction`'s
-    /// third case exists to keep separate.
+    /// **Everything but the two answer keys maps to `.dismiss`** — the
+    /// load-bearing half. Platforms deliver more than button presses through
+    /// this channel (a Windows toast BODY click activates the app; a
+    /// freedesktop daemon can invoke an unsolicited `"default"` action), and
+    /// reading either as a deny would decide about a peer just because
+    /// someone looked at the notification.
     ///
-    /// Total rather than optional, because "I do not recognize this" and
-    /// "somebody dismissed it" call for the same behaviour: bring the app
-    /// forward, leave the person waiting in the window.
+    /// Total, not optional: "I don't recognize this" and "dismissed" call
+    /// for the same behaviour — bring the app forward, leave them waiting.
     public static func action(forKey key: String) -> NoticeAction {
         switch key {
         case approveKey: .approve
@@ -108,27 +87,24 @@ public enum SharerNoticeText {
         _ notice: SharerNotice, rendersBody: Bool, rendersActions: Bool
     ) -> Rendered {
         let buttons = rendersActions ? self.buttons(for: notice.kind) : []
-        // The hint belongs only where a button was actually taken away. On an
-        // informational notice there is nothing to answer, and telling someone
-        // to go and answer a report is how a notification becomes noise.
+        // Hint only where a button was actually taken away — telling someone
+        // to answer a report is how a notification becomes noise.
         let needsHint = !notice.kind.actions.isEmpty && !rendersActions
 
         var detail = self.detail(for: notice.kind, label: notice.label)
         if needsHint { detail += " " + answerInAppHint }
 
         guard rendersBody else {
-            // Everything on one line. The name goes FIRST: a summary is
-            // truncated from the end, and the name is the part that decides
-            // whether this is worth interrupting for.
+            // Name goes FIRST: a summary truncates from the end, and the
+            // name decides whether this is worth interrupting for.
             return Rendered(summary: detail, body: "", buttons: buttons)
         }
         return Rendered(
             summary: headline(for: notice.kind), body: detail, buttons: buttons)
     }
 
-    /// The short line. Deliberately says nothing about *who* — that is the
-    /// body's job, and duplicating it reads as a stutter on daemons that show
-    /// both.
+    /// The short line. Says nothing about *who* — that's the body's job, and
+    /// duplicating it stutters on daemons that show both.
     static func headline(for kind: SharerNoticeKind) -> String {
         switch kind {
         case .viewerPending: "Someone wants to watch"
@@ -150,11 +126,9 @@ public enum SharerNoticeText {
         }
     }
 
-    /// Buttons for a kind, in the order they should appear.
-    ///
-    /// The affirmative is worded per kind rather than shared: "Accept" is right
-    /// for a viewer at the gate and wrong for an invitation to start sharing,
-    /// where the answer is not agreement but an action.
+    /// Buttons for a kind, in order. The affirmative is worded per kind:
+    /// "Accept" fits a viewer at the gate but not an invitation to share,
+    /// where the answer is an action rather than agreement.
     static func buttons(for kind: SharerNoticeKind) -> [Button] {
         switch kind {
         case .viewerPending:

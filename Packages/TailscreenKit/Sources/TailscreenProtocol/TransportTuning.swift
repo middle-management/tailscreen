@@ -8,18 +8,15 @@ import Foundation
 /// `QualitySettingsTests` pins every value here to the literal it replaced,
 /// so an accidental edit fails CI instead of silently retuning the transport.
 public enum TransportTuning {
-    /// Server: drop viewers that have gone silent for this long. Has to
-    /// absorb a run of consecutive UDP keepalive losses plus Task
-    /// scheduling jitter — clients send KEEPALIVE every
-    /// `keepaliveIntervalNs`, so 15 s tolerates ~30 consecutive misses
-    /// while still collecting a truly crashed viewer promptly.
+    /// Server: drop viewers that have gone silent for this long. Absorbs a
+    /// run of UDP keepalive losses + scheduling jitter — clients send
+    /// KEEPALIVE every `keepaliveIntervalNs`, so 15s tolerates ~30
+    /// consecutive misses while still collecting a truly crashed viewer.
     public static let viewerIdleTimeoutNs: UInt64 = 15_000_000_000
 
     /// Client: tear the viewing session down after this long without any
     /// datagram from the sharer. **Invariant: must equal
-    /// `viewerIdleTimeoutNs`** — the two ends are designed to time out
-    /// together (see the comments in `TailscaleScreenShareClient.receiveLoop`
-    /// and around the server's `viewerIdleTimeoutNs` use). Asserted in
+    /// `viewerIdleTimeoutNs`** — the two ends time out together. Asserted in
     /// `QualitySettingsTests`.
     public static let clientIdleDisconnectNs: UInt64 = viewerIdleTimeoutNs
 
@@ -28,9 +25,9 @@ public enum TransportTuning {
     /// server's idle sweep.
     public static let keepaliveIntervalNs: UInt64 = 500_000_000
 
-    /// Server: prune viewers stuck in the approval-pending state after
-    /// this long. Longer than the connected-viewer timeout so the sharer
-    /// has plausibly enough time to react to the Accept / Deny prompt.
+    /// Server: prune viewers stuck in the approval-pending state after this
+    /// long. Longer than the connected-viewer timeout so the sharer has
+    /// plausibly enough time to react to the Accept/Deny prompt.
     public static let pendingApprovalTimeoutNs: UInt64 = 60_000_000_000
 
     /// Server: hung-helper watchdog — if a live capture helper emits
@@ -45,12 +42,9 @@ public enum TransportTuning {
     public static let maxQueuedVideoFramesPerViewer = 4
 
     /// Server: drop a viewer's audio packet once this many are already
-    /// queued behind a stalled send. Audio access units arrive every
-    /// 20 ms (one Opus frame), so 24 ≈ 0.5 s — deep enough to ride out a
-    /// DERP hiccup, shallow enough that a stalled viewer's audio latency
-    /// stays bounded. Mirrors `maxQueuedVideoFramesPerViewer` for the
-    /// per-viewer audio send chains (audio is loss-tolerant; the receiver
-    /// conceals the gap).
+    /// queued behind a stalled send. Opus frames arrive every 20ms, so 24 ≈
+    /// 0.5s — deep enough to ride out a DERP hiccup, shallow enough to bound
+    /// latency. Mirrors `maxQueuedVideoFramesPerViewer`.
     public static let maxQueuedAudioPacketsPerViewer = 24
 
     /// Server: sliding window for the helper crash budget.
@@ -110,42 +104,31 @@ public enum TransportTuning {
     public static let fecGroupSizeHeavy = 5
 
     /// Client: NACK-scheduler reorder tolerances while FEC parity is
-    /// actually FLOWING (armed on the first 0x0D received, not at bare
-    /// negotiation — the server always advertises `.fec`, and a clean link
-    /// that never sees parity must keep phase-1 NACK timing). A packet lost
-    /// first-in-group sees up to N−1 newer media packets plus the trailing
-    /// parity before recovery, so the gap becomes NACK-eligible only after
-    /// N+2 newer packets (N = the largest ladder group) or 25 ms (one
-    /// 60 fps frame interval + parity slack) — FEC gets first shot at every
-    /// gap; NACK fires only for the multi-loss groups FEC can't solve.
+    /// actually FLOWING (armed on first 0x0D received, not bare negotiation
+    /// — a clean link that never sees parity keeps phase-1 timing). A gap
+    /// becomes NACK-eligible only after N+2 newer packets (N = largest
+    /// ladder group) or 25ms, so FEC gets first shot at every gap.
     public static let fecSchedulerPacketTolerance = fecGroupSizeLight + 2
     public static let fecSchedulerToleranceNs: UInt64 = 25_000_000
 
     /// Client: how long without any parity datagram before the FEC receive
-    /// machinery disarms — scheduler tolerances back to phase-1, media
-    /// buffering off. Comfortably longer than a sweep window's worth of
-    /// parity cadence, short enough that a server that gated parity off
-    /// doesn't leave the viewer's NACK timing relaxed for long.
+    /// machinery disarms back to phase-1. Longer than a sweep window's
+    /// parity cadence, short enough not to leave NACK timing relaxed long
+    /// after the server gates parity off.
     public static let fecParityIdleNs: UInt64 = 3_000_000_000
 
-    /// Client: reorder-buffer depth (hard packet cap) in NACK mode. Unlike the
-    /// happy-path 16, this must comfortably exceed a full keyframe's packet
-    /// count (a 4K IDR is ~250 packets, higher at high bitrate) PLUS a
-    /// round-trip of trailing packets, so a single early loss in a big
-    /// keyframe doesn't overflow the window before its retransmit lands. Sized
-    /// as a generous memory bound (~1 MiB of ≤1100 B packets); the actual
-    /// abandonment trigger in NACK mode is `reorderGapHoldNs` (time), not this.
+    /// Client: reorder-buffer depth (hard packet cap) in NACK mode. Must
+    /// comfortably exceed a full keyframe's packet count (a 4K IDR is ~250,
+    /// higher at high bitrate) plus a round trip of trailing packets, so an
+    /// early loss doesn't overflow the window before its retransmit lands.
+    /// The actual abandonment trigger is `reorderGapHoldNs` (time), not this.
     public static let nackReorderDepth = 1024
 
-    /// Client: how long the reorder buffer holds an open gap before declaring
-    /// loss, in NACK mode. The old count-based window overflowed in tens of ms
-    /// at video bitrate — long before a NACK retransmit could arrive one RTT
-    /// (~100–200 ms on a WAN) later — so any keyframe that lost a packet was
-    /// torn and never reassembled (the viewer never installed parameter sets →
-    /// permanent stall). A gap now survives ~this long so the retransmit fills
-    /// it. Bounds the withhold on GENUINELY lost packets too; the NACKScheduler
-    /// drives PLI independently, so this doesn't delay keyframe recovery. Fixed
-    /// for now — deriving it from `NACKScheduler.rttEstimateNs` (hold ≈ 3× RTT,
-    /// floored here) is a natural follow-up for very-high-RTT links.
+    /// Client: how long the reorder buffer holds an open gap before
+    /// declaring loss, in NACK mode. The old count-based window overflowed
+    /// in tens of ms at video bitrate, tearing any keyframe that lost a
+    /// packet before a retransmit (~100–200ms RTT on WAN) could arrive.
+    /// Fixed for now — deriving it from `NACKScheduler.rttEstimateNs` (≈3×
+    /// RTT, floored here) is a natural follow-up for very-high-RTT links.
     public static let reorderGapHoldNs: UInt64 = 300_000_000
 }

@@ -2,17 +2,13 @@ import Foundation
 
 /// Every keyboard shortcut the app defines, as data.
 ///
-/// A shortcut is invisible by construction: nothing on screen implies ⌃⌥M, so
-/// registering one accomplishes nothing unless the app also says so somewhere
-/// the user will look. Each host renders that differently — menu items and a
-/// cheat sheet on macOS, `GtkShortcutsWindow` on Linux, `KeyboardAccelerator`
-/// on Windows — but all three are rendering the same list, and a list
-/// maintained three times is a list that disagrees three ways.
-///
-/// macOS proved that before this existed: it kept the menu and the cheat sheet
-/// in two hand-written places, and they drifted apart on ⌃⌥., the panic key
-/// whose entire purpose is to be remembered under pressure. It appeared in
-/// neither list.
+/// A shortcut is invisible by construction: nothing on screen implies ⌃⌥M,
+/// so it accomplishes nothing unless the app also renders it somewhere. Each
+/// host renders that differently (menu items + cheat sheet on macOS,
+/// `GtkShortcutsWindow` on Linux, `KeyboardAccelerator` on Windows), but all
+/// three read the same list rather than maintaining three that drift apart —
+/// which macOS proved by losing ⌃⌥. (the panic key) from both its
+/// hand-written lists at once.
 public enum ShortcutCommand: String, Codable, Sendable, CaseIterable {
     // Audio
     case toggleMicrophone
@@ -46,17 +42,13 @@ public enum ShortcutCommand: String, Codable, Sendable, CaseIterable {
 }
 
 /// A shortcut's modifier keys, expressed by *role* rather than by glyph.
+/// `primary` is what lets one catalog serve three platforms: the "app
+/// command" modifier is ⌘ on macOS and Ctrl elsewhere.
 ///
-/// `primary` is the difference that makes one catalog serve three platforms:
-/// the "app command" modifier is ⌘ on macOS and Ctrl everywhere else, so a
-/// catalog holding literal ⌘ would be a macOS catalog with extra steps.
-///
-/// Deliberately **not** `KeyModifiers`, despite the overlap. That type is the
-/// remote-control **wire** model: it names physical keys because it describes
-/// keystrokes being replayed on another machine, where "the same physical key"
-/// is exactly what must survive the trip. This one describes intent being
-/// rendered for a human, where the same intent is a *different* physical key
-/// per platform. Merging them would force one of the two to lie.
+/// Deliberately **not** `KeyModifiers`, despite the overlap: that type
+/// names physical keys for remote-control replay, where the same physical
+/// key must survive the trip; this one names intent for display, where the
+/// same intent is a *different* physical key per platform.
 public struct ShortcutModifiers: OptionSet, Codable, Sendable, Hashable {
     public let rawValue: UInt8
 
@@ -72,11 +64,9 @@ public struct ShortcutModifiers: OptionSet, Codable, Sendable, Hashable {
     public static let control = ShortcutModifiers(rawValue: 1 << 3)
 }
 
-/// The non-modifier half of a chord.
-///
-/// Characters, not scancodes or HID usages: this catalog exists to be
-/// *displayed*, and "⌘/" is what a user reads. The physical-key model belongs
-/// to remote control, where a keystroke is being replayed rather than shown.
+/// The non-modifier half of a chord. Characters, not scancodes or HID
+/// usages: this catalog exists to be *displayed*, and "⌘/" is what a user
+/// reads.
 public enum ShortcutKey: Equatable, Sendable, Codable {
     case character(String)
     case escape
@@ -99,8 +89,7 @@ public struct ShortcutChord: Equatable, Sendable, Codable {
 
     /// Key first, modifiers second-and-defaulted: a leading defaulted
     /// parameter would make `.init(.character("1"))` ambiguous against the
-    /// synthesized `init(from:)`, which the compiler resolves in favour of
-    /// `Decodable` with a confusing error.
+    /// synthesized `Decodable` init, giving a confusing error.
     public init(_ key: ShortcutKey, _ modifiers: ShortcutModifiers = []) {
         self.modifiers = modifiers
         self.key = key
@@ -109,10 +98,8 @@ public struct ShortcutChord: Equatable, Sendable, Codable {
 
 /// How a chord is spelled for the reader.
 public enum ShortcutDisplayStyle: Sendable {
-    /// Apple's glyphs, in Apple's canonical order (⌃⌥⇧⌘). The order is not a
-    /// preference — macOS renders modifiers this way everywhere, and a list
-    /// that used another order would look wrong beside the menu bar it
-    /// documents.
+    /// Apple's glyphs, in Apple's canonical order (⌃⌥⇧⌘) — matching how
+    /// macOS renders modifiers everywhere else.
     case appleSymbols
     /// `Ctrl+Alt+M`, for GTK and Windows.
     case words
@@ -131,9 +118,9 @@ extension ShortcutChord {
             return out + key.display
         case .words:
             var parts: [String] = []
-            // `primary` and `control` both land on Ctrl off macOS. That is
-            // correct, and `ShortcutCatalog.collisions` is what stops two
-            // commands quietly becoming the same chord because of it.
+            // `primary` and `control` both land on Ctrl off macOS, correctly;
+            // `ShortcutCatalog.collisions` stops two commands quietly
+            // becoming the same chord because of it.
             if modifiers.contains(.control) || modifiers.contains(.primary) { parts.append("Ctrl") }
             if modifiers.contains(.option) { parts.append("Alt") }
             if modifiers.contains(.shift) { parts.append("Shift") }
@@ -173,14 +160,11 @@ public struct ShortcutEntry: Equatable, Sendable {
     /// English source text describing what it does; hosts localize.
     public let summary: String
 
-    /// Registered with the OS so it fires while the app is **not** frontmost.
-    ///
-    /// The distinction is what makes a shortcut reachable mid-share, when the
-    /// sharer is in the app they are sharing. It also carries an obligation:
-    /// a global registration can be refused because another app already owns
-    /// the combo, and every platform's API reports that by returning a value
-    /// nobody reads. A host that advertises a global shortcut must be prepared
-    /// to say it did not take.
+    /// Registered with the OS so it fires while the app is **not**
+    /// frontmost — what makes a shortcut reachable mid-share. Also an
+    /// obligation: registration can be refused if another app owns the
+    /// combo, and a host advertising a global shortcut must be prepared to
+    /// say it didn't take.
     public let isGlobal: Bool
 
     public init(
@@ -254,10 +238,9 @@ public enum ShortcutCatalog {
             chord: .init(.character("m"), [.control, .option]),
             summary: "Toggle microphone", isGlobal: true),
 
-        // Global, and the reason the global tier exists at all: a sharer
-        // taking their machine back from a viewer cannot be asked to find a
-        // window first. Registered only while a grant is live, so an idle app
-        // does not hold ⌃⌥. system-wide for a handler with nothing to do.
+        // Global: a sharer taking their machine back from a viewer cannot be
+        // asked to find a window first. Registered only while a grant is
+        // live, so an idle app doesn't hold ⌃⌥. system-wide for nothing.
         .init(
             command: .stopRemoteControl, section: .remoteControl,
             chord: .init(.character("."), [.control, .option]),
@@ -289,13 +272,11 @@ public enum ShortcutCatalog {
         entries.filter(\.isGlobal)
     }
 
-    /// Commands whose chords collide once spelled for `style`.
-    ///
-    /// Not decoration. `primary` and `control` are distinct on macOS (⌘ vs ⌃)
-    /// and both become Ctrl everywhere else, so a pair that is unambiguous in
-    /// the menu bar can silently become one chord on GTK and WinUI — where the
-    /// symptom is not an error but a shortcut that runs the wrong command.
-    /// Sections do not scope this: these are application-wide accelerators.
+    /// Commands whose chords collide once spelled for `style`. Not
+    /// decoration: `primary` and `control` are distinct on macOS (⌘ vs ⌃)
+    /// but both become Ctrl elsewhere, so an unambiguous menu-bar pair can
+    /// silently become one chord on GTK/WinUI, running the wrong command.
+    /// Sections don't scope this — these are app-wide accelerators.
     public static func collisions(_ style: ShortcutDisplayStyle) -> [String: [ShortcutCommand]] {
         var byChord: [String: [ShortcutCommand]] = [:]
         for entry in entries {

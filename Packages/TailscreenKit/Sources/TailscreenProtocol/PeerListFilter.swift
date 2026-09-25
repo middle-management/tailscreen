@@ -1,31 +1,21 @@
 import Foundation
 
 /// The viewer-side peer-list filter: which discovered Tailscreen peers the
-/// menubar's AVAILABLE SCREENS section actually shows. Two axes, both
-/// derived from netmap data the discovery layer already carries (no probes,
-/// no wire change):
+/// menubar's AVAILABLE SCREENS section shows. Two axes, both derived from
+/// netmap data already on hand (no probes, no wire change):
 ///
-///  - **Status** — `hideOffline` drops rows tsnet reports unreachable, and
-///    `onlySharing` keeps only peers whose fetched `.metadataResponse` said
-///    `isSharing`. Sharing state is a *fetched* fact (a per-peer TCP dial,
-///    see `TailscreenMetadataClient`), so it is tri-state at match time
-///    (`PeerSharingState`): `.sharing` / `.notSharing` / `.unknown` (no
-///    answer yet, peer offline, or a legacy build that doesn't speak
-///    `.metadataRequest`). While `onlySharing` is on, `.unknown`
-///    deliberately hides — the user asked for screens they can actually
-///    watch, and rows appear as answers land.
-///  - **Tags** — `selectedTags` keeps only peers carrying at least one of
-///    the selected Tailscale ACL tags (`"tag:server"` etc.). Tags exist
-///    only on *tagged* nodes (tagged pre-auth key or admin-console tag), so
-///    the untagged bucket is an explicit choice: while a tag filter is
-///    active, `includeUntagged` decides whether tagless peers still show.
-///    With no tags selected the tag axis is off and `includeUntagged` is
-///    irrelevant — everything passes it.
+///  - **Status** — `hideOffline` drops unreachable rows; `onlySharing` keeps
+///    only peers whose fetched `.metadataResponse` said `isSharing`. Sharing
+///    state is tri-state (`PeerSharingState`): `.sharing`/`.notSharing`/
+///    `.unknown` (no answer yet, offline, or legacy peer). `onlySharing`
+///    deliberately hides `.unknown` — rows appear as answers land.
+///  - **Tags** — `selectedTags` keeps peers carrying at least one selected
+///    ACL tag. `includeUntagged` decides whether tagless peers still show
+///    while a tag filter is active; irrelevant when none is selected.
 ///
-/// This is a cosmetic, client-side filter. The authoritative version of
-/// "only these people reach these screens" is Tailscale ACLs on port 7447 —
-/// but since discovery is netmap-based (not probe-based), ACL-blocked peers
-/// still appear in the raw list, and a tag filter is how a user hides them.
+/// Cosmetic, client-side only — the authoritative access control is
+/// Tailscale ACLs on port 7447. Since discovery is netmap- not probe-based,
+/// ACL-blocked peers still appear in the raw list; the tag filter hides them.
 public struct PeerListFilter: Codable, Sendable, Equatable {
     public var hideOffline: Bool
     public var selectedTags: Set<String>
@@ -46,8 +36,7 @@ public struct PeerListFilter: Codable, Sendable, Equatable {
     }
 
     /// Decode-with-fallback so a filter persisted by an older build (fewer
-    /// fields) loads with the new axes off instead of resetting the user's
-    /// whole filter to `.default` via the store's decode-failure path.
+    /// fields) loads with the new axes off instead of resetting to `.default`.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         hideOffline = try container.decodeIfPresent(Bool.self, forKey: .hideOffline) ?? false
@@ -88,29 +77,22 @@ public struct PeerListFilter: Codable, Sendable, Equatable {
 
 /// A peer as the LIST needs to see it: an identity to look the metadata
 /// sweep's answer up by, plus the two netmap facts the filter's axes read.
-///
-/// Three hosts hold three different peer types over one filter — macOS's
-/// `TailscreenPeer`, and `DiscoveredSharer` in both swift-cross-ui apps — and
-/// each had written the projection out by hand. This is the seam that lets it
-/// be written once; the conformances are empty extensions in the tiers that
-/// own those types.
+/// Lets one filter serve macOS's `TailscreenPeer` and `DiscoveredSharer` in
+/// both swift-cross-ui apps via empty extensions in the tiers that own them.
 public protocol PeerListRow {
     /// The key the sweep's `shareInfo` dictionary is populated under.
     var id: String { get }
     var isOnline: Bool { get }
-    /// Tailscale ACL tags, empty for an untagged node — which is a filterable
-    /// state (`includeUntagged`), not an absence of data.
+    /// Tailscale ACL tags, empty for an untagged node (a filterable state,
+    /// `includeUntagged`, not absence of data).
     var tags: [String] { get }
 }
 
 extension PeerListFilter {
-    /// The rows this filter admits, in the input's order.
-    ///
-    /// `shareInfo` is the metadata sweep's answers keyed by row id, and the
-    /// tri-state projection of a MISSING entry is the whole reason this is one
-    /// function rather than three: an unanswered peer is `.unknown`, never
-    /// "not sharing", and a host that wrote `shareInfo[id]?.isSharing == true`
-    /// instead would quietly claim a fact the wire never carried.
+    /// The rows this filter admits, in the input's order. `shareInfo` is the
+    /// metadata sweep's answers keyed by row id; a missing entry projects to
+    /// `.unknown`, never "not sharing" (`shareInfo[id]?.isSharing == true`
+    /// would quietly claim a fact the wire never carried).
     public func narrow<Row: PeerListRow>(
         _ rows: [Row], shareInfo: [String: TailscreenMetadata] = [:]
     ) -> [Row] {
@@ -122,15 +104,10 @@ extension PeerListFilter {
     }
 
     /// The tags a filter menu should offer: every tag across the RAW list,
-    /// plus any tag currently selected. Sorted, so the menu does not reshuffle
-    /// between discovery sweeps.
-    ///
-    /// The union with `selectedTags` is the load-bearing half. Derive the menu
-    /// from the present peers alone and a selected tag whose last peer goes
-    /// offline loses its row — which leaves the filter hiding everything with
-    /// no control left to switch it back off. macOS had this rule and the two
-    /// swift-cross-ui apps did not; collapsing the three copies keeps the one
-    /// that cannot strand its user.
+    /// plus any tag currently selected (sorted, stable across sweeps).
+    /// Including `selectedTags` matters: deriving from present peers alone
+    /// would drop a selected tag's row when its last peer goes offline,
+    /// stranding the user with no way to switch the filter back off.
     public func knownTags<Row: PeerListRow>(in rows: [Row]) -> [String] {
         var union = selectedTags
         for row in rows { union.formUnion(row.tags) }
@@ -138,11 +115,9 @@ extension PeerListFilter {
     }
 }
 
-/// A peer's sharing state as known to the viewer — the input to the
-/// filter's `onlySharing` axis. Deliberately an enum, not `Bool?`: the
-/// unknown case is load-bearing (a legacy peer or unanswered dial must
-/// never read as "not sharing" in code that displays state, and must hide
-/// under `onlySharing` by explicit choice, not optional coincidence).
+/// A peer's sharing state as known to the viewer — input to `onlySharing`.
+/// Enum, not `Bool?`: the unknown case is load-bearing, so a legacy peer or
+/// unanswered dial can never read as "not sharing".
 public enum PeerSharingState: Sendable, Equatable {
     case sharing
     case notSharing
@@ -164,25 +139,10 @@ public enum PeerSharingState: Sendable, Equatable {
 /// ``PeerSharingState`` — the cache the metadata sweep fills and the rows'
 /// sharing chip reads.
 ///
-/// Two lines of code, and every host had written them slightly differently.
-/// The GTK picker's manual refresh cleared a peer's status on a no-answer while
-/// its 10 s quiet refresh kept the previous one, so the same chip meant
-/// different things depending on which pass had run last — and a machine that
-/// stopped sharing between sweeps kept saying "Sharing" for as long as it also
-/// stopped answering. macOS and the Windows hub already clear.
-///
 /// **A no-answer clears the entry.** `nil` from `TailscreenMetadataClient` is
-/// status-UNKNOWN — a timeout, an EOF, a legacy build dropping the unknown byte
-/// — and the one thing it is not is evidence about what that machine is doing
-/// now. The alternative (keep the last answer) is stale-positive by
-/// construction: the chip's failure mode becomes "invites you to connect to a
-/// share that ended", which is the failure a person acts on, whereas
-/// `.unknown` renders as no chip and hides under the "Only screens being
-/// shared" axis — visibly nothing rather than confidently wrong.
-///
-/// Pure, and in this tier for the same reason `PeerListFilter` is: all three
-/// hubs project the same cache through the same tri-state, and a divergence
-/// here is invisible until somebody dials a screen that is not there.
+/// status-UNKNOWN, not evidence the machine stopped sharing; keeping the
+/// last answer would be stale-positive by construction (inviting a share
+/// that already ended), whereas `.unknown` renders as no chip.
 public enum PeerShareStatusMap {
     /// Fold one probe answer in. `fetched == nil` removes the entry.
     public static func recording(
@@ -194,12 +154,9 @@ public enum PeerShareStatusMap {
         return next
     }
 
-    /// Drop entries for peers the latest discovery no longer lists.
-    ///
-    /// Without this a peer that leaves the tailnet keeps its last answer, so
-    /// the same id coming back later shows a stale chip until its next probe
-    /// lands — and a peer that never comes back keeps its row's worth of the
-    /// map for the life of the process.
+    /// Drop entries for peers the latest discovery no longer lists, so a
+    /// peer leaving the tailnet doesn't keep a stale chip (or a permanent
+    /// map entry) for the life of the process.
     public static func pruned(
         _ statuses: [String: TailscreenMetadata], toPresent ids: Set<String>
     ) -> [String: TailscreenMetadata] {

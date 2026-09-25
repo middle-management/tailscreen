@@ -18,28 +18,22 @@ public protocol NoticePosting: AnyObject {
     func withdraw(kind: SharerNoticeKind, identity: String)
 }
 
-/// The reconcile loop between live rows and posted notices, extracted from the
-/// two swift-cross-ui hosts' `SharerNotifications`, whose `applyAsk` and
-/// `applyViewers` were byte-identical — the classic sign that the sequencing
-/// belonged beside the decision (`SharerNoticeDecision`) rather than in every
-/// backend.
+/// The reconcile loop between live rows and posted notices, extracted from
+/// the two swift-cross-ui hosts' `SharerNotifications`, whose `applyAsk` and
+/// `applyViewers` were byte-identical.
 ///
-/// What it owns is the `announced` bookkeeping — who has been told about, per
-/// kind, with the label to use if they leave — and the order of operations:
-/// withdraw the gone, post the fresh, remember the rest. What it deliberately
-/// does NOT own is delivery (the poster's), the routing of a button press back
-/// (each platform hands presses back differently), and the teardown rule that
-/// `reset()` runs BEFORE the rosters clear — the host calls it from its
-/// `stop()`, because stopping a share expels every viewer at once and
-/// reconciling against the resulting empty list would fire one "stopped
-/// watching" banner per viewer at the exact moment the sharer already decided
-/// to stop.
+/// Owns the `announced` bookkeeping (who's been told, per kind, with the
+/// label for if they leave) and the order of operations: withdraw the gone,
+/// post the fresh, remember the rest. Deliberately does NOT own delivery,
+/// press routing (platform-specific), or the teardown rule that `reset()`
+/// runs BEFORE rosters clear — the host calls it from `stop()`, since
+/// stopping a share expels everyone at once and reconciling against the
+/// resulting empty list would fire one "stopped watching" per viewer right
+/// as the sharer decided to stop.
 ///
-/// The macOS path is deliberately not on this yet: `AppState` keeps four
-/// per-source notified-sets and calls the decision functions directly (its
-/// withdraw rides `SharerNoticeCenter` by identifier, and one of its sets
-/// deliberately survives `stopSharing`), so folding it in is a follow-up
-/// rather than a byte-identical extraction like the two hosts above.
+/// macOS isn't on this yet: `AppState` keeps four per-source notified-sets
+/// and calls the decision functions directly, so folding it in is a
+/// follow-up rather than a byte-identical extraction.
 @MainActor
 public struct SharerNoticeReconciler {
     /// Who has already been notified, per kind, with the name to use if they
@@ -50,11 +44,9 @@ public struct SharerNoticeReconciler {
     public init() {}
 
     /// Reconcile the notifications for one *ask* kind against its live list.
-    ///
-    /// New rows are announced; rows that left have their banner taken back.
-    /// That second half is not tidiness: a banner reading "someone is waiting
-    /// to be let in", with an Accept button, is actively wrong once they have
-    /// been admitted from the window — pressing it then does nothing.
+    /// New rows are announced; rows that left have their banner taken back —
+    /// not tidiness, since a stale "waiting to be let in" banner with a dead
+    /// Accept button is actively wrong once admitted from the window.
     public mutating func applyAsk(
         kind: SharerNoticeKind, candidates: [NoticeCandidate], poster: NoticePosting
     ) {
@@ -71,23 +63,20 @@ public struct SharerNoticeReconciler {
                 .map { ($0.identity, $0.label) })
     }
 
-    /// Reconcile the joined/left pair against the connected roster.
-    ///
-    /// A matched pair on purpose: a sharer told somebody arrived and never told
-    /// they left has to go and look to find out whether anyone is still
-    /// watching, which is the ask-the-app problem notifications exist to
-    /// remove. Only viewers whose ARRIVAL was announced get a departure —
-    /// which falls out of reconciling against the same set — and nothing is
-    /// posted during teardown, because the host's `stop()` calls `reset()`
-    /// first.
+    /// Reconcile the joined/left pair against the connected roster. Matched
+    /// pair on purpose: a sharer told someone arrived but never told they
+    /// left has to go check the app, which is the problem notifications
+    /// exist to remove. Only viewers whose ARRIVAL was announced get a
+    /// departure; nothing posts during teardown since `stop()` calls
+    /// `reset()` first.
     public mutating func applyViewers(_ candidates: [NoticeCandidate], poster: NoticePosting) {
         let known = announced[.viewerJoined] ?? [:]
         let gone = SharerNoticeDecision.noticesToWithdraw(
             candidates: candidates, alreadyNotified: Set(known.keys))
         for identity in gone {
-            // The arrival banner goes; a departure banner replaces it. Leaving
-            // "started watching" on screen after they left is the one thing
-            // this pair exists to prevent.
+            // Arrival banner goes; departure banner replaces it — leaving
+            // "started watching" on screen after they left is what this
+            // pair exists to prevent.
             poster.withdraw(kind: .viewerJoined, identity: identity)
             poster.post(
                 SharerNotice(
@@ -103,16 +92,16 @@ public struct SharerNoticeReconciler {
     }
 
     /// Drop one identity after its banner was answered from the notification
-    /// itself, so a genuinely fresh ask from the same peer is announced again.
-    /// (The Windows host needs this: a press arrives through app activation,
-    /// outside any reconcile pass.)
+    /// itself, so a genuinely fresh ask is announced again. (Windows needs
+    /// this: a press arrives through app activation, outside any reconcile
+    /// pass.)
     public mutating func forget(kind: SharerNoticeKind, identity: String) {
         announced[kind]?.removeValue(forKey: identity)
     }
 
-    /// Forget everybody. Call BEFORE the rosters are cleared — see the type
-    /// comment — and alongside whatever bulk withdraw the platform offers;
-    /// clearing first is what makes the empty snapshots that follow no-ops.
+    /// Forget everybody. Call BEFORE rosters clear (see type doc), alongside
+    /// whatever bulk withdraw the platform offers; clearing first makes the
+    /// empty snapshots that follow no-ops.
     public mutating func reset() {
         announced.removeAll()
     }

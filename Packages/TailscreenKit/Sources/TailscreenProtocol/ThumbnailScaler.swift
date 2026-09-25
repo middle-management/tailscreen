@@ -3,20 +3,15 @@ import Foundation
 /// Downscale a captured BGRA frame to a small RGBA thumbnail — the sharer's
 /// own "this is what they can see" preview.
 ///
-/// **Why RGBA out when everything else here is BGRA.** The two GUI hubs display
-/// it through `SwiftCrossUI.Image`, whose in-memory initializer takes
-/// `ImageFormats.Image<RGBA>` — packed R,G,B,A. Capture APIs hand back BGRA. So
-/// a channel swap has to happen somewhere, and doing it here means it happens
-/// once, in the same pass as the scale, in a tier Linux CI tests. Getting it
-/// wrong does not fail: the preview renders with red and blue exchanged, which
-/// on a screenshot of a desktop looks like a colour-management problem rather
-/// than a bug.
+/// **RGBA out, BGRA in**: the GUI hubs display via `SwiftCrossUI.Image`,
+/// whose in-memory initializer wants packed R,G,B,A, while capture APIs hand
+/// back BGRA. Swapping here does it once, in the same pass as the scale.
+/// Getting it wrong doesn't fail loudly — it renders with red/blue swapped,
+/// reading as a colour-management issue rather than a bug.
 ///
-/// **Why box-averaging rather than nearest.** A thumbnail of a screen is mostly
-/// text. Point-sampling a 4 K desktop down to 160 px keeps one pixel in 24 and
-/// turns text into noise that reads as a broken image; averaging the block
-/// turns it into grey, which reads as small text. It costs one pass over the
-/// source either way.
+/// **Box-averaging, not nearest**: a screen thumbnail is mostly text.
+/// Point-sampling a 4K desktop down to 160px keeps one pixel in 24 and turns
+/// text into noise; averaging the block turns it into readable grey.
 public enum ThumbnailScaler {
     /// Bytes per pixel, both directions. Named because `4` appears in every
     /// index computation below and a bare literal there is where an off-by-one
@@ -37,19 +32,13 @@ public enum ThumbnailScaler {
         }
     }
 
-    /// The longest edge a preview is scaled to fit within.
-    ///
-    /// Small on purpose: this is a thumbnail in a card, it is produced
-    /// repeatedly for the life of a share, and every pixel is one the capture
-    /// thread pays for. 360 rather than 240 because the share card now shows
-    /// it at up to that size (`ShareCard`'s preview mat fits it into a 360
-    /// box), and an upscaled box-average reads as a focus problem.
+    /// The longest edge a preview is scaled to fit within. Small on purpose
+    /// (produced repeatedly for the life of a share, on the capture thread).
+    /// 360 matches `ShareCard`'s preview mat.
     public static let defaultLongestEdge = 360
 
     /// Fit `width`x`height` inside a `longestEdge` box, preserving aspect.
-    ///
-    /// Never scales UP: a 100 px window previewed at 240 would be a blurry
-    /// enlargement of something already small enough to read.
+    /// Never scales UP: a blurry enlargement of something already readable.
     public static func fittedSize(
         width: Int, height: Int, longestEdge: Int = defaultLongestEdge
     ) -> (width: Int, height: Int)? {
@@ -57,9 +46,8 @@ public enum ThumbnailScaler {
         let longest = max(width, height)
         guard longest > longestEdge else { return (width, height) }
         let scale = Double(longestEdge) / Double(longest)
-        // At least 1 in each axis: a 4000x2 strip scales to 240x0 otherwise,
-        // and a zero-height image is a crash in whatever displays it rather
-        // than a very short preview.
+        // At least 1 in each axis: a zero-height image crashes whatever
+        // displays it rather than showing a short preview.
         return (
             max(1, Int((Double(width) * scale).rounded())),
             max(1, Int((Double(height) * scale).rounded()))
@@ -91,9 +79,8 @@ public enum ThumbnailScaler {
         out.withUnsafeMutableBufferPointer { destination in
             guard let destinationBase = destination.baseAddress else { return }
             for row in 0..<target.height {
-                // Source band for this output row. Computed from the OUTPUT
-                // index rather than accumulated, so rounding cannot drift the
-                // bands out of the source by the bottom of the image.
+                // Computed from the OUTPUT index, not accumulated, so
+                // rounding can't drift the bands off by the image's bottom.
                 let y0 = row * height / target.height
                 let y1 = max(y0 + 1, (row + 1) * height / target.height)
                 for column in 0..<target.width {
@@ -116,8 +103,7 @@ public enum ThumbnailScaler {
                     }
                     guard count > 0 else { continue }
                     let destinationPixel = (row * target.width + column) * bytesPerPixel
-                    // B,G,R in → R,G,B out. The swap is the whole reason this
-                    // returns a distinct type rather than more BGRA.
+                    // B,G,R in → R,G,B out.
                     destinationBase[destinationPixel] = UInt8(red / count)
                     destinationBase[destinationPixel + 1] = UInt8(green / count)
                     destinationBase[destinationPixel + 2] = UInt8(blue / count)
@@ -128,27 +114,20 @@ public enum ThumbnailScaler {
         return Thumbnail(width: target.width, height: target.height, rgba: out)
     }
 
-    /// How often a preview is worth producing.
-    ///
-    /// Once a second, not per frame. This runs on the capture thread, between a
-    /// frame arriving and the encoder getting it, so the cost lands directly on
-    /// the share's frame rate — and nobody watches their own thumbnail closely
-    /// enough to notice it is a second stale.
+    /// How often a preview is worth producing. Once a second, not per frame
+    /// — this runs on the capture thread between a frame arriving and the
+    /// encoder getting it, so cost lands directly on frame rate.
     public static let intervalNs: UInt64 = 1_000_000_000
 
     /// Whether to produce a preview now, given when the last one was made.
-    ///
-    /// Pure so the throttle is testable: the alternative is a timestamp
-    /// comparison buried in a capture loop, which is exactly the kind of thing
-    /// that ends up firing every frame after a refactor and nobody notices
-    /// except as a share that got slower.
+    /// Pure so the throttle is testable rather than a timestamp comparison
+    /// buried in a capture loop.
     public static func shouldCapture(
         lastCaptureNs: UInt64?, nowNs: UInt64, intervalNs: UInt64 = intervalNs
     ) -> Bool {
         guard let lastCaptureNs else { return true }
-        // Saturating rather than wrapping: a clock that went backwards (a
-        // caller passing a stale `now`) must not read as "an enormous time has
-        // passed" and fire on every frame.
+        // Saturating, not wrapping: a clock going backwards must not read as
+        // an enormous elapsed time and fire on every frame.
         guard nowNs >= lastCaptureNs else { return false }
         return nowNs - lastCaptureNs >= intervalNs
     }

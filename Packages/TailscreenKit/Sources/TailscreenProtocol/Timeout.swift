@@ -9,12 +9,11 @@ public struct TimeoutError: Error {
 /// Run `operation` and return its result, but throw `TimeoutError` if it
 /// hasn't completed within `seconds`.
 ///
-/// Caveat: the losing task is cancelled, but cancellation does not necessarily
-/// interrupt a blocking call that never checks `Task.isCancelled` — notably
-/// tsnet's `node.up()`, which blocks down in Go. In that case the operation
-/// keeps running in the background; the value of this wrapper is that the
-/// *caller* regains control and can surface an error (or move on) instead of
-/// hanging forever.
+/// Caveat: the losing task is cancelled, but cancellation doesn't
+/// necessarily interrupt a blocking call that never checks
+/// `Task.isCancelled` (notably tsnet's `node.up()`, which blocks down in
+/// Go) — the operation keeps running in the background, but the *caller*
+/// regains control instead of hanging forever.
 public func withTimeout<T: Sendable>(
     seconds: TimeInterval,
     operation: @escaping @Sendable () async throws -> T

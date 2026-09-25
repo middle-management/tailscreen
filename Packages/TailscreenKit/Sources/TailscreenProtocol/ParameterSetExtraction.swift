@@ -2,23 +2,15 @@ import Foundation
 
 /// Picks the codec parameter sets out of a keyframe's NAL units.
 ///
-/// Every `CaptureEncoding` backend that encodes with libavcodec has to do
-/// this: libavcodec hands back a keyframe with SPS/PPS (or VPS/SPS/PPS)
-/// in-band, and the server wants them named. The X11 backend had it inline,
-/// the Windows one needed the same thing, and a second hand-written copy of a
-/// bit-mask table is how the two platforms quietly disagree.
+/// Shared by every `CaptureEncoding` backend that encodes with libavcodec
+/// (X11, Windows), which otherwise each hand-roll the same bit-mask table
+/// and risk disagreeing. Lives here rather than in FFmpegKit: pure byte
+/// arithmetic with no libavcodec dependency, so `linux-protocol` can test it
+/// without libavcodec installed, and it returns ``CodecParameterSets``, a
+/// type FFmpegKit can't name.
 ///
-/// It lives here — not next to the backends, and not in FFmpegKit — for two
-/// reasons. It is pure arithmetic over bytes with no libavcodec in it, so
-/// Linux CI's `linux-protocol` job runs its tests without libavcodec
-/// installed. And it returns ``CodecParameterSets``, which FFmpegKit cannot
-/// name.
-///
-/// **This takes Annex-B NALs, already split.** Splitting is the caller's
-/// FFmpeg-side business (`NALUnit.avccToAnnexB` then `NALUnit.annexBNALs`);
-/// what is worth sharing and worth testing is the part below — which byte
-/// carries the type, how wide the field is, and which sets must all be
-/// present for the answer to be usable.
+/// Takes Annex-B NALs, already split by the caller (`NALUnit.avccToAnnexB`
+/// then `NALUnit.annexBNALs`).
 public enum ParameterSetExtraction {
     /// H.264 NAL types, from the low five bits of the header byte.
     private enum H264: UInt8 {
@@ -28,11 +20,9 @@ public enum ParameterSetExtraction {
 
     /// HEVC NAL types, from bits 1–6 of the header byte.
     ///
-    /// The field moved AND widened between the two codecs — `& 0x1F` on an
-    /// HEVC NAL reads a number that is wrong rather than absent, so the two
-    /// masks are not interchangeable and a mixed-up pair fails silently: no
-    /// parameter sets, so viewers install nothing and see black while the
-    /// sharer's own preview looks perfect.
+    /// The field moved AND widened vs H.264 — `& 0x1F` on an HEVC NAL reads a
+    /// wrong number rather than absent, so a mixed-up mask fails silently
+    /// (no parameter sets, black viewer, fine sharer preview).
     private enum HEVC: UInt8 {
         case vps = 32
         case sps = 33
@@ -44,14 +34,9 @@ public enum ParameterSetExtraction {
     ///   - codec: which mask/type table to read them with.
     /// - Returns: the parameter sets, or `nil` if any required one is absent.
     ///
-    /// All-or-nothing on purpose. A viewer needs the complete set to build a
-    /// decoder, so handing up a partial one would only move the failure later
-    /// and further from its cause.
-    ///
-    /// On duplicates the FIRST wins. libavcodec emits one set per keyframe,
-    /// but a backend that concatenates access units could present two, and
-    /// "the first one in the frame" is at least a stated rule rather than
-    /// whichever the dictionary happened to keep.
+    /// All-or-nothing: a viewer needs the complete set to build a decoder,
+    /// so a partial one only moves the failure later. On duplicates the
+    /// FIRST wins.
     public static func parameterSets(
         fromAnnexBNALs nals: [Data],
         codec: VideoCodec

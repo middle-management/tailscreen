@@ -1,43 +1,27 @@
 import Foundation
 
 /// The glue between a sharer's roster and what it remembers about people:
-/// remember a decision, forget one, apply the ones that were made before the
-/// peer's identity had resolved, and keep the live server's policy map in step.
+/// remember a decision, forget one, apply the ones made before the peer's
+/// identity resolved, and keep the live server's policy map in step.
 ///
-/// It exists because Linux and Windows both needed exactly this and macOS had
-/// grown it inline in `AppState` — five behaviours spread across a view model,
-/// none of them testable, all of them silent when wrong. Putting it here makes
-/// it one implementation that Linux CI runs, and leaves each host with nothing
-/// to do but render rows and forward taps.
+/// Shared because Linux and Windows both needed it and macOS had grown it
+/// inline in `AppState` — untestable and silent when wrong. Lives in this
+/// tier, not `TailscreenSharer`: nothing here imports the server, only reads
+/// a store and hands back a policy map, so putting it beside the server
+/// would drag libtailscale into `linux-protocol` for no reason.
 ///
-/// **It lives in this tier, not in `TailscreenSharer`**, and the closure below
-/// is why. Nothing here imports the server: it reads a store and hands back a
-/// policy map. Putting it beside the server would have dragged libtailscale
-/// into `linux-protocol` — a leg that deliberately builds no Go archive — for
-/// a type that never touches a node.
-///
-/// **Not observable and not `Sendable`**, the same two decisions
-/// `AccountProfileStore` documents and for the same reasons: `ObservableObject`
-/// means a different protocol on each host, and this owns an unlocked store, so
-/// Swift 6's strict checking keeping it inside one `@MainActor` model is a
-/// stronger guarantee than annotating it here. Mutators return whether anything
-/// changed, so a host's reactive wrapper re-publishes only on a real change.
-///
-/// The server is reached through a closure rather than a reference. Not
-/// squeamishness about retain cycles: it is what lets every case below be
-/// tested with no tsnet node, no network and no share — which is the whole
-/// difference between this logic being checked and being hoped about.
+/// Not observable and not `Sendable`, same reasoning as `AccountProfileStore`.
+/// Mutators return whether anything changed, so a host's reactive wrapper
+/// re-publishes only on a real change. The server is reached via closure
+/// rather than reference, so every case below is testable with no tsnet
+/// node, no network, no share.
 public final class SharerAccessCoordinator {
     private let store: PeerAccessStore
     private var intents = ViewerRosterDecision.PendingIntents()
 
-    /// Called whenever the effective policy map changes, with the whole map.
-    ///
-    /// Whole map rather than a delta because that is the server's own API
-    /// (`setAccessPolicies`), and because the server does more with it than
-    /// apply one row: it re-runs the admission gate over everyone parked, and
-    /// sweeps the connected roster for anyone newly denied. A delta would make
-    /// this side responsible for knowing that.
+    /// Called whenever the effective policy map changes, with the whole map
+    /// (matches the server's own `setAccessPolicies` API, which re-runs the
+    /// admission gate over everyone parked rather than applying one row).
     public var onPoliciesChanged: (([String: PeerPolicy]) -> Void)?
 
     public init(store: PeerAccessStore) {
@@ -48,11 +32,9 @@ public final class SharerAccessCoordinator {
     public var policies: [String: PeerPolicy] { store.policiesByStableID }
 
     /// What is remembered about the peer behind a roster row, if anything.
-    ///
-    /// Takes the resolved StableNodeID rather than the row id, because the row
-    /// id is a connection (`"ip:port"`) and the memory is about a machine.
-    /// Passing the wrong one compiles — they are both `String` — which is why
-    /// the parameter is named for what it must be.
+    /// Takes the resolved StableNodeID, not the row id — the row id is a
+    /// connection (`"ip:port"`) while the memory is about a machine, and
+    /// both are `String` so the parameter is named for what it must be.
     public func remembered(stableID: String?) -> PeerPolicy? {
         stableID.flatMap { store.policy(for: $0) }
     }
@@ -62,14 +44,11 @@ public final class SharerAccessCoordinator {
 
     /// Record "Always Allow" or "Deny & Block" for a roster row.
     ///
-    /// - Returns: true when it was persisted immediately, false when it was
-    ///   queued because the peer's StableNodeID has not resolved yet. Both are
-    ///   success; the caller uses the answer to word the row.
-    ///
-    /// The queue is the interesting half. A sharer who wants somebody gone
-    /// wants it *now*, and the netmap lookup that produces the only key safe to
-    /// remember them under is asynchronous — so "not yet identified" must not
-    /// mean "your decision was dropped".
+    /// - Returns: true when persisted immediately, false when queued because
+    ///   the peer's StableNodeID hasn't resolved yet — both are success; the
+    ///   caller uses the answer to word the row. Queuing exists because the
+    ///   netmap lookup that produces the safe-to-remember key is async, so
+    ///   "not yet identified" must not mean "dropped".
     @discardableResult
     public func remember(
         rowID: String, stableID: String?, displayName: String, policy: PeerPolicy
@@ -84,12 +63,9 @@ public final class SharerAccessCoordinator {
         return true
     }
 
-    /// Drop what is remembered about a peer, and cancel any queued decision for
-    /// its row.
-    ///
-    /// Both halves are needed: forgetting the stored policy while leaving an
-    /// intent queued would silently re-apply the decision the moment the
-    /// identity resolved, which is the opposite of what Forget means.
+    /// Drop what is remembered about a peer, and cancel any queued decision
+    /// for its row. Both halves needed: leaving an intent queued would
+    /// silently re-apply the decision once identity resolved.
     @discardableResult
     public func forget(rowID: String, stableID: String?) -> Bool {
         intents.cancel(id: rowID)
@@ -98,20 +74,12 @@ public final class SharerAccessCoordinator {
         return true
     }
 
-    /// Feed the coordinator a roster snapshot.
-    ///
-    /// Called on every `onViewersChanged` / `onPendingViewersChanged`, which is
-    /// also when a hostname or StableNodeID finishes resolving — the event the
-    /// queue is waiting for. Three things happen, in this order and for
-    /// reasons:
-    ///
-    ///   1. queued decisions whose identity just resolved are persisted;
-    ///   2. display names are refreshed, so a settings list shows machine names
-    ///      rather than the IP a decision happened to be made against;
-    ///   3. queued decisions for rows that have gone are dropped — otherwise a
-    ///      Deny & Block on a peer that leaves before resolving would land on
-    ///      *the next connection from that address*, which can be a different
-    ///      machine behind one NAT.
+    /// Feed the coordinator a roster snapshot, called on every
+    /// `onViewersChanged`/`onPendingViewersChanged` (also when identity
+    /// finishes resolving). In order: persist queued decisions whose
+    /// identity just resolved; refresh display names; drop queued decisions
+    /// for rows that have gone (otherwise a Deny & Block could land on the
+    /// next connection from that address — a different machine behind NAT).
     ///
     /// - Returns: true if anything was persisted, so a host can re-render.
     @discardableResult
@@ -134,9 +102,9 @@ public final class SharerAccessCoordinator {
         return changed
     }
 
-    /// Forget every queued decision. Called when a share stops: the rows are
-    /// gone, and an intent that outlived the share it was made during would
-    /// apply to whoever connects to the *next* one from the same address.
+    /// Forget every queued decision. Called when a share stops, since an
+    /// intent outliving it would apply to whoever connects to the next one
+    /// from the same address.
     public func reset() {
         intents = ViewerRosterDecision.PendingIntents()
     }

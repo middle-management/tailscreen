@@ -2,11 +2,10 @@ import Foundation
 
 /// Which microphone a single global mute hotkey flips.
 ///
-/// These apps can **share and watch at once**, and the two directions carry
-/// separate microphones with separate mute latches — deliberately, because one
-/// control flipping both would mute somebody in a call they are not in. That
-/// is settled for the in-window buttons (`toggleMic` vs `toggleShareMic`); a
-/// hotkey has no such luxury, because there is exactly one chord.
+/// The app can share and watch at once, each with its own mic and mute
+/// latch (deliberate: one control flipping both would mute someone in a
+/// call they aren't in). The in-window buttons keep them separate; the
+/// hotkey can't, since there's only one chord.
 public enum MuteHotkeyTarget: String, Equatable, Sendable, CaseIterable {
     case sharer
     case viewer
@@ -22,41 +21,25 @@ public enum MuteHotkeyTarget: String, Equatable, Sendable, CaseIterable {
     }
 }
 
-/// The routing decision, and the reason it is a decision rather than a fan-out.
+/// The routing decision, and why it's a decision rather than a fan-out.
 ///
-/// **Flipping both was rejected.** A toggle over two independent latches has no
-/// coherent meaning when they disagree: with the share muted and the viewing
-/// session live, one press produces the exact inverse mismatch. Re-defining it
-/// as "if anything is live, mute everything" fixes the mute direction and
-/// breaks the other one — the second press unmutes you into a call you were
-/// only listening to, which is the failure the two-button split exists to
-/// prevent.
+/// **Flipping both was rejected**: toggling two independent latches that
+/// disagree has no coherent meaning, and "mute everything if anything is
+/// live" just moves the mismatch to the second press.
 ///
-/// **The sharer wins when both are live**, and the argument is the row this
-/// closes: *mute from outside the window*. Being outside the window is not
-/// symmetric between the two roles.
+/// **The sharer wins when both are live**, because while sharing the app
+/// window (and its mic button) is necessarily behind whatever's being
+/// demonstrated, whereas the viewer's video window — and its mic button —
+/// is what's on screen. So the hotkey is a sharer affordance; the viewer
+/// only gets it when no share is running.
 ///
-/// - While sharing you are necessarily in some *other* app — that is what you
-///   are showing — so the app window, and the mic button on it, is behind
-///   whatever you are demonstrating. This is the case that has no other answer.
-/// - While watching, the video window is the thing you are looking at. The mic
-///   button is on screen, an inch from the pointer.
-///
-/// So the hotkey is fundamentally a sharer affordance, and the viewer gets it
-/// only because there is no reason to withhold it when no share is running.
-///
-/// The cost is honest and worth naming: start a share while already in a
-/// viewing session and the chord silently changes which microphone it points
-/// at. Hosts are expected to say which one it is (see ``MuteHotkeyTarget/label``)
-/// rather than leave that invisible, and the per-session buttons remain the
-/// unambiguous control.
+/// Cost: starting a share mid-viewing-session silently retargets the chord.
+/// Hosts must surface which mic it points at (``MuteHotkeyTarget/label``);
+/// the per-session buttons stay the unambiguous control.
 public enum MuteHotkeyRouting {
     /// The microphone the hotkey flips right now, or nil when there is none.
-    ///
-    /// "Available" means a live microphone the user could mute — an attached
-    /// uplink, not merely a session. A share with no working capture device
-    /// must not shadow the viewer's mic, or a machine with a broken sharer
-    /// microphone would answer every press with nothing at all.
+    /// "Available" means a live uplink, not merely a session — a share with
+    /// no working capture device must not shadow the viewer's mic.
     public static func target(
         sharerMicAvailable: Bool, viewerMicAvailable: Bool
     ) -> MuteHotkeyTarget? {
@@ -65,14 +48,9 @@ public enum MuteHotkeyRouting {
         return nil
     }
 
-    /// Whether the hotkey should be held at all.
-    ///
-    /// A global grab is exclusive: whoever registers a chord takes it from
-    /// every other app on the machine. Holding one while there is no
-    /// microphone to mute is taking it for a handler with nothing to do — the
-    /// same reason macOS registers its remote-control panic key only while a
-    /// grant is live. So registration follows the target: something to mute,
-    /// grab it; nothing, let it go.
+    /// Whether the hotkey should be held at all. A global grab is exclusive
+    /// and takes the chord from every other app, so registration follows the
+    /// target: something to mute, grab it; nothing, let it go.
     public static func shouldRegister(
         sharerMicAvailable: Bool, viewerMicAvailable: Bool
     ) -> Bool {

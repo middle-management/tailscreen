@@ -4,16 +4,13 @@ import Foundation
 /// the LocalAPI status snapshot (`TailscreenPeer.curAddr` / `.relay`).
 ///
 /// A direct endpoint wins over a relay: tsnet reports both fields while a
-/// connection is upgrading, and `curAddr` being populated is the
-/// authoritative "we have a direct path" signal. Empty strings count as
-/// absent — the LocalAPI reports `""` rather than omitting the key when a
-/// path isn't established yet.
+/// connection is upgrading, and `curAddr` populated is the authoritative
+/// "direct path" signal. Empty strings count as absent — LocalAPI reports
+/// `""` rather than omitting the key.
 ///
-/// Extracted from the peer-detail pane so the classification is pinned by
-/// `PeerConnectionInfoTests` rather than living in a view's private
-/// computed property, and portable because all three hubs show this line —
-/// the GTK and WinUI ones through `TailscreenHubUI`, which cannot import a
-/// macOS app target.
+/// Portable and pinned by `PeerConnectionInfoTests` since all three hubs
+/// show this line (GTK/WinUI via `TailscreenHubUI`, which can't import a
+/// macOS app target).
 public enum PeerRoute: Equatable, Sendable {
     case direct
     /// DERP-relayed, carrying the region code tsnet reported ("fra").
@@ -31,12 +28,9 @@ public enum PeerRoute: Equatable, Sendable {
 
 /// Coarse latency tier behind the peer-detail pane's quality dot.
 ///
-/// Thresholds are deliberately generous: the measurement is a TCP
-/// metadata round-trip over the live Tailscale path (dial + request +
-/// service time), not a wire ping, so it reads high compared to a raw
-/// RTT. `good` is "same-city direct", `fair` covers typical
-/// cross-country or freshly-relayed paths, `poor` is where a share will
-/// visibly suffer.
+/// Thresholds are deliberately generous: the measurement is a TCP metadata
+/// round-trip (dial + request + service time), not a wire ping, so it reads
+/// high vs raw RTT.
 public enum ConnectionQualityTier: Equatable, Sendable {
     case good
     case fair

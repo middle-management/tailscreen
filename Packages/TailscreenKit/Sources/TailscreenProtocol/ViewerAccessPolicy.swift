@@ -8,11 +8,9 @@ public enum PeerPolicy: String, Codable, Sendable {
 }
 
 /// One remembered peer. Keyed by the Tailscale **StableNodeID**
-/// (LocalAPI `PeerStatus.ID`, the "nXXXX…" string) — the only peer
-/// identifier that survives IP reassignment, MagicDNS renames, and node-key
-/// rotation (see `TailscalePeerDiscovery.mergeKey` for the ID-space
-/// pitfalls). `displayName` is cosmetic and refreshed on each sighting so
-/// renamed machines stay readable in Settings.
+/// (LocalAPI `PeerStatus.ID`, "nXXXX…") — the only peer identifier that
+/// survives IP reassignment, MagicDNS renames, and node-key rotation.
+/// `displayName` is cosmetic and refreshed on each sighting.
 public struct PeerAccessEntry: Codable, Sendable, Identifiable, Equatable {
     public let stableID: String
     public var displayName: String
@@ -25,14 +23,14 @@ public struct PeerAccessEntry: Codable, Sendable, Identifiable, Equatable {
 /// Persistent per-peer allow/deny store backing the "Always Allow" /
 /// "Deny & Block" actions and the Settings "Remembered viewers" list.
 ///
-/// `@MainActor` because it's UI-owned state (AppState holds it, SwiftUI
-/// renders it). The screen-share server never touches this store — it's
-/// handed a value snapshot via `TailscaleScreenShareServer.setAccessPolicies`
-/// whenever the entries change, so the `@unchecked Sendable` server never
-/// reaches into `UserDefaults` or main-actor state.
+/// `@MainActor`: UI-owned state. The screen-share server never touches this
+/// store directly — it's handed a value snapshot via
+/// `TailscaleScreenShareServer.setAccessPolicies` whenever entries change,
+/// so the `@unchecked Sendable` server never reaches into `UserDefaults` or
+/// main-actor state.
 ///
-/// Persistence is a single JSON blob under one `UserDefaults` key. The
-/// defaults instance is injectable so tests can use a scratch suite.
+/// Persistence is a single JSON blob under one `UserDefaults` key, injectable
+/// for tests.
 @MainActor
 public final class ViewerAccessPolicyStore: ObservableObject {
     public static let defaultsKey = "viewerAccessPolicies"
@@ -88,7 +86,7 @@ public final class ViewerAccessPolicyStore: ObservableObject {
 
     /// Pure projection shared by the instance property and AppState's
     /// `$entries` subscription (which receives the new array before the
-    /// property is written).
+    /// stored property updates).
     public nonisolated static func policiesByStableID(_ entries: [PeerAccessEntry]) -> [String: PeerPolicy] {
         Dictionary(entries.map { ($0.stableID, $0.policy) }, uniquingKeysWith: { _, last in last })
     }

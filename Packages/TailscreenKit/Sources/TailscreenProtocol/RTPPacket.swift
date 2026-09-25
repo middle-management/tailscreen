@@ -2,11 +2,10 @@ import Foundation
 
 /// RTP wire format used between the screen-share server and viewers (RFC 3550 +
 /// RFC 6184 H.264 payload + RFC 7798 HEVC payload). The same UDP socket also
-/// carries small "control" datagrams from the viewer back to the server (HELLO,
-/// KEEPALIVE, BYE, PLI). We disambiguate by the first byte: real RTP packets
-/// are V=2, so byte 0 is always in the range 0x80-0xBF; control packets use
-/// 0x00-0x7F. Codec is signalled by the RTP payload type (96 = H.264, 97 =
-/// HEVC) so a viewer can demux without out-of-band negotiation.
+/// carries small "control" datagrams (HELLO, KEEPALIVE, BYE, PLI), disambiguated
+/// by the first byte: real RTP packets are V=2 (byte 0 in 0x80-0xBF); control
+/// packets use 0x00-0x7F. Codec is signalled by RTP payload type (96 = H.264,
+/// 97 = HEVC) so a viewer demuxes without out-of-band negotiation.
 ///
 /// Single byte at offset 0 of every datagram on the wire:
 ///
@@ -43,74 +42,55 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
     case bye = 0x02
     case pli = 0x03
     case helloAck = 0x04
-    /// Sharer→viewer "I'm gone." Lets the viewer tear down immediately on
-    /// `Stop Sharing` instead of waiting out the 15 s no-video idle timer.
+    /// Sharer→viewer "I'm gone." Lets the viewer tear down immediately
+    /// instead of waiting out the 15s no-video idle timer.
     case serverBye = 0x05
-    /// Sharer→viewer "you're in the approval queue." Sent when the viewer's
-    /// HELLO lands while `requireApproval` is on, so the viewer can show a
-    /// "waiting for approval" overlay instead of sitting on a black window.
+    /// Sharer→viewer "you're in the approval queue" (`requireApproval`).
     case helloPending = 0x06
-    /// Viewer→sharer "I can't decode this codec." Sent when the viewer's
-    /// VideoToolbox can't build a decompression session for the stream —
-    /// typically an HEVC stream reaching a Mac without HEVC hardware decode.
-    /// The sharer responds by latching the share to H.264, which every Mac
-    /// can decode.
+    /// Viewer→sharer "I can't decode this codec" (VideoToolbox refused an
+    /// HEVC decompression session). Sharer latches the share to H.264.
     case codecUnsupported = 0x07
-    /// Sharer→viewer "the sharer declined your request." Sent by `denyViewer`
-    /// (and the blocked-peer rejection paths) alongside SERVER_BYE so the
-    /// viewer can distinguish "declined/blocked" from "sharer stopped".
+    /// Sharer→viewer "the sharer declined your request", sent alongside
+    /// SERVER_BYE so the viewer can distinguish decline from sharer-stopped.
     case helloDenied = 0x08
 
-    /// Viewer→sharer "I can decode this codec but not its profile/bit-depth."
-    /// Sent when a 10-bit HEVC Main 10 stream reaches a viewer whose hardware
-    /// only decodes 8-bit HEVC. The sharer responds by latching the share to
-    /// 8-bit (staying on HEVC) rather than all the way to H.264 — a lighter
-    /// fallback than `codecUnsupported`. Ignored by servers that never emit
-    /// 10-bit; unknown bytes are dropped, so it's backward compatible.
+    /// Viewer→sharer "I can decode this codec but not its profile/bit-depth"
+    /// — a 10-bit HEVC Main 10 stream reaching 8-bit-only hardware. Sharer
+    /// latches to 8-bit rather than falling all the way to H.264. Backward
+    /// compatible: unknown bytes are dropped.
     case profileUnsupported = 0x09
 
     /// Viewer→sharer generic NACK (RFC 4588 generic-NACK FCI semantics).
-    /// Requests selective retransmission of missing RTP sequence numbers in
-    /// *this viewer's* sequence space:
+    /// Requests selective retransmission in *this viewer's* sequence space:
     ///     `[0x0A][count:1][(pid:2 BE, blp:2 BE) × count]`
-    /// where `pid` is the first missing seq and `blp` is a bitmask of the 16
-    /// sequence numbers following it. The sharer retransmits byte-identical
-    /// RTP from its send-side ring, or falls back to PLI when the gap is too
-    /// old / over budget. Capability-negotiated (see `ScreenShareCaps`): a
-    /// server that never advertised NACK support drops the unknown byte, so a
-    /// new viewer paired with an old server stays on the PLI path.
+    /// `pid` is the first missing seq, `blp` a bitmask of the 16 following
+    /// it. The sharer retransmits byte-identical RTP from its send-side
+    /// ring, or falls back to PLI when the gap is too old/over budget.
+    /// Capability-negotiated (`ScreenShareCaps`).
     case nack = 0x0A
 
     /// Viewer→sharer RTCP-RR-style receiver report (~1 Hz):
     ///     `[0x0B][fracLostQ8:1][extHighestSeq:4][jitterTicks:4]
     ///      [lastPingTs:8][delaySincePingMs:2]`
-    /// Feeds the sharer's receiver-feedback congestion controller with real
-    /// loss fraction, cumulative sequence position, RTP jitter, and an RTT
-    /// echo (`lastPingTs` + `delaySincePingMs` — the last `ping` this viewer
-    /// saw and how long it held it before reporting).
+    /// Feeds the congestion controller loss fraction, sequence position,
+    /// jitter, and an RTT echo (`lastPingTs`/`delaySincePingMs`).
     case receiverReport = 0x0B
 
     /// Sharer→viewer RTT ping (~1 Hz, piggybacked on the idle sweep):
     ///     `[0x0C][serverUptimeNs:8]`
-    /// The viewer echoes `serverUptimeNs` back in its next `receiverReport`
-    /// (as `lastPingTs`) so the sharer can compute RTT = now − lastPingTs −
-    /// delaySincePingMs. Server→viewer only; ignored if a viewer sends it.
+    /// Echoed back as `lastPingTs` in the viewer's next receiver report, so
+    /// the sharer computes RTT = now − lastPingTs − delaySincePingMs.
     case ping = 0x0C
 
     /// Sharer→viewer XOR parity datagram (single-parity FEC, one per group of
     /// ≤ N media packets):
     ///     `[0x0D][baseSeq:2 BE][count:1][xor body:variable]`
-    /// `baseSeq` is the group's first sequence number in *that viewer's*
-    /// sequence space (per-viewer rewrite, same trick as retransmits); `count`
-    /// is the group size k (2…16, contiguous by construction — no mask
-    /// needed). The body is the XOR over each covered packet of
-    /// `[len:2 BE][byte1][timestamp:4][payload…]`, zero-padded to the longest
-    /// member (see `FECCodec`), so the viewer can reconstruct any *one* lost
-    /// packet — including the marker packet — with zero additional RTT.
-    /// Parity rides the control plane (not an RTP PT) so losing parity opens
-    /// no media-seq gap: no NACK, no RR loss, just an uncovered group.
-    /// Capability-negotiated (`ScreenShareCaps.fec`); old viewers drop the
-    /// unknown byte, old servers never receive it (server→viewer only).
+    /// `baseSeq` is the group's first seq in *that viewer's* sequence space;
+    /// `count` is the group size k (2…16, contiguous). Body is the XOR over
+    /// each covered packet of `[len:2 BE][byte1][timestamp:4][payload…]`,
+    /// zero-padded to the longest member (see `FECCodec`). Rides the control
+    /// plane so losing parity opens no media-seq gap. Capability-negotiated
+    /// (`ScreenShareCaps.fec`, server→viewer only).
     case fec = 0x0D
 
     public static func encode(_ kind: ScreenShareControlMessage) -> Data {
@@ -138,9 +118,9 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
     }
 
     /// Parse a HELLO_ACK datagram. Returns the SSRC, or nil if malformed.
-    /// Strict 5-byte form used by legacy viewers — a 6-byte extended ack
-    /// (with server caps) is rejected here, which is exactly the
-    /// backward-compat mechanism: an old viewer never enters NACK mode.
+    /// Strict 5-byte form: a 6-byte extended ack (with server caps) is
+    /// rejected, which is the backward-compat mechanism — an old viewer
+    /// never enters NACK mode.
     public static func decodeHelloAck(_ data: Data) -> UInt32? {
         guard data.count == 5, data[data.startIndex] == helloAck.rawValue else { return nil }
         return data.readBE(UInt32.self, at: data.startIndex + 1)
@@ -221,11 +201,9 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
 
     /// Encode a receiver report. See `receiverReport` for the layout. Pass
     /// `includeRecoveryFields: true` (FEC negotiated) to append the trailing
-    /// `[fecRecovered:2 BE][nackRecovered:2 BE]` — the 24-byte extended form.
-    /// The default emits the legacy 20-byte layout so pre-FEC servers see
-    /// exactly the bytes they already parse (all decoders are length-tolerant:
-    /// a 22-byte FEC-era decoder reads `fecRecovered` and ignores the trailing
-    /// two, a 20-byte decoder ignores both).
+    /// `[fecRecovered:2 BE][nackRecovered:2 BE]` (24-byte extended form).
+    /// Default emits the legacy 20-byte layout; all decoders are
+    /// length-tolerant.
     public static func encodeReceiverReport(_ report: ReceiverReport, includeRecoveryFields: Bool = false) -> Data {
         var data = Data(capacity: includeRecoveryFields ? 24 : 20)
         data.append(receiverReport.rawValue)
@@ -242,9 +220,8 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
     }
 
     /// Parse a receiver report; nil if malformed (needs at least the 20-byte
-    /// legacy layout). The optional trailing `[fecRecovered:2 BE]` (≥22 bytes)
-    /// and `[nackRecovered:2 BE]` (≥24 bytes) decode when present and read as 0
-    /// otherwise — the same both-forms tolerance as `decodeHelloAckCaps`.
+    /// legacy layout). Trailing `[fecRecovered:2 BE]` (≥22 bytes) and
+    /// `[nackRecovered:2 BE]` (≥24 bytes) decode when present, else read as 0.
     public static func decodeReceiverReport(_ data: Data) -> ReceiverReport? {
         guard data.count >= 20, data[data.startIndex] == receiverReport.rawValue else { return nil }
         let base = data.startIndex
@@ -295,12 +272,10 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
         return data
     }
 
-    /// Parse an FEC datagram. This is untrusted UDP input, so every field is
-    /// bounds-checked: nil on a short buffer, an out-of-range group count, a
-    /// body too short to carry the XORed `[len:2][byte1][ts:4]` prefix, or a
-    /// body larger than any legitimate parity (`FECCodec.maxBodyBytes` — the
-    /// prefix plus one full MTU payload region) — truncated/garbage/oversized
-    /// datagrams reject cleanly instead of feeding the recovery solve.
+    /// Parse an FEC datagram. Untrusted UDP input: every field is
+    /// bounds-checked (short buffer, out-of-range group count, undersized or
+    /// oversized body) so garbage rejects cleanly instead of feeding the
+    /// recovery solve.
     public static func decodeFEC(_ data: Data) -> (baseSeq: UInt16, count: Int, body: Data)? {
         guard data.count >= 4 + FECCodec.minBodyBytes, data[data.startIndex] == fec.rawValue else { return nil }
         guard data.count <= 4 + FECCodec.maxBodyBytes else { return nil }
@@ -332,41 +307,26 @@ public struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     /// enables the feature only when both advertised it — an old peer sees
     /// an unknown OptionSet bit and ignores it.
     public static let fec = ScreenShareCaps(rawValue: 1 << 2)
-    /// **Sharer→viewer only** (set in the server's HELLO_ACK caps, never in a
-    /// viewer's HELLO): this sharer's build/platform can inject viewer input,
-    /// so the viewer should offer its "Request Control" affordance. Absence
-    /// means the sharer can't do remote control at all (e.g. a future
-    /// non-injection Linux/Windows sharer) — the viewer hides the request so
-    /// the user isn't clicking a button that silently does nothing (old
-    /// behavior: the `.controlRequest` was skipped as an unknown TCP type
-    /// with no feedback). This is *static* capability; the runtime "Allow
-    /// control requests" toggle and the Accessibility gate still answer a
-    /// live request with an immediate `.controlRevoked` decline.
+    /// **Sharer→viewer only**: this sharer's build/platform can inject
+    /// viewer input, so the viewer should offer "Request Control". Absent
+    /// means the sharer can't do remote control at all, so the viewer hides
+    /// the button rather than let it silently do nothing. Static capability;
+    /// the runtime "Allow control requests" toggle still answers a live
+    /// request with `.controlRevoked`.
     public static let remoteControl = ScreenShareCaps(rawValue: 1 << 3)
     /// **Sharer→viewer only**: this sharer renders and fans out viewer
-    /// annotations (draws them on its own overlay + relays to other viewers).
-    /// The viewer offers its annotation toolbar only when set — a sharer that
-    /// can't render annotations (a future minimal Linux/Windows sharer) would
-    /// otherwise leave the viewer drawing local-only scribbles that reach
-    /// nobody. Absent ⇒ the viewer hides the drawing tools. Like
-    /// `.remoteControl`, purely a sharer capability; a viewer never sets it.
+    /// annotations. Absent, the viewer hides its drawing tools rather than
+    /// let strokes go nowhere.
     public static let annotations = ScreenShareCaps(rawValue: 1 << 4)
     /// **Viewer→sharer only**: this viewer can decode a 10-bit bitstream
-    /// (HEVC Main 10). The sharer encodes ONCE and fans the same packets out
-    /// to everyone, so 10-bit is only safe when *every* admitted viewer can
-    /// take it — a sharer that has opted into the 10-bit/HDR capture path
-    /// therefore drops the share to 8-bit as soon as one viewer joins without
-    /// this bit, and treats a legacy capability-less HELLO as "can't"
-    /// (absence is never read as capability, per TS-CAP-006).
+    /// (HEVC Main 10). The sharer encodes ONCE and fans out to everyone, so
+    /// it drops the whole share to 8-bit as soon as one viewer joins without
+    /// this bit (absence never read as capability, per TS-CAP-006).
     ///
-    /// Conservative on purpose, and the direction that fails safe: 8-bit is a
-    /// quality reduction everyone can see, while 10-bit at a viewer that
-    /// can't decode it is a blank screen. It is also not hypothetical — the
-    /// libavcodec viewers (Linux, Windows) reject any non-8-bit frame outright
-    /// in `FFmpegKit`'s `makeFrame`, so before this bit a 10-bit share to one
-    /// of them failed every frame with nothing on the wire to say why.
-    /// `PROFILE_NO` (0x09) remains the after-the-fact escape hatch for a
-    /// viewer whose decoder surprises it mid-share.
+    /// Fails safe toward 8-bit: libavcodec viewers (Linux, Windows) reject
+    /// any non-8-bit frame outright, so a 10-bit share to one used to fail
+    /// every frame with nothing on the wire to say why. `PROFILE_NO` (0x09)
+    /// remains the after-the-fact escape hatch.
     public static let tenBit = ScreenShareCaps(rawValue: 1 << 5)
 
     /// Every defined capability bit, in one production-side list so
@@ -397,22 +357,15 @@ public struct ReceiverReport: Sendable, Equatable {
     /// so the server subtracts its own processing delay from the RTT.
     public var delaySincePingMs: UInt16
     /// Packets this viewer recovered via FEC since its previous report.
-    /// Rides the optional 24-byte extended layout (FEC negotiated only);
-    /// reads as 0 from the legacy 20-byte (and FEC-era 22-byte) forms.
-    /// Recovered packets count as *received* in `fracLostQ8` (residual loss
-    /// drives the bitrate arm), so this field is what lets the server's FEC
-    /// arm still see raw link loss — the anti-oscillation term (FEC hiding all
-    /// loss must not switch FEC off, which would re-trigger the loss it was
-    /// hiding).
+    /// Recovered packets count as *received* in `fracLostQ8`, so this field
+    /// lets the server's FEC arm still see raw link loss (the
+    /// anti-oscillation term: FEC hiding all loss must not switch FEC off).
+    /// Rides the 24-byte extended layout; reads as 0 from earlier forms.
     public var fecRecovered: UInt16 = 0
-    /// Packets this viewer recovered via NACK retransmission since its previous
-    /// report. Same role as `fecRecovered` for the FEC arm's raw-loss
-    /// reconstruction: a served retransmit counts as *received* (so it drops
-    /// residual loss), so without this the arm can't tell a genuinely clean
-    /// link from a lossy one NACK is quietly repairing — and FEC would never
-    /// gate on a high-RTT link where NACK's per-loss round trip is exactly the
-    /// latency FEC's zero-RTT recovery removes. Rides the 24-byte extended
-    /// layout; reads as 0 from the 20/22-byte forms.
+    /// Packets this viewer recovered via NACK retransmission since its
+    /// previous report. Same role as `fecRecovered`: without it, FEC could
+    /// never gate on a high-RTT link where NACK's own success is quietly
+    /// hiding the loss that would justify it.
     public var nackRecovered: UInt16 = 0
 
     public init(
@@ -438,16 +391,11 @@ public struct RTPHeader: Sendable {
     /// Dynamic payload type for HEVC. 96 is taken; 97 is the next dynamic
     /// PT and matches what most WebRTC stacks use for HEVC.
     public static let hevcPayloadType: UInt8 = 97
-    /// Dynamic payload type for Opus voice. 98 follows H.264 (96) + HEVC
-    /// (97). (Formerly `aacPayloadType` — the voice codec was AAC-LC before the
-    /// Opus-only switch; the wire value 98 is unchanged, only the name.)
+    /// Dynamic payload type for Opus voice. 98 follows H.264 (96) + HEVC (97).
     public static let voicePayloadType: UInt8 = 98
-    /// Dynamic payload type for shared system/computer audio (Opus),
-    /// distinct from voice (98) so viewers demux the two without any
-    /// negotiation — the same auto-detect philosophy as video's 96/97.
-    /// Viewers that predate the feature reject PT 99 in
-    /// `AudioRTPDepacketizer.unpack` / `MultiCodecDepacketizer.ingest`, so
-    /// they silently drop it (no torn video/audio).
+    /// Dynamic payload type for shared system/computer audio (Opus), distinct
+    /// from voice (98) so viewers demux both without negotiation. Viewers
+    /// predating the feature reject PT 99 and silently drop it.
     public static let systemAudioPayloadType: UInt8 = 99
     /// Every RTP payload type Tailscreen emits, in one production-side list
     /// so `WireByteRegistryTests` can assert its registry table matches this
@@ -526,9 +474,8 @@ public struct RTPHeader: Sendable {
     }
 }
 
-/// Splits an AVCC-formatted access unit into a sequence of length-prefixed
-/// NAL units. Each entry is the raw NAL bytes (NAL header + RBSP), no length
-/// prefix.
+/// Splits an AVCC-formatted access unit into NAL units. Each entry is the
+/// raw NAL bytes (NAL header + RBSP), no length prefix.
 public enum AVCCParser {
     public static func nalUnits(from avcc: Data, lengthSize: Int = 4) -> [Data] {
         var nals: [Data] = []
@@ -564,28 +511,17 @@ public struct VideoAccessUnit {
 /// anything that wouldn't fit in one MTU. STAP-A is intentionally not used
 /// — keeping the format flat makes the depacketizer trivial.
 ///
-/// Stateful by design: maintains a small pool of `Data` buffers from the
-/// previous `packetize` call so each subsequent call can reuse that storage
-/// instead of allocating fresh. See `RTPPacketBufferPool` for the safety
-/// argument (Data's COW + array-remove-before-mutate gives us in-place
-/// reuse when the consumer has dropped its reference, and a clean fresh
-/// allocation otherwise — never aliasing).
+/// Maintains a small pool of `Data` buffers from the previous `packetize`
+/// call so each subsequent call can reuse that storage. See
+/// `RTPPacketBufferPool` for the no-aliasing argument.
 ///
-/// `Sendable`, checked: the packetizer's only cross-call state is the
-/// buffer pool, and `RTPPacketBufferPool` synchronizes itself with a
-/// `Guarded` — everything else (`seq`, the output array) is per-call locals,
-/// with the sequence space owned by the caller. Concurrent `packetize`
-/// calls are therefore memory-safe; at worst an interleaved batch forfeits
-/// buffer reuse (COW allocates fresh). In practice the screen-share server
-/// invokes `packetize` from a single site — `broadcast()`, driven by the
-/// capture backend's one delivery thread — so calls don't actually
-/// overlap; the fan-out serialization that used to be cited here (the
-/// server-side `broadcastTail` send chain) no longer exists, replaced by
-/// per-viewer send chains that serialize sends, not packetization.
+/// `Sendable`, checked: the only cross-call state is the buffer pool, which
+/// synchronizes itself via `Guarded`; everything else is per-call locals.
+/// Concurrent `packetize` calls are memory-safe, at worst forfeiting reuse.
 public final class H264Packetizer: Sendable {
     /// Max bytes of RTP *payload* per packet (excludes the 12-byte RTP header).
-    /// Tailscale's WireGuard tunnel typically uses MTU 1280; subtract IPv6+UDP
-    /// (40+8) and RTP header (12), leaving ~1220. We use 1100 for headroom.
+    /// WireGuard's typical MTU 1280 minus IPv6+UDP (40+8) and RTP header (12)
+    /// leaves ~1220; 1100 gives headroom.
     public static let maxPayloadBytes = 1100
 
     private let pool = RTPPacketBufferPool()
@@ -595,15 +531,7 @@ public final class H264Packetizer: Sendable {
     /// Packetize one access unit's NAL units into RTP packets ready to send.
     /// Sequence numbers run from `startSequence` (incrementing by 1 per
     /// returned packet); the marker bit is set on the last packet only.
-    ///
-    /// **Buffer lifetime:** returned `Data` values are owned by the caller
-    /// (Swift value semantics + COW), but the packetizer holds a pool of
-    /// the *previous* call's buffers. When you call `packetize` again, any
-    /// buffer from the prior call that is no longer in use (refcount=1 on
-    /// the pool side after array removal) has its storage reused in place.
-    /// If the consumer still holds a copy, the pool's `removeAll` triggers
-    /// COW and the consumer keeps its bytes intact. There is no aliasing
-    /// hazard either way.
+    /// See `RTPPacketBufferPool` for buffer-reuse/aliasing details.
     public func packetize(
         nals: [Data],
         timestamp: UInt32,
@@ -626,21 +554,17 @@ public final class H264Packetizer: Sendable {
             }
         }
 
-        // Set the marker bit on the final packet (last packet of the AU).
-        // We initially emit every packet with marker=0; flipping the one
-        // bit at the end is cheaper than threading "isLast" through the
-        // emit path.
+        // Flip the marker bit on the last packet rather than threading
+        // "isLast" through the emit path.
         if !packets.isEmpty {
             Self.setMarkerBit(on: &packets[packets.count - 1])
         }
 
-        // Hand the new batch back to the pool so the *next* packetize call
-        // can recycle these buffers if/when the consumer has released them.
         pool.handOver(packets)
         return packets
     }
 
-    /// Reserve+write an RTP packet for a single-NAL payload using a pooled
+    /// Reserve+write an RTP packet for a single-NAL payload, using a pooled
     /// buffer when available.
     private func emitPacket(
         payload: Data,
@@ -664,10 +588,8 @@ public final class H264Packetizer: Sendable {
     }
 
     /// RFC 6184 §5.8 FU-A fragmentation. Emits one RTP packet per fragment,
-    /// writing the RTP header + FU indicator + FU header + fragment bytes
-    /// directly into a pooled buffer (no intermediate `chunks` allocation).
-    /// Caller guarantees `nal` is non-empty (it's the same value tested by
-    /// `packetize`'s loop header).
+    /// writing directly into a pooled buffer (no intermediate `chunks`
+    /// allocation). Caller guarantees `nal` is non-empty.
     private func emitFUA(
         nal: Data,
         startSeq: inout UInt16,
@@ -716,9 +638,8 @@ public final class H264Packetizer: Sendable {
         }
     }
 
-    /// Sets bit 0x80 of byte 1 of the RTP packet (the marker bit). Used to
-    /// flag the final packet of the access unit after we've emitted them
-    /// all with marker=0.
+    /// Sets bit 0x80 of byte 1 (the marker bit), flagging the AU's final
+    /// packet after all are emitted with marker=0.
     public static func setMarkerBit(on packet: inout Data) {
         guard packet.count > 1 else { return }
         packet[packet.startIndex + 1] |= 0x80
@@ -728,24 +649,20 @@ public final class H264Packetizer: Sendable {
 /// Small fixed-depth RTP reorder buffer that sits in front of the codec
 /// depacketizers.
 ///
-/// Loopback and local-headscale deliver packets in order and lossless, so the
-/// depacketizers historically treated *any* sequence-number deviation as loss.
-/// That's fine locally, but over a real DERP-relayed WAN — where reordering and
-/// duplication are routine — it dropped a whole frame (and fired a PLI) on
-/// every reorder event, amplifying loss into a keyframe storm.
+/// Loopback delivers packets in order, so the depacketizers historically
+/// treated any sequence-number deviation as loss — fine locally, but over a
+/// real DERP-relayed WAN it dropped a whole frame (firing a PLI) on every
+/// reorder, amplifying loss into a keyframe storm.
 ///
-/// This buffer absorbs reordering up to `maxDepth` packets and silently
-/// discards duplicates / late stragglers, only declaring loss when a gap truly
-/// can't be filled within the window. It is **latency-free on the happy path**:
-/// a packet arriving with the expected sequence number is released immediately;
-/// only packets that arrive *ahead* of a gap are briefly held, and only until
-/// the gap fills (the reordered packet shows up) or the window overflows. All
-/// sequence arithmetic is `&-`/`&+` wrap-safe.
+/// Absorbs reordering up to `maxDepth` packets and silently discards
+/// duplicates/late stragglers, declaring loss only when a gap can't be
+/// filled within the window. Latency-free on the happy path: only packets
+/// arriving *ahead* of a gap are briefly held. All sequence arithmetic is
+/// `&-`/`&+` wrap-safe.
 public struct RTPReorderBuffer {
     /// One packet released to the assembler, in ascending sequence order.
-    /// Public members: the differential suite (Packages/TailscreenDifferential,
-    /// a separate package, so no `@testable`) compares releases field-by-field
-    /// against the Go SDK's.
+    /// Public members: the differential suite (a separate package, no
+    /// `@testable`) compares releases field-by-field against the Go SDK's.
     public struct Release {
         public let packet: Data
         /// True when a gap was skipped immediately before this packet — the
@@ -756,32 +673,28 @@ public struct RTPReorderBuffer {
 
     /// Hard cap on out-of-order packets held while waiting for a gap to fill.
     /// In count-based mode (`gapHoldNs == 0`) this doubles as the abandonment
-    /// trigger — ~16 is a few frames' worth, enough to absorb realistic WAN
-    /// reordering without adding latency. In time-based (NACK) mode it is a
-    /// generous memory bound only: a full keyframe (hundreds of packets) plus
-    /// a round-trip of trailing packets must fit, so the client sizes it well
+    /// trigger; in time-based (NACK) mode it's a generous memory bound sized
     /// above a keyframe's packet count.
     public let maxDepth: Int
 
     /// How long to hold an open gap before declaring loss, in nanoseconds.
-    /// `0` (default) = pure count-based abandonment (`buffered.count > maxDepth`),
-    /// the loopback/reorder-only behavior. When positive (NACK mode), a gap is
-    /// held until this elapses so a retransmit arriving ~1 RTT later can still
-    /// fill it — the count-based window overflowed in tens of ms at video
-    /// bitrate, tearing keyframes long before their retransmits could land.
-    /// `maxDepth` remains a hard memory cap on top of the time bound.
+    /// `0` (default) is pure count-based abandonment. When positive (NACK
+    /// mode), a gap is held until this elapses so a retransmit ~1 RTT later
+    /// can still fill it — the count-based window used to overflow in tens
+    /// of ms at video bitrate, tearing keyframes before retransmits landed.
+    /// `maxDepth` remains a hard cap on top.
     public let gapHoldNs: UInt64
 
     /// Next sequence number we want to release. nil until the first packet.
     private var nextSeq: UInt16?
     /// Future packets held while waiting for a gap to fill, keyed by seq.
     private var buffered: [UInt16: Data] = [:]
-    /// `nowNs` when the current front-gap hold era began (first packet buffered
-    /// since `buffered` was last empty). nil while nothing is held. Drives the
-    /// `gapHoldNs` deadline; only meaningful when `gapHoldNs > 0`.
+    /// `nowNs` when the current front-gap hold era began. nil while nothing
+    /// is held. Drives the `gapHoldNs` deadline; meaningful only when
+    /// `gapHoldNs > 0`.
     private var oldestGapNs: UInt64?
     /// Gaps abandoned (loss declared) since this buffer was created. Survives
-    /// `reset` on purpose — it is a session tally for diagnostics, not state.
+    /// `reset` — a session tally for diagnostics, not state.
     public private(set) var skippedGapCount = 0
 
     public init(maxDepth: Int = 16, gapHoldNs: UInt64 = 0) {
@@ -802,9 +715,8 @@ public struct RTPReorderBuffer {
     }
 
     /// Insert one received packet at time `nowNs`; return the packets now
-    /// releasable, in order. When `gapHoldNs > 0` an open gap is held until the
-    /// deadline elapses (so a NACK retransmit can fill it) or the `maxDepth`
-    /// hard cap is hit.
+    /// releasable, in order. When `gapHoldNs > 0` an open gap is held until
+    /// the deadline elapses or the `maxDepth` hard cap is hit.
     public mutating func push(seq: UInt16, packet: Data, nowNs: UInt64) -> [Release] {
         guard let want = nextSeq else {
             // First packet of the (re)synced session: release immediately.
@@ -848,8 +760,7 @@ public struct RTPReorderBuffer {
     }
 
     /// After a drain/skip, restart the hold era for whatever gap now sits at
-    /// the front (a different missing sequence than the one just resolved), or
-    /// clear it when nothing is held.
+    /// the front, or clear it when nothing is held.
     private mutating func refreshGapClock(nowNs: UInt64) {
         oldestGapNs = buffered.isEmpty ? nil : nowNs
     }
@@ -875,22 +786,18 @@ public struct RTPReorderBuffer {
 }
 
 /// Stateful receiver that reassembles RTP packets back into AVCC-formatted
-/// access units (length-prefixed NAL units, exactly the shape `VideoDecoder`
-/// expects). A `RTPReorderBuffer` in front absorbs WAN reordering/duplication;
-/// genuine loss (a gap the reorder window can't fill) still drops the partial
-/// AU so the decoder never sees a torn frame, and the caller is expected to
-/// send a PLI in response so the encoder issues a fresh IDR.
+/// access units (the shape `VideoDecoder` expects). A `RTPReorderBuffer` in
+/// front absorbs WAN reordering/duplication; genuine loss still drops the
+/// partial AU so the decoder never sees a torn frame, and the caller sends
+/// a PLI in response.
 public final class H264Depacketizer {
     /// Starting reserved capacity for `currentAU`. Sized to cover a typical
-    /// 1080p/4K HEVC or H.264 keyframe (~1–2 MB) so the per-NAL `append`
-    /// path doesn't cause Data to repeatedly reallocate-and-copy as the AU
-    /// grows. Anything larger is handled by Data's normal exponential
-    /// growth on overflow.
+    /// 1080p/4K keyframe (~1–2 MB) so per-NAL `append` doesn't repeatedly
+    /// reallocate-and-copy. Larger frames use Data's normal growth.
     public static let initialAUCapacity = 2 * 1024 * 1024  // 2 MB
 
-    /// Starting reserved capacity for `fuBuffer`. Sized to cover the
-    /// largest individual NAL we'd realistically see fragmented over FU-A
-    /// (one big slice NAL inside a keyframe).
+    /// Starting reserved capacity for `fuBuffer`: the largest individual NAL
+    /// realistically fragmented over FU-A.
     public static let initialFUCapacity = 256 * 1024  // 256 KB
 
     private var ssrc: UInt32?
@@ -905,13 +812,13 @@ public final class H264Depacketizer {
     /// Absorbs WAN packet reordering/duplication before assembly (see
     /// `RTPReorderBuffer`). Owns all sequence-number tracking now.
     private var reorder: RTPReorderBuffer
-    /// Completed AUs awaiting return. A single `ingest` can complete more than
-    /// one AU when a late packet unblocks a run of buffered packets spanning a
-    /// frame boundary; we return them one per `ingest` call, in order, to keep
-    /// the `ingest(_:) -> VideoAccessUnit?` contract the caller relies on.
+    /// Completed AUs awaiting return. A single `ingest` can complete more
+    /// than one when a late packet unblocks buffered packets spanning a
+    /// frame boundary; returned one per `ingest` call to keep its
+    /// `-> VideoAccessUnit?` contract.
     private var readyQueue: [VideoAccessUnit] = []
-    /// Access units that completed and were then thrown away as torn. See the
-    /// drop site in `flushAU` for why this is counted rather than silent.
+    /// Access units that completed and were then thrown away as torn. See
+    /// `flushAU` for why this is counted rather than silent.
     public private(set) var tornAUCount = 0
     /// Gaps the reorder buffer gave up waiting for, i.e. declared loss.
     public var skippedGapCount: Int { reorder.skippedGapCount }
@@ -950,28 +857,26 @@ public final class H264Depacketizer {
             ssrc = header.ssrc
         }
 
-        // Route through the reorder buffer; assemble whatever it releases, in
-        // order. In-order packets release immediately (no added latency).
+        // In-order packets release immediately (no added latency).
         for release in reorder.push(seq: header.sequenceNumber, packet: packet, nowNs: nowNs) {
             assemble(release.packet, lostBefore: release.lostBefore)
         }
         return readyQueue.isEmpty ? nil : readyQueue.removeFirst()
     }
 
-    /// Assemble one in-sequence packet into the current AU, appending any
-    /// completed AU to `readyQueue`. `lostBefore` is set by the reorder buffer
-    /// when it skipped an unfillable gap immediately before this packet.
-    /// Drain access units completed but not yet returned by `ingest`. A single
-    /// `ingest` returns at most one AU, but a late packet that unblocks a run
-    /// of buffered packets can complete several at once; production reads the
-    /// extras one per subsequent `ingest`, while a test that's finished feeding
-    /// a stream uses this to flush the tail.
+    /// Drain access units completed but not yet returned by `ingest`. A
+    /// single `ingest` returns at most one AU, but a late packet unblocking
+    /// buffered packets can complete several at once; production reads the
+    /// extras one per subsequent `ingest`, tests use this to flush the tail.
     public func drainReady() -> [VideoAccessUnit] {
         let out = readyQueue
         readyQueue.removeAll(keepingCapacity: true)
         return out
     }
 
+    /// Assemble one in-sequence packet into the current AU, appending any
+    /// completed AU to `readyQueue`. `lostBefore` is set by the reorder
+    /// buffer when it skipped an unfillable gap right before this packet.
     private func assemble(_ packet: Data, lostBefore: Bool) {
         guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return }
 
@@ -1030,7 +935,7 @@ public final class H264Depacketizer {
 
             if isStart {
                 fuBuffer.removeAll(keepingCapacity: true)
-                // Reconstruct original NAL header: F+NRI from FU indicator, type from FU header.
+                // Reconstruct NAL header: F+NRI from FU indicator, type from FU header.
                 fuNALHeader = (fuIndicator & 0xE0) | originalType
                 fuBuffer.append(fuNALHeader)
                 fuBuffer.append(fragment)
@@ -1070,12 +975,9 @@ public final class H264Depacketizer {
         let avcc = currentAU
         let hasIDR = currentHasIDR
 
-        // Replace `currentAU` with a freshly-reserved buffer so the next AU
-        // doesn't pay quadratic-style reallocation cost as `append` fills
-        // it. We can't `removeAll(keepingCapacity:)` here because `avcc`
-        // shares this buffer via COW; mutating it would either trigger COW
-        // (defeating the reuse) or alias bytes the consumer is about to
-        // read. A fresh allocation is the safe, correct choice.
+        // Fresh buffer, not `removeAll`: `avcc` shares this storage via COW,
+        // so reusing it in place would either defeat the COW or alias bytes
+        // the consumer is about to read.
         var fresh = Data()
         fresh.reserveCapacity(Self.initialAUCapacity)
         currentAU = fresh
@@ -1087,15 +989,9 @@ public final class H264Depacketizer {
 
         if wasCorrupted {
             // Drop the AU but keep the loss flag latched so the next clean
-            // AU still carries it — the caller uses that to drive PLI.
-            //
-            // COUNTED because this drop is otherwise perfectly invisible: the
-            // caller sees `ingest` return nil, which is also what a normal
-            // mid-frame packet returns. A blank viewer whose access-unit count
-            // sits still cannot be told from one where every frame arrives and
-            // is discarded here — and those want opposite fixes. The whole
-            // socket-drain hunt turned on that distinction and had to infer it
-            // from arrival rates.
+            // AU still carries it, driving PLI. Counted rather than silent:
+            // `ingest` returning nil here is otherwise indistinguishable
+            // from a normal mid-frame packet.
             tornAUCount &+= 1
             return nil
         }
@@ -1125,15 +1021,9 @@ public final class H264Depacketizer {
 
 /// RFC 7798 HEVC packetizer. Same shape as the H.264 path — Single NAL for
 /// small NALs, FU mode for anything that wouldn't fit in one MTU. AP
-/// (aggregation packets) and PACI are intentionally unused; the depacketizer
-/// is correspondingly simpler.
+/// (aggregation packets) and PACI are intentionally unused.
 ///
-/// Buffer-pool semantics mirror `H264Packetizer`, and so does the
-/// `Sendable` rationale: the pool is the only cross-call state and it
-/// locks itself (`RTPPacketBufferPool`'s `Guarded`), so concurrent
-/// `packetize` calls are memory-safe and merely forfeit buffer reuse —
-/// there is no `broadcastTail`-style caller-side serialization to lean on
-/// anymore.
+/// Buffer-pool semantics and `Sendable` rationale mirror `H264Packetizer`.
 public final class H265Packetizer: Sendable {
     public static let maxPayloadBytes = H264Packetizer.maxPayloadBytes
 
@@ -1376,10 +1266,8 @@ public final class H265Depacketizer {
 
             if isStart {
                 fuBuffer.removeAll(keepingCapacity: true)
-                // Reconstruct the original NAL header: F + LayerId top bit
-                // come from PayloadHdr byte 0; original type goes in bits
-                // 1-6 of the same byte. Byte 1 (rest of LayerId + TID)
-                // passes through unchanged.
+                // F + LayerId top bit come from PayloadHdr byte 0; original
+                // type in bits 1-6; byte 1 passes through unchanged.
                 let fBit = payloadHdr0 & 0x80
                 let layerIdHi = payloadHdr0 & 0x01
                 let originalH0: UInt8 = fBit | ((originalType & 0x3F) << 1) | layerIdHi
@@ -1424,11 +1312,7 @@ public final class H265Depacketizer {
         let avcc = currentAU
         let hasIDR = currentHasIDR
 
-        // See `H264Depacketizer.flushAU` for the rationale: we hand the
-        // accumulated `currentAU` storage to the caller (via `avcc`) and
-        // pre-reserve a fresh buffer of the same capacity for the next
-        // AU. This keeps the per-NAL `append` path off Data's quadratic
-        // grow-and-copy escalator for large keyframes.
+        // See `H264Depacketizer.flushAU` for the fresh-buffer rationale.
         var fresh = Data()
         fresh.reserveCapacity(Self.initialAUCapacity)
         currentAU = fresh
@@ -1467,21 +1351,18 @@ public final class H265Depacketizer {
 }
 
 /// Routes incoming RTP packets to the right depacketizer based on the
-/// payload type. Used by the viewer so we don't need a separate negotiation
-/// step — whichever codec the server picked, the receiver discovers it
+/// payload type. Used by the viewer so no separate negotiation step is
+/// needed — whichever codec the server picked, the receiver discovers it
 /// from the first packet's PT.
 public final class MultiCodecDepacketizer {
     private let h264: H264Depacketizer
     private let h265: H265Depacketizer
 
     /// `reorderDepth` sizes each codec's `RTPReorderBuffer`. The viewer plumbs
-    /// a deeper window when the server advertised NACK support — retransmits
-    /// have to land before the window overflows, and the default 16 packets is
-    /// only a few frames (shallower than one WAN RTT). Defaults to the
-    /// happy-path 16 for legacy / non-NACK sessions.
-    /// `gapHoldNs` (NACK mode) holds an open gap by time so a retransmit
-    /// arriving ~1 RTT later fills it before the AU is torn; `0` (default) is
-    /// the count-based happy path. See `RTPReorderBuffer.gapHoldNs`.
+    /// a deeper window when the server advertised NACK support; defaults to
+    /// the happy-path 16 for legacy/non-NACK sessions.
+    /// `gapHoldNs` (NACK mode) holds an open gap by time so a retransmit ~1
+    /// RTT later fills it before the AU is torn. See `RTPReorderBuffer.gapHoldNs`.
     public init(reorderDepth: Int = 16, gapHoldNs: UInt64 = 0) {
         self.h264 = H264Depacketizer(reorderDepth: reorderDepth, gapHoldNs: gapHoldNs)
         self.h265 = H265Depacketizer(reorderDepth: reorderDepth, gapHoldNs: gapHoldNs)
@@ -1506,10 +1387,9 @@ public final class MultiCodecDepacketizer {
         }
     }
 
-    /// Drain access units completed but not yet returned by `ingest` (a single
-    /// late packet — including an FEC recovery — can unblock a run of buffered
-    /// packets, but `ingest` returns only the first). Only the active codec's
-    /// depacketizer holds anything; the other's queue is empty.
+    /// Drain access units completed but not yet returned by `ingest` (a
+    /// single late packet, including an FEC recovery, can unblock several).
+    /// Only the active codec's depacketizer holds anything.
     public func drainReady() -> [VideoAccessUnit] {
         h264.drainReady() + h265.drainReady()
     }

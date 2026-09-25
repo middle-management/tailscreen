@@ -3,10 +3,9 @@ import Foundation
 /// The arithmetic between a viewer's normalized `[0, 1]` pointer coordinate
 /// and what Windows' `SendInput` wants.
 ///
-/// Extracted from the injector for the same reason `MacKeyCodeMapping` and
-/// `BGRAToI420` were: it is pure integer arithmetic with several ways to be
-/// subtly wrong, and none of them can be checked on the machine that runs it.
-/// Every case below is a real trap:
+/// Extracted from the injector: pure integer arithmetic with several ways to
+/// be subtly wrong, none checkable on the machine that runs it. Every case
+/// below is a real trap:
 ///
 ///   * `SendInput`'s absolute coordinates are `0…65535` across the **virtual
 ///     desktop**, not the screen and not the captured region — so the
@@ -28,9 +27,9 @@ public enum WindowsPointerMapping {
     /// multi-monitor desktop.
     ///
     /// A typealias since the Linux injector needed the identical type and
-    /// clamp — see ``ScreenRegion``. The name is kept because it is what every
-    /// Win32 caller here reads as, and because the two-stage conversion below
-    /// is genuinely Windows-only.
+    /// clamp — see ``ScreenRegion``. The name is kept because every Win32
+    /// caller here reads it that way, and the two-stage conversion below is
+    /// genuinely Windows-only.
     public typealias ScreenRect = ScreenRegion
 
     /// Where a normalized `[0, 1]` point inside the captured region lands in
@@ -78,14 +77,9 @@ public enum WindowsPointerMapping {
     }
 
     /// One `InputEvent` scroll delta (line units) as Windows wheel units.
-    ///
-    /// `WHEEL_DELTA` is 120 per detent, and Windows treats it as a signed
-    /// 16-bit value packed into `mouseData` — hence the saturation rather
-    /// than a wrapping conversion. Wire-supplied, so NaN and infinity are
-    /// zero rather than a trap.
-    ///
-    /// Sign matches the other end: positive `deltaY` is a wheel rotation away
-    /// from the user, and positive `deltaX` a tilt to the right.
+    /// `WHEEL_DELTA` is 120/detent, packed into a signed 16-bit `mouseData`,
+    /// hence saturation rather than wrapping. Wire-supplied, so NaN/infinity
+    /// map to zero.
     public static func wheelDelta(_ lines: Double) -> Int32 {
         guard lines.isFinite else { return 0 }
         let scaled = (lines * Double(wheelDeltaPerLine)).rounded()
@@ -98,9 +92,8 @@ public enum WindowsPointerMapping {
     public static let wheelDeltaPerLine = 120
 
     private static func axis(_ value: Int, origin: Int, extent: Int) -> Int32 {
-        // A one-pixel-wide desktop is degenerate but reachable (and a
-        // zero-width one would divide by zero), so it collapses to 0 rather
-        // than trapping.
+        // A one-pixel-wide desktop is degenerate but reachable, and a
+        // zero-width one would divide by zero, so this collapses to 0.
         guard extent > 1 else { return 0 }
         let offset = value - origin
         let scaled = (Double(offset) * 65535.0 / Double(extent - 1)).rounded()

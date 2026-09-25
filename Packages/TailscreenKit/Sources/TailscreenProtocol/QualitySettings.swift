@@ -1,41 +1,28 @@
 import Foundation
 
 /// User-facing quality knobs for the sharing side — frame-rate cap, codec
-/// preference, encoder quality, and an optional bandwidth ceiling. The
-/// named preset is *derived* from the knobs (a computed label, never
-/// stored), so the Settings picker can't contradict the knob values.
-/// Persisted as a JSON blob in `UserDefaults` (see `QualitySettingsStore`)
-/// and delivered to the capture-helper subprocess as environment variables
-/// at spawn time (`helperEnvironment()` / `fromEnvironment(_:)`),
-/// following the `TAILSCREEN_FORCE_H264` precedent — the helper owns the
-/// SCStream + VideoToolbox pipeline, so the main process never touches
-/// encoder state directly.
+/// preference, encoder quality, and an optional bandwidth ceiling. The named
+/// preset is *derived* from the knobs (computed, never stored), so the
+/// Settings picker can't contradict the values. Persisted as JSON in
+/// `UserDefaults` (`QualitySettingsStore`) and delivered to the
+/// capture-helper as spawn-time env vars (`helperEnvironment()` /
+/// `fromEnvironment(_:)`), since the helper owns the SCStream +
+/// VideoToolbox pipeline.
 ///
-/// Mid-share semantics: the bandwidth ceiling live-applies over the
-/// existing `setBitrate` wire message
-/// (`TailscaleScreenShareServer.updateQualityCeiling`); fps cap, codec
-/// preference, and encoder quality are snapshotted per share session and
-/// apply the next time sharing starts.
+/// Mid-share: the bandwidth ceiling live-applies over `setBitrate`
+/// (`TailscaleScreenShareServer.updateQualityCeiling`); the other three
+/// knobs are snapshotted per session and apply next time sharing starts.
 ///
-/// `default` reproduces the pre-settings behavior bit-for-bit: 60 fps,
-/// automatic codec (HEVC with H.264 fallback), 0.7 encoder quality, no
-/// ceiling beyond the encoder's bits-per-pixel formula. Pinned by
+/// `default` reproduces pre-settings behavior bit-for-bit. Pinned by
 /// `QualitySettingsTests`.
 public struct QualitySettings: Codable, Equatable, Sendable {
     /// Which codec the helper's encoder should use. `.auto` tries HEVC
-    /// first and falls back to H.264 — both when VideoToolbox refuses an
-    /// HEVC session and when a viewer reports it can't decode the stream
-    /// (CODEC_NO). `.hevc` is the explicit, no-safety-net variant: the
-    /// encoder ladder drops its H.264 rung and the sharer ignores
-    /// CODEC_NO, so viewers that only decode H.264 simply can't watch —
-    /// Settings states that trade-off next to the picker. `.h264` skips
-    /// HEVC entirely. The manual `TAILSCREEN_FORCE_H264=1` escape hatch
-    /// still overrides every preference (it exists precisely to un-wedge
-    /// a share by hand); the *automatic* CODEC_NO latch is what explicit
-    /// HEVC opts out of. A persisted `"hevc"` blob from the oldest builds
-    /// (which offered the option when it still meant "prefer") now decodes
-    /// as this explicit case — closest to the preference those users
-    /// expressed.
+    /// first, falling back to H.264 on VideoToolbox refusal or a viewer's
+    /// CODEC_NO. `.hevc` is the explicit no-safety-net variant: the sharer
+    /// ignores CODEC_NO, so H.264-only viewers simply can't watch. `.h264`
+    /// skips HEVC entirely. `TAILSCREEN_FORCE_H264=1` still overrides every
+    /// preference. A persisted `"hevc"` blob from oldest builds (when it
+    /// meant "prefer") now decodes as this explicit case.
     public enum CodecPreference: String, CaseIterable, Codable, Sendable {
         case auto
         case hevc
@@ -57,39 +44,25 @@ public struct QualitySettings: Codable, Equatable, Sendable {
     public static let allowedFPSCaps = [15, 30, 60]
 
     /// Bounds for the user bandwidth ceiling. The 1 Mbps lower bound is a
-    /// UX floor (the Settings stepper works in whole Mbps); it is
-    /// deliberately decoupled from the adaptive sweep's absolute floor
-    /// (`TransportTuning.adaptiveFloorMinBps`) but must never sit below
-    /// it — asserted in `QualitySettingsTests`.
+    /// UX floor, decoupled from but never below the adaptive sweep's floor
+    /// (`TransportTuning.adaptiveFloorMinBps`) — asserted in
+    /// `QualitySettingsTests`.
     public static let minCeilingBps = 1_000_000
     public static let maxCeilingBps = 50_000_000
 
     /// Ceiling installed when the user first flips "Limit bandwidth" on.
     public static let initialCeilingBps = 10_000_000
 
-    /// The ceiling that applies when the user has set none — "automatic".
+    /// The ceiling that applies when the user has set none ("automatic").
     ///
-    /// Automatic used to mean *unbounded*: the bits-per-pixel formula alone
-    /// set the rate, and nothing capped what it produced. On an ordinary
-    /// retina display that is not a theoretical concern — a 6016x3384
-    /// capture at 60 fps anchors near 98 Mbps, close to **twice**
-    /// `maxCeilingBps`, which is the most the Settings stepper will let
-    /// anyone ask for. A share helping itself to more than the UI will
-    /// grant on request is wrong on the app's own terms, and the overshoot
-    /// is not confined to the picture: video and voice share one socket
-    /// (`NetworkConfig.tailscreenPort`), so a rate the link cannot carry
-    /// degrades the call as well.
-    ///
-    /// Deliberately equal to `maxCeilingBps` rather than something lower.
-    /// This is the *consistency* bound — automatic must not exceed
-    /// explicit — not a judgement about what a good automatic default
-    /// would be. That distinction keeps the change narrow: nothing at or
-    /// below 4K moves at all (3840x2160 HEVC at 60 anchors near 40 Mbps),
-    /// so only the 5K/6K captures that were the outlier are affected.
-    /// Choosing a genuinely conservative automatic default is a product
-    /// decision with a visible quality cost on links that *can* carry the
-    /// rate; this constant only fixes the part that is indefensible.
-    /// Pinned to `maxCeilingBps` by `QualitySettingsTests`.
+    /// Automatic used to mean unbounded: a 6016x3384 capture at 60fps
+    /// anchors near 98 Mbps, nearly double `maxCeilingBps` — more than the
+    /// UI itself will let anyone request, and video/voice share one socket
+    /// (`NetworkConfig.tailscreenPort`), so the overshoot degrades the call
+    /// too. Equal to `maxCeilingBps` rather than lower: this is a
+    /// consistency bound (automatic ≤ explicit), not a conservative-default
+    /// judgement — nothing at/below 4K is affected. Pinned by
+    /// `QualitySettingsTests`.
     public static let automaticCeilingBps = maxCeilingBps
 
     /// Bounds for `encoderQuality` (`kVTCompressionPropertyKey_Quality`).
@@ -132,12 +105,10 @@ public struct QualitySettings: Codable, Equatable, Sendable {
         case encoderQuality
     }
 
-    /// Decode-with-fallback so an older (or newer) persisted blob never
-    /// fails settings load: every missing or unparseable field degrades to
-    /// its default instead of throwing. An old blob's stored `"preset"`
-    /// key is simply ignored (the preset is derived from the knobs now),
-    /// and a legacy `"hevc"` codec preference decodes as `.auto`.
-    /// `encode(to:)` stays synthesized.
+    /// Decode-with-fallback: every missing or unparseable field degrades to
+    /// its default instead of failing settings load. An old blob's stored
+    /// `"preset"` key is ignored (derived now). `encode(to:)` stays
+    /// synthesized.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         fpsCap = (try? container.decode(Int.self, forKey: .fpsCap)) ?? 60
@@ -161,11 +132,9 @@ public struct QualitySettings: Codable, Equatable, Sendable {
     }
 
     /// Clamp a user bandwidth ceiling to `minCeilingBps…maxCeilingBps` and
-    /// round it to a whole Mbps — the Settings stepper works in integer
-    /// Mbps, so keeping the stored value on the same grid means the
-    /// display needs no fudging. `nil` (automatic) passes through. Shared
-    /// with `TailscaleScreenShareServer.updateQualityCeiling` so the
-    /// live-apply path clamps exactly like persistence does.
+    /// round to a whole Mbps (matching the Settings stepper's grid). `nil`
+    /// passes through. Shared with `updateQualityCeiling` so live-apply
+    /// clamps exactly like persistence.
     public static func normalizedCeiling(_ bps: Int?) -> Int? {
         guard let bps else { return nil }
         let clamped = min(max(bps, minCeilingBps), maxCeilingBps)
@@ -173,28 +142,17 @@ public struct QualitySettings: Codable, Equatable, Sendable {
     }
 
     /// What a bits-per-pixel `anchorBps` actually resolves to: the user's
-    /// explicit ceiling when they set one, else `automaticCeilingBps`.
-    ///
-    /// One function because three places used to spell this out, and they
-    /// have to agree or the encoder and the adaptive sweep aim at different
-    /// rates: the sharer's anchor
-    /// (`TailscaleScreenShareServer.onEncoderResolution`), the live-apply
-    /// path (`updateQualityCeiling`), and the capture helper's own
-    /// `DataRateLimits` clamp. All three wrote `min(anchor, ceiling ??
-    /// anchor)`, which is why "automatic" was unbounded in all three at
-    /// once. An explicit ceiling is already clamped to `maxCeilingBps` by
-    /// `normalizedCeiling`, so the automatic arm is the only one this
-    /// changes.
+    /// explicit ceiling when they set one, else `automaticCeilingBps`. One
+    /// function so the sharer's anchor, the live-apply path, and the
+    /// capture helper's `DataRateLimits` clamp can't drift apart.
     public func cappedBitrate(anchorBps: Int) -> Int {
         min(anchorBps, maxBitrateBps ?? Self.automaticCeilingBps)
     }
 
     // MARK: - Presets
 
-    /// The fixed knob combinations behind the named presets. `balanced`
-    /// is exactly the pre-settings default behavior (pinned by tests);
-    /// `low` trades frame rate, ceiling, and encoder quality for
-    /// bandwidth; `high` spends encoder quality for fidelity.
+    /// The fixed knob combinations behind the named presets. `balanced` is
+    /// the pre-settings default behavior (pinned by tests).
     private static let presetCombos: [Preset: QualitySettings] = [
         .low: QualitySettings(fpsCap: 30, codecPreference: .auto, maxBitrateBps: 3_000_000, encoderQuality: 0.6),
         .balanced: QualitySettings(fpsCap: 60, codecPreference: .auto, maxBitrateBps: nil, encoderQuality: 0.7),
@@ -237,10 +195,10 @@ public struct QualitySettings: Codable, Equatable, Sendable {
 
     // MARK: - Codec resolution
 
-    /// Codec the helper's encoder should try first. `forceH264` is the
-    /// viewer-reported decode-failure latch (`TAILSCREEN_FORCE_H264`) and
-    /// wins over every preference, or a viewer that can't decode HEVC
-    /// would re-black-screen after a helper respawn.
+    /// Codec the helper's encoder should try first. `forceH264` (the
+    /// viewer-reported decode-failure latch) wins over every preference, or
+    /// a viewer that can't decode HEVC would re-black-screen after a
+    /// helper respawn.
     public func preferredVideoCodec(forceH264: Bool) -> VideoCodec {
         if forceH264 { return .h264 }
         switch codecPreference {
@@ -252,8 +210,8 @@ public struct QualitySettings: Codable, Equatable, Sendable {
     // MARK: - Helper environment mapping
 
     /// Env-var names carrying the spawn-time knobs into the capture-helper.
-    /// Env (not the framed `contentFilter` payload) so the wire schema
-    /// stays untouched and a crash-restart respawn reuses the same bytes.
+    /// Env, not the framed `contentFilter` payload, so the wire schema
+    /// stays untouched.
     public static let fpsCapEnvKey = "TAILSCREEN_FPS_CAP"
     public static let codecPrefEnvKey = "TAILSCREEN_CODEC_PREF"
     public static let maxBitrateEnvKey = "TAILSCREEN_MAX_BITRATE"
@@ -297,10 +255,8 @@ public struct QualitySettings: Codable, Equatable, Sendable {
 }
 
 /// Persisted quality settings. Mirrors `ViewerApprovalPreference` — plain
-/// `UserDefaults` so non-SwiftUI call sites (`AppState.init`'s
-/// stored-property initialiser) can read the saved value without going
-/// through `@AppStorage`. The `defaults` parameter exists for tests, which
-/// use a scratch suite instead of `.standard`.
+/// `UserDefaults` so `AppState.init` can read the saved value without
+/// `@AppStorage`. `defaults` exists for tests, which use a scratch suite.
 public enum QualitySettingsStore {
     public static let key = "qualitySettings"
 

@@ -23,20 +23,15 @@ public struct PickerSelection: Codable, Sendable, Equatable {
     /// for single-app, multiple for multi-app.
     public let bundleIDs: [String]
     /// Whether the capture-helper should also configure system-audio capture
-    /// (an `.audio` SCStream output). Non-optional with a custom decoder that
-    /// defaults a *missing* key to `false`, so JSON produced by an older
-    /// picker-helper (which never wrote the field) still decodes. Emission is
-    /// separately gated by the `setAudioEnabled` latch, so this only controls
-    /// whether the output exists.
+    /// (an `.audio` SCStream output). Missing key decodes to `false` so old
+    /// picker-helper JSON still works. Emission is separately gated by the
+    /// `setAudioEnabled` latch; this only controls whether the output exists.
     public let captureAudio: Bool
     /// Cloaked Apps: bundle IDs the capture-helper must exclude from a
     /// `.display` share (`SCContentFilter(display:excludingApplications:…)`).
-    /// Only meaningful for `.display` — window shares capture a single
-    /// window, and an `.application` share's include-list already hides
-    /// everything not picked. The picker never writes this; the sharer's
-    /// main process injects it from the persisted cloak list before spawning
-    /// the helper (like `captureAudio`). Missing key decodes to `[]` so old
-    /// JSON stays valid.
+    /// Only meaningful for `.display`. The picker never writes this; the
+    /// sharer's main process injects it from the persisted cloak list before
+    /// spawning the helper. Missing key decodes to `[]`.
     public let excludedBundleIDs: [String]
 
     public init(
@@ -60,9 +55,8 @@ public struct PickerSelection: Codable, Sendable, Equatable {
     }
 
     /// Custom decode so a missing `captureAudio` / `excludedBundleIDs` key
-    /// (old picker-helper JSON) falls back to `false` / `[]` instead of
-    /// failing. `encode(to:)` stays synthesized — the fields always
-    /// serialize.
+    /// falls back to `false` / `[]` instead of failing. `encode(to:)` stays
+    /// synthesized.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         kind = try container.decode(Kind.self, forKey: .kind)

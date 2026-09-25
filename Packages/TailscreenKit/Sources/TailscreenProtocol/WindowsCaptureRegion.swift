@@ -3,23 +3,15 @@ import Foundation
 /// Works out WHERE a Windows capture target is on screen, when the platform
 /// won't say.
 ///
-/// A WGC `GraphicsCaptureItem` is opaque: it has a size and a display name and
-/// no HMONITOR or HWND. That is fine for capturing — the item is its own
-/// handle — and fatal for remote control, which has to turn a viewer's
-/// normalized `[0, 1]` coordinate into a screen pixel and therefore needs the
-/// target's rect.
+/// A WGC `GraphicsCaptureItem` is opaque: it has a size and a display name
+/// but no HMONITOR or HWND — fine for capturing, fatal for remote control,
+/// which needs to turn a normalized `[0, 1]` coordinate into a screen pixel.
 ///
-/// The only signal available is the item's size, matched against the
-/// enumerated monitors. That works, with one important limit, and the limit is
-/// what most of this type is about: **two monitors of the same resolution are
-/// indistinguishable this way.** A dual 1920×1080 desk is not an exotic
-/// configuration, so this case is common and must be handled, not hoped past.
-///
-/// The rule is therefore *unique match or nothing*. An ambiguous answer
-/// returns `nil` and the host declines to offer remote control, because a
-/// click landing on the wrong monitor is worse than a click that does not
-/// happen — the viewer aimed at something they could see, and it went
-/// somewhere they could not.
+/// The only signal is the item's size, matched against enumerated monitors.
+/// **Two monitors of the same resolution are indistinguishable this way** —
+/// a dual 1920×1080 desk is common, not exotic — so the rule is *unique
+/// match or nothing*: an ambiguous answer declines remote control rather
+/// than risk a click landing on the wrong monitor.
 ///
 /// No Win32 here, so Linux CI runs the tests.
 public enum WindowsCaptureRegion {
@@ -66,10 +58,8 @@ public enum WindowsCaptureRegion {
         let matches = monitors.filter { $0.width == itemWidth && $0.height == itemHeight }
         switch matches.count {
         case 0:
-            // Not a lost display — a window. A window share's size only
-            // coincidentally equals a monitor's, and when it does (a
-            // fullscreen window) the rect is the same anyway, so treating that
-            // as a display match is harmless rather than wrong.
+            // Not a lost display — a window. A fullscreen window's size
+            // coincidentally matching a monitor's is harmless, not wrong.
             return .failure(.notADisplay)
         case 1:
             guard let match = matches.first else { return .failure(.unknownGeometry) }

@@ -1,9 +1,8 @@
 import Foundation
 
 // Codec-level wire types + encoder tuning constants, in their own file (not
-// VideoEncoder.swift) because they are part of the platform-portable
-// TailscreenProtocol set — see Packages/TailscreenKit/README.md. Nothing
-// here may import an Apple framework.
+// VideoEncoder.swift) since they're part of the platform-portable
+// TailscreenProtocol set. Nothing here may import an Apple framework.
 
 /// Codec used on the wire. The sharer picks at startup (preferring HEVC
 /// when the host's VideoToolbox HW encoder accepts it); the viewer learns
@@ -48,11 +47,10 @@ public enum EncoderTuning {
     /// `DataRateLimits`: window length in seconds.
     public static let dataRateWindowSeconds = 0.5
 
-    /// Default bits-per-pixel used to derive a target bitrate from the
-    /// captured resolution when no explicit ceiling is set. HEVC's better
-    /// compression earns a lower budget for equivalent quality. A pure
-    /// codec→bpp mapping (no VideoToolbox dependency), so it lives in the
-    /// portable tuning layer and a non-mac encoder adapter reuses it.
+    /// Default bits-per-pixel used to derive a target bitrate when no
+    /// explicit ceiling is set. HEVC's better compression earns a lower
+    /// budget for equivalent quality. Pure codec→bpp mapping, no VideoToolbox
+    /// dependency, so a non-mac encoder adapter reuses it.
     public static func defaultBitsPerPixel(for codec: VideoCodec) -> Double {
         switch codec {
         case .hevc: return 0.08
@@ -61,9 +59,8 @@ public enum EncoderTuning {
     }
 
     /// Target bitrate for a resolution/frame-rate at a given bits-per-pixel
-    /// budget. Pure arithmetic with no encoder dependency, so the sharer's
-    /// adaptive-bitrate anchor can compute it without knowing which encoder
-    /// backend is downstream.
+    /// budget. Pure arithmetic, so the adaptive-bitrate anchor can compute
+    /// it without knowing which encoder backend is downstream.
     public static func computeBitrate(width: Int, height: Int, fps: Int, bitsPerPixel: Double) -> Int {
         Int(Double(width * height) * bitsPerPixel * Double(fps))
     }
