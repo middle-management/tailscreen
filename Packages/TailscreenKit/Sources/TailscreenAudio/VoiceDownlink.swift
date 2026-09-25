@@ -167,12 +167,14 @@ public final class VoiceDownlink: @unchecked Sendable {
         return stats
     }
 
-    /// Close the window if it is due and return the row to record, or nil.
+    /// Close the window if it is due and return the row to record — **empty
+    /// when there is none**, which `audioSummaryFields` never produces, so
+    /// the two are not confusable.
     ///
     /// Called with the lock held; the caller records **outside** it, for the
     /// same reason `ingest` hands its frames out before invoking the sink.
-    private func audioSummaryRowLocked(nowNs: UInt64) -> [String: DiagnosticValue]? {
-        guard let windowNs = summarySampler.windowClosed(nowNs: nowNs) else { return nil }
+    private func audioSummaryRowLocked(nowNs: UInt64) -> [String: DiagnosticValue] {
+        guard let windowNs = summarySampler.windowClosed(nowNs: nowNs) else { return [:] }
         let context = VoiceStats.PlaybackContext(
             voiceStreams: voiceSSRCsThisWindow.count,
             systemAudioPlaying: systemAudioThisWindow,
@@ -182,7 +184,7 @@ public final class VoiceDownlink: @unchecked Sendable {
             playbackQueueTracked: false)
         voiceSSRCsThisWindow.removeAll(keepingCapacity: true)
         systemAudioThisWindow = false
-        guard VoiceStats.shouldRecordSummary(context: context) else { return nil }
+        guard VoiceStats.shouldRecordSummary(context: context) else { return [:] }
         let snapshot = statsSnapshot
         let previous = lastSummaryStats
         lastSummaryStats = snapshot
@@ -207,7 +209,7 @@ public final class VoiceDownlink: @unchecked Sendable {
     public func ingest(_ packet: Data, nowNs: UInt64? = nil) {
         let now = nowNs ?? Self.monotonicNowNs()
         let (sink, frames, summary) = lock.withLock {
-            () -> ((([Float]) -> Void)?, [[Float]], [String: DiagnosticValue]?) in
+            () -> ((([Float]) -> Void)?, [[Float]], [String: DiagnosticValue]) in
             guard let parsed = depacketizer.unpack(packet) else {
                 return (nil, [], audioSummaryRowLocked(nowNs: now))
             }
@@ -217,7 +219,7 @@ public final class VoiceDownlink: @unchecked Sendable {
             var out: [Emission] = []
             switch VoiceReceiveDecisions.audioRoute(payloadType: parsed.payloadType) {
             case .drop:
-                return (nil, [], nil)  // Unreachable — `unpack` admits only PT 98/99 — but total.
+                return (nil, [], [:])  // Unreachable — `unpack` admits only PT 98/99 — but total.
             case .systemAudio:
                 systemAudioThisWindow = true
                 ingestSystemAudio(parsed, nowNs: now, into: &out)
@@ -232,7 +234,7 @@ public final class VoiceDownlink: @unchecked Sendable {
             // its own lock, and nesting the two is how a deadlock gets built.
             return (pcmSink, mixed, audioSummaryRowLocked(nowNs: now))
         }
-        if let summary {
+        if !summary.isEmpty {
             DiagnosticsCenter.shared.recorder?.record(.audioSummary, fields: summary)
         }
         guard let sink else { return }
