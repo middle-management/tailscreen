@@ -10,21 +10,21 @@ permalink: /platform-support/
 1. TOC
 {:toc}
 
-What works where. macOS is the reference implementation; Linux and Windows are
-newer and deliberately incomplete in places. **Browser** is the fourth
-column: a page, not an app — it only *views*, only as a guest (by the web
+What works where. macOS is the reference implementation; Linux and Windows
+are newer and deliberately incomplete in places. **Browser** is the fourth
+column: a page, not an app — it only *views*, only as a guest (via the web
 form of a share link), and every byte to it is relayed, since a browser
-cannot hole-punch. The mechanics are in `plans/browser-viewer.md`.
+can't hole-punch. Mechanics: `plans/browser-viewer.md`.
 
-This page doubles as the **alignment scoreboard**: every ⚠️ and ❌ below is
-either a gap worth closing or a decision worth writing down. The order to
-close them in — and which ones are deliberate divergences rather than debt —
-is `plans/platform-alignment.md`.
+This page also serves as the **alignment scoreboard** — every ⚠️ and ❌ is
+either a gap worth closing or a decision worth writing down; the priority
+order, and which gaps are deliberate divergences rather than debt, is in
+`plans/platform-alignment.md`.
 
-**Rows track `main`, not open pull requests.** A row is ✅ only when the
-thing works for somebody who installed the app — the code is merged *and*
-the product consumes it, not merely the backend. And a ⚠️ row's note says
-what the partial case *is*, because that is the part a reader can act on.
+**Rows track `main`, not open pull requests.** ✅ means the thing works for
+someone who installed the app — merged *and* consumed by the product, not
+just the backend. A ⚠️ row's note says what the partial case *is*, because
+that's the part a reader can act on.
 
 ## Legend
 
@@ -57,52 +57,48 @@ what the partial case *is*, because that is the part a reader can act on.
 | Guests draw + request control (same capability gates as tailnet viewers) | ✅ | ✅ | ✅ | ✅ |
 | `tailscreen:` link opens the app | ✅ | ✅ AppImage/Flatpak¹ | ✅ MSIX² | ⚠️ the web link opens the page; `tailscreen:` needs an app |
 
-³ Browsers refuse to play audio until the page has been clicked; the
-**Enable Audio** button is that click. ⁴ In a browser, **Join** means opening
-the **web link** (`https://tailscreen.dev/view/#tc…`, from **Copy Web
-Link** on any of the three apps' share cards) — or
-opening the page bare and pasting any form of the link, or the bare
-token, into its join field, the apps' join sheet as a page. Either way the
-token rides the URL fragment, so it never reaches the server hosting the
-page. Everything the browser receives is DERP-relayed — fine on a
-self-hosted relay, not on the free ones at screen-share bitrate.
+³ Browsers refuse to play audio until the page is clicked; **Enable Audio**
+is that click. ⁴ **Join** in a browser means opening the **web link**
+(`https://tailscreen.dev/view/#tc…`, from **Copy Web Link** on any app's
+share card), or opening the page bare and pasting the link or bare token
+into its join field — either way the token rides the URL fragment, so it
+never reaches the server hosting the page. Everything the browser receives
+is DERP-relayed — fine on a self-hosted relay, not the free ones at
+screen-share bitrate.
 
-¹ Link clicks reach the Linux app once a `.desktop` entry registering the
-`tailscreen` scheme is installed — the Flatpak exports one at install, an
-AppImage only after desktop integration (e.g. AppImageLauncher or Gear
-Lever); a bare binary or tarball run registers nothing, and there the join
-card and `tailscreen --join <link>` are the way in. ² On Windows the MSIX
-declares the scheme, so the packaged install handles clicks; the zip build
+¹ Link clicks reach the Linux app once a `.desktop` entry registers the
+`tailscreen` scheme — the Flatpak exports one at install, an AppImage only
+after desktop integration (e.g. AppImageLauncher, Gear Lever); a bare
+binary or tarball registers nothing, so there the join card and
+`tailscreen --join <link>` are the way in. ² On Windows the MSIX declares
+the scheme, so the packaged install handles clicks; the zip build
 registers nothing.
 
-The two colour rows are independent, and the viewing one is why a mac
-sharer's 10-bit setting can quietly do nothing: viewers advertise whether
-they can decode 10-bit in their `HELLO`, and a share holds itself at 8-bit
-for everyone while any viewer that can't is watching. The libavcodec viewers
-can't yet, so a mac→Linux or mac→Windows share is 8-bit even with the
-sharer's toggle on — correct colour and correct pictures, just not the extra
-two bits.
+The two colour rows are independent — the viewing one is why a Mac
+sharer's 10-bit toggle can quietly do nothing: viewers advertise 10-bit
+decode support in `HELLO`, and a share holds itself at 8-bit while any
+connected viewer can't decode it. libavcodec viewers can't yet, so a
+Mac→Linux or Mac→Windows share stays 8-bit even with the toggle on —
+correct colour, just not the extra two bits.
 
-The Linux share card offers two doors: the primary button shares a screen,
-and a second — **"Share a window or app"**, present only when a desktop
-portal exists — asks the portal for a window instead. The portal draws its
-own picker (the compositor is the thing that knows which windows exist and
-which ones this person may see), and the button is *absent* rather than
-greyed on portal-less setups, because sharing one window is a capability an
-X11-only desktop genuinely lacks; a window selection is never silently
-widened to the whole screen.
+The Linux share card offers two doors: the primary button shares a screen;
+a second — **"Share a window or app"**, present only with a desktop
+portal — asks the portal for a window, drawing its own picker since the
+compositor is what knows which windows exist and which this person may
+see. The button is *absent*, not greyed, without a portal: sharing one
+window is a capability an X11-only desktop genuinely lacks, and a window
+selection is never silently widened to the whole screen.
 
 **Wayland sharing works too.** The sharer picks its backend from the
-session kind — `XDG_SESSION_TYPE`, never `$DISPLAY`, which XWayland sets
-on Wayland desktops too. An X11 session keeps direct
-root capture; a Wayland session negotiates the ScreenCast portal
-(`PortalCaptureKit` + `TailscreenSharerPortal`, PipeWire frames into the
-same BGRAToI420 → libavcodec seam as X11 and WGC), which begins with the
-compositor's consent dialog; a Wayland session with no portal refuses
-rather than falling back to the capture that would appear to work. One
-honest limit: the annotation overlay and XTEST injection are X11
-machinery, so those extras are at their best on an X11 session — the
-Wayland-native equivalents are future work.
+session kind — `XDG_SESSION_TYPE`, never `$DISPLAY`, which XWayland also
+sets on Wayland. X11 keeps direct root capture; Wayland negotiates the
+ScreenCast portal (`PortalCaptureKit` + `TailscreenSharerPortal`, PipeWire
+frames into the same BGRAToI420 → libavcodec seam as X11 and WGC),
+starting with the compositor's consent dialog. A Wayland session with no
+portal refuses rather than falling back to a capture that would only
+appear to work. One honest limit: the annotation overlay and XTEST
+injection are X11 machinery, so those extras work best there — Wayland
+equivalents are future work.
 
 ## Audio
 
@@ -114,12 +110,12 @@ Wayland-native equivalents are future work.
 | Playback backend | AVAudioEngine | ALSA | WASAPI | WebCodecs + Web Audio |
 | Capture backend | VoiceProcessingIO | ALSA | WASAPI | — |
 
-Voice now runs both directions on every platform: one portable voice path
+Voice runs both directions on every platform through one portable path
 (`ThreadedMicrophone` + `BlockingPCMSource` over the shared Opus
-encoder/decoder), with ALSA and WASAPI capture behind the same seam. What
-remains is **computer-audio capture** — the Share System Audio button is
-macOS-only, because only ScreenCaptureKit hands the capture pipeline the
-system's own output; viewers on every platform play it back.
+encoder/decoder), ALSA and WASAPI capture behind the same seam. What
+remains is **computer-audio capture**: macOS-only, since only
+ScreenCaptureKit hands the capture pipeline the system's own output.
+Viewers on every platform can still play it back.
 
 ## Interaction
 
@@ -138,35 +134,33 @@ system's own output; viewers on every platform play it back.
 | Detects a vanished sharer (timeout / dead socket) | ✅ | ✅ | ✅ | ⚠️ on connection close only |
 | Cancel while waiting for approval | ✅ | ✅ | ✅ | ⚠️ close the tab |
 
-Every row except the revoke hotkey is closed on all three platforms.
-Closing them was mostly wiring: the protocol, the grant gate, the
-coordinate mapping and the neutral key model were all portable and already
-tested, so what was missing each time was the host call rather than a
-capability.
+Every row but the revoke hotkey is closed on all three platforms — mostly
+wiring, since the protocol, grant gate, coordinate mapping and neutral key
+model were already portable and tested; what was missing was the host
+call, not a capability.
 
 Three specifics worth knowing:
 
-- **The Linux sharer's ✅ has a condition: the session must be composited.**
-  The overlay is an ARGB window, and on uncomposited X11 there is no per-pixel
-  alpha — what should be transparent paints as opaque black, so the "overlay"
-  would be a black rectangle over the sharer's whole screen. It therefore
-  refuses to exist there, and the capability bit is withheld with it, so
-  viewers see disabled drawing tools rather than strokes reaching nobody. Every
-  mainstream desktop composites; headless and bare-X setups don't. (The bit is
-  always *derived* from something the host actually has, never defaulted on.)
-- **The Linux sharer injects through XTEST, which is an optional X11
-  extension.** Without it every call succeeds and injects nothing, so its
-  presence is probed at open and the capability is withheld when absent —
-  viewers aren't offered Request Control rather than being granted control
-  whose clicks vanish. The headless sharer additionally defaults control off
-  behind `--allow-control`: an unattended process shouldn't invite a peer to
-  take the pointer merely because it can.
-- **Windows gates control and annotations on resolving the capture item's screen
-  rect.** A WGC `GraphicsCaptureItem` carries no HMONITOR, so its size is matched
-  against the enumerated monitors; a *window* capture, or two identical monitors,
-  declines rather than guessing. That's deliberate — a click landing on a screen
-  the viewer can't see is worse than no click — but it means both features can be
-  correctly absent on a working share.
+- **The Linux sharer's ✅ needs a composited session.** The overlay is an
+  ARGB window; on uncomposited X11 there's no per-pixel alpha, so what
+  should be transparent paints as opaque black — a black rectangle over
+  the whole screen. It refuses to exist there, withholding the capability
+  bit too, so viewers see disabled drawing tools rather than strokes
+  reaching nobody. Every mainstream desktop composites; headless and
+  bare-X setups don't.
+- **The Linux sharer injects through XTEST, an optional X11 extension.**
+  Without it, calls succeed but inject nothing, so presence is probed at
+  open and the capability withheld when absent — viewers aren't offered
+  Request Control rather than granted control whose clicks vanish. The
+  headless sharer also defaults control off behind `--allow-control`: an
+  unattended process shouldn't invite a peer to take the pointer just
+  because it can.
+- **Windows gates control and annotations on resolving the capture item's
+  screen rect.** A WGC `GraphicsCaptureItem` carries no HMONITOR, so its
+  size is matched against enumerated monitors; a *window* capture, or two
+  identical monitors, declines rather than guesses — a click landing on a
+  screen the viewer can't see is worse than no click, but it means both
+  features can be correctly absent on a working share.
 
 ## Access control
 
@@ -177,26 +171,24 @@ Three specifics worth knowing:
 | Kick a connected viewer | ✅ | ✅ | ✅ | — |
 | Ask a peer to share their screen | ✅ | ✅ | ✅ | — |
 
-All of it comes from shared code: the approval gate, the decision logic and
-the StableNodeID-keyed intent queue live in the portable tier
+All of it is shared code: the approval gate, decision logic and the
+StableNodeID-keyed intent queue live in the portable tier
 (`ViewerRosterDecision` + `SharerAccessCoordinator`), and the hub renders
 one viewer-row component on every host. (The server's own default is
 approval *off* — right for a headless automation sharer; every app host
 turns it on.)
 
-Two things behind the ✅s are worth knowing:
-
-- **A remember decision can land a moment after you make it.** The store is
-  keyed by Tailscale StableNodeID — never a hostname, which the peer supplies
-  and could therefore choose — and that ID arrives from the sharer's own netmap
-  lookup a beat after the connection does. A decision made before then is
-  queued rather than dropped, and the row says so instead of looking unpressed.
-- **Being askable requires listening while idle**, which is the part that was
-  actually missing for "Ask a peer to share". A request arrives exactly when a
-  machine is *not* sharing, so a listener that lives only as long as a share
-  answers nothing — and to the asker that is indistinguishable from the peer
-  being away. Accepting also waives the approval gate for that peer, or the
-  person you just invited arrives at your own gate and is asked to wait.
+Two things behind the ✅s are worth knowing: a remember decision can land a
+moment after you make it — the store is keyed by Tailscale StableNodeID,
+never a peer-supplied hostname, and that ID arrives from the sharer's own
+netmap lookup a beat after the connection does, so a decision made before
+then is queued rather than dropped, and the row says so instead of looking
+unpressed. And being askable requires listening while idle — the part
+actually missing for "Ask a peer to share": a request arrives exactly when
+a machine is *not* sharing, so a listener that lives only as long as a
+share answers nothing, indistinguishable to the asker from the peer being
+away. Accepting also waives the approval gate for that peer — otherwise
+the person you just invited hits your own gate and waits.
 
 ## The hub
 
@@ -220,105 +212,98 @@ Two things behind the ✅s are worth knowing:
 | Global hotkeys (mute, revoke control) | ✅ remappable | ⚠️ mute only | ⚠️ mute only | — |
 | Told when a hotkey couldn't be registered | ✅ Settings | ✅ share card | ✅ share card | — |
 
-Linux and Windows share their chrome (`Packages/TailscreenHubUI`), so hub work
-lands on both at once — which is why that block is the most aligned of the five.
-They now share their *strings* too: one catalog (`Packages/TailscreenL10n`)
-backs all three apps, so a string translated for macOS is translated for the
-other two, and adding a language is dropping one `<lang>.lproj` into that
-package. Force one with `TAILSCREEN_LANG=sv` to check your work.
-The peer-detail pane and the share card's quality menu are that principle in
-action: one component each (`HubQualityMenu`), serving both hosts, backed by
-the same portable `QualitySettings` model and `PeerRoute`/latency
-classifications the macOS hub uses.
+Linux and Windows share their chrome (`Packages/TailscreenHubUI`) — the
+most aligned block of the five — and their *strings*: one catalog
+(`Packages/TailscreenL10n`) backs all three apps, so a string translated
+for macOS is translated for the other two, and adding a language means
+dropping one `<lang>.lproj` into that package (force one with
+`TAILSCREEN_LANG=sv` to check your work). The peer-detail pane and the
+share card's quality menu follow the same pattern: one component each
+(`HubQualityMenu`), backed by the shared portable `QualitySettings` model.
 
-The last block is about *where the sharing controls live*. On macOS the live
-share's card — preview, mute, draw, approve a viewer, the link, stop — renders
-in the window *and* in the menubar item, out of the same components, so you can
-mute, draw, approve a viewer and stop without the window ever coming forward.
-Linux and Windows have the same card, but only in the window — which during a
-share is behind the thing you're sharing, and raising it is itself visible to
-your viewers. Every mid-share action costs an interruption the audience can see.
+The last block is about *where the sharing controls live*. On macOS the
+live share's card — preview, mute, draw, approve a viewer, the link,
+stop — renders in the window *and* the menubar item, so you can mute,
+draw, approve a viewer or stop without the window ever coming forward.
+Linux and Windows have the same card, but only in the window — which
+during a share sits behind the thing you're sharing, so raising it is
+itself visible to your viewers, and every mid-share action costs an
+interruption the audience can see.
 
-**Notifications are the most uneven block.** They matter because approval
-defaults *on*: a sharer who isn't watching the window silently strands
-whoever tries to connect. All three platforms post, and the *decisions*
-behind them — what to say, when, when to take it back — are one shared,
-tested layer, so they can't drift apart. Every ask carries Accept / Deny you answer without
-leaving what you're doing, the two that strand somebody mid-share break through
-Do Not Disturb and the reports don't, and nothing dings while a share is
-running, because a notification sound is played by another process and would go
-out with your shared system audio. What differs is what each platform can
-actually deliver:
+**Notifications are the most uneven block**, because approval defaults
+*on*: a sharer not watching the window silently strands whoever tries to
+connect. All three platforms post, and the *decisions* behind them — what
+to say, when, when to take it back — are one shared, tested layer. Every
+ask carries Accept/Deny answerable without leaving what you're doing; the
+two that strand somebody mid-share break through Do Not Disturb (the
+reports don't); nothing dings during a share, since a sound would go out
+with your shared system audio. What differs is what each platform can
+deliver:
 
-- **macOS** breaks through Focus for the two mid-share asks, reads back whether
-  you've turned notifications off, and takes a banner down again once you
-  answer in the app — an Accept that could only be a no-op reads as a broken
-  button rather than a stale one. Needs the bundled app: `make run` output has
-  no bundle id, and posts nothing at all.
-- **Linux** posts over `org.freedesktop.Notifications`. A daemon that can't
-  render buttons is asked first, the wording changes to say where to answer
-  instead, and the share card says so too — the same "degrades and says so"
-  rule the Windows zip build follows.
-- **Windows** posts the same set through the Windows App SDK — but only when
-  the app can register with the notification platform, which today means the
-  **MSIX**. The zip ships a self-contained runtime that deliberately omits the
-  package those APIs need, so it degrades to in-window prompts and *says so on
-  the share card* rather than going quiet. The buttons and the press that comes
-  back are wired, and are the one part of this no CI anywhere can verify:
-  nothing in the project posts a Windows toast that a machine then observes.
+- **macOS** breaks through Focus for the two mid-share asks, reads back
+  whether notifications are off, and clears a banner once you answer in
+  the app — needs the bundled app (`make run` output has no bundle id and
+  posts nothing).
+- **Linux** posts over `org.freedesktop.Notifications`. A daemon that
+  can't render buttons is asked first; the wording then says where to
+  answer instead, and the share card says so too — the same "degrades and
+  says so" rule Windows' zip build follows.
+- **Windows** posts through the Windows App SDK, but only when the app can
+  register with the notification platform — today, the **MSIX**. The zip
+  ships a self-contained runtime that omits the package those APIs need,
+  so it degrades to in-window prompts and says so on the share card. The
+  buttons are wired, but posting and observing a real Windows toast is the
+  one part no CI can verify.
 
 **"Am I still sharing?" is a different question, and an outline answers it
-better than an icon.** A border drawn around the captured region says what a
-status glyph can't: not that a share is running somewhere, but that *this* is
-what viewers can see. macOS draws one for every share kind. Linux paints one
-under the annotations overlay for X11 display shares only: the portal hands
-back a stream size but no position on screen, so a portal share gets no
-indicator rather than a border around the wrong region. Windows didn't have
-to build one — WGC draws its own capture border unless an app opts out, and ours
-doesn't (still unconfirmed on a real desktop).
+better than an icon** — a border around the captured region says not that
+a share is running somewhere, but that *this* is what viewers can see.
+macOS draws one for every share kind. Linux paints one under the
+annotations overlay, but only for X11 display shares: the portal hands
+back a stream size but no on-screen position, so a portal share gets no
+indicator rather than a border around the wrong region. Windows didn't
+need to build one — WGC draws its own capture border unless an app opts
+out, and ours doesn't (unconfirmed on a real desktop).
 
-The capabilities behind the remaining rows now exist everywhere — microphone
-capture and the click-taking sharer overlay both landed — so what's left
-really is the *surface*: a way to toggle drawing, and a revoke hotkey,
-without raising the window over the thing being shared. The mute hotkey shows
-the shape those will take.
-
-swift-cross-ui offers nothing for any of this, so each surface needs a platform
-shim. The plan — including why notifications come first, why a tray icon was
-considered and dropped, and why the outline is nearly free on two of the three
-platforms — is in
+What's left is the *surface*: a way to toggle drawing, and a revoke
+hotkey, without raising the window over the thing being shared — the
+capabilities behind them (microphone capture, the click-taking sharer
+overlay) already exist everywhere. The mute hotkey shows the shape those
+will take. swift-cross-ui offers nothing for any of this, so each needs a
+platform shim; the plan is in
 [`plans/sharer-surfaces.md`](https://github.com/middle-management/tailscreen/blob/main/plans/sharer-surfaces.md).
 
 ## Transport and resilience
 
-Everything here is in the portable core and identical on all three platforms,
-because none of it touches the OS (the mechanics are on the
-[Network Protocol]({{ site.baseurl }}{% link protocol.md %}) page):
+Everything here is in the portable core and identical on all three
+platforms, since none of it touches the OS (mechanics:
+[Network Protocol]({{ site.baseurl }}{% link protocol.md %})):
 
-NACK retransmission · XOR FEC · receiver reports · congestion control and the
-fps ladder · adaptive bitrate · per-viewer fairness · reorder/jitter buffering ·
-keyframe request (PLI) · idle sweep · the codec fallback ladder · the
-decode-failure escalation ladder (keyframe request → decoder reset → a
-user-visible stall error).
+NACK retransmission · XOR FEC · receiver reports · congestion control and
+the fps ladder · adaptive bitrate · per-viewer fairness · reorder/jitter
+buffering · keyframe request (PLI) · idle sweep · the codec fallback
+ladder · the decode-failure escalation ladder (keyframe request → decoder
+reset → a user-visible stall error).
 
 Voice has its own resilience layer on the same terms — packet-loss
-concealment, per-speaker jitter buffering, a cooldown on a failing decoder,
-a sweep that retires quiet speakers — and all three platforms run the same
-decisions. Several people talking at once are summed into one stream on the
-way to the speaker, so a sharer hearing two viewers, or a viewer hearing the
-sharer and another viewer, hears them together rather than in alternating
-20 ms slices.
+concealment, per-speaker jitter buffering, a cooldown on a failing
+decoder, a sweep that retires quiet speakers — run identically on all
+three platforms. Several people talking at once are summed into one
+stream, so a sharer hearing two viewers, or a viewer hearing the sharer
+and another viewer, hears them together rather than in alternating 20 ms
+slices.
 
-That is the point of the split: a bug fixed in the loss-recovery path is fixed
-everywhere, and the platform code stays down to capture, encode, decode, render,
-audio I/O and input injection.
+That's the point of the split: a bug fixed in loss recovery is fixed
+everywhere, and platform code stays down to capture, encode, decode,
+render, audio I/O and input injection.
 
 ## Diagnostics
 
-Recording a session — handshakes, admission decisions, user actions, active
-views, failures — and exporting it as a file you can send to whoever is
-helping. Two sides' files merge into one ordered timeline, with the clock
-difference between the machines solved from the handshake itself. See
+Recording a session — handshakes, admission decisions, user actions,
+active views, failures — and exporting it as a file you can send to
+whoever is helping. Two sides' files merge into one ordered timeline, with
+the clock difference between the machines solved from the handshake
+itself. See
 [Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}#recording-diagnostics).
 
 | | macOS | Linux | Windows | Browser |
@@ -331,17 +316,15 @@ difference between the machines solved from the handshake itself. See
 | Export to a file | ✅ Settings → Diagnostics | ❌ | ❌ | — |
 | Merge two recordings into one timeline | ✅ Settings → Diagnostics | ❌ | ❌ | — |
 
-The **protocol half** is in the portable core, so all three platforms record
-handshakes, admission decisions and the package's own log lines identically —
-that is the half two bundles are merged on, and it works between any pair of
-platforms.
+The **protocol half** is in the portable core, so all three platforms
+record handshakes, admission decisions and log lines identically — the
+half two bundles merge on, working between any pair of platforms.
 
-The **app half** is macOS-only so far: which button a person pressed, which
-screen was in front of them, and which failures were shown to them are
-instrumented in the macOS app and nowhere else yet. So a Linux or Windows
-bundle explains what the connection did but not what the person did, and
-there is no export button on those platforms — both are tracked as follow-up
-work.
+The **app half** is macOS-only so far: which button was pressed, which
+screen was in front of the user, and which failures were shown are
+instrumented only in the macOS app. A Linux or Windows bundle explains
+what the connection did but not what the person did, and there's no export
+button on those platforms yet — both are follow-up work.
 
 ## Distribution
 
@@ -352,8 +335,8 @@ work.
 | Package manager | Homebrew cask | ❌ (casks are macOS-only; Flatpak unpublished) | ❌ winget pending | — |
 | Formats | `.app` zip | AppImage, tarball | zip, MSIX | hosted page, single-file HTML |
 
-Windows signing is blocked on registering with SignPath's free OSS tier; until
-then the MSIX installs only after its certificate is trusted — each release
-ships the cert's public `.cer` beside it, and
+Windows signing is blocked on registering with SignPath's free OSS tier;
+until then the MSIX installs only after its certificate is trusted — each
+release ships the cert's public `.cer` beside it, and
 [Install]({{ site.baseurl }}{% link install.md %}#installing-the-msix-trusting-the-certificate)
-documents the one-time trust — while the zip needs no trust step at all.
+covers the one-time trust. The zip needs no trust step.

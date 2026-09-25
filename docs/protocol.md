@@ -11,24 +11,22 @@ has_children: true
 1. TOC
 {:toc}
 
-This page explains how the protocol works and why it is shaped this way. The
-normative definition — every MUST and MUST NOT, with stable requirement
-identifiers and a machine-readable conformance suite behind them — is the
-[Wire Protocol Specification]({{ site.baseurl }}{% link spec.md %}). Where the
+This page explains how the protocol works and why. The normative
+definition — every MUST and MUST NOT, with stable requirement IDs and a
+machine-readable conformance suite — is the
+[Wire Protocol Specification]({{ site.baseurl }}{% link spec.md %}); where the
 two disagree, the specification wins.
 
-Tailscreen uses **one port — `7447` — on both TCP and UDP**, and that's it.
-All traffic rides over the tailnet's WireGuard tunnel, so anything you read
-below is happening inside an authenticated, encrypted pipe. "Tailnet" rather
-than "Tailscale" throughout: the protocol leans on the mesh for peer identity
-and discovery as much as for encryption, and a self-hosted
-[headscale]({{ site.baseurl }}{% link self-hosted.md %}) control plane supplies
-all of it just as the hosted service does.
+Tailscreen uses **one port — `7447` — on both TCP and UDP**. All traffic rides
+the tailnet's WireGuard tunnel, so everything below happens inside an
+authenticated, encrypted pipe. "Tailnet" rather than "Tailscale" throughout:
+a self-hosted [headscale]({{ site.baseurl }}{% link self-hosted.md %}) control
+plane supplies the same peer identity, discovery, and encryption as the
+hosted service.
 
 `7447` is a *provisional* default, not an IANA-registered assignment. Nothing
 negotiates or discovers it, so peers on different numbers simply don't find
-each other — which is why it reads as fixed in practice. It is still free to
-move, and for that reason the literal lives once in the code, in
+each other. It's still free to move, so the literal lives once in code, in
 `NetworkConfig.tailscreenPort`.
 
 | Channel        | Transport | Purpose                                                              |
@@ -47,51 +45,47 @@ move, and for that reason the literal lives once in the code, in
 NAL units packetized per RFC 6184 (H.264) and RFC 7798 (HEVC) on top of
 RFC 3550 RTP.
 
-Four things worth calling out:
-
-**Two codecs, picked by the sharer, told to the viewer via the RTP
-payload type.** The sharer tries HEVC first and falls back to H.264 if
-VideoToolbox refuses (mostly Intel Macs without HW HEVC). The codec is
-signalled on every packet by the payload type:
+**Two codecs, picked by the sharer, told to the viewer via the RTP payload
+type.** The sharer tries HEVC first and falls back to H.264 if VideoToolbox
+refuses (mostly Intel Macs without HW HEVC). The codec is signalled on every
+packet by the payload type:
 
 - `96` — H.264
 - `97` — HEVC
 
-The viewer demuxes from the payload type and configures the decoder on
-the fly. There's no SDP, no handshake, no separate "codec announce"
-message; the bytes on the wire are self-describing. HEVC is the default
-because on screen content (flat regions, sharp edges, repeated text
-glyphs) it's roughly 30% more efficient than H.264 at the same visual
-quality — which matters on a bandwidth-constrained Wi-Fi link.
+The viewer demuxes from the payload type and configures the decoder on the
+fly — no SDP, no handshake, no separate "codec announce"; the bytes on the
+wire are self-describing. HEVC is the default because on screen content
+(flat regions, sharp edges, repeated text glyphs) it's roughly 30% more
+efficient than H.264 at the same visual quality, which matters on a
+bandwidth-constrained Wi-Fi link.
 
 **Parameter sets go in-band, on every keyframe.** SPS+PPS for H.264;
-VPS+SPS+PPS for HEVC. Most RTP H.264 implementations put parameter sets
-in out-of-band SDP — we don't have one, and viewers can connect at any
-time, so the parameter sets ship with every keyframe instead. Cost: a
-few hundred bytes per keyframe. Benefit: a viewer that connects
-mid-stream sees pixels in under a second, no handshake.
+VPS+SPS+PPS for HEVC. Most RTP H.264 implementations put parameter sets in
+out-of-band SDP — we don't have one, and viewers can connect at any time, so
+the parameter sets ship with every keyframe instead. Cost: a few hundred
+bytes per keyframe. Benefit: a viewer that connects mid-stream sees pixels
+in under a second, no handshake.
 
-**Color rides in-band too.** The encoder writes the color primaries,
-transfer function, matrix, and bit depth into the SPS VUI, and the viewer
-reads them back onto the decoded buffers and its Metal layer — so wide
-color needs no protocol change at all. By default the sharer tags
-BT.709, or Display P3 when capturing a wide-gamut display. The sharer's
-**Settings → Color** toggles opt into 10-bit HEVC Main 10 (BT.2020 PQ for
-HDR), still gated on the display actually being capable — and on the
-audience: viewers advertise a `tenBit` capability bit in their `HELLO`, and
-because a sharer encodes once for everyone, the share holds at 8-bit while
-any viewer that didn't advertise it is watching. One that joins mid-stream
-latches a 10-bit share back down. A viewer whose decoder surprises it
-after the fact can still send `PROFILE_NO` (below), which latches the same
-way — a lighter fallback than dropping all the way to H.264.
+**Color rides in-band too.** The encoder writes color primaries, transfer
+function, matrix, and bit depth into the SPS VUI, and the viewer reads them
+back onto the decoded buffers and its Metal layer — wide color needs no
+protocol change. By default the sharer tags BT.709, or Display P3 on a
+wide-gamut display. The sharer's **Settings → Color** toggles opt into
+10-bit HEVC Main 10 (BT.2020 PQ for HDR), gated on the display's capability
+and on the audience: viewers advertise a `tenBit` capability bit in their
+`HELLO`, and because a sharer encodes once for everyone, the share holds at
+8-bit while any viewer that didn't advertise it is watching. One that joins
+mid-stream latches a 10-bit share back down. A viewer whose decoder
+surprises it after the fact can send `PROFILE_NO` (below), a lighter
+fallback than dropping all the way to H.264.
 
 **Keyframe-on-PLI.** The viewer sends a Picture Loss Indication when it
-detects a gap in sequence numbers it can't recover from. The encoder
-forces a keyframe in response. Combined with the periodic ~2-second
-keyframe schedule, this means a transient loss costs you milliseconds of
-artifacts, not seconds of green frames. UDP loss is fine — and where it's
-cheap to repair, the NACK/FEC machinery below repairs it without a
-keyframe at all.
+detects an unrecoverable gap in sequence numbers; the encoder forces a
+keyframe in response. Combined with the periodic ~2-second keyframe
+schedule, a transient loss costs milliseconds of artifacts, not seconds of
+green frames — and where loss is cheap to repair, the NACK/FEC machinery
+below repairs it without a keyframe at all.
 
 ## Audio — UDP RTP
 
@@ -105,12 +99,12 @@ space from video. Opus (royalty-free, software-only), mono, 48 kHz, one
 - `99` — system audio (sharer → viewers only; what the sharer's machine is
   playing). Viewers demux by payload type, exactly like video's 96/97.
 
-SSRC allocation is deliberately partitioned: the sharer's voice owns SSRC
-`0`, system audio owns the reserved SSRC `1`, and viewer-assigned SSRCs
-start at `2`. The inbound gate on the sharer accepts only PT 98 from
-viewers, which doubles as the anti-spoof rule for PT 99 — a viewer can't
-inject fake "system audio". Old viewers reject PT 99 and silently drop
-it, so system audio degrades to nothing on peers that predate it.
+SSRC allocation is partitioned: the sharer's voice owns SSRC `0`, system
+audio owns the reserved SSRC `1`, and viewer-assigned SSRCs start at `2`.
+The sharer's inbound gate accepts only PT 98 from viewers, which doubles as
+the anti-spoof rule for PT 99 — a viewer can't inject fake "system audio".
+Old viewers reject PT 99 and silently drop it, so system audio degrades to
+nothing on peers that predate it.
 
 ## Control — UDP, in-band
 
@@ -135,60 +129,54 @@ binary payloads:
 | `0x0C` | `PING`            | sharer → viewer | ~1 Hz RTT probe, echoed back in the receiver report.       |
 | `0x0D` | `FEC`             | sharer → viewer | XOR parity datagram for zero-RTT single-loss repair (payload below). |
 
-How can these coexist with full RTP packets on the same port? Every real
-RTP packet is V=2, which forces the leading byte into `0x80`-`0xBF`.
-Control messages live in `0x00`-`0x7F`, so the first byte unambiguously
-says which kind of datagram it is. No framing, no header, no port
-multiplexing.
+These coexist with full RTP packets on the same port because every real RTP
+packet is V=2, forcing the leading byte into `0x80`-`0xBF`. Control messages
+live in `0x00`-`0x7F`, so the first byte unambiguously says which kind of
+datagram it is — no framing, no header, no port multiplexing.
 
-**Backward compatibility is one rule applied everywhere: unknown bytes
-are ignored.** An old peer that doesn't know `HELLO_DENY` or `FEC` drops
-the datagram and carries on; a new peer talking to an old one simply
-never receives the new bytes. Every addition above was designed so that
-the ignore-unknown rule alone produces sensible degraded behavior.
+**Backward compatibility is one rule applied everywhere: unknown bytes are
+ignored.** An old peer that doesn't know `HELLO_DENY` or `FEC` drops the
+datagram and carries on; a new peer talking to an old one simply never
+receives the new bytes. Every addition above was designed so the
+ignore-unknown rule alone produces sensible degraded behavior.
 
 ### Capability negotiation
 
 A viewer that supports loss recovery sends an **extended HELLO** —
 `[0x00][caps:1]` — where the caps bits are: bit 0 NACK, bit 1
 receiver-report, bit 2 FEC. An old sharer reads byte 0 only and never
-notices. A cap-aware sharer records the bits and replies with an
-**extended HELLO_ACK**: `[0x04][ssrc:4][serverCaps:1]`, 6 bytes — but
-*only* to viewers that advertised caps. A legacy viewer's HELLO_ACK
-parser strictly requires 5 bytes and rejects the 6-byte form, which is
-exactly the point: it never half-enters a mode it doesn't support. The
-whole recovery matrix degrades cleanly in both directions, ending at
-plain PLI.
+notices. A cap-aware sharer records the bits and replies with an **extended
+HELLO_ACK**: `[0x04][ssrc:4][serverCaps:1]`, 6 bytes — but *only* to viewers
+that advertised caps. A legacy viewer's HELLO_ACK parser strictly requires 5
+bytes and rejects the 6-byte form, so it never half-enters a mode it doesn't
+support. The whole recovery matrix degrades cleanly in both directions,
+ending at plain PLI.
 
 `serverCaps` also carries two bits the viewer never sends back — sharer
 capabilities the viewer uses to gate its own UI so it never offers an
 interaction the sharer can't honour:
 
 - **bit 3 `remoteControl`** — this build/platform can inject viewer input.
-  The viewer offers Request Control only when set, so a non-injection
-  sharer (a future Linux/Windows build) never receives a `.controlRequest`
-  it would silently drop. Static capability: the sharer's runtime "Allow
-  control requests" toggle and Accessibility grant still decline a live
-  request with `controlRevoked`.
-- **bit 4 `annotations`** — this sharer renders viewer annotations on its
-  own overlay and relays them to other viewers. The viewer's annotation
-  toolbar is disabled when absent, so it never draws local-only strokes
-  that reach neither the sharer nor other viewers.
+  Request Control shows only when set, so a non-injection sharer (a future
+  Linux/Windows build) never gets a `.controlRequest` it would silently
+  drop. Static: the sharer's "Allow control requests" toggle and
+  Accessibility grant still decline a live request with `controlRevoked`.
+- **bit 4 `annotations`** — this sharer renders and relays viewer
+  annotations. The annotation toolbar is disabled when absent, so a viewer
+  never draws local-only strokes that reach nobody.
 
-Both follow the same rule the loss-recovery caps do: absence degrades to
-"feature off," and — pre-1.0 with no deployed peers — the bit is
-authoritative, so a set bit is the only thing that lights up the UI.
+Both degrade the same way the loss-recovery caps do: absence means
+"feature off," and — pre-1.0, with no deployed peers — the bit is
+authoritative.
 
-The viewer's HELLO carries one bit of its own beyond the recovery three:
+The viewer's HELLO carries one bit beyond the recovery three:
 
 - **bit 5 `tenBit`** — this viewer can decode a 10-bit bitstream (HEVC
-  Main 10). Unlike the recovery bits, which govern one link, this one
-  governs the whole share: the sharer encodes once and fans the same
-  packets out, so it drops to 8-bit for everyone as soon as a viewer
-  without the bit is admitted. Absence is read as "can't" — a legacy
-  viewer has no way to say otherwise, and the failure it prevents (a
-  viewer whose decoder refuses every frame) is worse than the one it
-  causes (two bits of colour depth nobody was promised).
+  Main 10). Unlike the per-link recovery bits, this one governs the whole
+  share: the sharer encodes once for everyone, so it drops to 8-bit as
+  soon as a viewer without the bit is admitted. Absence reads as "can't" —
+  a decoder that refuses every frame is worse than two bits of colour
+  depth nobody was promised.
 
 Bits 0–5 are assigned; the rest are reserved, with an escape hatch to a
 second caps byte specified in
@@ -198,32 +186,31 @@ second caps byte specified in
 
 RTCP generic-NACK FCI semantics
 ([wire format]({{ site.baseurl }}{% link spec.md %}#91-nack)): the viewer
-names the first missing sequence number and a bitmask of the 16 after it,
-in *that viewer's* sequence space — every viewer gets its own rewritten
-RTP header.
+names the first missing sequence number and a bitmask of the 16 after it, in
+*that viewer's* sequence space — every viewer gets its own rewritten RTP
+header.
 
 The sharer answers with byte-identical retransmissions from a bounded
-send-side ring, under a per-viewer token budget capped at 25% of the
-video bitrate. If the gap has already been evicted from the ring, or the
-viewer is over budget, the sharer falls back to forcing a keyframe — so
-NACK is strictly an optimization in front of the PLI path, never a
-replacement for it. Pure packet *reordering* never triggers a NACK; the
-viewer runs a deeper reorder window in NACK mode precisely so
-retransmits have time to land.
+send-side ring, under a per-viewer token budget capped at 25% of the video
+bitrate. If the gap has already been evicted from the ring, or the viewer is
+over budget, the sharer falls back to forcing a keyframe — NACK is strictly
+an optimization in front of the PLI path, never a replacement for it. Pure
+packet *reordering* never triggers a NACK; the viewer runs a deeper reorder
+window in NACK mode precisely so retransmits have time to land.
 
 ### Receiver reports and pings (`0x0B`, `0x0C`)
 
 The sharer pings each cap-aware viewer about once a second; the viewer
-echoes the ping timestamp in its ~1 Hz receiver report
-([wire format]({{ site.baseurl }}{% link spec.md %}#92-receiver-reports-and-rtt)).
-That gives the sharer real per-viewer loss fraction, cumulative sequence
-position, jitter, and RTT — the inputs to the congestion controller (see
-[Architecture]({{ site.baseurl }}{% link architecture.md %})). The report's
-trailing `fecRecovered` count exists only on FEC-negotiated links
-(a tolerant decoder reads 0 from the legacy form): packets repaired by FEC count as
-*received* in the loss fraction, so the bitrate controller reacts only to
-loss the viewer actually suffered, while the sharer separately
-reconstructs the raw link loss to steer the FEC overhead.
+echoes the timestamp in its ~1 Hz receiver report
+([wire format]({{ site.baseurl }}{% link spec.md %}#92-receiver-reports-and-rtt)),
+giving the sharer per-viewer loss fraction, sequence position, jitter, and
+RTT — the inputs to the congestion controller (see
+[Architecture]({{ site.baseurl }}{% link architecture.md %})). The trailing
+`fecRecovered` count exists only on FEC-negotiated links (a tolerant decoder
+reads 0 from the legacy form): FEC-repaired packets count as *received* in
+the loss fraction, so the bitrate controller reacts only to loss the viewer
+actually suffered, while the sharer separately reconstructs raw link loss to
+steer the FEC overhead.
 
 ### FEC — XOR parity (`0x0D`)
 
@@ -235,22 +222,20 @@ packet — with zero additional round-trips
 
 Design points that matter:
 
-- Parity rides the control-byte plane, not an RTP payload type, so a
-  *lost parity packet* opens no sequence gap — no NACK, no reported loss,
-  just an uncovered group. Redundancy that can't cause noise.
+- Parity rides the control-byte plane, not an RTP payload type, so a *lost
+  parity packet* opens no sequence gap — no NACK, no reported loss, just an
+  uncovered group. Redundancy that can't cause noise.
 - Each group's parity is interleaved immediately after that group's last
-  media packet, never batched at the end of a frame — a multi-hundred-
-  packet keyframe would otherwise evict early groups from the viewer's
-  bounded buffer before their recovery data even hit the wire.
-- The sharer only turns FEC on for viewers whose own path measures
-  RTT > 150 ms *and* raw loss > 2 % (where a retransmit round-trip is
-  genuinely expensive), compensates the encoder bitrate to N/(N+1) so
-  video + parity still fits the congestion budget, and turns it off
-  after two consecutive clean windows.
-- The viewer arms its FEC machinery on the first parity datagram it
-  actually receives — negotiation alone changes nothing, so a clean link
-  pays no extra buffering — and hands multi-loss groups (beyond XOR's
-  single-loss limit) to NACK as before.
+  media packet, never batched at the end of a frame — a multi-hundred-packet
+  keyframe would otherwise evict early groups from the viewer's bounded
+  buffer before their recovery data even hit the wire.
+- The sharer turns FEC on only for viewers whose path measures RTT > 150 ms
+  *and* raw loss > 2% (where a retransmit round-trip is genuinely
+  expensive), compensates encoder bitrate to N/(N+1) so video + parity still
+  fits the congestion budget, and turns it off after two clean windows.
+- The viewer arms its FEC machinery on the first parity datagram it actually
+  receives, so a clean link pays no extra buffering, and hands multi-loss
+  groups (beyond XOR's single-loss limit) to NACK as before.
 
 ## Annotations / control — TCP
 
@@ -283,48 +268,43 @@ the entire backward-compatibility story on this channel too.
 
 Two hard limits protect the parser: a single frame's declared length is
 capped at **1 MiB** (a peer declaring more is treated as a corrupt stream
-and disconnected — nobody gets to slow-stream a bogus 4 GiB frame into
-the sharer's memory), and annotation/control ops are only honoured from
-**admitted** viewers — a pending, denied, or blocked peer can open the
-TCP connection but its ops go nowhere.
+and disconnected), and annotation/control ops are only honoured from
+**admitted** viewers — a pending, denied, or blocked peer can open the TCP
+connection but its ops go nowhere.
 
-Yes, the payload is JSON. Yes, you could shave bytes with a binary
-encoding. No, it doesn't matter — strokes and input events are tens of
-bytes each, and the bandwidth budget for this channel is rounding error
-compared to the video.
+The payload is JSON, not a binary encoding — it doesn't matter, since
+strokes and input events are tens of bytes each and this channel's
+bandwidth is rounding error next to video.
 
-Why TCP for this and UDP for video? Because **dropping a stroke segment
-(or a mouse-up) is visible and confusing; dropping a video frame is
-invisible.** A circle drawn as two disconnected arcs reads as broken
-software; a 16 ms frame stutter goes unnoticed. The transport choice
-tracks the cost of loss.
+TCP here, UDP for video, because **dropping a stroke segment (or a
+mouse-up) is visible and confusing; dropping a video frame is invisible.**
+A circle drawn as two disconnected arcs reads as broken software; a 16 ms
+frame stutter goes unnoticed.
 
 ## Stream carriage — the reliable-transport profile (`0x0D`)
 
 Everything above assumes a viewer can send and receive UDP. Some can't: a
 network that blocks it, and — the case that made this a feature — a
 **browser**, which has no datagram socket at all and reaches the guest
-tunnel's relay over a WebSocket. For those, the *whole* UDP plane is
-carried over the framed TCP channel instead: each datagram — HELLO,
-KEEPALIVE, every RTP packet, receiver reports, PLI — becomes one
-`mediaDatagram` frame whose payload is the datagram's bytes, byte for
-byte. Nothing inside is re-encoded, so past the demultiplexer the sharer
-and viewer pipelines are the same code that serves UDP.
+tunnel's relay over a WebSocket. For those, the *whole* UDP plane is carried
+over the framed TCP channel instead: each datagram — HELLO, KEEPALIVE, every
+RTP packet, receiver reports, PLI — becomes one `mediaDatagram` frame whose
+payload is the datagram's bytes, byte for byte. Nothing inside is
+re-encoded, so past the demultiplexer the sharer and viewer pipelines are
+the same code that serves UDP.
 
 There is no capability bit for it. A viewer **elects** the profile by
 sending its HELLO as a frame; the connection it arrived on becomes that
 viewer's media route, and closing it is that viewer's BYE. Two things
-change on election. Loss recovery is masked off — a reliable, in-order
-stream never loses a packet, so NACK retransmits and FEC parity would be
-pure overhead (receiver reports stay: RTT and liveness still matter). And
-loss turns into *delay*: what a lossy path would have dropped, a stream
-queues, so the sharer treats a stream viewer as it treats a legacy
-PLI-only viewer whose socket is backing up — its per-viewer send chain
-sheds whole frames under pressure and the fairness controller throttles
-it to keyframes if that persists — rather than growing a second
-congestion controller. Latency under loss is worse than native UDP, which
-is inherent and the reason the apps stay the recommendation where they
-can run.
+change on election: loss recovery is masked off, since a reliable in-order
+stream never loses a packet (receiver reports stay — RTT and liveness still
+matter); and loss turns into *delay* instead — what a lossy path would have
+dropped, a stream queues, so the sharer treats a stream viewer like a legacy
+PLI-only viewer whose socket is backing up, shedding whole frames under
+pressure and throttling to keyframes if that persists, rather than growing
+a second congestion controller. Latency under loss is worse than native
+UDP — inherent, and the reason the native apps stay the recommendation
+where they can run.
 
 A sharer that predates the profile skips the unknown frame type and the
 viewer's HELLO simply times out — the ordinary forward-compatibility rule
@@ -339,22 +319,20 @@ The metadata service listens on the same TCP/7447 socket and responds to a
 few simple request types: "who are you?", "what's your resolution?", and
 the request-to-share prompt.
 
-Request-to-share got a real answer path: the response (`shareResponse`,
-type `0x05`) travels back **on the same TCP connection the request
-arrived on** — no dial-back, so the answer provably reaches the actual
-requester and can't be spoofed to a third party. The requester holds the
-connection open awaiting it; a timeout or EOF means "no answer", which is
-also exactly what an older peer produces, so the addition is backward
-compatible. On the receiving side, pending requests are deduplicated and
+The request-to-share response (`shareResponse`, type `0x05`) travels back
+**on the same TCP connection the request arrived on** — no dial-back, so the
+answer provably reaches the actual requester and can't be spoofed to a
+third party. The requester holds the connection open awaiting it; a timeout
+or EOF means "no answer", which is also what an older peer produces, so the
+addition is backward compatible. Pending requests are deduplicated and
 capped by the peer's **source IP** — not the hostname claimed in the
-payload — so a flood can't stack banner rows or pin unbounded
-connections. Accepting a request also pre-approves the requester's IP for
-the share that follows, so they don't hit the viewer-approval gate a
-second time.
+payload — so a flood can't stack banner rows or pin unbounded connections.
+Accepting a request also pre-approves the requester's IP for the share that
+follows, so they don't hit the viewer-approval gate a second time.
 
-This isn't its own port for a reason: opening a second port would mean a
-second hole in any tailnet ACL and a second TCP probe in discovery. One
-port, multiple channels, separated by the framing byte.
+No separate port for this: a second port would mean a second hole in any
+tailnet ACL and a second TCP probe in discovery. One port, multiple
+channels, separated by the framing byte.
 
 ## Discovery
 
@@ -366,9 +344,9 @@ Ephemeral viewer-only nodes register under `tailscreen-client-` and are
 excluded, so a transient viewer never shows up as something you can connect
 to.
 
-Share *status* is the one thing the netmap can't tell you, and that's a
+Share *status* is the one thing the netmap can't tell you, so that's a
 separate, lazy query: the metadata pair above (`0x0B`/`0x0C`), dialled
-concurrently across online peers only when the menu opens, on a manual
+concurrently across online peers only when the menu opens, on manual
 refresh, or when the "only screens being shared" filter turns on. Every
 failure — timeout, EOF, an older peer dropping the unknown byte — reads as
 *status unknown*, never as "not sharing".
@@ -380,18 +358,14 @@ Everything on this page also runs over the **share-by-token guest tunnel**
 the sharer's public key plus relay details — travels in an opaque `tc…`
 token instead of a tailnet's netmap. Nothing on the wire inside the tunnel
 changes: both channels of `7447`, the same bytes, the same capability
-negotiation, the same loss-recovery ladder. What the tunnel can't supply
-is peer enumeration — the token *is* the rendezvous, so discovery is
-simply inapplicable — and the sharer compensates at the admission layer:
-a guest's stable identifier is its WireGuard node key, approval is
-mandatory on every join, and a deny evicts that key at the tunnel for the
-life of the link. The **browser viewer** is a guest on this tunnel with
-one difference in transport: it reaches the relay only over a WebSocket —
-a reliable stream end to end — so it always runs the stream carriage
-above rather than have UDP-shaped loss recovery fight a transport that
-never loses. The full accounting is
+negotiation, the same loss-recovery ladder. What the tunnel can't supply is
+peer enumeration, so discovery is simply inapplicable; the sharer
+compensates at the admission layer instead (identity by WireGuard node key,
+mandatory per-join approval) — see
+[Architecture]({{ site.baseurl }}{% link architecture.md %}#guests-the-share-by-token-tunnel)
+for that model and how the browser viewer fits it. Full wire accounting:
 [Appendix D of the specification]({{ site.baseurl }}{% link spec.md %}#appendix-d-transport-bootstrap-via-connection-token-guest-mode)
-(informative — it adds no wire values and changes no requirements) and the
+(informative — no new wire values, no new requirements) and the
 [security model]({{ site.baseurl }}{% link security.md %}).
 
 ## Changing the protocol
@@ -401,8 +375,8 @@ Every wire constant above is pinned by a registry test
 deterministic seeded fuzz harness in CI. The rules they all obey are
 normative in the
 [Wire Protocol Specification]({{ site.baseurl }}{% link spec.md %}), pinned
-by the language-neutral vectors under `conformance/`. A change to a wire
-value touches three things in one commit: the registry test, the
-specification's [registry appendix]({{ site.baseurl }}{% link spec.md %}#appendix-a-wire-value-registry),
-and a vector — and a shipped byte is never renumbered; deployed peers
-would break.
+by the language-neutral vectors under `conformance/`. A wire value change
+touches three things in one commit: the registry test, the specification's
+[registry appendix]({{ site.baseurl }}{% link spec.md %}#appendix-a-wire-value-registry),
+and a vector — a shipped byte is never renumbered; deployed peers would
+break.

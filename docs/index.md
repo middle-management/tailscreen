@@ -14,7 +14,7 @@ image: /assets/social-card.png
   </p>
   <h1>Screen sharing that feels&nbsp;like <span class="ts-accent">sitting at the same desk</span>.</h1>
   <p class="ts-hero-tagline">Tailscreen streams one computer&rsquo;s screen to another over your own
-  Tailscale network &mdash; encrypted, peer-to-peer, at 60&nbsp;fps, between
+  Tailscale network &mdash; encrypted, peer-to-peer, at 60&nbsp;fps, across
   macOS, Linux, and Windows. No meeting link, no server in the middle, no
   port to forward.</p>
   <p class="ts-hero-actions">
@@ -58,10 +58,9 @@ platform&rsquo;s native tooling and streams it over
 <a href="https://tailscale.com/">Tailscale</a> (or any
 <a href="{{ site.baseurl }}{% link self-hosted.md %}">compatible control
 plane</a>) &mdash; direct when the network allows, relayed inside the same
-encryption when it isn&rsquo;t.
-macOS, Linux, and Windows all speak the same protocol, so any of them can
-watch any other, and your screen never touches a third-party server.
-Curious what&rsquo;s underneath?
+encryption when it isn&rsquo;t. macOS, Linux, and Windows all speak the
+same protocol, so any of them can watch any other, and your screen never
+touches a third-party server.
 <a href="{{ site.baseurl }}{% link architecture.md %}">Read the architecture</a>.</p>
 </div>
 
@@ -77,10 +76,10 @@ Curious what&rsquo;s underneath?
   </div>
   <div class="ts-spotlight-body">
     <h3>Video that keeps up</h3>
-    <p>Smooth, hardware-encoded video, with wide color that survives the
-    trip. And when the network turns ugly, Tailscreen fights back instead
-    of freezing: it repairs losses and adapts quality on the fly, then
-    snaps back to pin-sharp the moment the link recovers.</p>
+    <p>Smooth, hardware-encoded video with wide color that survives the
+    trip. When the network turns ugly, Tailscreen fights back instead of
+    freezing — repairing losses and adapting quality on the fly, then
+    snapping back to pin-sharp the moment the link recovers.</p>
   </div>
 </div>
 
@@ -111,15 +110,14 @@ Curious what&rsquo;s underneath?
   </div>
   <div class="ts-spotlight-body">
     <h3>Invite anyone, by link</h3>
-    <p>Someone outside your tailnet &mdash; no Tailscale account, nothing to
-    sign up for? Flip <strong>Share via Link</strong> and send them a one-off
-    link. They knock over an encrypted tunnel, wait at your approval prompt
-    like everyone else, and once you let them in they get the full seat:
-    video, voice, drawing, even requesting the mouse &mdash; and if they
-    have nothing installed, the web form of the same link opens the share
-    in their browser. The link dies the moment you stop sharing, rotate it,
-    or flip the toggle off &mdash; there&rsquo;s nothing to revoke
-    later.</p>
+    <p>Someone outside your tailnet, with no Tailscale account? Flip
+    <strong>Share via Link</strong> and send them a one-off link. They
+    knock over an encrypted tunnel, wait at your approval prompt like
+    everyone else, and once admitted get the full seat: video, voice,
+    drawing, even requesting the mouse. Nothing installed? The web form of
+    the same link opens the share in their browser. The link dies the
+    moment you stop sharing, rotate it, or flip the toggle off &mdash;
+    nothing to revoke later.</p>
   </div>
 </div>
 </div>
@@ -278,14 +276,14 @@ Curious what&rsquo;s underneath?
 <div class="ts-container-narrow">
 <ul class="ts-checks">
   <li>macOS 15 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland),
-  or Windows 10/11 (x64 or arm64) &mdash; in any combination on the two
+  or Windows 10/11 (x64 or arm64) &mdash; any combination on the two
   ends.</li>
   <li>A Tailscale account &mdash; the free personal tier is fine &mdash;
   except for guests joining (or, on macOS, hosting) a share by link, who
-  need no account at all. (Or a
+  need no account at all. Or use a
   <a href="{{ site.baseurl }}{% link self-hosted.md %}">self-hosted,
-  compatible control plane</a> such as headscale &mdash; no Tailscale
-  account needed at all.)</li>
+  compatible control plane</a> such as headscale, with no Tailscale account
+  needed either.</li>
   <li>On a Mac: Screen Recording permission; macOS asks the first time you
   share. (Accessibility too, but only if you ever grant remote control.)</li>
 </ul>
