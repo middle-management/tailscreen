@@ -38,8 +38,7 @@ final class AnnotationCanvasModelTests: XCTestCase {
         XCTAssertNil(model.inProgress)
         XCTAssertTrue(model.canUndo)
 
-        // Every emitted op is an .add carrying the same shape id (the
-        // mid-drag in-progress emit plus the commit).
+        // Every emitted op is an .add carrying the same shape id.
         XCTAssertFalse(ops.isEmpty)
         for op in ops {
             guard case .add(let ann) = op else {

@@ -4,19 +4,13 @@ import TailscreenProtocol
 
 // Reports what the injector would do, and — only if asked — actually does it.
 //
-// Two jobs, like every other probe here. The first is to make the LINKER run
-// over the shim: a SwiftPM library target is compiled but never linked, which
-// is how WASAPIKit's four missing GUID symbols passed their own build step and
-// surfaced eleven minutes later in the app.
+// First job: run the LINKER over the shim — a library target is compiled but
+// never linked. Second: answer "is remote control wired up correctly" without
+// standing up a share and a viewer, by printing the virtual desktop (where a
+// multi-monitor setup goes wrong) and the absolute coordinates a corner click
+// would produce.
 //
-// The second is to answer "is remote control wired up correctly" without
-// standing up a share and a viewer. It prints the virtual desktop the mapping
-// is anchored to — which is where a multi-monitor setup goes wrong — and the
-// exact absolute coordinates a corner click would produce.
-//
-// It does NOT inject by default, and is not run in CI. Unlike wasapi-probe,
-// whose failure mode is silence, this one moves a real cursor: pass `--inject`
-// to let it, and expect the pointer to jump to the middle of the desktop.
+// Does NOT inject by default, and is not run in CI: pass `--inject` to move a real cursor.
 
 let desktop = SendInputInjector.virtualDesktop()
 print("sendinput-probe: virtual desktop \(desktop)")

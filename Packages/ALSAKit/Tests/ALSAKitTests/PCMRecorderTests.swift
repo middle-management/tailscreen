@@ -6,20 +6,13 @@ import XCTest
 /// negotiates a format with it, reads frames, and tears down — on whatever
 /// Linux CI builds it.
 ///
-/// Every live test opens the `"null"` device. It is ALSA's always-present
-/// discard PCM, and — unlike a loopback or a file plugin — it works in *both*
-/// directions: `SND_PCM_STREAM_CAPTURE` on `null` opens, accepts any rate and
-/// channel count, starts, and returns full buffers of digital silence
-/// immediately, with no hardware, no mixer server and no real-time pacing.
-/// That is enough to exercise open / hw-param negotiation / the read path /
-/// close for real; it is deliberately never `"default"`, which CI has no input
-/// device for.
+/// Every live test opens the `"null"` device: ALSA's always-present discard
+/// PCM, which opens, negotiates, and returns silence with no hardware — never
+/// `"default"`, which CI has no input device for.
 ///
-/// What `null` cannot do is produce a *signal*, so nothing here asserts on
-/// sample values — a silence assertion would pass against a `read` that
-/// returned its own zero-filled scratch buffer without ever calling libasound,
-/// which is the definition of a test that cannot fail. The channel fold's
-/// arithmetic is therefore pinned separately, on `downmixToMono` directly.
+/// `null` cannot produce a real signal, so nothing here asserts on sample
+/// values — that would pass against a `read` that never called libasound.
+/// The channel fold's arithmetic is pinned separately, on `downmixToMono` directly.
 final class PCMRecorderTests: XCTestCase {
     // MARK: - Live capture against the null device
 

@@ -11,61 +11,44 @@ import enum TailscreenProtocol.ViewerZoomMath
 import enum TailscreenProtocol.WindowsKeyCodeMapping
 import class TailscreenViewer.FrameStore
 
-// This is the app's ONLY genuinely Windows-bound file, and the `#else` at the
-// bottom is what lets Linux CI typecheck everything else in the app —
-// including `TailscreenWindowsApp.swift`, whose 90-line result-builder body
-// once failed on a Windows runner with "failed to produce diagnostic for
-// expression" after a forty-minute build. Everything the app does apart from
-// blitting a frame is portable, and there is no reason for a one-line type
-// error in it to be discoverable only on Windows.
+// This is the app's ONLY genuinely Windows-bound file — the `#else` at the
+// bottom is what lets Linux CI typecheck everything else, including
+// `TailscreenWindowsApp.swift`'s result-builder body, which once failed on a
+// Windows runner with "failed to produce diagnostic for expression".
 //
-// The interactive layer added for the viewer's drawing / zoom / remote control
-// follows the same rule and pushes it harder: EVERY decision lives in
-// `WindowsViewerInteraction` (state machine, gate, ordering) or in the portable
-// tier (`ViewerPointerMapping` letterbox math, `ViewerZoomMath` geometry,
-// `AnnotationRasterizer` strokes, `WindowsKeyCodeMapping` VK→HID), all of which
-// Linux compiles and tests. What is left here is event plumbing: read a
-// pointer, hand over four numbers.
+// The interactive layer (drawing/zoom/remote control) follows the same rule:
+// EVERY decision lives in `WindowsViewerInteraction` or the portable tier
+// (`ViewerPointerMapping`, `ViewerZoomMath`, `AnnotationRasterizer`,
+// `WindowsKeyCodeMapping`), all Linux-compiled and tested. What's left here
+// is event plumbing: read a pointer, hand over four numbers.
 #if os(Windows)
 
-// Inside the guard on purpose: `CWinVideo` is a `.when(platforms: [.windows])`
-// dependency, so on Linux the module does not exist and a top-of-file import
-// breaks the `linux-app` typecheck that exists to catch exactly this.
+// Inside the guard: `CWinVideo` is a `.when(platforms: [.windows])`
+// dependency, so a top-of-file import would break the `linux-app` typecheck.
 import CWinVideo
 
 import WinUI
-// `WinUIElementRepresentable` lives in the BACKEND module, not in SwiftCrossUI
-// and not in WinUI — it is the seam between the two, so neither re-exports it.
+// `WinUIElementRepresentable` lives in the BACKEND module — the seam between
+// SwiftCrossUI and WinUI, so neither re-exports it.
 import WinUIBackend
 import WindowsFoundation
 
-/// The video surface: a WinUI `Image` fed from a GPU-rendered `SurfaceImageSource`, polling the
-/// portable `FrameStore` for the latest decoded frame.
-///
-/// `Image` + `SurfaceImageSource`, with the YUV->RGB conversion on the GPU in
-/// `CWinVideo`. This replaced `Image` + `WriteableBitmap` + `I420Converter`,
-/// which converted ~7 MP on the CPU and uploaded a full BGRA frame per frame on
-/// the UI thread — the only CPU colour-conversion left in the project once the
-/// GTK viewer moved to a GL shader.
+/// The video surface: a WinUI `Image` fed from a GPU-rendered
+/// `SurfaceImageSource`, polling the portable `FrameStore` for the latest
+/// decoded frame. YUV->RGB conversion happens on the GPU in `CWinVideo`,
+/// replacing an earlier `WriteableBitmap` + `I420Converter` CPU path.
 ///
 /// `SurfaceImageSource` rather than `SwapChainPanel`: swift-winui has no
-/// `SwapChainPanel` binding, and `WinUIElementRepresentable` needs a
-/// Swift-typed element. `SurfaceImageSource` is bound, and its
-/// `ISurfaceImageSourceNative` (from the dependency's bundled
-/// microsoft.ui.xaml.media.dxinterop.h) hands D3D11 a surface to render into —
-/// so the element stays an `Image` and only its *source* changed. See
-/// plans/gpu-rendering-plan.md for the trade-off that buys.
+/// `SwapChainPanel` binding. Its `ISurfaceImageSourceNative` hands D3D11 a
+/// surface to render into, so the element stays an `Image` and only its
+/// source changed. See plans/gpu-rendering-plan.md.
 ///
-/// Two things deliberately stayed on the paths that were already free. Zoom is
-/// still a `CompositeTransform` on the element, because the compositor applies
-/// it for nothing; putting it in the shader would duplicate working GPU work.
-/// And annotations are still rasterized by the portable `AnnotationRasterizer`,
-/// into a reusable RGBA overlay the shader composites in the same pass — so they
-/// remain part of the picture and keep scaling with the video, which is the
-/// property the old draw-into-the-bitmap approach had and was worth keeping.
+/// Zoom stays a `CompositeTransform` on the element (compositor applies it
+/// for free); annotations still rasterize via the portable
+/// `AnnotationRasterizer` into an overlay the shader composites in the same
+/// pass, so they scale with the video.
 ///
-/// `WinUIElementRepresentable` is swift-cross-ui's `NSViewRepresentable`
-/// analogue: any `FrameworkElement` can be hosted, and `Image` is one.
+/// `WinUIElementRepresentable` is swift-cross-ui's `NSViewRepresentable` analogue.
 struct WinUIVideoView: WinUIElementRepresentable {
     typealias WinUIElementType = WinUI.Image
 
@@ -97,15 +80,11 @@ struct WinUIVideoView: WinUIElementRepresentable {
         context.coordinator.draw(from: store, into: element, interaction: interaction)
     }
 
-    /// Take whatever the parent offers, falling back to 16:9 when a dimension is
-    /// unspecified. The frame's own size is deliberately NOT consulted: with
-    /// `stretch = .uniform` the element letterboxes itself, so sizing to the
-    /// video would make the layout jump on the first decoded frame and again on
-    /// every resolution change.
-    ///
-    /// This overrides the protocol's default, which measures the element — an
-    /// `Image` with no source yet measures zero, which would collapse the pane
-    /// before the stream starts.
+    /// Take whatever the parent offers, falling back to 16:9. The frame's own
+    /// size is deliberately NOT consulted: `stretch = .uniform` already
+    /// letterboxes it, so sizing to the video would jump the layout on the
+    /// first decoded frame. Overrides the protocol's default, which measures
+    /// an `Image` with no source as zero and would collapse the pane.
     @MainActor
     func sizeThatFits(
         _ proposal: ProposedViewSize,
@@ -115,41 +94,31 @@ struct WinUIVideoView: WinUIElementRepresentable {
         proposal.replacingUnspecifiedDimensions(by: ViewSize(640, 360))
     }
 
-    /// Owns the image source across updates. Recreating a `SurfaceImageSource`
-    /// per frame would allocate a full-resolution surface 60 times a second; it
-    /// is rebuilt only when the video size actually changes.
+    /// Owns the image source across updates. Rebuilt only when the video size
+    /// actually changes — recreating it per frame would allocate a
+    /// full-resolution surface 60 times a second.
     @MainActor
     final class Coordinator {
         private var source: SurfaceImageSource?
         private var sourceWidth = 0
         private var sourceHeight = 0
-        /// Set once `winvideo_init` has succeeded. When it never does — no D3D11
-        /// device at all — `draw` gives up rather than falling back: a silent CPU
-        /// path would hide exactly the failure this replaced, and the log line
-        /// `CWinVideo` prints is the diagnosis.
+        /// Set once `winvideo_init` succeeds. When it never does, `draw`
+        /// gives up rather than falling back to a silent CPU path.
         private var gpuReady = false
-        /// Reusable RGBA overlay for annotations, allocated only when somebody
-        /// draws. A session with an empty canvas uploads three planes; the fourth
-        /// texture costs nothing until there is something in it.
+        /// Reusable RGBA overlay for annotations, allocated only when
+        /// somebody draws.
         private var overlay: [UInt8] = []
         /// The element's last laid-out size, for the letterbox and zoom math.
-        /// Read from the element on each event rather than cached across them:
-        /// the pane resizes with the window.
         private var lastVideoWidth = 0
         private var lastVideoHeight = 0
-        /// Whether a pointer press is currently down on the surface, and what
-        /// it is doing. A drag is one gesture, and which gesture it is has to be
-        /// decided at press time — switching tools mid-drag must not reshape it.
+        /// Which gesture a pointer press is doing — decided at press time, so
+        /// switching tools mid-drag can't reshape it.
         private var activeGesture: Gesture?
         private var lastPanPoint: CGPoint = .zero
-        /// Which button opened the current `.controlling` drag.
-        ///
-        /// Remembered rather than re-read on release, because the button-state
-        /// flags say what is *currently* pressed and by release time nothing
-        /// is: a right-drag would otherwise send `mouseDown(.right)` followed
-        /// by `mouseUp(.left)` and strand the right button down on the
-        /// sharer's machine — the same stuck-button failure `SendInputInjector`
-        /// synthesizes a button-up to avoid on revoke.
+        /// Which button opened the current `.controlling` drag. Remembered
+        /// rather than re-read on release, since by release time nothing is
+        /// pressed — a right-drag would otherwise send `mouseUp(.left)` and
+        /// strand the right button down on the sharer's machine.
         private var pressedButton: InputEvent.MouseButton = .left
 
         private enum Gesture {
@@ -170,22 +139,14 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 gpuReady = winvideo_init() != 0
                 guard gpuReady else { return }
             }
-            // Device-lost recovery. `WriteableBitmap` could not lose its device;
-            // a D3D11 one can, on a driver update or a GPU reset, and a viewer
-            // that goes black and stays black is worse than a slow one. Rebuild
-            // from scratch and let the next frame land.
+            // Device-lost recovery: a D3D11 device can be lost on a driver
+            // update or GPU reset, and a black-and-stuck viewer is worse than
+            // a slow one. Rebuild from scratch and let the next frame land.
             if winvideo_device_lost() != 0 {
-                // The plan's rollback for this step is "keep the rebuild path
-                // behind a log line so it is visible in the wild", and it is the
-                // whole reason this branch is auditable at all: the three C sites
-                // that detect the loss already log their HRESULT, but nothing
-                // said whether recovery was ever ATTEMPTED. A viewer that
-                // recovers silently and one that is wedged look identical in a
-                // log otherwise, and this path is too hard to trigger on purpose
-                // to leave that ambiguous.
-                //
-                // Fires once per loss episode, not once per frame: `winvideo_reset`
-                // clears the flag, so the next frame takes the init path instead.
+                // Logged so recovery is visible in the wild — a viewer that
+                // recovers silently and one that's wedged look identical
+                // otherwise. Fires once per loss episode: `winvideo_reset`
+                // clears the flag.
                 print("[winvideo] device lost — rebuilding the D3D11 device")
                 winvideo_reset()
                 gpuReady = false
@@ -196,34 +157,21 @@ struct WinUIVideoView: WinUIElementRepresentable {
             }
 
             if source == nil || sourceWidth != frame.width || sourceHeight != frame.height {
-                // `isOpaque: true` is the third argument on purpose. The shader
-                // writes alpha 1.0 over the whole surface, so declaring it lets
-                // XAML skip blending the video against what is behind it — and
-                // it makes the shader's "the source is created opaque" comment
-                // true rather than aspirational, which is what the two-argument
-                // initializer left it as.
+                // `isOpaque: true`: the shader writes alpha 1.0 over the whole
+                // surface, so this lets XAML skip blending the video against
+                // what's behind it.
                 let fresh = SurfaceImageSource(
                     Int32(frame.width), Int32(frame.height), true)
-                // The QueryInterface for `ISurfaceImageSourceNative` happens in
-                // C++, so no IID is spelled in Swift; all this side owes is a
-                // valid `IUnknown*` for the WinRT object.
-                //
-                // Getting to it is two hops, and the shape is not guessable —
-                // a swift-winui class projection is a `WinRTClass`, which
-                // WRAPS its COM pointer in `_inner` rather than inheriting
-                // `IUnknown`, so `pUnk` does not exist on the class itself.
-                // `thisPtr` is the public bridge (`IWinRTObject`), and it is
-                // an `IInspectable`, which does carry `pUnk` — the same
-                // `pUnk.borrow` handoff `NotificationActivation` makes to
-                // `CWinNotify`. Do NOT reach for the projection's own
-                // `queryInterface`: on `WinRTClass` it is
-                // `@_spi(WinRTImplements)`, so calling it would drag an SPI
-                // import into the app for no gain.
+                // A swift-winui class projection is a `WinRTClass`, which
+                // wraps its COM pointer in `_inner` rather than inheriting
+                // `IUnknown`, so `pUnk` isn't on the class itself. `thisPtr`
+                // (the `IWinRTObject` bridge) is an `IInspectable`, which does
+                // carry `pUnk` — same handoff `NotificationActivation` makes.
+                // Don't use the projection's own `queryInterface`: on
+                // `WinRTClass` it's `@_spi(WinRTImplements)`.
                 //
                 // `withExtendedLifetime` because `thisPtr` hands back a fresh
-                // reference: the pointer must outlive the call, and the C++
-                // side takes its own reference on the interface it queries
-                // before returning.
+                // reference that must outlive the call.
                 let inspectable = fresh.thisPtr
                 let bound = withExtendedLifetime(inspectable) {
                     winvideo_bind_source(
@@ -238,23 +186,15 @@ struct WinUIVideoView: WinUIElementRepresentable {
             }
             guard source != nil else { return }
 
-            // Annotations still go through the portable `AnnotationRasterizer`
-            // — the same tested code the old bitmap path used — but into a
-            // dedicated RGBA overlay the shader composites over the video in the
-            // same pass, instead of into the converted frame. Same visible
-            // result and the same property worth keeping (strokes are part of
-            // the picture, so they scale with the element's transform), without
-            // needing a CPU BGRA frame to draw into.
+            // Annotations rasterize into a dedicated RGBA overlay the shader
+            // composites over the video in the same pass, so strokes scale
+            // with the element's transform without needing a CPU BGRA frame.
+            // The buffer is allocated on first use and reused.
             //
-            // The buffer is allocated on first use and reused; a session where
-            // nobody draws pays one `isEmpty` check and uploads three planes
-            // rather than four.
-            // Ephemeral strokes (`.click` markers) age out on a clock, and this
-            // per-frame composite is the only thing that ticks once the ops stop
-            // arriving — a lone click marker with no traffic behind it would
-            // otherwise sit on the canvas for the whole session. Swept BEFORE
-            // the read so this frame already reflects it; `expire` deliberately
-            // queues no repaint of its own.
+            // Ephemeral strokes (`.click` markers) age out on a clock, and
+            // this per-frame composite is the only thing that ticks once the
+            // ops stop arriving. Swept BEFORE the read so this frame already
+            // reflects it; `expire` queues no repaint of its own.
             interaction.annotations.expire()
             let annotations = interaction.annotations.visibleAnnotations
             var overlayPointer: UnsafePointer<UInt8>?
@@ -297,12 +237,10 @@ struct WinUIVideoView: WinUIElementRepresentable {
             applyZoom(to: element, interaction: interaction)
         }
 
-        /// Project the portable zoom state onto the element's render transform.
-        ///
-        /// A `RenderTransform` rather than cropping the source: it is composited
-        /// by the same pass that already draws the Image, so zooming costs
-        /// nothing per frame, and it scales the annotations with the video
-        /// because the shader composites them into the same surface.
+        /// Project the portable zoom state onto the element's render
+        /// transform, rather than cropping the source — composited by the
+        /// same pass that already draws the Image, so zooming costs nothing
+        /// per frame.
         private func applyZoom(to element: WinUI.Image, interaction: WindowsViewerInteraction) {
             let state = interaction.zoomState
             let transform = CompositeTransform()
@@ -311,21 +249,17 @@ struct WinUIVideoView: WinUIElementRepresentable {
             transform.translateX = Double(state.offset.x)
             transform.translateY = Double(state.offset.y)
             element.renderTransform = transform
-            // Origin at the centre, matching `ViewerZoomMath`'s model: it
-            // magnifies about the fit rect's centre and expresses pan as an
-            // offset from it. With the default (0, 0) origin the same numbers
-            // would zoom toward the top-left corner.
+            // Origin at the centre, matching `ViewerZoomMath`'s model — the
+            // default (0, 0) would zoom toward the top-left corner.
             element.renderTransformOrigin = Point(x: 0.5, y: 0.5)
         }
 
         // MARK: Input
 
-        /// Attach pointer + key handlers once, at element creation.
-        ///
-        /// The element is made focusable and takes focus on press, because a
-        /// `WinUI.Image` is not a focus target by default and `keyDown` never
-        /// fires on something that cannot be focused — remote-control typing
-        /// would silently do nothing while the pointer worked fine.
+        /// Attach pointer + key handlers once, at element creation. The
+        /// element is made focusable and takes focus on press, since a
+        /// `WinUI.Image` is not a focus target by default and `keyDown`
+        /// never fires without it.
         func attachInput(to element: WinUI.Image, interaction: WindowsViewerInteraction) {
             element.isTabStop = true
             element.isHitTestVisible = true
@@ -339,10 +273,8 @@ struct WinUIVideoView: WinUIElementRepresentable {
             element.pointerReleased.addHandler { [weak self] sender, args in
                 self?.handleReleased(sender, args, interaction)
             }
-            // A capture loss ends the gesture exactly like a release. Without
-            // it, dragging out of the window and letting go leaves the stroke
-            // live forever and — worse, under a control grant — leaves a button
-            // held down on the sharer's desktop.
+            // A capture loss ends the gesture like a release, or dragging out
+            // of the window leaves a button stuck down on the sharer's desktop.
             element.pointerCaptureLost.addHandler { [weak self] sender, args in
                 self?.handleReleased(sender, args, interaction)
             }
@@ -355,18 +287,15 @@ struct WinUIVideoView: WinUIElementRepresentable {
             element.keyUp.addHandler { [weak self] sender, args in
                 self?.handleKey(sender, args, interaction, down: false)
             }
-            // An element that loses focus stops receiving key-up events, so a
-            // modifier held at that moment would stay "held" forever — and
-            // silently turn the next plain click into a modified one.
+            // Losing focus stops key-up events, so a held modifier would
+            // stay "held" forever without this.
             element.lostFocus.addHandler { [weak self] _, _ in
                 self?.clearModifiers()
             }
             element.doubleTapped.addHandler { [weak self] sender, args in
                 guard let self, let element = sender as? WinUI.Image, let args else { return }
-                // `DoubleTappedRoutedEventArgs` DOES carry `getPosition` — it
-                // is `PointerRoutedEventArgs` that does not — but it throws.
-                // An unreadable anchor falls back to the element's centre,
-                // which is where a fit-to-window zoom would land anyway.
+                // `getPosition` throws here; an unreadable anchor falls back
+                // to the element's centre.
                 let fit = self.fitRect(of: element)
                 let anchor =
                     (try? args.getPosition(element)).map {
@@ -376,14 +305,10 @@ struct WinUIVideoView: WinUIElementRepresentable {
             }
         }
 
-        /// The aspect-fit rect the video occupies inside the element, in the
-        /// element's own coordinates.
-        ///
-        /// `ViewerZoomMath` works against this rather than the whole pane, and
-        /// so does the letterbox mapping — they have to agree, or a click lands
-        /// in one place and zooms about another. Which is why the arithmetic
-        /// is `ViewerPointerMapping.fitRect`, the same function `normalize`
-        /// maps pointer positions against.
+        /// The aspect-fit rect the video occupies inside the element.
+        /// `ViewerZoomMath` and the letterbox mapping must agree on this, or a
+        /// click lands in one place and zooms about another —
+        /// `ViewerPointerMapping.fitRect` is the one function both use.
         private func fitRect(of element: WinUI.Image) -> CGRect {
             ViewerPointerMapping.fitRect(
                 paneSize: (width: element.actualWidth, height: element.actualHeight),
@@ -391,10 +316,8 @@ struct WinUIVideoView: WinUIElementRepresentable {
         }
 
         /// Pointer position as normalized `[0, 1]` over the video content.
-        ///
-        /// Takes loose `Double`s rather than a `Point` because WinRT's
-        /// `Point` carries `Float`s and every caller has already had to widen
-        /// them — `CGPoint` and `ViewerPointerMapping` both speak `Double`.
+        /// Takes loose `Double`s rather than a `Point`: WinRT's `Point`
+        /// carries `Float`s and every caller has already widened them.
         private func normalized(
             x: Double, y: Double, in element: WinUI.Image
         ) -> (
@@ -406,20 +329,14 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 videoSize: (width: lastVideoWidth, height: lastVideoHeight))
         }
 
-        /// Everything a pointer handler needs, resolved in one call.
-        ///
-        /// WinUI reports position *and* button state on a `PointerPoint`, not
-        /// as fields on the event args: `PointerRoutedEventArgs` has no
-        /// `getPosition` at all (that lives on the *tapped* args, which is a
-        /// different event). `getCurrentPoint` throws and its `properties` is
-        /// optional, so resolving both at once is one failure path instead of
-        /// three.
+        /// Everything a pointer handler needs, resolved in one call. WinUI
+        /// reports position and button state on a `PointerPoint`, and both
+        /// `getCurrentPoint` and its `properties` can fail — resolving them
+        /// together is one failure path instead of two.
         ///
         /// A point with no readable `properties` still yields a position: the
-        /// button degrades to left rather than dropping the event, because a
-        /// click that arrives as the wrong button is a bad day while a click
-        /// that never arrives — with the pointer visibly moving — is a broken
-        /// feature with no error anywhere.
+        /// button degrades to left rather than dropping the event — a wrong
+        /// button beats a click that never arrives.
         private struct PointerSample {
             let x: Double
             let y: Double
@@ -445,7 +362,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 ? .right : (properties.isMiddleButtonPressed ? .middle : .left)
             return PointerSample(
                 x: x, y: y, button: button,
-                // `WHEEL_DELTA` is 120 per detent on both ends of this wire.
+                // `WHEEL_DELTA` is 120 per detent.
                 wheelLines: Double(properties.mouseWheelDelta) / 120.0,
                 isHorizontalWheel: properties.isHorizontalMouseWheel)
         }
@@ -473,8 +390,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
                         button: point.button,
                         modifiers: modifiers()))
             } else if interaction.isZoomed {
-                // Only while zoomed: at fit there is nothing to pan over, and
-                // treating a plain click as a pan gesture would swallow it.
+                // Only while zoomed: at fit there's nothing to pan over.
                 activeGesture = .panning
                 lastPanPoint = CGPoint(x: point.x, y: point.y)
             } else {
@@ -500,9 +416,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 lastPanPoint = CGPoint(x: point.x, y: point.y)
                 interaction.pan(by: delta, fit: fitRect(of: element))
             case .controlling, nil:
-                // Moves are forwarded even with no button down — a remote
-                // pointer that only moves while dragging cannot hover, and
-                // hover is most of what a pointer does.
+                // Forwarded even with no button down, so hover still works.
                 interaction.forward(.mouseMove(x: norm.x, y: norm.y))
             }
         }
@@ -519,10 +433,8 @@ struct WinUIVideoView: WinUIElementRepresentable {
             case .controlling:
                 guard let args, let point = Self.sample(args, element) else { return }
                 let norm = normalized(x: point.x, y: point.y, in: element)
-                // The released button is no longer *pressed*, so the flags read
-                // `.left` by fallthrough. That is the same button the press
-                // reported for every single-button drag, which is the only kind
-                // a pointer capture delivers here.
+                // The released button is no longer pressed, so the flags
+                // read `.left` by fallthrough; use `pressedButton` instead.
                 interaction.forward(
                     .mouseUp(
                         x: norm.x, y: norm.y,
@@ -541,10 +453,8 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 let point = Self.sample(args, element), point.wheelLines != 0
             else { return }
 
-            // Ctrl+wheel zooms, plain wheel scrolls the sharer's content when a
-            // grant is held. The split matters: without it, zooming would be
-            // unreachable while controlling, and scrolling unreachable while
-            // not.
+            // Ctrl+wheel zooms, plain wheel scrolls the sharer's content when
+            // a grant is held.
             if modifiers().contains(.control) || !interaction.forwardsInput {
                 let step =
                     point.wheelLines > 0
@@ -554,10 +464,8 @@ struct WinUIVideoView: WinUIElementRepresentable {
                     fit: fitRect(of: element))
             } else {
                 let norm = normalized(x: point.x, y: point.y, in: element)
-                // A tilt wheel reports on the SAME `mouseWheelDelta` field and
-                // is distinguished only by this flag. Without the split a
-                // horizontal scroll arrives at the sharer as a vertical one,
-                // which is a wrong action rather than a missing one.
+                // A tilt wheel reports on the SAME `mouseWheelDelta` field,
+                // distinguished only by this flag.
                 interaction.forward(
                     .scroll(
                         x: norm.x, y: norm.y,
@@ -572,18 +480,14 @@ struct WinUIVideoView: WinUIElementRepresentable {
             _ interaction: WindowsViewerInteraction, down: Bool
         ) {
             guard let args else { return }
-            // VK → HID, through the same table the Windows *sharer* injects
-            // with, read in the other direction. Nothing native reaches the
-            // wire; an unmapped key is dropped rather than guessed at, exactly
-            // as every injector in this repo drops one.
+            // VK → HID, the same table the Windows sharer injects with, read
+            // in the other direction. An unmapped key is dropped, never guessed at.
             guard let usage = WindowsKeyCodeMapping.hidUsage(forVirtualKey: UInt16(args.key.rawValue))
             else { return }
-            // Modifier keys update the tracked snapshot and are NOT forwarded
-            // as standalone events — their held state rides every event's
-            // `modifiers` field, which keeps a mid-stream join stateless and
-            // stops a dropped connection stranding a modifier down on the
-            // sharer's machine. Tracked BEFORE the drop, or the very first
-            // Ctrl+C would send C with no Ctrl.
+            // Modifier keys update the tracked snapshot rather than being
+            // forwarded standalone — their held state rides every event's
+            // `modifiers` field. Tracked BEFORE the drop, or the first Ctrl+C
+            // would send C with no Ctrl.
             guard !trackModifier(usage: usage, down: down) else { return }
             interaction.forward(
                 down
@@ -591,33 +495,17 @@ struct WinUIVideoView: WinUIElementRepresentable {
                     : .keyUp(key: usage, modifiers: modifiers()))
         }
 
-        /// The modifier snapshot that rides every event.
-        ///
-        /// TRACKED from the key events this element already receives, rather
-        /// than queried from the system. The obvious query — `CoreWindow` —
-        /// does not exist in a WinAppSDK app at all (it is UWP), and the
-        /// alternatives (`InputKeyboardSource`, `PointerRoutedEventArgs`'
-        /// modifier field) vary by binding version, which is a bet this file
-        /// cannot check on Linux and costs forty minutes per attempt to check
-        /// on Windows. Tracking uses only `args.key`, which is already in hand
-        /// — no extra API surface, and identical on both architectures.
-        ///
-        /// The cost is that modifiers held BEFORE this element took focus are
-        /// unknown. That is why `clearModifiers` exists and is wired to focus
-        /// loss: an unknown modifier state must decay to "none held", never
-        /// persist as a phantom Ctrl that silently turns the viewer's next
-        /// click into a Ctrl-click on the sharer's desktop.
+        /// The modifier snapshot that rides every event. TRACKED from the key
+        /// events this element already receives, rather than queried from
+        /// the system: `CoreWindow` doesn't exist in a WinAppSDK app, and the
+        /// alternatives vary by binding version. Modifiers held BEFORE this
+        /// element took focus are unknown, hence `clearModifiers` on focus loss.
         private var trackedModifiers: KeyModifiers = []
 
-        /// Update the tracked set from a modifier key event. Returns true when
-        /// the key WAS a modifier, so the caller can drop it rather than
-        /// forwarding it — their held state rides every event's `modifiers`
-        /// field, which is what keeps a mid-stream join stateless.
-        ///
-        /// The usage table and the Caps-Lock-is-a-toggle rule are
-        /// `KeyModifiers.trackHIDKeyEvent`, shared with the GTK viewer's
-        /// `ViewerInputMapping.isModifierUsage` — which reads the same table
-        /// rather than its own range of it.
+        /// Update the tracked set from a modifier key event. Returns true
+        /// when the key WAS a modifier, so the caller can drop it rather than
+        /// forwarding it. Shared logic is `KeyModifiers.trackHIDKeyEvent`,
+        /// also used by the GTK viewer.
         private func trackModifier(usage: UInt16, down: Bool) -> Bool {
             trackedModifiers.trackHIDKeyEvent(usage: usage, down: down)
         }
@@ -633,14 +521,9 @@ struct WinUIVideoView: WinUIElementRepresentable {
 
 #else
 
-/// Off Windows there is no WinUI to host, so the video surface is a placeholder
-/// with the same name and the same initializer.
-///
-/// It exists purely so the rest of the app compiles somewhere a Windows runner
-/// is not required — the same trick every C shim in this port uses (`ts_wgc`,
-/// `ts_overlay`, `ts_sendinput` all have off-Windows stubs), applied one layer
-/// up. Nothing renders it: no `#if`-free code path reaches this on a platform
-/// that could show it.
+/// Off Windows there is no WinUI to host, so the video surface is a
+/// placeholder with the same name and initializer, so the rest of the app
+/// compiles somewhere a Windows runner isn't required.
 struct WinUIVideoView: View {
     let store: FrameStore
     let generation: Int

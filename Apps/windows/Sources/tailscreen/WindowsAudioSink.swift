@@ -7,32 +7,24 @@ import class TailscreenViewer.MonoPCMConverter
 
 /// `AudioSink` backed by WASAPI shared-mode rendering.
 ///
-/// Mirrors `ALSAAudioSink` on Linux — same seam, same best-effort rule: a device
-/// failure is logged and dropped, never propagated, because audio must not be
-/// able to take the video path down with it.
+/// Mirrors `ALSAAudioSink` on Linux — a device failure is logged and dropped,
+/// never propagated, so audio can't take the video path down with it.
 ///
-/// **Opens lazily, on the first buffer.** Two reasons, and the first is not
-/// optional: COM apartment state is per-thread, so the thread that calls
-/// `ts_wasapi_open` must be the thread that writes. This sink is always wrapped
-/// in a `ThreadedAudioSink`, whose single drain thread is therefore where the
-/// open has to happen — doing it in `init` would open on whichever thread built
-/// the session. The second reason is a bonus: a machine with no audio endpoint
-/// costs nothing until audio actually arrives.
+/// Opens lazily, on the first buffer: COM apartment state is per-thread, so
+/// the thread that opens must be the thread that writes, and this sink is
+/// always wrapped in a `ThreadedAudioSink` whose single drain thread is where
+/// that has to happen.
 ///
-/// Not thread-safe, and does not need to be: `ThreadedAudioSink` calls `play`
+/// Not thread-safe, and doesn't need to be: `ThreadedAudioSink` calls `play`
 /// from one thread only.
 final class WASAPIAudioSink: AudioSink {
     private enum State {
         case unopened
         case open(WASAPI.Player, MonoPCMConverter)
-        /// Opening or writing failed. Stays silent for the rest of the session
-        /// rather than retrying 50×/s against a device that is not coming back.
-        ///
-        /// Known limitation: this also swallows a *recoverable* fault — the user
-        /// switching default output device mid-call — which then needs the
-        /// session restarted to get audio back. Reopening on the next buffer
-        /// would fix that, and wants a retry budget so a permanently absent
-        /// device does not thrash; deferred rather than guessed at.
+        /// Opening or writing failed. Stays silent for the rest of the
+        /// session rather than retrying 50x/s against a device that's gone.
+        /// Known limitation: also swallows a recoverable fault (switching
+        /// default output device mid-call), which then needs a restart.
         case failed
     }
 
@@ -78,9 +70,8 @@ final class WASAPIAudioSink: AudioSink {
         }
     }
 
-    /// stderr rather than a logger: this file's failures are diagnosed from the
-    /// captured console output of a downloaded artifact, which is the only
-    /// channel that reaches a user who is not attached to a debugger.
+    /// stderr rather than a logger: the only channel that reaches a user not
+    /// attached to a debugger.
     private func log(_ message: String) {
         FileHandle.standardError.write(Data((message + "\n").utf8))
     }

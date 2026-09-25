@@ -113,16 +113,10 @@ final class RemoteControlPolicyTests: XCTestCase {
         ControlRequestInfo(id: id, viewerIP: ip, hostname: nil, arrivedAt: Date())
     }
 
-    /// The dedupe *rule* — once per pending episode, forgotten on leave — now
-    /// lives in `SharerNoticeDecision.noticesToPost` and is pinned by
-    /// `SharerNoticeTests` in the portable package, where Linux CI runs it.
-    /// What stays macOS's own decision, and is pinned here, is the **key** the
-    /// rule is applied to.
-    ///
-    /// Keying by viewer IP rather than by the TCP `connectionID` the grant
-    /// itself uses is the whole anti-spam property: every reconnect mints a
-    /// fresh connection UUID, so a connection-keyed notice re-fires on each
-    /// drop-and-redial for a request the sharer is already looking at.
+    /// The dedupe rule lives in `SharerNoticeDecision.noticesToPost`
+    /// (`SharerNoticeTests`); pinned here is the KEY it's applied to — viewer
+    /// IP, not the TCP `connectionID`, since every reconnect mints a fresh
+    /// connection UUID and would otherwise re-fire the notice.
     func testControlNoticesAreKeyedByViewerIPNotConnection() {
         let first = request("100.64.0.7")
         let redial = request("100.64.0.7")
@@ -149,11 +143,8 @@ final class RemoteControlPolicyTests: XCTestCase {
         XCTAssertEqual(AppState.noticeCandidates([named]).first?.label, "wisp")
     }
 
-    /// The roster and the gate key by `"ip:port"`, deliberately the opposite
-    /// choice from the control path: a viewer who drops and rejoins on a fresh
-    /// ephemeral port *should* be announced again, because an arrival is news
-    /// each time. Both keys are correct, which is why the shared decision takes
-    /// an opaque string rather than picking one.
+    /// The roster keys by `"ip:port"`, the opposite of the control path: a
+    /// viewer rejoining on a fresh ephemeral port should be announced again.
     func testViewerNoticesAreKeyedByIPAndPort() {
         let pending = PendingViewerInfo(
             id: "100.64.0.7:49152", tailscaleIP: "100.64.0.7", hostname: nil, stableID: nil,
@@ -178,11 +169,8 @@ final class RemoteControlPolicyTests: XCTestCase {
     // MARK: - Toggle-off drains pending requests
 
     func testDisablingControlRequestsDrainsPendingRequests() {
-        // "Turn off to decline requests automatically" (Settings caption):
-        // flipping the gate off must clear every parked request so the
+        // Flipping the gate off must clear every parked request so the
         // sharer's pending rows empty and each requester is declined.
-        // Snapshots arrive synchronously via onControlRequestsChanged; no
-        // live listener needed (the .controlRevoked reply no-ops headless).
         final class SnapshotBox: @unchecked Sendable {
             private let lock = NSLock()
             private var snapshots: [[ControlRequestInfo]] = []

@@ -4,26 +4,17 @@ import GNotifyKit
 
 // gnotify-probe — the link check and the live gate for GNotifyKit.
 //
-// Two jobs, and the first is the boring one that matters: a SwiftPM library
-// target is COMPILED but never LINKED, so a missing `-lgio-2.0` stays invisible
-// until something downstream links it. Running this binary at all proves the
-// link.
-//
-// The second is the one no unit test can do. `Notify` takes `(susssasa{sv}i)` —
-// eight fields, two of them containers — and a mistake in that signature is a
-// D-Bus error at call time that nothing else in this repo would ever produce.
-// Neither is the *signal* path testable in isolation: GDBus delivers to the
-// thread-default main context captured at subscribe time, so a handle opened on
-// a thread that never iterates one posts perfectly and reports nothing. That
-// failure is invisible to every check except pressing a real button.
+// A SwiftPM library target is COMPILED but never LINKED, so a missing
+// `-lgio-2.0` stays invisible until something downstream links it. Running
+// this binary at all proves the link. The live check does what no unit test
+// can: post to a real daemon, ask what it renders, press a real button, and
+// prove the *signal* path — GDBus delivers to the thread-default main context
+// captured at subscribe time, so a handle opened elsewhere posts perfectly
+// and reports nothing.
 
 /// Pump the default main context until `condition` holds or the deadline
-/// passes.
-///
-/// This is the whole point of the live check: `DesktopNotifier` subscribes on
-/// the thread-default context, and here that is the same context this loop
-/// iterates. A probe that slept instead would pass against a notifier whose
-/// signals reach nobody.
+/// passes — the same context `DesktopNotifier` subscribes on. A probe that
+/// slept instead would pass against a notifier whose signals reach nobody.
 @discardableResult
 func pump(untilSeconds seconds: Double, until condition: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(seconds)

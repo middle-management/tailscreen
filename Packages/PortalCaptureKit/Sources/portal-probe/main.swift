@@ -33,11 +33,9 @@ import PortalCaptureKit
 //                                 open a PipeWire stream, report frames.
 //                                 Needs a desktop session and a human.
 //
-// The link check is the reason this is an executable at all: a SwiftPM library
-// target is compiled but never linked, so a missing -lpipewire-0.3 stays
-// invisible until something downstream links it. That is how WASAPIKit's
-// missing GUIDs passed their own CI step and failed eleven minutes later in
-// the app.
+// The link check is the reason this is an executable at all: a SwiftPM
+// library target is compiled but never linked, so a missing -lpipewire-0.3
+// stays invisible until something downstream links it.
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
@@ -71,15 +69,10 @@ if arguments.contains("--link-check") {
 // MARK: - --handshake-test
 
 if arguments.contains("--handshake-test") {
-    // What this proves, stated so nobody reads more into a green run than is
-    // there: the CLIENT half of the D-Bus protocol. Options dicts a server can
-    // read, the Request path derived and subscribed to BEFORE the call (the
-    // fake answers with no pause, so a late subscription misses it and this
-    // times out), the streams array parsed, a restore token picked up, and a
-    // file descriptor surviving OpenPipeWireRemote.
-    //
-    // What it proves about a real portal: nothing. No consent dialog, no
-    // compositor, no PipeWire, not one pixel.
+    // Proves the CLIENT half of the D-Bus protocol only: options dicts, the
+    // Request path subscribed to BEFORE the call (the fake answers with no
+    // pause, so a late subscription misses it), the streams array, restore
+    // token, fd survival. Proves nothing about a real portal.
     guard ProcessInfo.processInfo.environment["DBUS_SESSION_BUS_ADDRESS"] != nil else {
         emit("PORTAL_HANDSHAKE result=SKIP no DBUS_SESSION_BUS_ADDRESS (run under dbus-run-session)")
         exit(0)

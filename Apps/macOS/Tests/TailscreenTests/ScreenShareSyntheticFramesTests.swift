@@ -86,14 +86,10 @@ final class ScreenShareSyntheticFramesTests: XCTestCase {
         await server.stop()
     }
 
-    /// Mid-stream source/resolution change, viewer side. A "Change
-    /// Source…" retarget is (to the viewer) just a fresh encoder emitting
-    /// an IDR with new in-band parameter sets — this proves the client
+    /// A "Change Source…" retarget is, to the viewer, just a fresh encoder
+    /// emitting an IDR with new in-band parameter sets. Proves the client
     /// re-installs the params, rebuilds its decoder, and decodes frames at
-    /// the new dimensions with zero out-of-band signaling, using no
-    /// capture machinery at all. Mirrors what
-    /// `TailscaleScreenShareServer.changeSource` produces after the helper
-    /// respawn.
+    /// the new dimensions with zero out-of-band signaling.
     func testClientAdaptsToMidStreamResolutionChange() async throws {
         let env = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "synth-reschange")

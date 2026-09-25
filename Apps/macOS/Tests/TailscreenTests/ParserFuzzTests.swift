@@ -16,12 +16,10 @@ import XCTest
 /// synchronous and loop-bounded by input length, and the harness feeds bounded
 /// inputs, so a wedge surfaces as the suite blowing its CI timeout.
 ///
-/// Determinism rules (see CLAUDE.md): no `Date()`, no unseeded randomness, no
-/// sleeps. Every iteration derives its seed from the loop index, and every
-/// failure message prints that seed so a red run reproduces exactly.
-/// `multiplier` scales the iteration budgets: 1 for PR CI (the whole suite
-/// stays in low single-digit seconds), ~50 for the nightly soak
-/// (`SoakTests`).
+/// No `Date()`, no unseeded randomness, no sleeps: every iteration derives
+/// its seed from the loop index, printed on failure for exact repro.
+/// `multiplier` scales the iteration budget: 1 for PR CI, ~50 for the
+/// nightly soak (`SoakTests`).
 struct ParserFuzzHarness {
     let multiplier: Int
     let baseSeed: UInt64
@@ -471,9 +469,7 @@ struct ParserFuzzHarness {
         let valid = Self.validParameterSetsPayload(codec: 0, paramSets: [sps, pps])
         let validHEVC = Self.validParameterSetsPayload(codec: 1, paramSets: [vps, sps, pps])
 
-        // Unmutated parses — both zero-based and as a re-based slice. This is
-        // the case that pinned the absolute-offset readBE32 hazard: the old
-        // implementation trapped on any Data slice with a non-zero startIndex.
+        // Zero-based and re-based slice must both parse (pins a slice-safety regression).
         XCTAssertNotNil(HelperScreenCapture.decodeParameterSets(valid))
         XCTAssertNotNil(HelperScreenCapture.decodeParameterSets(validHEVC))
         let paddedValid = Data([0xFF, 0xFF]) + valid

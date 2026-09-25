@@ -38,9 +38,8 @@ final class RemoteControlInjectorTests: XCTestCase {
     private let displaySelection = PickerSelection(
         kind: .display, displayID: nil, windowID: nil, bundleIDs: [])
 
-    // MARK: - Neutral-wire → CGEvent translation (supersedes the old raw-flag
-    // masking: flags are now *constructed* from the neutral bits, so nothing
-    // wire-supplied can reach CGEventFlags unmasked)
+    // MARK: - Neutral-wire → CGEvent translation (flags are constructed from
+    // the neutral bits, so nothing wire-supplied reaches CGEventFlags unmasked)
 
     func testEventFlagsTranslatesEachNeutralBit() {
         XCTAssertEqual(RemoteControlInjector.eventFlags([.shift]), [.maskShift])

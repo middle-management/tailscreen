@@ -5,11 +5,10 @@ import XCTest
 /// `AppState.nodeBringUpPhase` — the mac hub's five scattered bring-up
 /// signals read as the one `NodeBringUpPhase` all three hubs share.
 ///
-/// The mapping is a projection rather than a stored phase (see
-/// `AppState.nodePhase` for why), which makes its PRECEDENCE the entire
-/// content: the same five booleans can be read in several orders and only
-/// one of them is right in the windows where two are set at once. Those
-/// windows are what this suite is about.
+/// A projection, not a stored phase (see `AppState.nodePhase`), so its
+/// PRECEDENCE is the whole point: the five booleans can be read in several
+/// orders, and only one order is right when two are set at once. This suite
+/// pins those windows.
 @MainActor
 final class NodeBringUpPhaseProjectionTests: XCTestCase {
     /// A settled signed-in reading, for the cases that vary one input.
@@ -30,35 +29,21 @@ final class NodeBringUpPhaseProjectionTests: XCTestCase {
 
     // MARK: - The ordering that matters
 
-    /// The load-bearing leg.
-    ///
-    /// The obvious precedence — in-flight before settled — is wrong here.
-    /// `TailscaleAuth` sets `isAuthenticated` and clears `isLoading` from
-    /// two different points in the login flow, so there is a window where
-    /// both are true; reading the in-flight one first reports `startingNode`
-    /// for somebody already signed in and looking at their screens list,
-    /// and everything gated on the phase then treats a live session as an
-    /// unfinished bring-up. Checking the settled case first makes that
-    /// unrepresentable rather than merely unlikely.
+    /// The obvious precedence (in-flight before settled) is wrong here:
+    /// `TailscaleAuth` sets `isAuthenticated` and clears `isLoading` from two
+    /// different points in login, so there's a window where both are true.
+    /// Reading in-flight first would report `startingNode` for someone
+    /// already signed in.
     func testSignedInWinsOverASignInStillMarkedInFlight() {
         XCTAssertEqual(phase(isAuthenticated: true, isSigningIn: true), .ready)
     }
 
-    /// In-flight is BOTH login flags, and the app-level one is the earlier.
-    ///
-    /// `AppState.isLoggingIn` is set at the top of `login()`; the auth
-    /// object's `isLoading` only once `getOrCreateNode()` has returned and
-    /// the flow proper begins. Node creation is the slow part of a first
-    /// run, so reading only the second leaves that entire window reporting
-    /// `signedOut` — a sign-in card offering a button whose press `login()`
-    /// then swallows through its own re-entrancy guard. The projection is
-    /// handed the OR of the two.
-    ///
-    /// This leg pins only that an in-flight sign-in beats the signed-out
-    /// default — the OR itself is at the `nodePhase` call site, which a test
-    /// of the pure function cannot reach, and which is why the composition is
-    /// spelled out in that property's doc comment rather than left to be
-    /// inferred from the parameter name.
+    /// `AppState.isLoggingIn` is set at the top of `login()`, before the auth
+    /// object's `isLoading` (only once `getOrCreateNode()` returns). Reading
+    /// only the latter would report `signedOut` during node creation — the
+    /// slow part of a first run. The OR of the two is applied at the
+    /// `nodePhase` call site (see its doc comment); this leg only pins that
+    /// in-flight beats signed-out.
     func testASignInInFlightOutranksTheSignedOutDefault() {
         XCTAssertEqual(phase(isAuthenticated: false, isSigningIn: true), .startingNode)
     }
@@ -83,11 +68,8 @@ final class NodeBringUpPhaseProjectionTests: XCTestCase {
         XCTAssertEqual(phase(isDiscovering: true), .discovering)
     }
 
-    /// An empty list BEFORE any pass has finished is "no answer yet", not
-    /// "no devices" — so the phase is still `discovering` even with no
-    /// sweep currently running. This is the flag the loading skeleton has
-    /// always keyed off; reading it here is what lets the view stop
-    /// re-deriving it.
+    /// An empty list before any pass has finished is "no answer yet," not "no
+    /// devices" — still `discovering` even with no sweep currently running.
     func testNotYetAnsweredReadsAsDiscoveringEvenWithNoSweepRunning() {
         XCTAssertEqual(
             phase(isDiscovering: false, hasCompletedInitialDiscovery: false), .discovering)
@@ -115,10 +97,8 @@ final class NodeBringUpPhaseProjectionTests: XCTestCase {
 
     // MARK: - What the views read off it
 
-    /// Both signed-out readings put the welcome pane's card in reach, which
-    /// is what the shared `isSignedOut` promises and what the sign-in card
-    /// relabels itself from. The two are still distinct values — collapsing
-    /// them is the shortcut that loses the reason.
+    /// Both readings satisfy `isSignedOut` but stay distinct values —
+    /// collapsing them would lose the failure reason.
     func testBothSignedOutReadingsAreSignedOutButNotEqual() {
         let failed = phase(isAuthenticated: false, failure: "boom")
         let fresh = phase(isAuthenticated: false)

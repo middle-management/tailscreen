@@ -79,13 +79,9 @@ public enum FFmpeg {
         }
     }
 
-    /// `AVColorRange`, as much of it as exists.
-    ///
-    /// These three enums are FFmpeg-shaped on purpose: this package wraps the
-    /// system library and knows nothing about Tailscreen's types (see the
-    /// layering note in TailscreenVideoFFmpeg's Package.swift), so it reports
-    /// what libavcodec said and lets its consumer map that to whatever the app
-    /// tier calls it.
+    /// `AVColorRange`. These three enums are FFmpeg-shaped on purpose: this
+    /// package knows nothing about Tailscreen's types, so it reports what
+    /// libavcodec said and lets the consumer map it.
     public enum ColorRange: Sendable, Equatable {
         case unspecified
         case limited
@@ -218,14 +214,10 @@ public enum FFmpeg {
         return names
     }
 
-    /// One multi-line inventory of this build, for a log.
-    ///
-    /// Exists because the question "does our FFmpeg have NVENC / VAAPI / D3D11VA"
-    /// was answerable only by speculation: CI links BtbN's LGPL Windows build
-    /// and distro libavcodec on Linux, and neither documents its enabled set
-    /// where we would see it. Printed by `CapabilityReportTests` in the jobs
-    /// that already run this package's suite on both platforms, so the answer
-    /// is a line in a log we already produce rather than a research task.
+    /// One multi-line inventory of this build, for a log — answers "does our
+    /// FFmpeg have NVENC / VAAPI / D3D11VA" without speculation. Printed by
+    /// `CapabilityReportTests` in the jobs that already run this package's
+    /// suite.
     public static func capabilityReport() -> String {
         func present(_ names: [String], _ probe: (String) -> Bool) -> String {
             let found = names.filter(probe)
@@ -437,16 +429,9 @@ public enum FFmpeg {
             guard width > 0, height > 0, fps > 0 else {
                 throw DecodeError(message: "invalid encoder geometry \(width)x\(height)@\(fps)")
             }
-            // NO EXPLICIT POINTER TYPE HERE. FFmpeg 5.0 made the codec lookups
-            // return `const AVCodec *`; 4.x returns a mutable one, so Swift
-            // imports this as UnsafePointer on one and UnsafeMutablePointer on
-            // the other, and naming either breaks the build on the other. Every
-            // other lookup in this file already infers (`guard let c = …`) and
-            // is portable by accident; this was the one annotated site, and it
-            // is what stopped the app compiling against the FFmpeg in Ubuntu
-            // 22.04. Inference is the fix: `avcodec_alloc_context3` takes a
-            // const pointer on both, and Swift converts mutable→const at the
-            // call.
+            // NO EXPLICIT POINTER TYPE HERE. FFmpeg 5.0 returns `const AVCodec
+            // *` from codec lookups; 4.x returns mutable, so an annotated type
+            // breaks the build on one or the other. Let it infer.
             let enc = encoderName.flatMap { avcodec_find_encoder_by_name($0) } ?? avcodec_find_encoder(codec.avID)
             guard let enc else {
                 throw DecodeError(message: "no encoder for \(codec)\(encoderName.map { " (\($0))" } ?? "")")
@@ -606,16 +591,11 @@ public enum FFmpeg {
 /// This conversion belongs in the shared adapter layer, not reinvented per
 /// platform (see plans/porting-plan.md problem #3).
 public enum NALUnit {
-    /// Convert an AVCC access unit to Annex-B. `nalLengthSize` is the width of
-    /// each NAL's length prefix (1, 2, or 4 bytes; H.264/HEVC avcC records use
-    /// 4). Returns nil if the buffer is malformed — a length that runs past
-    /// the end, or a zero-length NAL — so a corrupt packet can't be fed to the
-    /// decoder as a partial stream.
     /// Split an Annex-B buffer into its constituent NAL payloads (start codes
     /// removed). Accepts both the 3-byte `00 00 01` and 4-byte `00 00 00 01`
     /// forms, which encoders mix freely within one access unit. Trailing
-    /// zero-bytes (`trailing_zero_8bits`) are trimmed, since they belong to the
-    /// stream framing rather than the NAL.
+    /// zero-bytes are trimmed, since they belong to the stream framing rather
+    /// than the NAL.
     public static func annexBNALs(_ annexB: Data) -> [Data] {
         let bytes = [UInt8](annexB)
         var starts: [(index: Int, codeLength: Int)] = []
@@ -667,6 +647,10 @@ public enum NALUnit {
         return out
     }
 
+    /// Convert an AVCC access unit to Annex-B. `nalLengthSize` is the width of
+    /// each NAL's length prefix (1, 2, or 4 bytes; H.264/HEVC avcC records use
+    /// 4). Returns nil if the buffer is malformed — a length that runs past
+    /// the end, or a zero-length NAL.
     public static func avccToAnnexB(_ avcc: Data, nalLengthSize: Int = 4) -> Data? {
         guard (1...4).contains(nalLengthSize) else { return nil }
         let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]

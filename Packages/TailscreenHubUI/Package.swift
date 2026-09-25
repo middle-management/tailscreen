@@ -3,27 +3,17 @@ import PackageDescription
 
 // TailscreenHubUI — the hub's look, shared by every swift-cross-ui app.
 //
-// The macOS app has a "hub": a docked window with a thick header carrying the
-// wordmark and a status subtitle, a centered content column, rounded cards, and
-// a Screens list of presence-dot + hostname + IP rows that expand into a detail
-// pane. The GTK viewer reproduced that in swift-cross-ui primitives, because
-// swift-cross-ui is a SwiftUI *subset* — no SF Symbols, `Button` takes only a
-// String, no `.buttonStyle` — so the look had to be rebuilt from `Circle`,
-// `Capsule`, `RoundedRectangle` and translucent tints.
-//
-// Then the Windows app arrived and had none of it, and the choice was to
-// rebuild that work a second time or to move it somewhere both apps can reach.
-// A design system that exists twice is a design system that drifts: the two
-// would agree on the day they were written and never again.
-//
-// So it lives here, in one place, and both apps import it.
+// The macOS app's "hub" (docked window, header, cards, Screens list) was
+// rebuilt in swift-cross-ui primitives for the GTK viewer, since swift-cross-ui
+// is a SwiftUI subset with no SF Symbols or `.buttonStyle`. Rather than
+// rebuild it again for Windows, it lives here, in one place both apps import,
+// so the design system can't drift between them.
 //
 // Deliberately thin on dependencies: SwiftCrossUI for the views and
 // TailscreenProtocol for the handful of value types the chrome renders
-// (`TailscreenMetadata` behind a screen row's sharing chip, `AnnotationTool`
-// behind the toolbar). Nothing platform-specific, no transport, no decoder —
-// which is also what lets Linux CI typecheck the whole thing on behalf of the
-// Windows app.
+// (`TailscreenMetadata`, `AnnotationTool`). Nothing platform-specific, no
+// transport, no decoder — which is also what lets Linux CI typecheck the
+// whole thing on behalf of the Windows app.
 let package = Package(
     name: "TailscreenHubUI",
     products: [

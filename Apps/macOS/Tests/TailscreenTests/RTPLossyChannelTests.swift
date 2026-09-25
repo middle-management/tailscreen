@@ -86,15 +86,11 @@ final class RTPLossyChannelTests: XCTestCase {
         return out
     }
 
-    /// Assert pure-reordering recovery: the reorder buffer anchors its
-    /// sequence baseline to the *first packet it receives*, so when the stream
-    /// starts out of order any genuinely-earlier packets arrive "behind" the
-    /// baseline and are correctly dropped as stragglers — losing at most a
-    /// short cold-start prefix (exactly what a viewer joining mid-stream sees,
-    /// before a keyframe re-syncs it). After that lock, reordering within the
-    /// window must drop nothing. Assert that: delivered frames are a contiguous
-    /// run ending at the final frame, missing at most `maxColdStartDrop` frames
-    /// at the front, none flagged as loss.
+    /// The reorder buffer anchors its sequence baseline to the first packet it
+    /// receives, so an out-of-order start drops a short cold-start prefix as
+    /// stragglers; after that, reordering within the window must drop
+    /// nothing. Asserts: contiguous run ending at the final frame, at most
+    /// `maxColdStartDrop` missing at the front, none flagged as loss.
     private func assertReorderRecovered(
         _ delivered: [VideoAccessUnit], frameCount: Int, maxColdStartDrop: Int,
         file: StaticString = #filePath, line: UInt = #line
@@ -259,13 +255,10 @@ final class RTPLossyChannelTests: XCTestCase {
     }
 
     /// Drive packetize → loss → (`NACKScheduler` + depacketizer) → retransmit
-    /// re-injection, in discrete 1 ms steps (one per arriving packet). NACKed
-    /// sequence numbers are looked up in the byte-identical wire map and
-    /// re-injected `rttSteps` later — unless `retransmitReliable` is false,
-    /// which models a link so lossy even retransmits drop, forcing the
-    /// scheduler's PLI fallback. The first packet is never dropped so the
-    /// receiver's cold-start baseline is clean and every later loss is
-    /// recoverable.
+    /// re-injection, in discrete 1 ms steps. NACKed seqs are re-injected
+    /// `rttSteps` later unless `retransmitReliable` is false, which models
+    /// retransmits also dropping (forces the PLI fallback). The first packet
+    /// is never dropped, keeping the cold-start baseline clean.
     private func runNACKLoop(
         packets: [Data],
         config: NACKLoopConfig,
@@ -419,16 +412,13 @@ final class RTPLossyChannelTests: XCTestCase {
         var fecRecovered: Int
     }
 
-    /// Impairment knobs for `runRecoveryLoop`. `singleLossPerGroupRate`
-    /// drops at most one member per FEC group (the FEC-solvable regime);
-    /// `dropLastInGroup` pins that victim to the group's LAST packet — for
-    /// the final group that's the AU's marker packet, the tail-of-batch
-    /// recovery case that must not leave a phantom scheduler gap;
-    /// `mediaLossRate` is unconstrained per-packet loss (multi-loss groups
-    /// hand off to NACK); `parityLossRate` drops parity datagrams
-    /// (parity loss must be silent and free); `lateOriginalSteps` re-delivers
-    /// each dropped original that many steps later (the late-original dedup
-    /// case).
+    /// Impairment knobs for `runRecoveryLoop`. `singleLossPerGroupRate` drops
+    /// at most one member per FEC group (FEC-solvable); `dropLastInGroup`
+    /// pins that victim to the group's last packet (the AU marker, for the
+    /// tail-of-batch case); `mediaLossRate` is unconstrained loss (multi-loss
+    /// groups hand off to NACK); `parityLossRate` drops parity datagrams
+    /// (must be silent and free); `lateOriginalSteps` re-delivers a dropped
+    /// original that many steps later (late-original dedup case).
     private struct RecoveryLoopConfig {
         var lossSeed: UInt64
         var singleLossPerGroupRate: Double = 0
@@ -440,23 +430,20 @@ final class RTPLossyChannelTests: XCTestCase {
         var lateOriginalSteps: Int?
     }
 
-    /// The FEC leg of the recovery loop: the "server" side groups each
-    /// frame's packets with `groupRanges` + `parityBody`, emitting each
-    /// group's parity IMMEDIATELY after that group's last member — genuinely
-    /// mirroring the broadcast send chain's interleaved ordering (batch-
-    /// trailing parity would defeat the viewer's bounded buffer on
-    /// multi-group keyframes); the "viewer" side runs the production
-    /// composition — FEC-mode `NACKScheduler` tolerances (parity flowing),
+    /// The FEC leg: the "server" side groups each frame's packets and emits
+    /// each group's parity immediately after its last member, mirroring the
+    /// send chain's interleaved ordering (batch-trailing parity would defeat
+    /// the viewer's bounded buffer on multi-group keyframes). The "viewer"
+    /// side runs the production composition — FEC-mode `NACKScheduler`,
     /// `FECGroupBuffer` in front of the depacketizer, recovered packets
-    /// ingested through the same path as received ones with `noteRecovered`
-    /// — with NACKed seqs re-injected byte-identically `rttSteps` later.
+    /// ingested via `noteRecovered` — with NACKed seqs re-injected `rttSteps` later.
     private func runRecoveryLoop(
         packets: [Data],
         config: RecoveryLoopConfig,
         ingest: (Data) -> VideoAccessUnit?,
         drain: () -> [VideoAccessUnit]
     ) -> RecoveryLoopOutcome {
-        // Regroup the flat stream into frames (one AU each, contiguous seqs).
+        // Regroup the flat stream into frames.
         var frames: [[Data]] = []
         var lastTs: UInt32?
         for packet in packets {
@@ -471,11 +458,9 @@ final class RTPLossyChannelTests: XCTestCase {
         var wire: [UInt16: Data] = [:]
         for packet in packets { wire[Self.seqOf(packet)] = packet }
 
-        // Server side: schedule = each frame's packets with every group's
-        // parity interleaved right after that group's last member; decide
-        // the dropped set up front for the single-loss-per-group regime
-        // (victims only inside covered ranges, never the stream's first
-        // packet, so every drop is FEC-solvable).
+        // Server side: interleave each group's parity right after its last
+        // member; pick the dropped set up front (never the stream's first
+        // packet, so every single-loss-per-group drop is FEC-solvable).
         enum Event {
             case media(Data)
             case parity(base: UInt16, count: Int, body: Data)
@@ -698,14 +683,11 @@ final class RTPLossyChannelTests: XCTestCase {
     }
 
     func testEarlyGroupLossInMultiGroupFrameRecoveredByFEC() {
-        // Keyframe-sized frames of 26 packets → three balanced groups per
-        // frame. With every group losing one member, the FIRST group's
-        // victim is recovered by its own interleaved parity — which arrives
-        // right after the group, NOT after the whole batch. Batch-trailing
-        // parity would leave that early gap NACK-eligible ~16 media packets
-        // before recovery data even hit the wire (and, on real keyframes,
-        // let the bounded FECGroupBuffer evict the group's members first).
-        // Zero NACKs is therefore the interleaving proof.
+        // Keyframe-sized frames → three balanced groups per frame. The
+        // first group's victim must be recovered by its own interleaved
+        // parity, not batch-trailing parity (which would leave the gap
+        // NACK-eligible, or let the bounded FECGroupBuffer evict it first).
+        // Zero NACKs is the interleaving proof.
         let (packets, expected) = Self.buildH264Stream(
             frameCount: 40, bytesPerFrame: 28_000, ssrc: 0xFEC6)
         let perFrame = packets.count / 40
@@ -726,14 +708,11 @@ final class RTPLossyChannelTests: XCTestCase {
     }
 
     func testCoveredMarkerLossRecoveredWithoutPhantomGap() {
-        // The AU's FINAL packet (marker) is lost in every selected frame and
-        // recovered from parity — the tail-of-batch case: no wire packet
-        // ever carries that seq, so the scheduler must advance past the
-        // recovery (`noteRecovered`) or the NEXT frame's first packet
-        // re-opens a phantom gap for the already-recovered seq and burns a
-        // spurious NACK. Zero NACKs pins the fix; balanced `groupRanges`
-        // guarantees the marker sits inside a covered group (12 packets →
-        // 6+6).
+        // The AU's final packet (marker) is lost and recovered from parity —
+        // no wire packet ever carries that seq, so the scheduler must
+        // advance past the recovery (`noteRecovered`) or the next frame's
+        // first packet re-opens a phantom gap and burns a spurious NACK.
+        // Zero NACKs pins the fix.
         let (packets, expected) = Self.buildH264Stream(
             frameCount: 60, bytesPerFrame: 13_000, ssrc: 0xFEC7)
         let perFrame = packets.count / 60

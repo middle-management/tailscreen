@@ -4,14 +4,11 @@ import PackageDescription
 // TailscreenDifferential — the Swift↔Go differential suite over the stateful
 // receive pipeline.
 //
-// This is a separate package, not a TailscreenKit test target, for one hard
-// reason: a Go c-archive carries a whole Go runtime, and two of them cannot
-// be linked into one binary — their cgo export symbols (`crosscall2`,
-// `_cgo_panic`, `_cgo_topofstack`) collide. SwiftPM links every test target
-// of a package into a single test executable on Linux, and TailscreenKit's
-// `TailscreenSharerTests` already links `libtailscale.a` — so the suite that
-// links `libtailscreen.a` (the public Go SDK as a c-archive) has to live in
-// a package whose test binary contains exactly one Go runtime.
+// A separate package, not a TailscreenKit test target: a Go c-archive
+// carries a whole Go runtime, and two can't be linked into one binary (their
+// cgo export symbols collide). TailscreenKit's `TailscreenSharerTests`
+// already links `libtailscale.a`, so the suite linking `libtailscreen.a`
+// needs its own test binary.
 //
 // It depends only on the `TailscreenProtocol` product (Foundation-only, no
 // TailscaleKit in the build graph) plus the `CTailscreen` systemLibrary,

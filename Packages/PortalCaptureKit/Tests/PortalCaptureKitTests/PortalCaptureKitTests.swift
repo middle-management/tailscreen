@@ -9,15 +9,9 @@ import XCTest
 /// parts that need a compositor and a human are covered by nothing, because
 /// nothing can cover them. See README.md.
 final class PortalRequestPathTests: XCTestCase {
-    /// The one piece of the handshake that is pure string arithmetic, and the
-    /// one whose failure is completely silent: derive it wrong and the client
-    /// subscribes to a path nothing is ever emitted on, so every portal call
-    /// times out with no error from anywhere.
-    ///
-    /// Pinned against hand-written expectations rather than against the fake
-    /// portal, which derives the same path with its own implementation — if
-    /// both used one function, a typo would move both together and neither
-    /// would notice.
+    /// Pinned against hand-written expectations rather than the fake portal,
+    /// which derives the same path independently — sharing one function would
+    /// let a typo move both together unnoticed.
     func testUniqueNameBecomesAPathElement() {
         XCTAssertEqual(
             PortalSession.requestPath(uniqueName: ":1.42", token: "ts9_1"),

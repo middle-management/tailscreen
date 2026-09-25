@@ -3,21 +3,8 @@ import XCTest
 @testable import FFmpegKit
 
 /// Prints what the FFmpeg build under test actually carries, and asserts the
-/// floor the viewer depends on.
-///
-/// The printing is the point, and it is deliberately in a test rather than a
-/// tool: `swift test --package-path Packages/FFmpegKit` already runs in the
-/// Windows `ffmpeg` job and the `linux-ffmpeg` job, so this reaches both
-/// platforms' logs with no workflow change and no new target to keep staged.
-///
-/// It exists because "does our FFmpeg have NVENC / VAAPI / D3D11VA" was
-/// answerable only by guessing. CI links BtbN's **LGPL** Windows build — the
-/// same licensing choice that excludes libx264 and leaves libopenh264 doing the
-/// encoding — and distro libavcodec on Linux, and neither announces its enabled
-/// set anywhere we would see it. Every hardware-acceleration decision depends
-/// on that answer, so it should be a line in a log we already produce.
-///
-/// Grep `FFMPEG_CAPS` in a job log.
+/// floor the viewer depends on. Deliberately a test, not a tool, so it reaches
+/// both platforms' job logs with no workflow change. Grep `FFMPEG_CAPS`.
 final class CapabilityReportTests: XCTestCase {
 
     func testReportTheBuildsCapabilities() {

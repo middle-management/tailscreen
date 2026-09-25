@@ -25,13 +25,11 @@ import XCTest
 /// would institutionalize a false invariant — see
 /// `testTCPAndUDPSpacesAreDisjointOnPurpose`.
 ///
-/// Known limit: enum-backed channels get real exhaustiveness via
-/// `CaseIterable`, but non-enum constants (payload types, caps bits, SSRCs)
-/// can only be as exhaustive as the production-side `allPayloadTypes` /
-/// `ScreenShareCaps.allKnown` lists this test cross-checks — a new constant
-/// that never joins its production list, or a raw byte literal written
-/// straight into wire code, bypasses the registry entirely. Reviews should
-/// treat any new wire literal without a registry row as a defect.
+/// Known limit: non-enum constants (payload types, caps bits, SSRCs) are only
+/// as exhaustive as the production-side `allPayloadTypes` /
+/// `ScreenShareCaps.allKnown` lists this test cross-checks — a raw byte
+/// literal that never joins its production list bypasses the registry
+/// entirely. Treat any new wire literal without a registry row as a defect.
 final class WireByteRegistryTests: XCTestCase {
     /// One pinned row: the constant's source-level case name and its wire value.
     private struct WireRow {
