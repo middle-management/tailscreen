@@ -16,9 +16,24 @@ extension VoiceStats {
         /// Distinct remote voices being decoded (live SSRC decoders).
         /// `VoiceMixer` sums same-slot ones, so above 1 this is mixing depth.
         public var voiceStreams: Int
-        /// Whether shared system audio is playing alongside — a separate
-        /// player node on macOS, only summed with voice at the main mixer.
-        public var systemAudioPlaying: Bool
+        /// Whether shared system audio is being RECEIVED and played here — a
+        /// separate player node on macOS, only summed with voice at the main
+        /// mixer.
+        ///
+        /// Receive-side only, and named for it. The first cut called this
+        /// `system_audio` and set it from inbound PT 99 alone, which a sharer
+        /// never receives — so the machine that had just turned system audio
+        /// ON reported `false` for every row while the viewer opposite it
+        /// reported `true`, and a reader asking "was system audio in this
+        /// call" got opposite answers from the two halves of one pair.
+        public var systemAudioIn: Bool
+        /// Whether this host is CAPTURING and sending system audio.
+        ///
+        /// The sharer's half of the same question, and not something the
+        /// voice path can observe: system audio leaves through the capture
+        /// helper, never through anything that reaches here. The host pushes
+        /// it, exactly as it pushes `outputDevice`.
+        public var systemAudioOut: Bool
         /// Whether this host's own microphone is open — engages AEC and restarts the engine.
         public var microphoneOn: Bool
         /// Current adaptive jitter target, in 20 ms buffers — the same
@@ -41,7 +56,8 @@ extension VoiceStats {
 
         public init(
             voiceStreams: Int = 0,
-            systemAudioPlaying: Bool = false,
+            systemAudioIn: Bool = false,
+            systemAudioOut: Bool = false,
             microphoneOn: Bool = false,
             jitterTargetDepth: Int = 0,
             burstDepth: Int = 0,
@@ -49,7 +65,8 @@ extension VoiceStats {
             playbackQueueTracked: Bool = false
         ) {
             self.voiceStreams = voiceStreams
-            self.systemAudioPlaying = systemAudioPlaying
+            self.systemAudioIn = systemAudioIn
+            self.systemAudioOut = systemAudioOut
             self.microphoneOn = microphoneOn
             self.jitterTargetDepth = jitterTargetDepth
             self.burstDepth = burstDepth
@@ -62,7 +79,8 @@ extension VoiceStats {
     /// running. Deliberately not an "only when a counter moved" guard, which
     /// would hide the steady-state faults this exists to catch.
     public static func shouldRecordSummary(context: PlaybackContext) -> Bool {
-        context.voiceStreams > 0 || context.systemAudioPlaying || context.microphoneOn
+        context.voiceStreams > 0 || context.systemAudioIn || context.systemAudioOut
+            || context.microphoneOn
     }
 
     /// The `audio.summary` fields for one window: deltas for every counter,
@@ -70,7 +88,7 @@ extension VoiceStats {
     ///
     /// `clamped` counts decoded buffers with a sample outside [-1, 1] — voice
     /// already hot before summing — so non-zero alongside `voice_streams` > 1
-    /// or `system_audio` says the mix is clipping, not the network dropping.
+    /// or `system_audio_in` says the mix is clipping, not the network dropping.
     public func audioSummaryFields(
         since previous: VoiceStats, windowNs: UInt64, context: PlaybackContext
     ) -> [String: DiagnosticValue] {
@@ -85,7 +103,8 @@ extension VoiceStats {
             "jitter_target": DiagnosticValue(context.jitterTargetDepth),
             "burst_depth": DiagnosticValue(context.burstDepth),
             "voice_streams": DiagnosticValue(context.voiceStreams),
-            "system_audio": .bool(context.systemAudioPlaying),
+            "system_audio_in": .bool(context.systemAudioIn),
+            "system_audio_out": .bool(context.systemAudioOut),
             "mic_on": .bool(context.microphoneOn)
         ]
         if context.playbackQueueTracked {

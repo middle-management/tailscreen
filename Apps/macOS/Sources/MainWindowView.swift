@@ -787,7 +787,21 @@ private struct ShareStatusSection: View {
                         .font(.system(.headline, design: .rounded))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 8)
+                    // The only way out until the session reaches a state with
+                    // its own exit. The viewer window's placard carries a
+                    // Cancel, but that window is not brought to the front
+                    // until admission or the first frame, so while connecting
+                    // it is invisible and its button unreachable — leaving
+                    // this row, a spinner with no control on it, as the whole
+                    // interface. A dead share link spends that time in a
+                    // `dialUDP` with no deadline; one rc.16 bundle sat here
+                    // for three and a half minutes on a connection that had
+                    // given up after fifteen seconds.
+                    Button(L("Cancel")) {
+                        Task { await appState.disconnect() }
+                    }
+                    .accessibilityHint(L("Stops trying to connect"))
                 }
             default:
                 // A failed start says so above the retry button; the alert is
@@ -991,6 +1005,16 @@ private struct PeerListSection: View {
 
     private static let maxSkeletonRows = 6
 
+    /// How often the visible list re-checks the tailnet, in seconds.
+    ///
+    /// A compromise, and worth naming as one. Each pass costs one local
+    /// LocalAPI status call plus a short-lived metadata dial to every online
+    /// peer, which is exactly the cost that made the share-status sweep lazy
+    /// in the first place — so this is slow enough that a ten-peer tailnet is
+    /// not dialled constantly, and quick enough that somebody starting a
+    /// share appears without the other person thinking to press Refresh.
+    private static let refreshInterval: Double = 20
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L("Screens"))
@@ -1009,6 +1033,34 @@ private struct PeerListSection: View {
             guard !didAutoDiscover else { return }
             didAutoDiscover = true
             Task { await appState.discoverPeers() }
+        }
+        // Keep the list live while it is on screen.
+        //
+        // Nothing refreshed it after the first load. Membership rode the IPN
+        // netmap, which is push-only — so a watcher whose stream went quiet
+        // without erroring froze the list for the rest of the session with
+        // nothing to say so (rc.16: one `Peer status updated` at launch, then
+        // five and a half minutes of nothing) — and the sharing column was
+        // deliberately lazy, refreshing only on this view's Refresh button or
+        // the "only sharing" filter, so a peer that started sharing while you
+        // watched never changed.
+        //
+        // `discoverPeers` already fixes all three: it re-seeds from
+        // backendStatus, re-kicks real-time monitoring (idempotent, and the
+        // only thing that revives a silently dead watcher), and sweeps share
+        // status. It coalesces on `isDiscovering`, so overlapping with a
+        // manual Refresh costs nothing.
+        //
+        // A `.task` rather than a timer so SwiftUI cancels it when the list
+        // goes away: the sweep dials every online peer, and paying for that
+        // behind a hidden window is what made the whole thing lazy to begin
+        // with.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.refreshInterval))
+                guard !Task.isCancelled else { return }
+                await appState.discoverPeers(surfacingFailures: false)
+            }
         }
         .onChange(of: appState.isDiscovering) { _, discovering in
             // Arm only after the first discovery's results rendered, so the

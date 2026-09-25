@@ -748,6 +748,19 @@ class AppState: ObservableObject {
     /// `frameAutosaveName` for the viewer window.
     private static let viewerFrameAutosaveName = "TailscreenViewerWindow"
 
+    /// How long a join-by-link may sit in the relay bootstrap before the hub
+    /// gives up on it.
+    ///
+    /// Matched to the viewer's own idle-disconnect window so the two ways a
+    /// join can fail — the tunnel never comes up, or it comes up and the
+    /// sharer never answers — time out alike rather than one of them looking
+    /// broken next to the other. Generous on purpose: a first relay
+    /// bootstrap over a slow link is legitimately several seconds, and the
+    /// cost of waiting too long is now a spinner with a Cancel on it rather
+    /// than a dead end.
+    private static let linkJoinTimeoutSeconds =
+        Double(TransportTuning.clientIdleDisconnectNs) / 1_000_000_000
+
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
@@ -1649,7 +1662,7 @@ class AppState: ObservableObject {
                         srv?.sendAudioRTP(packet)
                     }
                     self.voiceChannel = voice
-                    self.publishOutputDeviceToVoice()
+                    self.publishVoiceHostContext()
                     srv.onAudioReceived = { [weak voice] packet in
                         voice?.receive(packet)
                     }
@@ -2041,15 +2054,25 @@ class AppState: ObservableObject {
                 snapshot: current,
                 selectedInput: selectedInputDeviceName,
                 selectedOutput: selectedOutputDeviceName))
-        publishOutputDeviceToVoice()
+        publishVoiceHostContext()
     }
 
-    /// Tell the voice path which output every `audio.summary` row was
-    /// measured through. Pushed on each device change and on attach, since a
-    /// `VoiceChannel` built after the last change would otherwise record
-    /// rows naming no device.
-    private func publishOutputDeviceToVoice() {
+    /// Tell the voice path the half of an `audio.summary` row it cannot
+    /// observe for itself: which output the numbers were measured through,
+    /// and whether this host is sending system audio.
+    ///
+    /// Both are pushed rather than read because both live here. The device
+    /// is Core Audio state on the MainActor; system audio leaves through the
+    /// capture helper and never passes anything the voice path can see, so
+    /// without this a sharer's row says `system_audio_out: false` on the
+    /// machine that just turned it on.
+    ///
+    /// Called on every device change, on every system-audio toggle, and on
+    /// attach — a `VoiceChannel` built after the last change would otherwise
+    /// record rows carrying neither.
+    private func publishVoiceHostContext() {
         voiceChannel?.setOutputDeviceName(selectedOutputDeviceName ?? systemDefaultOutputName)
+        voiceChannel?.setSharingSystemAudio(isSystemAudioOn)
     }
 
     /// Name of the selected input, or nil for "system default" — a real
@@ -2110,6 +2133,22 @@ class AppState: ObservableObject {
 
     func toggleMic() async {
         guard let voice = voiceChannel, let cap = micCapture else {
+            // "Not yet" is not a failure. The voice channel is built when a
+            // session is admitted, and the mic chord is a GLOBAL hotkey — it
+            // arrives here whatever is on screen — so pressing it four
+            // seconds into a connect used to raise a modal error about a
+            // condition that was about to stop being true. One rc.16 bundle
+            // records exactly that, mid-handshake, on a connection that was
+            // still retrying its HELLO.
+            //
+            // Silent rather than a softer alert, because nothing was
+            // transmitting to mute: with no capture running the press has
+            // already got what it asked for. The error stays for a genuinely
+            // idle app, where it is the true answer.
+            if connectionState == .connecting || sharingState == .starting {
+                logger.log("Mic toggle ignored — session still coming up")
+                return
+            }
             presentError(.voiceNotReady())
             return
         }
@@ -2158,6 +2197,7 @@ class AppState: ObservableObject {
         isSystemAudioOn.toggle()
         AppDiagnostics.action(.actionSystemAudioToggle, ["on": .bool(isSystemAudioOn)])
         server?.setShareSystemAudio(isSystemAudioOn)
+        publishVoiceHostContext()
     }
 
     // MARK: - Link sharing (share-by-token) actions
@@ -2473,7 +2513,7 @@ class AppState: ObservableObject {
                             c?.sendAudioRTP(packet)
                         }
                         self.voiceChannel = voice
-                        self.publishOutputDeviceToVoice()
+                        self.publishVoiceHostContext()
                         c.onAudioReceived = { [weak voice] packet in
                             voice?.receive(packet)
                         }
@@ -2488,6 +2528,30 @@ class AppState: ObservableObject {
 
             if let guestToken {
                 // The token names the relay and sharer: no node, no sign-in.
+                //
+                // Bounded, because the bootstrap is not. A token names a
+                // relay and a node key; dialing a node that is gone — an
+                // expired link, a rotated one, a mistyped paste — simply
+                // waits, and `connectGuest` has no deadline to end that wait.
+                // A watchdog rather than `withTimeout` around the call: the
+                // dial blocks down in the guest tunnel's own code, where
+                // cancelling the Swift task does not reach, so what has to
+                // happen on the deadline is the same teardown Cancel
+                // performs. The dial may outlive it; the person does not.
+                let watchdog = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(Self.linkJoinTimeoutSeconds))
+                    guard !Task.isCancelled, let self else { return }
+                    // Only if this very session is still trying. A join that
+                    // succeeded, was cancelled, or was replaced has moved on,
+                    // and tearing down whatever is live now would be worse
+                    // than the hang.
+                    guard self.viewerPresentation.isCurrent(sessionID),
+                        self.connectionState == .connecting
+                    else { return }
+                    self.presentError(.linkJoinUnreachable())
+                    await self.disconnect()
+                }
+                defer { watchdog.cancel() }
                 try await c.connectGuest(token: guestToken)
             } else {
                 // Reuse the AppState-owned tsnet node rather than spinning up
@@ -3592,7 +3656,13 @@ class AppState: ObservableObject {
         }
     }
 
-    func discoverPeers() async {
+    /// - Parameter surfacingFailures: whether a failure reaches the person as
+    ///   an alert. True for anything a press started; **false for the visible
+    ///   list's periodic refresh**, which would otherwise put a modal on
+    ///   screen every 20 seconds for as long as the tailnet stayed unhappy,
+    ///   and an unauthenticated one the moment the pane rendered without a
+    ///   node. A background refresh that cannot speak still logs.
+    func discoverPeers(surfacingFailures: Bool = true) async {
         // UI-preview mode renders the seeded list: there is no node, and the
         // unauthenticated-discovery alert would land on the screenshot.
         if Self.isUIPreview { return }
@@ -3605,7 +3675,7 @@ class AppState: ObservableObject {
         // Need an active Tailscale node to discover peers
         // Try to get it from either server or client
         guard let node = server?.node ?? client?.node ?? self.node else {
-            presentError(.discoveryUnauthenticated())
+            if surfacingFailures { presentError(.discoveryUnauthenticated()) }
             hasCompletedInitialDiscovery = true
             return
         }
@@ -3631,7 +3701,7 @@ class AppState: ObservableObject {
                 Task { @MainActor [weak self] in await self?.refreshPeerShareStatus() }
             } catch {
                 logger.log("Discovery: reseed failed with \(error)")
-                presentError(.discoveryFailed(error))
+                if surfacingFailures { presentError(.discoveryFailed(error)) }
             }
             isDiscovering = false
             settleInitialDiscoveryAnswer()
@@ -3685,7 +3755,7 @@ class AppState: ObservableObject {
             // no popup needed.
         } catch {
             logger.log("Discovery: failed with \(error)")
-            presentError(.discoveryFailed(error))
+            if surfacingFailures { presentError(.discoveryFailed(error)) }
         }
         isDiscovering = false
         settleInitialDiscoveryAnswer()

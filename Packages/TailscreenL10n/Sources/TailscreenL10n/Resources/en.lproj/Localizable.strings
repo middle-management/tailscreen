@@ -177,6 +177,7 @@
 "Copied" = "Copied";
 "Show Window" = "Show Window";
 "Brings the viewer window to the front" = "Brings the viewer window to the front";
+"Stops trying to connect" = "Stops trying to connect";
 "Offline" = "Offline";
 "%@, %@" = "%@, %@";
 "online" = "online";
@@ -271,6 +272,8 @@
 "OK" = "OK";
 "Open System Settings" = "Open System Settings";
 "Couldn't Start Sharing" = "Couldn't Start Sharing";
+"Couldn't Join That Link" = "Couldn't Join That Link";
+"Nothing answered at that share link. It may have expired, been replaced by a new link, or the sharer may have stopped sharing. Ask for a fresh link and try again." = "Nothing answered at that share link. It may have expired, been replaced by a new link, or the sharer may have stopped sharing. Ask for a fresh link and try again.";
 "Couldn't Open Picker" = "Couldn't Open Picker";
 "macOS's screen-sharing picker failed to start: %@" = "macOS's screen-sharing picker failed to start: %@";
 "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again." = "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again.";
@@ -286,7 +289,7 @@
 "Voice Init Failed" = "Voice Init Failed";
 "Voice could not be initialized: %@. Voice will be unavailable for this share session." = "Voice could not be initialized: %@. Voice will be unavailable for this share session.";
 "Voice Not Ready" = "Voice Not Ready";
-"Voice is only available during an active share." = "Voice is only available during an active share.";
+"Voice is available while you are sharing or viewing a screen." = "Voice is available while you are sharing or viewing a screen.";
 "Microphone Unavailable" = "Microphone Unavailable";
 "Tailscreen could not start the microphone: %@. Check System Settings → Privacy & Security → Microphone." = "Tailscreen could not start the microphone: %@. Check System Settings → Privacy & Security → Microphone.";
 "Login Failed" = "Login Failed";

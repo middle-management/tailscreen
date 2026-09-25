@@ -177,6 +177,7 @@
 "Copied" = "Kopierat";
 "Show Window" = "Visa fönster";
 "Brings the viewer window to the front" = "Tar fram tittarfönstret";
+"Stops trying to connect" = "Slutar försöka ansluta";
 "Offline" = "Frånkopplad";
 "%@, %@" = "%@, %@";
 "online" = "ansluten";
@@ -272,6 +273,8 @@
 "OK" = "OK";
 "Open System Settings" = "Öppna Systeminställningar";
 "Couldn't Start Sharing" = "Kunde inte starta delning";
+"Couldn't Join That Link" = "Kunde inte ansluta till länken";
+"Nothing answered at that share link. It may have expired, been replaced by a new link, or the sharer may have stopped sharing. Ask for a fresh link and try again." = "Ingen svarade på den delningslänken. Den kan ha gått ut, ersatts av en ny länk, eller så har den som delar slutat dela. Be om en ny länk och försök igen.";
 "Couldn't Open Picker" = "Kunde inte öppna väljaren";
 "macOS's screen-sharing picker failed to start: %@" = "macOS skärmdelningsväljare kunde inte startas: %@";
 "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again." = "macOS returnerade inte delbara skärmar i tid. Om det här är första gången du delar, ge Tailscreen behörighet i Systeminställningar → Integritet och säkerhet → Skärminspelning och försök igen.";
@@ -287,7 +290,7 @@
 "Voice Init Failed" = "Röstinitiering misslyckades";
 "Voice could not be initialized: %@. Voice will be unavailable for this share session." = "Rösten kunde inte initieras: %@. Röst kommer inte att vara tillgänglig under den här delningssessionen.";
 "Voice Not Ready" = "Rösten är inte redo";
-"Voice is only available during an active share." = "Röst är endast tillgänglig under en aktiv delning.";
+"Voice is available while you are sharing or viewing a screen." = "Röst är tillgängligt när du delar eller tittar på en skärm.";
 "Microphone Unavailable" = "Mikrofon ej tillgänglig";
 "Tailscreen could not start the microphone: %@. Check System Settings → Privacy & Security → Microphone." = "Tailscreen kunde inte starta mikrofonen: %@. Kontrollera Systeminställningar → Integritet och säkerhet → Mikrofon.";
 "Login Failed" = "Inloggning misslyckades";
