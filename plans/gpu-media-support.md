@@ -2,7 +2,7 @@
 
 > Status: active. Render step done separately (`plans/gpu-rendering-plan.md`,
 > status DONE — Windows now does GPU YUV→RGB + present, matching Linux).
-> Encode/decode hardware acceleration (this doc's steps 2, 3, 4, 6 below)
+> Encode/decode hardware acceleration (this doc's steps 3, 4, 6 below)
 > **not yet implemented**: `FFmpegKit.Capabilities` can probe for hardware
 > encoder/decoder names, but `FFmpegCaptureEncoderBase.defaultH264Encoders`/
 > `defaultHEVCEncoders` are still software-only ladders, and
@@ -34,14 +34,12 @@ order to fix it, rather than guessing.
   `AVHWFramesContext`/`get_format` plumbing needed. That plumbing is only
   required for the `d3d11va`/`vaapi` hwaccel route and zero-copy, which is
   why decode moved up the recommended order instead of being step 4.
-- **A live bug, still present as of this doc**: `defaultHEVCEncoders =
-  ["libx265"]` and the Windows FFmpeg build ships **no software HEVC
-  encoder at all** (every `hevc_*` entry there is hardware) — so a Windows
-  sharer requesting HEVC fails to start on every machine today, invisibly,
-  because the default codec preference is `auto`. This is the
-  highest-value, lowest-effort fix on the list: put `hevc_mf` /
-  `hevc_nvenc`/`hevc_amf`/`hevc_qsv` ahead of `libx265` in the Windows
-  ladder (keep `libx265` for Linux, where it's present).
+- **Fixed: HEVC on Windows failed to start.** `defaultHEVCEncoders` is
+  `["libx265"]` and the Windows LGPL build ships no software HEVC encoder,
+  so an explicit HEVC choice threw `encoderUnavailable`. The ladder now
+  falls through to H.264 (`FFmpegCaptureEncoderBase.encoderLadder`). Real
+  HEVC on Windows still needs a hardware entry (`hevc_mf`/`hevc_nvenc`/
+  `hevc_amf`) — part of step 3, untested without real hardware.
 - **Sequencing logic**: doing hardware decode before GPU render buys less
   than it looks like, because a hardware-decoded frame would land on the
   GPU and then be pulled back to the CPU for `I420Converter` anyway — this
@@ -53,12 +51,11 @@ order to fix it, rather than guessing.
   hardware to measure. GPU render/present work is unaffected by this since
   it removes CPU work regardless of virtualization.
 
-## Recommended order (steps 2–4, 6 still open)
+## Recommended order (steps 3, 4, 6 still open)
 
 1. ~~Print encoder/decoder/hwaccel availability in CI~~ — done
    (`FFmpeg.capabilityReport()`), results above.
-2. **Fix the HEVC encoder ladder** (the live bug above) — two-line change,
-   highest value.
+2. ~~Fix the HEVC encoder ladder~~ — done as an H.264 fallback (above).
 3. **Hardware H.264 encode**: `h264_mf` first on Windows, then NVENC/AMF/QSV;
    NVENC/VAAPI ahead of `libx264` on Linux. NVENC/AMF/MF accept
    system-memory `nv12`/`yuv420p` frames directly — no `AVHWFramesContext`

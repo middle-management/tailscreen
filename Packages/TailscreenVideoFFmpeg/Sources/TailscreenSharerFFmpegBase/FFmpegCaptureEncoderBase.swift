@@ -111,6 +111,14 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     public static let defaultH264Encoders = ["libx264", "libopenh264"]
     public static let defaultHEVCEncoders = ["libx265"]
 
+    /// The names to try for a session, in order. HEVC is a preference, not a
+    /// requirement: every viewer decodes H.264, and the Windows LGPL FFmpeg
+    /// build has no software HEVC encoder at all, so an HEVC request falls
+    /// through to the H.264 ladder rather than failing the share.
+    public static func encoderLadder(wantHEVC: Bool) -> [String] {
+        wantHEVC ? defaultHEVCEncoders + defaultH264Encoders : defaultH264Encoders
+    }
+
     /// The quality knobs every backend decodes from `start`'s
     /// `forceH264`/`qualityEnv` pair, in one place so the defaults cannot
     /// drift between platforms.
@@ -174,17 +182,21 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
             : attempts.joined(separator: "; ")
     }
 
-    /// Run the ladder against the real libavcodec.
+    /// Run the ladder against the real libavcodec. The opened encoder's
+    /// `codec` may be H.264 even when `wantHEVC` is set (see
+    /// ``encoderLadder(wantHEVC:)``); parameter sets and the RTP payload type
+    /// follow `encoder.codec`, so nothing downstream reads `wantHEVC`.
     public static func openSoftwareEncoder(
         wantHEVC: Bool, width: Int, height: Int, fps: Int, bitrate: Int
     ) throws -> FFmpeg.VideoEncoder {
-        let names = wantHEVC ? defaultHEVCEncoders : defaultH264Encoders
+        let names = encoderLadder(wantHEVC: wantHEVC)
+        let hevcNames = Set(defaultHEVCEncoders)
         let (opened, attempts) = firstOpenableEncoder(
             names: names,
             isAvailable: FFmpeg.isEncoderAvailable
         ) { name in
             try FFmpeg.VideoEncoder(
-                codec: wantHEVC ? .hevc : .h264, width: width, height: height,
+                codec: hevcNames.contains(name) ? .hevc : .h264, width: width, height: height,
                 fps: fps, bitrate: bitrate, encoderName: name)
         }
         guard let opened else {
