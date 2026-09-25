@@ -445,7 +445,9 @@ and silently.
 - **Codec** — Automatic (HEVC with H.264 fallback), HEVC, or H.264.
   Explicit HEVC is the no-safety-net choice: it never falls back, so
   viewers that can only decode H.264 won't be able to watch — the pane
-  says so when you pick it.
+  says so when you pick it. On a sharer with no HEVC encoder (Windows,
+  and Linux without libx265) the share starts in H.264 instead; the
+  stats overlay shows the codec actually in use.
 - **Encoder quality** — a 0.30–1.00 slider for the encoder's
   quality/bitrate trade-off. It's what the presets mostly differ on, so it
   unlocks only on Custom (the other presets just show their value).

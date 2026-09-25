@@ -1,281 +1,87 @@
 # Building the live Linux viewer on swift-cross-ui / GTK
 
-A working plan (not a commitment) for turning today's headless
-`tailscreen-viewer` CLI into a **native-feeling desktop viewer** on Linux —
-a real window with letterboxed video, zoom/pan, a stats overlay, connection
-placards, and (later) annotations + a sharer picker — reusing the portable
-`ViewerSession` data plane the mac app now shares.
+> **Status: shipped through L4** (foundation, zoom/pan, stats/placards,
+> back-channel + input/annotations, sharer picker + hub chrome). SDL viewer
+> retired — GTK is the sole Linux/Windows viewer. Windows port (L5) is a
+> separate scoped plan: `plans/viewer-windows-plan.md`. Remaining gaps below.
+> Referenced from `Apps/linux/Package.swift` and `GtkVideoView.swift`.
 
-The chrome is built with **[swift-cross-ui](https://github.com/stackotter/swift-cross-ui)**
-(a SwiftUI-like declarative framework that renders **native GTK4 widgets** on
-Linux), and the video is a custom **`GtkVideoView`** — a downstream `View` that
-hosts a `GtkGLArea` and draws decoded frames with an OpenGL YUV→RGB shader.
+## Goal
 
-## Why this foundation (and why not SDL)
+Turn the headless `tailscreen-viewer` CLI into a native-feeling GTK4 desktop
+viewer on Linux, reusing the portable `ViewerSession` data plane the mac app
+shares, while adding a real window, zoom/pan, stats overlay, placards,
+annotations, remote-control input, and a sharer picker.
 
-The viewer is video-first, so SDL (window + input + a fast YUV surface) was the
-obvious base. But SDL is not a widget toolkit — every button, panel, and line
-of text is hand-drawn, and it never looks native. swift-cross-ui gives real
-native GTK widgets from declarative Swift that reads like the mac app's SwiftUI,
-which is the on-theme choice for a Tailscreen viewer.
+## Key decisions & why
 
-The one risk that made this look expensive — *"can a low-latency GPU video
-surface live inside swift-cross-ui without forking it?"* — was **retired by a
-spike** (see below). With that gone, the swift-cross-ui/GTK path costs about the
-same as SDL + an immediate-mode GUI, but yields a native-looking, Swift-declarative
-UI and a **CI-gated render test** SDL couldn't offer.
+- **swift-cross-ui (native GTK4 widgets) over SDL.** SDL gives a fast video
+  surface but no widget toolkit — every button/panel would be hand-drawn and
+  never look native. swift-cross-ui renders real GTK widgets from
+  SwiftUI-like declarative Swift, matching the mac app's idiom.
+- **De-risked with a throwaway spike before committing**, against stock
+  `swift-cross-ui@main` with no fork: a downstream `GtkVideoView : View`
+  (~70 lines) hosts a real `Gtk.GLArea`, gets a live GL ES context under
+  Xvfb + Mesa `llvmpipe`, and a YUV420→RGB BT.709 shader was verified pixel-
+  exact via `glReadPixels`. This proved the one expensive-looking risk (can a
+  low-latency GL surface live inside swift-cross-ui without forking it) and
+  is now a permanent CI-gated render test (`linux-gtk-viewer` job) — a
+  guarantee the SDL path never had.
+- **Everything below the window is reused unchanged**: `ViewerSession`
+  (NACK/RR/PLI/FEC), `FFmpegVideoDecoder`, Opus→`ALSAAudioSink`, and
+  `TsnetTransport`. The GTK app only replaces the video *sink* and adds
+  chrome. `ViewerZoomMath`, the placard state machine, and `ViewerStats`
+  aggregation were hoisted into portable packages so the mac and GTK viewers
+  share the same tested logic rather than duplicating it.
+- **Threading: GTK owns the main thread; tsnet runs on a background Task.**
+  The decoder runs synchronously on the transport task, writes into a locked
+  latest-frame box, and a GTK idle source triggers `queueRender()` to pull
+  and upload it — GTK calls never happen off the main thread. This
+  live-frames-over-tsnet path is what the spike did *not* exercise (it used
+  a static frame), so it was L0's explicit deliverable, not an afterthought.
+- **Audio sink is fronted by a `ThreadedAudioSink`** because the transport
+  loop runs on the GTK main thread and ALSA's blocking device write (~50
+  writes/s) would otherwise stall video. Best-effort: a busy/missing device
+  drops to video-only.
+- **Scroll/zoom and remote-control scroll share one C shim
+  (`cgtkvideo_attach_scroll`)** because swift-cross-ui has no
+  `EventControllerScroll` binding and there is only one scroll callback to
+  attach — can't split local-zoom and remote-forward across two controllers.
+  A pure `ViewerInputMapping.scrollDisposition` owns the routing plus the
+  GDK↔wire sign flip (GDK down-positive vs. wire up-positive).
+- **Input/annotation forwarding go through one `AsyncStream` with a single
+  consumer each** (`InputForwarder`, `AnnotationForwarder`) rather than a
+  Task per event — required so a down/up key pair or an undo can't invert
+  order, and so a re-bindable channel survives back-channel reconnects.
+- **Separate `Apps/linux` package**, not folded into the core — swift-cross-ui
+  + GTK4 shouldn't weigh down the core `linux-viewer` CI job. It reuses
+  `TailscreenLinuxBackends`'s `TailscreenViewerCore`/`TailscreenViewerTsnet`.
+- **Picker dials by tailnet IP, not hostname** — sidesteps a `from == dest`
+  hostname-match limitation when the viewer and a listed sharer share a name.
 
-## The spike (done) — what's already proven
+## Open items / remaining gaps
 
-A throwaway package against **stock `swift-cross-ui@main` (no fork)** established,
-end to end and verified by pixel read-back, that:
+- **Mic capture** has no ALSA input path yet (playback-only today); mic
+  toggle in the annotation/audio UI stays deferred until it exists.
+- **Non-pen annotation tools** (line/arrow/rect/oval/click) not built — only
+  freehand pen ships. Thick-stroke GL line width is best-effort.
+- **Sharer list is a one-shot snapshot**, not live IPN-bus refresh; no
+  automatic reconnect/back-to-picker after a session ends.
+- **L5 (Windows)** is fully separate scope; see `plans/viewer-windows-plan.md`.
 
-- A **downstream** `struct GtkVideoView: View` (≈70 lines) conforms to the public
-  `View` protocol, downcasts the generic backend to the concrete `GtkBackend`,
-  constructs a real `Gtk.GLArea`, and returns it as `Backend.Widget` via a
-  runtime cast — **compiles and links**, no `@_spi`, no framework patch.
-- Under a virtual display (Xvfb + Mesa `llvmpipe` software GL) the app launches,
-  GTK realises the GLArea, creates a **live GL ES 3.2 context**, and fires our
-  render callback.
-- A synthetic **YUV420 frame** uploaded as three `GL_R8` textures and converted
-  by a **BT.709** fragment shader renders correct pixels — `glReadPixels`
-  returned white `255,254,255`, black `1,0,1`, red `255,62,131`, blue
-  `131,103,255`, matching the hand-computed BT.709 outputs to the digit.
+## Where it lives
 
-The only difference from production is the *source* of the YUV bytes (synthetic
-in the spike vs. FFmpeg's `DecodedVideoFrame` planes in the viewer) — a pointer
-hand-off the GL path is indifferent to. GTK4 + epoxy + Mesa + Xvfb installed in
-the CI container in ~1 minute.
-
-## Architecture
-
-```
-tailscreen (swift-cross-ui App, DefaultBackend = GtkBackend)
- ├─ App / WindowGroup ................ native GTK window + declarative chrome
- │   ├─ GtkVideoView (GtkGLArea) ..... GL YUV→RGB render of the latest frame
- │   ├─ StatsOverlay ................. swift-cross-ui Text/VStack over the video
- │   ├─ Placards ..................... awaiting-approval / declined / degraded …
- │   └─ Toolbar / SharerPicker ....... native buttons + list (later phases)
- └─ background Task: TsnetTransport (REUSED)
-       PacketListener(UDP/7447) → ViewerSession.receiveRTP / tick
-         ├─ FFmpegVideoDecoder (REUSED) → DecodedVideoFrame (I420)
-         │     → LatestFrameBox (locked) → queue_render on GTK thread
-         ├─ built-in Opus → ALSAAudioSink (REUSED)
-         └─ onControlToSend → UDP (HELLO / NACK / PLI / RR)
-```
-
-**Everything below the window is reused unchanged** from today's `Packages/TailscreenLinuxBackends`:
-`ViewerSession`, `FFmpegVideoDecoder`, the Opus/`ALSAAudioSink` audio path, and
-`TsnetTransport`. The GTK app only replaces the **sink** (`ThreadedSDLVideoSink`
-→ the GLArea renderer) and adds chrome around it.
-
-### Threading model (the main new integration point)
-
-swift-cross-ui owns the main thread (the GTK main loop runs inside
-`App.main()`). The tsnet transport is async and must run **concurrently**:
-
-- Spawn `TsnetTransport.run(...)` on a background `Task` before/around the GTK
-  loop.
-- `FFmpegVideoDecoder` decodes synchronously inside `ViewerSession.receiveRTP`
-  on the transport task; the decoded `DecodedVideoFrame` is stored in a locked
-  **latest-frame box** (the `ThreadedSDLVideoSink` pattern).
-- A redraw is requested on the **GTK thread** via `g_main_context_invoke` /
-  an idle source → `gl_area.queueRender()`; the GLArea's render callback pulls
-  the latest frame and uploads it. GTK calls never happen off the main thread.
-
-This — *live decoded frames over tsnet feeding the GLArea* — is the one thing
-the spike did **not** exercise (it used a static synthetic frame), so it's the
-explicit deliverable of Phase L0, not an afterthought.
-
-## What's portable / reused vs. new
-
-| Concern | Reused / portable today | New (this effort) |
-|---|---|---|
-| Receive data plane | `ViewerSession` (NACK/RR/PLI/FEC) | — |
-| Decode | `FFmpegVideoDecoder` | — |
-| Audio | Opus → `ALSAAudioSink` | — |
-| Transport | `TsnetTransport` (refactor into Core) | frame→GTK marshalling |
-| Video present | `DecodedVideoFrame` (I420) | `GtkVideoView` + GL YUV renderer |
-| Zoom/pan | **`ViewerZoomMath`** (already in `TailscreenProtocol`, CI-tested) | GTK event → math wiring |
-| Stats | `ViewerStats` + 1 s-bucket aggregation (mac-side; **hoist to portable**) | GTK overlay rendering |
-| Placards | state machine (mac-side; **hoist to portable**) | GTK overlay rendering |
-| Chrome | — | swift-cross-ui views (HUD, toolbar, picker) |
-| Back-channel | server-side `TailscreenControlListener` exists | viewer-side TCP dialer |
-
-## Phased delivery
-
-Each phase is a PR. The GLArea render path is **CI-gated headlessly** (Xvfb +
-`llvmpipe`) via the spike's pixel-readback test promoted to an XCTest — a
-guarantee the SDL path never had.
-
-### L0 — Foundation: app skeleton + live video
-- Add `swift-cross-ui` as a dependency; add a `tailscreen` target to
-  `Packages/TailscreenLinuxBackends` reusing `TailscreenViewerCore` (refactor `TsnetTransport` into
-  Core so both the SDL CLI and the GTK app share it).
-- Productise `GtkVideoView` from the spike: GLArea + GL YUV renderer fed by a
-  locked latest-frame box; per-frame `glTexSubImage2D` upload.
-- Wire the background transport Task + the frame→`queue_render` marshalling.
-- **Deliverable:** a native GTK window showing live decoded video from a real
-  Mac sharer over tsnet (local run) — the load-bearing integration.
-- **CI:** new `linux-gtk-viewer` job (apt `libgtk-4-dev libepoxy-dev
-  libgl1-mesa-dri xvfb`); build the app; run the **YUV-readback render test**
-  under Xvfb. Deterministic pixel assertions gate the render path.
-- **Audio (done, post-L5):** the reused `ALSAAudioSink` is now wired into the
-  GTK viewer's `transport.run` (`--no-audio` to disable). Because the transport
-  loop runs on the GTK main thread, the sink is fronted by a `ThreadedAudioSink`
-  (in `TailscreenViewerCore`) so ALSA's blocking device write happens off the
-  main thread — otherwise ~50 audio writes/s would stall video. Best-effort: a
-  missing/busy device drops to video-only. Mic **capture** still needs an ALSA
-  input path (not built yet).
-
-### L1 — Aspect-fit, zoom/pan, window behavior
-- Letterbox aspect-fit in the GLArea viewport (port the mac `aspectFitRect`
-  math); auto-snap the window to the first frame's resolution.
-- GTK scroll / modifier / double-click → **`ViewerZoomMath`** (reused) → GL
-  transform (cursor-anchored zoom, clamped pan, smart-magnify).
-- Window title "Viewing &lt;host&gt;", resizable, black letterbox.
-
-### L2 — Stats overlay + connection placards
-- Hoist `ViewerStats` + its 1 s-bucket aggregation into `TailscreenProtocol`
-  (no Metal dependency — clean move); wire the `note*` feeders + the session's
-  `onPLISent`/`onNACKSent`/`onFECRecovered` hooks.
-- Stats HUD as a swift-cross-ui overlay (toggle key), matching the mac field set,
-  thresholds, and sparklines.
-- Hoist the placard state machine to portable; render awaiting-approval,
-  declined/disconnected, degraded, stalled, and decode-failed as overlay views
-  driven by session state surfaced from the transport.
-
-### L3 — Outbound TCP back-channel + interactivity
-- Viewer-side TCP dialer (TailscaleKit `OutgoingConnection` → `sharer:7447`,
-  framing `ScreenShareMessage`) — the porting plan's named "last gap before
-  shippable". Server-side `TailscreenControlListener` shows the wire format.
-  **Done:** `ViewerBackChannel` (in `TailscreenViewerTsnet`) dials + frames +
-  reconnects (with a min-healthy-uptime backoff guard over the mac client's
-  pattern) and dispatches inbound annotation / control-grant / revoke;
-  `TsnetTransport.run` starts it alongside the UDP path and surfaces the
-  sharer's caps (`onAdmitted`) so chrome is caps-gated exactly like the mac
-  viewer.
-- Annotation toolbar (native buttons, caps-gated) + remote-control request
-  affordance. **Done:** a caps-gated Request/Release-Control button wired to the
-  back-channel with grant/revoke status, **plus input capture** — once control
-  is granted, `GtkVideoView` attaches `EventControllerMotion` /
-  `EventControllerKey` / three `GestureClick`s and translates pointer + keyboard
-  events to neutral `InputEvent`s via the pure, unit-tested `ViewerInputMapping`
-  (Core: aspect-fit pointer normalization, GDK button/modifier decode, evdev→USB-
-  HID keycode table). `InputForwarder` gates them on a live grant and funnels
-  them through one `AsyncStream` drained by a single consumer, honouring
-  `ViewerBackChannel.sendInputEvent`'s ordering contract (never one `Task` per
-  event, so a down/up pair can't invert). The mapping logic is CI-tested by the
-  `linux-viewer` job; the GTK event-controller wiring is compile-gated (not
-  verifiable headless, same boundary as L1's interactive zoom input).
-- **Zoom/pan (done).** Scroll zooms about the cursor, Shift+scroll pans, double-
-  click smart-magnifies — geometry via the CI-tested `ViewerZoomMath`, scroll
-  captured through a `cgtkvideo_attach_scroll` C shim (swift-cross-ui has no
-  `EventControllerScroll` binding). That single shim also carries the REMOTE
-  half: while a grant is live the wheel forwards as an `InputEvent.scroll` and
-  only Ctrl+wheel zooms locally, matching the WinUI viewer. It has to be one
-  place — there is one scroll callback to attach, so two controllers cannot
-  split it — hence the pure `ViewerInputMapping.scrollDisposition`, which also
-  owns the GDK→wire sign flip (GDK calls down positive, the wire calls up
-  positive).
-- **Annotations (done, both directions).** A freehand **pen** draws strokes over
-  the video (a bottom `AnnotationToolbar`: pen toggle, color swatches, undo,
-  clear, caps-gated on `ScreenShareCaps.annotations`). Strokes render in GL via a
-  new `cgtkvideo_draw_annotations` (polylines mapped through the *same* aspect-fit
-  + zoom/pan transform as the video, so they track content), held in an
-  `AnnotationStore` (lock-guarded; local + relayed strokes). Finalized ops relay
-  to the sharer through `AnnotationForwarder` (one `AsyncStream`, single consumer,
-  re-bindable channel — preserves add/undo order across reconnects), and inbound
-  relayed ops apply to the same canvas. **Follow-up:** the non-pen tools
-  (line/arrow/rect/oval/click) and thick-stroke geometry (today's GL line width is
-  best-effort). Mic toggle deferred until ALSA **capture** exists (playback-only
-  today).
-
-### L4 — Sharer picker + login polish
-- Use `TailscalePeerDiscovery` (exists, unused) → a native list to pick a sharer
-  instead of the CLI host arg. **Done:** `TsnetTransport` split into `prepare`
-  (bring the node up without a session) + `discoverPeers` (→ `[DiscoveredSharer]`)
-  + `run` (dial a chosen host); `run` calls `prepare` itself so the SDL CLI is
-  unchanged. Launched with no host arg, the GTK app enters picker mode
-  (`PickerModel` phase machine + a swift-cross-ui `ScrollView`/`ForEach` list);
-  selecting a row dials the sharer's **tailnet IP** (also sidestepping the
-  `from == dest` hostname-match limitation).
-- Interactive tsnet login URL surfaced as an in-window prompt (today: stderr +
-  `xdg-open`). **Done:** `prepare(onLoginURL:)` routes the URL to the picker
-  placard (`PickerModel.loginURL`); the stderr banner + `xdg-open` remain the
-  default when no handler is supplied (the SDL CLI).
-- **Hub-styled chrome.** The picker + placards now follow the macOS docked-
-  window hub (`MainWindowView`): a thick header (wordmark + a status subtitle), a
-  centered content column, a rounded login/status card, a **search field**, and a
-  "Screens" list of presence-dot + hostname + IP rows that **expand** into an
-  inline detail pane (a **View Screen** action + Host / IP, the viewer's cut of
-  the mac hub's `PeerDetailView`). Reproduced from swift-cross-ui primitives
-  (`Circle`/`RoundedRectangle` fills, translucent-gray tints that read on both
-  light and dark GTK themes, `.onTapGesture` rows since `Button` takes only a
-  String label; no SF Symbols). The header also carries a **Refresh** button
-  (re-lists via `discoverPeers` without re-login) and a **multi-account menu**
-  (`ProfileStore`: per-profile tsnet state dirs persisted under
-  `$XDG_CONFIG_HOME/tailscreen`; switching tears the node down and
-  brings it up under the chosen profile's state dir, Add Account seeds a fresh
-  dir → interactive login, and a profile auto-renames to its resolved Tailscale
-  login) — the viewer's cut of the mac hub's account switcher. Rows show a green
-  **sharing chip** + a `name · WxH · codec` detail caption from a lazy
-  `TailscreenMetadataClient` sweep (`TsnetTransport.fetchMetadata`). Sharer-only
-  hub chrome (Choose-what-to-share, approval toggle, filter menu) is deliberately
-  absent — this is a viewer. `ViewerChrome.swift` holds the reusable views; the
-  `GtkVideoView` is mounted only once frames flow, so the chrome sits on the
-  native window background, not over a black GL surface. A `--ui-preview` flag
-  renders the hub with seeded fake sharers and no networking, so the chrome is
-  screenshot-reviewable headless under Xvfb.
-- **Follow-up:** live IPN-bus refresh of the list (today's discovery is a
-  one-shot `backendStatus` seed); reconnect/back-to-picker
-  after a session ends. Picker + login are live-only (a real tailnet with
-  sharers), so compile + render-self-test verified; a live run needs a tailnet.
-
-### L5 — Windows (later, separate)
-- The same `GtkVideoView` *feature* on `WinUIBackend` becomes a WinUI video view
-  (`SwapChainPanel` + D3D). Different backend, same architecture. Out of scope
-  until Linux is solid. **Scoped:** the concrete porting plan — the reuse map
-  (only the video surface + audio sink are new), the load-bearing
-  `WinUIVideoView`/`SwapChainPanel` spike mirroring the GTK one, the D3D11
-  YUV→RGB shim (`CSwapChainVideo`), the unchanged threading model
-  (`DispatcherQueue.TryEnqueue` for `g_idle_add`), the `windows-latest` +
-  **WARP** render-self-test CI story, and the W0–W3 sub-phases — lives in
-  [`plans/viewer-windows-plan.md`](viewer-windows-plan.md). No Windows code can
-  compile in the Linux dev/CI container (WinUIBackend is the pruned target), so
-  the plan is the deliverable; implementation follows a Windows toolchain.
-
-## CI story
-
-- **`linux-gtk-viewer`** job: apt GTK4 + epoxy + Mesa + Xvfb, `swift build` the
-  app, and run the headless GL YUV-readback XCTest under `xvfb-run` +
-  `LIBGL_ALWAYS_SOFTWARE=1`. Proven to work in the spike.
-- The existing `linux-viewer` job (real decode → `ViewerSession` →
-  `PipelineIntegrationTests`) stays as the data-plane gate.
-- The live tsnet run remains local-only (documented constraint), exactly as the
-  SDL path and the mac E2E suites.
-
-## Risks
-
-- **swift-cross-ui is young and churns.** Our exposed surface is tiny
-  (`GtkVideoView` ≈ 70 lines against the public `View` protocol) and pinned to a
-  version; a `View`-protocol reshape touches only that file. Far lighter than a
-  fork — no framework patch is carried.
-- **GTK main loop ↔ Swift concurrency.** The transport-Task + frame-marshalling
-  integration is the real new engineering; L0's deliverable is precisely to
-  prove it with live frames, not synthetic ones.
-- **Two viewers during transition.** The SDL CLI was kept as a
-  headless/fallback path during bring-up; **now retired** — the GTK viewer is
-  the sole Linux/Windows viewer, and `Packages/TailscreenLinuxBackends` is a library-only core it
-  reuses (the SDL sink, CLI, and `Packages/SDLKit` were removed).
-- **Dependency weight in CI.** GTK4 + swift-cross-ui + swift-syntax add build
-  time; mitigated by caching and a dedicated job.
-
-## Open decisions (resolved)
-
-- **Package layout:** ~~same package vs. separate~~ → a **separate
-  `Apps/linux` package** (swift-cross-ui + GTK4 shouldn't burden the core's
-  `linux-viewer` CI job), reusing `Packages/TailscreenLinuxBackends`'s `TailscreenViewerCore` +
-  `TailscreenViewerTsnet`.
-- **Retire SDL or keep it?** → **retired.** The GTK viewer superseded it.
-- **swift-cross-ui pin:** → pinned to an exact revision for reproducibility.
+- App: `Apps/linux` (separate SwiftPM package).
+- Video surface: `GtkVideoView.swift` (GTK4/GL, YUV→RGB shader), C shims for
+  scroll (`cgtkvideo_attach_scroll`) and annotation drawing
+  (`cgtkvideo_draw_annotations`).
+- Reused portable core: `Packages/TailscreenLinuxBackends`
+  (`TailscreenViewerCore`, `TailscreenViewerTsnet`), `ViewerZoomMath`,
+  `ViewerInputMapping`, hoisted `ViewerStats`/placard state machine in
+  `TailscreenProtocol`.
+- Hub chrome: `ViewerChrome.swift` (picker, placards, multi-account
+  `ProfileStore`); `--ui-preview` renders it headless with seeded fake data.
+- CI: `linux-gtk-viewer` job (GTK4/epoxy/Mesa/Xvfb, headless GL readback
+  test); `linux-viewer` job remains the data-plane gate. Live tsnet runs stay
+  local-only, same constraint as the mac E2E suites.
+- Linux specifics generally: `.claude/rules/linux.md`.

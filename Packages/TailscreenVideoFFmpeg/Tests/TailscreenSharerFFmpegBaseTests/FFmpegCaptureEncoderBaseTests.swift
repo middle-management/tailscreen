@@ -82,6 +82,22 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
         }
     }
 
+    func testHEVCLadderFallsBackToH264() {
+        XCTAssertEqual(Base.encoderLadder(wantHEVC: false), Base.defaultH264Encoders)
+        XCTAssertEqual(
+            Base.encoderLadder(wantHEVC: true),
+            Base.defaultHEVCEncoders + Base.defaultH264Encoders)
+
+        // The Windows LGPL build: no libx265, libopenh264 present. An HEVC
+        // request must still open an encoder, not fail the share.
+        let result = Base.firstOpenableEncoder(
+            names: Base.encoderLadder(wantHEVC: true),
+            isAvailable: { $0 == "libopenh264" },
+            open: { $0 })
+        XCTAssertEqual(result.encoder, "libopenh264")
+        XCTAssertEqual(result.attempts, [])
+    }
+
     // MARK: Failure budget
 
     func testSourceGoneBudgetExhaustsAtLimitWithTheExactMessage() {
