@@ -11,8 +11,8 @@ permalink: /architecture/
 {:toc}
 
 Tailscreen is small: one portable Swift core, three thin native apps, one
-Go-built C archive, and no external services. Most of the interesting work
-happens in the video pipeline; everything else is plumbing.
+Go-built C archive, no external services. Most of the interesting work is in
+the video pipeline; everything else is plumbing.
 
 ## The whole picture
 
@@ -30,10 +30,10 @@ supplies only what has to touch the OS:
 | Input injection | CGEvent | XTEST | SendInput | — |
 
 The fourth column is a page, not an app: the same portable core, this time
-the public Go SDK compiled to WebAssembly, behind the browser's decoders
-and a canvas. It only views, only as a guest, and — because a browser has
-no UDP — its whole datagram plane rides the TCP line of the diagram below
-as `mediaDatagram` frames (the [stream
+the public Go SDK compiled to WebAssembly, behind the browser's decoders and
+a canvas. It only views, only as a guest, and — because a browser has no
+UDP — its whole datagram plane rides the TCP line below as `mediaDatagram`
+frames (the [stream
 profile]({{ site.baseurl }}{% link protocol.md %}#stream-carriage--the-reliable-transport-profile-0x0d)).
 
 ```
@@ -72,52 +72,39 @@ that seam.
 
 ## Video encode/decode
 
-The encoder is configured for the lowest latency we can talk it into:
+The encoder is configured for the lowest latency we can talk it into.
+Codec choice, parameter-set placement, and color handling are wire-level
+concerns covered on the [protocol page]({{ site.baseurl }}{% link protocol.md %}#video--udp-rtp);
+the pipeline-level defaults:
 
-- **HEVC by default, H.264 as a fallback.** The sharer tries to set up an
-  HEVC encoder at startup; if the platform refuses (mostly older Intel
-  Macs without hardware HEVC), it transparently retries with H.264. The
-  viewer doesn't need to know in advance — it picks up the codec from the
-  RTP payload type and configures the decoder on the fly.
 - Hardware encode on macOS (VideoToolbox — everywhere on Apple Silicon);
   software libavcodec on Linux and Windows today.
-- Frame reordering disabled. No B-frames. Each frame depends only on
-  earlier frames, which means a packet loss can't strand future frames
-  waiting for a frame from the past.
-- Adaptive bitrate based on resolution and a bits-per-pixel target. The
-  defaults are **0.06 bpp for HEVC** and **0.10 bpp for H.264** — HEVC's
-  intra-prediction modes earn back roughly 30% on screen content vs H.264,
-  so the same visual quality gets a smaller bitrate budget.
-- Profile is **HEVC Main** / **H.264 High** at AutoLevel — or **HEVC
-  Main 10** when the opt-in 10-bit/HDR path is enabled. Color is chosen
-  from the captured display's capability (BT.709 by default, Display P3
-  on wide-gamut displays, BT.2020 PQ for HDR) and travels in-band in the
-  SPS VUI; the fallback ladder runs Main 10 → 8-bit HEVC → H.264, driven
-  by viewer feedback.
-- Keyframe roughly every 2 seconds, or earlier when the receiver sends a
-  PLI (Picture Loss Indication).
+- Frame reordering disabled, no B-frames — each frame depends only on
+  earlier ones, so a packet loss can't strand future frames waiting on a
+  frame from the past.
+- Adaptive bitrate based on resolution and a bits-per-pixel target: **0.06
+  bpp for HEVC**, **0.10 bpp for H.264** (HEVC earns back roughly 30% on
+  screen content, so the same visual quality needs a smaller budget).
+- Profile is **HEVC Main** / **H.264 High** at AutoLevel, or **HEVC Main
+  10** on the opt-in 10-bit/HDR path; the fallback ladder runs Main 10 →
+  8-bit HEVC → H.264, driven by viewer feedback.
+- Keyframe roughly every 2 seconds, or earlier on a receiver PLI.
 
-RTP packetization follows RFC 6184 (H.264) and RFC 7798 (HEVC). It knows
-about FU-A fragmentation, STAP-A aggregation, and the codec's parameter
-sets. Parameter sets go in-band on every keyframe — **SPS+PPS** for H.264,
-**VPS+SPS+PPS** for HEVC — so a viewer that connects partway through can
-spin up a decoder without an out-of-band handshake.
-
-The decode path is symmetric. It builds its format description from
-whichever parameter-set flavor came in on the wire, so the decoder follows
-the encoder's choice, and decoded frames feed the platform's renderer.
+RTP packetization follows RFC 6184 (H.264) and RFC 7798 (HEVC), including
+FU-A fragmentation and STAP-A aggregation. The decode path is symmetric: it
+builds its format description from whichever parameter-set flavor came in
+on the wire, so the decoder follows the encoder's choice.
 
 When decoding starts *failing* (rather than just missing packets), the
 viewer runs an escalation ladder instead of dying quietly: request a
-keyframe (PLI) → recreate the decoder (the decompression session on
-macOS, the libavcodec context on Linux/Windows) → surface a "connection
-degraded" badge in the toolbar (macOS) → raise a user-visible stall
-error. The ladder's policy lives in the shared core, so all three
-viewers escalate identically; each rung fires once per episode, and a
-decoded frame resets the ladder. The
-UDP receive loops on both ends similarly retry with capped backoff
-(250 ms → 5 s) instead of treating the first transient socket error as
-fatal.
+keyframe (PLI) → recreate the decoder (the decompression session on macOS,
+the libavcodec context on Linux/Windows) → surface a "connection degraded"
+badge in the toolbar (macOS) → raise a user-visible stall error. The
+ladder's policy lives in the shared core, so all three viewers escalate
+identically; each rung fires once per episode, and a decoded frame resets
+the ladder. UDP receive loops on both ends similarly retry with capped
+backoff (250 ms → 5 s) instead of treating the first transient socket error
+as fatal.
 
 ## Per-viewer send chains and fairness
 
@@ -139,31 +126,31 @@ as a per-viewer health dot: healthy, degraded, or limited-to-keyframes.
 ## Loss recovery and congestion control
 
 Three cooperating mechanisms, all capability-negotiated so any mix of old
-and new peers degrades to plain PLI (the wire details are on the
+and new peers degrades to plain PLI (wire details on the
 [protocol page]({{ site.baseurl }}{% link protocol.md %})):
 
 - **NACK retransmission.** The viewer's `NACKScheduler` watches the
   sequence space, tolerates reordering, and requests exactly the missing
   packets; the sharer answers from a bounded `RetransmitBuffer` of
   recently-sent packets (templates shared across viewers — only header
-  bytes differ) under a per-viewer token budget. Gaps that age out or
-  blow the budget fall back to PLI.
-- **Receiver feedback.** Each viewer reports loss fraction, jitter, and
-  an RTT echo about once a second (`RRAccounting` does the bookkeeping on
-  the viewer — first-arrivals only, so duplicates and retransmits don't
-  distort the numbers). The sharer's congestion controller turns that
-  into two levers: the bitrate arm (cut / hold / raise with asymmetric
-  hysteresis) and, once bitrate bottoms out, an fps ladder (60 → 30 → 15,
-  applied live to the capture pipeline).
+  bytes differ) under a per-viewer token budget. Gaps that age out or blow
+  the budget fall back to PLI.
+- **Receiver feedback.** Each viewer reports loss fraction, jitter, and an
+  RTT echo about once a second (`RRAccounting` on the viewer counts
+  first-arrivals only, so retransmits don't distort the numbers). The
+  sharer's congestion controller turns that into two levers: the bitrate
+  arm (cut / hold / raise with asymmetric hysteresis) and, once bitrate
+  bottoms out, an fps ladder (60 → 30 → 15) applied live to the capture
+  pipeline.
 - **XOR FEC.** For viewers whose paths are both lossy *and* long (where a
-  retransmit round-trip is genuinely expensive), the sharer interleaves
-  one XOR parity packet per group of N media packets (`FECCodec`), sizing
-  N 10/7/5 against measured raw loss and compensating the encoder to
-  N/(N+1) of the budget so video-plus-parity still fits. The viewer's
-  `FECGroupBuffer` repairs any single loss per group with zero additional
-  RTT and feeds recovered packets through the same ingest path as
-  received ones, so the NACK scheduler and receiver reports stay
-  coherent. Multi-loss groups hand off to NACK.
+  retransmit round-trip is genuinely expensive), the sharer interleaves one
+  XOR parity packet per group of N media packets (`FECCodec`), sizing N
+  10/7/5 against measured raw loss and compensating the encoder to N/(N+1)
+  of the budget so video-plus-parity still fits. The viewer's
+  `FECGroupBuffer` repairs any single loss per group with zero extra RTT
+  and feeds recovered packets through the same ingest path as received
+  ones, so NACK and receiver reports stay coherent. Multi-loss groups hand
+  off to NACK.
 
 All the decision math (loss attribution, congestion response, FEC
 gating) is extracted into pure functions with unit tests — the live
@@ -174,18 +161,16 @@ loops need a real tsnet node and a genuinely bad network to exercise.
 Voice runs in both directions (Opus, mono, 48 kHz), with viewer-to-viewer
 relay through the sharer, alongside the sharer's **system audio**. The
 receive side runs an adaptive jitter buffer, conceals short sequence gaps
-instead of glitching, puts a failing decoder on a cooldown rather
-than hammering it, and sums the voices that fall in the same 20 ms slot
-into one frame before they reach the single playback queue every host
-has — a queue plays what it is given in turn, so handing it each voice
-separately interleaves them rather than mixing them. All of those decisions live in the portable core
-(`VoiceReceiveDecisions`), composed by every platform's audio path, so a
-fix lands on all three platforms at once; each host supplies only its own
-microphone and speaker.
+instead of glitching, puts a failing decoder on a cooldown rather than
+hammering it, and sums voices that fall in the same 20 ms slot into one
+frame before they reach the single playback queue every host has — a queue
+plays what it's given in turn, so separate voices would interleave rather
+than mix. All of this lives in the portable core (`VoiceReceiveDecisions`),
+composed by every platform's audio path, so a fix lands on all three at
+once; each host supplies only its own microphone and speaker.
 
-The codec is Opus (libopus, wrapped by the local `OpusKit`):
-royalty-free and software-only, so the exact same codec runs on Linux
-and Windows.
+The codec is Opus (libopus, wrapped by the local `OpusKit`): royalty-free
+and software-only, so the exact same codec runs on Linux and Windows.
 
 System audio — macOS-only today — is captured alongside the video,
 excluding Tailscreen's own output so viewers' voices never loop back. On
@@ -195,136 +180,119 @@ the sharer's mute toggle takes effect instantly.
 
 ## Remote control
 
-The viewer captures local mouse/keyboard in the viewer
-window, normalizes coordinates to `[0,1]`, and sends them as framed TCP
-input events. The sharer's gate (`RemoteControlPolicy`) admits events
-only from the exact connection that holds the grant — one grantee at a
-time, identified by server-assigned connection ID, behind an event-rate
-ceiling. Admitted events go to the platform's injector — `CGEvent` on
-macOS, XTEST on Linux, `SendInput` on Windows — which maps normalized
-coordinates onto the captured region's live global rect per share kind
-(display bounds, window bounds, or the union of a shared app's window
-rects — so an app share can't be used to click your Dock or taskbar) and
-translates the wire's platform-neutral key model (USB HID usages + a
-five-bit modifier set) into native input — constructive
-translation, so a hostile viewer can't smuggle arbitrary flag bits.
-Revocation is TOCTOU-safe: a sealed injector drops anything that
-raced the revoke and synthesizes a button-up for any button held
-mid-drag, so revoke never leaves a stuck mouse button. Keyboard scope is
-whole-machine by design (see [Security]({{ site.baseurl }}{% link security.md %}) for why, and
-for the grant-time disclosure).
+The viewer captures local mouse/keyboard in the viewer window, normalizes
+coordinates to `[0,1]`, and sends them as framed TCP input events. The
+sharer's gate (`RemoteControlPolicy`) admits events only from the exact
+connection holding the grant — one grantee at a time, identified by
+server-assigned connection ID, behind an event-rate ceiling. Admitted
+events go to the platform's injector — `CGEvent` on macOS, XTEST on Linux,
+`SendInput` on Windows — which maps normalized coordinates onto the
+captured region's live global rect per share kind (display bounds, window
+bounds, or the union of a shared app's window rects, so an app share can't
+be used to click your Dock or taskbar) and translates the wire's
+platform-neutral key model (USB HID usages + a five-bit modifier set) into
+native input — constructive translation, so a hostile viewer can't smuggle
+arbitrary flag bits. Revocation is TOCTOU-safe: a sealed injector drops
+anything that raced the revoke and synthesizes a button-up for any button
+held mid-drag, so revoke never leaves a stuck mouse button. Keyboard scope
+is whole-machine by design (see
+[Security]({{ site.baseurl }}{% link security.md %}) for why, and for the
+grant-time disclosure).
 
 ## Tailscale integration
 
-This is the part that, if Tailscale didn't exist, we would have written and
-hated.
-
 [TailscaleKit](https://github.com/middle-management/libtailscale) is a
-Swift wrapper around `libtailscale` (the same C library used by
-Tailscale's own embeds), pulled in as a local SwiftPM package whose
-submodule points at our fork — upstream history with our changes as
-ordinary commits on top. The commits are small glue plus the guest-tunnel
-surface; the story is in
+Swift wrapper around `libtailscale` (the same C library used by Tailscale's
+own embeds), pulled in as a local SwiftPM package whose submodule points at
+our fork — upstream history with our changes as ordinary commits on top.
+The commits are small glue plus the guest-tunnel surface; the story is in
 [Contributing]({{ site.baseurl }}{% link contributing.md %}#tailscalekit-and-the-fork).
 
 Each Tailscreen session spins up an **ephemeral tsnet node**: a fresh
-Tailscale identity that lives only as long as the session. The Tailscale
-control plane registers it, hands it a key, and removes it again the
-moment Tailscreen closes. Your admin console doesn't fill up with
+Tailscale identity that lives only as long as the session. The control
+plane registers it, hands it a key, and removes it again the moment
+Tailscreen closes — your admin console doesn't fill up with
 "Tailscreen-2024-12-15-15-32-44" devices.
 
 Peer discovery enumerates peers via the tsnet LocalAPI and opens TCP/7447
-to each in parallel with a short timeout. Anything that accepts and
-replies with the Tailscreen handshake gets shown in the **Screens** list.
+to each in parallel with a short timeout; anything that accepts and replies
+with the Tailscreen handshake shows up in the **Screens** list. We also
+subscribe to the IPN bus so the menu reflects peers coming online and
+offline immediately, not after the next discovery sweep.
 
-We also subscribe to the IPN bus so the menu reflects peers coming online
-and offline immediately, not after the next discovery sweep.
-
-The sharp edge in the auth flow is that interactive login only works after
-a tsnet node is initialized, which means after a share or a connection
-has been started at least once. There is no chicken-and-egg fix;
-that's just how `libtailscale` works.
+The sharp edge in the auth flow: interactive login only works after a tsnet
+node is initialized, i.e. after a share or a connection has been started
+at least once. There is no chicken-and-egg fix; that's just how
+`libtailscale` works.
 
 ### Guests: the share-by-token tunnel
 
 **Share via Link** carries the same protocol to people who aren't on the
 tailnet at all. Flipping it on mints a fresh WireGuard key pair for the
-share and encodes its public key plus DERP bootstrap details into an
-opaque token (`tc…`, wrapped in a `tailscreen:` link). A guest holding
-the token reaches the sharer through the named relay, completes an
-authenticated handshake, and from there it's ordinary WireGuard — direct
-when NAT traversal permits, relayed ciphertext when not. Both channels of
-port 7447 run over that tunnel unchanged: the sharer binds a second UDP
-listener and a second framed-TCP listener on the guest node beside the
-tailnet ones, and everything downstream — RTP fan-out, loss recovery,
-annotations, remote control — treats a guest connection like any other.
+share and encodes its public key plus DERP bootstrap details into an opaque
+token (`tc…`, wrapped in a `tailscreen:` link). A guest holding the token
+reaches the sharer through the named relay, completes an authenticated
+handshake, and from there it's ordinary WireGuard — direct when NAT
+traversal permits, relayed ciphertext when not. Both channels of port 7447
+run over that tunnel unchanged: the sharer binds a second UDP listener and
+a second framed-TCP listener on the guest node beside the tailnet ones, and
+everything downstream — RTP fan-out, loss recovery, annotations, remote
+control — treats a guest connection like any other.
 
 What differs is admission, not transport. A guest's identity is its
 WireGuard node key (there's no Tailscale identity to look up), approval is
 mandatory on every join — the remembered-allow store, open-door mode, and
-ask-to-share pre-approval deliberately don't apply — and denying a guest
-also evicts its key at the tunnel for the life of the link. The key pair
-is never persisted: stop sharing, press New Link, or flip the toggle off
-and every outstanding copy of the link is dead. A share can even run
-**link-only** — started signed out on any of the three apps, no tsnet node
-at all, the guest tunnel as its only transport. That path is written once —
-`SharerLinkSession.startLinkOnly` over `TailscaleScreenShareServer`'s
-`startGuestOnly` — which is why the swift-cross-ui hosts took one
-parameter each to gain it.
+ask-to-share pre-approval don't apply — and denying a guest also evicts its
+key at the tunnel for the life of the link. The key pair is never
+persisted: stop sharing, press New Link, or flip the toggle off, and every
+outstanding copy of the link is dead. A share can even run **link-only** —
+started signed out on any of the three apps, no tsnet node at all, the
+guest tunnel as its only transport (`SharerLinkSession.startLinkOnly` over
+`TailscaleScreenShareServer`'s `startGuestOnly`, which is why the
+swift-cross-ui hosts took one parameter each to gain it).
 
 **A browser is a guest too.** The web form of a share link
-(`https://tailscreen.dev/view/#tc…`) opens a static page that carries the
+(`https://tailscreen.dev/view/#tc…`) opens a static page carrying the
 fork's `guest` client and the protocol SDK compiled to WebAssembly. It
-reaches the relay over a WebSocket — the only socket a browser has — so
-its WireGuard tunnel is always relayed and never upgrades to a direct
-path, and everything inside it is carried reliably whether it is shaped
-like UDP or not. That is exactly the case the stream profile exists for,
-so the page uses nothing else: it sends its HELLO as a
-`mediaDatagram` frame, the sharer keys that viewer's media to the
-connection instead of a UDP address, and every RTP packet, receiver
-report and PLI follows the same way. Loss recovery is masked off (a
-reliable stream loses nothing; what it does instead is queue), the
-sharer's existing per-viewer send chain absorbs the backpressure, and
-from admission onward the page is an ordinary guest: mandatory approval
-every join, identity by key, the same drawing and remote-control gates.
-Decoding is WebCodecs — H.264 everywhere the browser ships a decoder,
-with the codec-unsupported fallback covering HEVC — and audio is Web
-Audio behind the click browsers insist on.
+reaches the relay over a WebSocket — the only socket a browser has — so its
+WireGuard tunnel is always relayed and never upgrades to a direct path,
+and everything inside it is carried reliably regardless of shape. That's
+exactly the case the [stream
+profile]({{ site.baseurl }}{% link protocol.md %}#stream-carriage--the-reliable-transport-profile-0x0d)
+exists for, so the page uses nothing else; from admission onward it's an
+ordinary guest — mandatory approval every join, identity by key, the same
+drawing and remote-control gates. Decoding is WebCodecs (H.264 everywhere
+the browser ships a decoder, falling back when HEVC is unsupported) and
+audio is Web Audio behind the click browsers insist on.
 
 ## Annotations
 
 The viewer floats a drawing overlay over the video window for local
 low-latency feedback; the sharer floats the same overlay over the actual
-display, so the captured frames include the strokes — every viewer
-(including the original drawer) sees the same annotations through the
-video stream, with the local-side overlay just smoothing out latency for
-whoever's holding the pen.
-
-The wire format is TCP, framed, JSON-encoded. We use TCP rather than
-RTCP-style RTP feedback because losing a stroke segment is worse than the
-latency cost of TCP retransmits — the viewer would be drawing on
-something the sharer never sees.
+display, so captured frames include the strokes — every viewer (including
+the original drawer) sees the same annotations through the video stream,
+with the local-side overlay just smoothing out latency for whoever's
+holding the pen. Wire format and the TCP-over-RTP-feedback rationale are on
+the [protocol page]({{ site.baseurl }}{% link protocol.md %}#annotations--control--tcp).
 
 ## Metadata
 
-The metadata channel exchanges three things over TCP/7447:
-
-- The share's display name (so the **Screens** list says "Mike's
-  laptop" rather than `100.83.12.4`).
-- The display resolution.
-- Request-to-share prompts, including the accept/decline answer sent back
-  on the same connection the request arrived on.
+The metadata channel exchanges three things over TCP/7447: the share's
+display name (so the **Screens** list says "Mike's laptop" rather than
+`100.83.12.4`), the display resolution, and request-to-share prompts,
+including the accept/decline answer sent back on the same connection the
+request arrived on.
 
 ## Guardrails
 
-Two test suites guard the protocol itself — know them before touching
-wire code:
+Two test suites guard the protocol itself — know them before touching wire
+code:
 
 - **The wire-byte registry.** Every wire constant is pinned in a registry
   test: exact value, exhaustiveness, uniqueness. A new byte needs a
   registry row in the same commit; a shipped byte is never renumbered.
 - **Parser fuzzing.** Every parser that reads peer-controlled bytes runs
-  under a deterministic seeded fuzz harness on each CI run, with a longer
+  under a deterministic seeded fuzz harness each CI run, with a longer
   nightly soak. A failure prints its reproducing seed.
 
 ## What's not here
