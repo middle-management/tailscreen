@@ -56,6 +56,7 @@ Port **7447** TCP+UDP (`NetworkConfig.tailscreenPort` — never write the litera
 - `CVPixelBuffer` isn't `Sendable` — convert to `CGImage` before hopping to `@MainActor`.
 - No `Task { … self … }` in `deinit`.
 - Log with `TSLogger`, not `print`. Surface UI errors via `appState.showAlertMessage(title:message:)`.
+- **Comments explain only what the code can't**: a non-obvious why, an invariant, a protocol/OS quirk, a "don't simplify this" warning — in a line or two. No history, no restating the code, no essays; point to `docs/spec.md` or a rules file instead of repeating it.
 - The `-L` to `Packages/TailscaleKit/lib` in `Package.swift` must stay **relative**.
 
 ## Pitfalls
