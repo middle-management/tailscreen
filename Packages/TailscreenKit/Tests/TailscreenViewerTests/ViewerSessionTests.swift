@@ -101,6 +101,98 @@ final class ViewerSessionTests: XCTestCase {
         return avcc
     }
 
+    // MARK: - HELLO retry
+    //
+    // A HELLO is one UDP datagram and `start()` used to send exactly one. Lose
+    // it and the session still came up — the sharer registers the address from
+    // a later KEEPALIVE or PLI — but with NO capabilities, because it only
+    // records them where a HELLO is parsed. It then answers with the legacy
+    // 5-byte ack, and for the rest of that session the viewer's annotation
+    // toolbar and Request Control are hidden, its NACKs are answered with
+    // nothing, no RTT ping is sent and FEC can never arm. Retrying until the
+    // sharer answers is what closes that window.
+
+    /// `decodeHelloCaps` is non-optional and answers `[]` for anything that is
+    /// not a HELLO, so it cannot be used to *identify* one. Count by kind.
+    private func helloCount(_ control: ControlCollector) -> Int { control.count(of: .hello) }
+
+    private func helloCaps(_ control: ControlCollector) -> [ScreenShareCaps] {
+        control.datagrams
+            .filter { ScreenShareControlMessage.decode($0) == .hello }
+            .map { ScreenShareControlMessage.decodeHelloCaps($0) }
+    }
+
+    /// The regression. An unanswered HELLO is sent again once the interval has
+    /// elapsed, carrying the same capabilities — those are the whole point of
+    /// re-sending it.
+    func testUnansweredHelloIsResentWithTheSameCaps() {
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: StubDecoder(), videoSink: StubVideoSink(),
+            audioSink: nil, onControlToSend: control.send)
+        session.start()
+        XCTAssertEqual(helloCount(control), 1)
+
+        // The first tick only seeds the retry clock: `start()` ran before any
+        // tick, so it had no clock to stamp, and reading that as "sent at time
+        // zero" would fire a duplicate immediately.
+        session.tick(nowNs: 1_000_000_000)
+        XCTAssertEqual(helloCount(control), 1, "the first tick must not duplicate the HELLO")
+
+        session.tick(nowNs: 1_500_000_000)
+        XCTAssertEqual(helloCount(control), 1, "still inside the retry interval")
+
+        session.tick(nowNs: 2_000_000_000)
+        XCTAssertEqual(helloCount(control), 2, "a full interval with no answer resends")
+        XCTAssertEqual(
+            helloCaps(control).last, fullCaps, "the retry must carry the caps, not a bare HELLO")
+    }
+
+    /// HELLO_PENDING stops it. The sharer only sends one from the path that
+    /// parses a HELLO, so receiving it is proof our caps landed — as good a
+    /// stop as the ack, and what keeps somebody parked at the approval prompt
+    /// from re-sending for the length of the wait.
+    func testHelloPendingStopsTheRetries() {
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: StubDecoder(), videoSink: StubVideoSink(),
+            audioSink: nil, onControlToSend: control.send)
+        session.start()
+        session.tick(nowNs: 1_000_000_000)
+        session.receiveRTP(ScreenShareControlMessage.encode(.helloPending))
+        XCTAssertTrue(session.isPendingApproval)
+
+        for step in 2...12 { session.tick(nowNs: UInt64(step) * 1_000_000_000) }
+        XCTAssertEqual(helloCount(control), 1, "parked at the gate is answered, not lost")
+    }
+
+    func testHelloAckStopsTheRetries() {
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: StubDecoder(), videoSink: StubVideoSink(),
+            audioSink: nil, onControlToSend: control.send)
+        session.start()
+        session.tick(nowNs: 1_000_000_000)
+        session.receiveRTP(
+            ScreenShareControlMessage.encodeHelloAck(ssrc: 77, caps: [.nack, .annotations]))
+        XCTAssertEqual(session.assignedSSRC, 77)
+
+        for step in 2...12 { session.tick(nowNs: UInt64(step) * 1_000_000_000) }
+        XCTAssertEqual(helloCount(control), 1, "an admitted viewer stops asking")
+    }
+
+    /// The bound. A sharer that never answers at all must not be sent HELLOs
+    /// for the life of the process.
+    func testRetriesStopAtTheAttemptLimit() {
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: StubDecoder(), videoSink: StubVideoSink(),
+            audioSink: nil, onControlToSend: control.send)
+        session.start()
+        for step in 1...40 { session.tick(nowNs: UInt64(step) * 1_000_000_000) }
+        XCTAssertEqual(helloCount(control), ViewerSession.helloAttemptLimit)
+    }
+
     // MARK: - Video
 
     func testVideoAccessUnitReachesSinkAsFrame() {

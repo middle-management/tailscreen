@@ -1347,10 +1347,23 @@ final class MicCapture {
 
 // MARK: - Logger
 
+/// The voice path's log sink, teed into the diagnostics bundle exactly as the
+/// viewer client's is.
+///
+/// Until this it only printed, which meant the two lines that answer "the audio
+/// was crackly" existed but reached nobody: `VoiceChannel`'s once-a-minute
+/// `stats concealed=… discontinuities=… overruns=… underruns=… clamped=…
+/// jitter=…ms`, and every `MicCapture:` engine line (playback started, VPIO
+/// engaged or refused, tap reinstalled after a configuration change, a device
+/// bind that failed). A 0.10.0-rc.15 bundle pair from a call both ends
+/// described as crackly could rule out packet loss and rule out link
+/// saturation, and then had nothing further to say, because none of that was
+/// in the file.
 private struct TSLogger: LogSink {
     var logFileHandle: Int32?
 
     func log(_ message: String) {
         print("[Voice] \(message)")
+        DiagnosticsCenter.shared.captureLog(source: "Voice", message: message)
     }
 }
