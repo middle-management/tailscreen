@@ -697,3 +697,16 @@
 "Writes a file naming this device, the devices it connected to, your audio devices, and what happened between them — no screen contents, audio, keystrokes, share links or sign-in details. Ask the person on the other end to export theirs too: the two files together are what make a problem readable." = "Skriver en fil som namnger den här enheten, enheterna den anslöt till, dina ljudenheter och vad som hände mellan dem — inget skärminnehåll, inget ljud, inga tangenttryckningar, inga delningslänkar och inga inloggningsuppgifter. Be personen i andra änden att exportera sin också: det är de två filerna tillsammans som gör ett problem läsbart.";
 "Couldn't Export Diagnostics" = "Kunde inte exportera diagnostik";
 "The diagnostics file could not be written: %@" = "Diagnostikfilen kunde inte skrivas: %@";
+
+/* MARK: - Open a link on the sharer */
+"%@ sent a link" = "%@ skickade en länk";
+"Open" = "Öppna";
+"Dismiss" = "Avfärda";
+"Send" = "Skicka";
+"Open Link on Sharer…" = "Öppna länk hos delaren…";
+"Open a Link on the Sharer" = "Öppna en länk hos delaren";
+"The sharer sees the whole link and chooses whether to open it." = "Delaren ser hela länken och väljer själv om den ska öppnas.";
+"That isn't a link the sharer can open. Use a full http:// or https:// address with no spaces." = "Det är ingen länk som delaren kan öppna. Använd en fullständig http://- eller https://-adress utan mellanslag.";
+"Link sent. The sharer decides whether to open it." = "Länken är skickad. Delaren bestämmer om den ska öppnas.";
+"Link Received" = "Länk mottagen";
+"%@ sent a link. Open Tailscreen to see it." = "%@ skickade en länk. Öppna Tailscreen för att se den.";

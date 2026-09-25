@@ -726,3 +726,16 @@
 "Merge" = "Merge";
 "Couldn't Merge Diagnostics" = "Couldn't Merge Diagnostics";
 "The diagnostics could not be merged: %@" = "The diagnostics could not be merged: %@";
+
+/* MARK: - Open a link on the sharer */
+"%@ sent a link" = "%@ sent a link";
+"Open" = "Open";
+"Dismiss" = "Dismiss";
+"Send" = "Send";
+"Open Link on Sharer…" = "Open Link on Sharer…";
+"Open a Link on the Sharer" = "Open a Link on the Sharer";
+"The sharer sees the whole link and chooses whether to open it." = "The sharer sees the whole link and chooses whether to open it.";
+"That isn't a link the sharer can open. Use a full http:// or https:// address with no spaces." = "That isn't a link the sharer can open. Use a full http:// or https:// address with no spaces.";
+"Link sent. The sharer decides whether to open it." = "Link sent. The sharer decides whether to open it.";
+"Link Received" = "Link Received";
+"%@ sent a link. Open Tailscreen to see it." = "%@ sent a link. Open Tailscreen to see it.";

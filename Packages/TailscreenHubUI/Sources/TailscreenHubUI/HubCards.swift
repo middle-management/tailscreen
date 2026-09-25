@@ -337,6 +337,11 @@ public struct ShareCard: View {
                         }
                         Spacer()
                     }
+                    if let detail = prompt.detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundColor(HubStyle.secondaryText)
+                    }
                     HStack(spacing: 6) {
                         Button(prompt.acceptLabel) { onAccept(prompt.id) }
                         Button(prompt.declineLabel) { onDecline(prompt.id) }
