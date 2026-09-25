@@ -1,564 +1,151 @@
 # Share by token — no-sign-in sharing, end to end
 
-> Status: plan. Groundwork and feasibility evidence: `plans/tailcat-evaluation.md`
-> (the control-plane-free tunnel is proven working on `tailscale.com v1.102.3`;
-> the libtailscale bump is validated on the Go side; one token serves N
-> individually-keyed viewers). This document is the build order: backend, core,
-> UI, docs, in landable phases with gates.
+> Status: **shipped**, all phases, all three apps (sharer + viewer, signed-in
+> and signed-out). Groundwork/feasibility: `plans/tailcat-evaluation.md`.
+> Remaining gaps are listed under "Known deviations" below; nothing here is
+> blocking.
 
-## What ships
+## What it is
 
-A sharer clicks **Share via Link**, gets a short token (also rendered as a
-`tailscreen:` URL), and hands it to anyone — no Tailscale account, no tailnet
-membership, no admin rights on the viewer's machine. A viewer pastes the token
-into **Join a Share…** in the hub (or clicks the link) and lands in the same
-approval flow tailnet viewers go through today: the sharer sees a pending row,
-approves, and the viewer gets the same low-latency RTP stream, annotations,
-and (if granted) remote control. Stopping the share kills the token forever.
+A sharer clicks **Share via Link**, gets a short token (also a `tailscreen:`
+URL), and hands it to anyone — no Tailscale account, no tailnet membership.
+A viewer pastes the token or clicks the link, lands in the same
+pending-approval flow as tailnet viewers, and gets the same RTP stream,
+annotations, and (if granted) remote control. Stopping the share kills the
+token forever. On macOS a share can run **link-only**, with no sign-in and no
+tsnet node at all.
 
-Underneath: a WireGuard tunnel bootstrapped over DERP with NAT hole-punching —
-Tailscale's data plane without its control plane, the mechanism tailcat
-demonstrates — carried by the same libtailscale archive we already ship, and
-speaking the unmodified 7447 wire protocol inside the tunnel.
+Underneath: a WireGuard tunnel bootstrapped over DERP with NAT hole-punching
+(Tailscale's data plane without its control plane — the mechanism
+`plans/tailcat-evaluation.md` proved out), carried by the same libtailscale
+archive, speaking the **unmodified 7447 wire protocol** inside the tunnel.
 
-## Goals
+## Goals / non-goals
 
-1. **Sharer**: start/stop a token share alongside (not instead of) the normal
-   tailnet share; copy the token/link; see guest viewers in the existing
-   roster; approve, deny, and drop them with the existing controls.
-2. **Viewer**: join by pasted token or clicked link, on every platform with a
-   viewer, through the existing viewer UI (placards, toolbar, stats).
-3. **Same protocol**: zero changes to the 7447 wire protocol. RTP/UDP media,
-   framed-TCP control, FEC/NACK/PLI — all identical inside the tunnel. No new
-   wire bytes, so no registry/spec/vector churn in the media plane.
-4. **Consent is stronger, not weaker, for guests**: approval is mandatory for
-   token viewers regardless of the "Require approval" toggle, and identity is
-   the viewer's WireGuard node key — cryptographic, not claimed.
-5. The archive/patch-series problem gets solved on the way, because Phase 0
-   forces it (see `plans/tailcat-evaluation.md`, "Who owns the archive").
+Goals: token share alongside (not instead of) the normal tailnet share;
+existing viewer UI on every platform; zero 7447 wire changes; **approval is
+mandatory for guests regardless of the "Require approval" toggle**, with
+identity = the guest's WireGuard node key (cryptographic, not claimed).
 
-## Non-goals (v1)
+Non-goals (v1, still true): browser viewer (separate plan,
+`plans/browser-viewer.md`); guest *sharers* (tokens let people watch/control,
+not share their own screen); voice/system audio to guests (PT98/99 fan-out
+works mechanically but consent/mixing UX for guest mics is a separate piece);
+persistent/reusable tokens (v1 tokens are ephemeral, one per share); tailnet↔guest
+bridging of any kind (a guest sees only the share fan-out — the packet filter
+admits 7447 + the control port to the server's own address, nothing else).
 
-- Browser viewer (needs the reliable-transport profile; separate plan —
-  now `plans/browser-viewer.md`).
-- Guest *sharers* — tokens let people watch/control your screen, not share
-  theirs. Request-to-share over the guest channel is out.
-- Voice/system audio to guests (PT 98/99 fan-out works mechanically, but mic
-  capture consent copy and mixing UX for guests is its own piece; keep v1
-  video + annotations + remote control).
-- Persistent tokens ("my permanent share address", `genkey`-style saved keys).
-  v1 tokens are ephemeral: one per share session, dead on stop.
-- Cross-device sync of remembered guest decisions.
-- tailnet↔guest bridging of any kind. A guest sees the share fan-out and
-  nothing else; the packet filter admits only 7447 to the server's own
-  address (plus the framed-TCP port), exactly as narrow as tailcat's
-  `ServedTCPPorts` idea.
+## Key design decisions and why
 
-## Current state (what the feature builds on)
+- **Fork `tailscale/libtailscale` rather than patch it.** The guest backend's
+  Go dependencies can't be expressed as a `Patches/*.patch` (generated
+  lockfile content), and two Go c-archives can't share one binary — so the
+  guest package has to live inside the *same* archive as tsnet. The old
+  23-patch series became ordinary commits on `middle-management/libtailscale`
+  (branch `tailscreen-main`); upstreamable ones continue as normal PRs against
+  upstream from there. See `.claude/rules/tailscalekit.md` for the submodule
+  mechanics.
+- **Zero wire changes.** The token is transport-plane only, parsed solely by
+  the vendored Go (CBOR, field names pinned by a vendored test); Swift treats
+  it as an opaque string. `docs/spec.md` Appendix D documents the bootstrap as
+  informative scope — no new registry rows, no vectors.
+- **Guest identity is the node key, not a claim.** Viewer identity became
+  `ViewerInfo`/`PendingViewerInfo.isGuest` + the guest node key from
+  `GuestServerNode.peers()` (not the originally-planned `ViewerIdentity` enum
+  — the addr-keyed rosters made a flag the smaller honest change). Guest
+  addrs are derived from the node key (`tcAddrForKey`, 80 bits of key in
+  `fd7a:115c:a1e0::/48`) and can't collide with tailnet addresses because
+  they live in a separate netstack. `plans/viewer-consent-and-access-control.md`
+  is the reasoning for why source-addr identity is trustworthy inside a
+  WireGuard tunnel; it transfers verbatim here.
+- **Eviction actually closes the tunnel.** tailcat's client map was
+  append-only; `RemoveClient(nodekey)` was added (delete from map, rebuild
+  netmap without the peer, push to magicsock, denylist the key against
+  re-handshake) — closing the gap `plans/tailcat-evaluation.md` found. Deny on
+  a guest calls SERVER_BYE *and* `guest_server_remove_peer`, stronger than the
+  tailnet case where a denied peer just can't re-approve.
+- **Remembered guest decisions are session-scoped, not persisted.** Ephemeral
+  keys make "always allow" meaningless across shares, so the store simply
+  drops `.guest` entries on share stop.
+- **Full-address tokens (embedded DERP region), not short ones.** Viewers
+  never need to fetch a DERP map. Public DERP is the default bootstrap; a
+  settings/DERP-override exists for self-hosted relays, because public relays
+  are rate-limited and not meant to sustain relayed video long-term
+  (`docs/self-hosted.md` has the derper recipe).
+- **The guest TCP control channel reuses the tailnet one's entire machinery**
+  (`TailscreenControlListener.start(adopting:)`, `FramedControlChannel`) —
+  same admitted-viewer gate, same single-grantee control gate, same
+  annotation bookkeeping — rather than a parallel implementation. The guest C
+  surface already had TCP fds bit-compatible with tsnet's, so this was
+  adoption, not new protocol.
+- **Sharer-side guest mode on Linux/Windows follows `plans/platform-alignment.md`'s
+  rule**: approve/deny/drop must exist wherever guests can exist, so it rode
+  with the sharer port rather than landing later. `SharerLinkSession`
+  (TailscreenSharer, an actor) is the one lifecycle both host engines
+  (`LinuxShareSession`, `WindowsShareSession`) drive, so the enable → attach
+  listener → token → rotate → evict → teardown sequence is written once.
+- **Link-only sharing needed a signed-out picker phase, not just a toggle.**
+  The GTK app previously always brought a tsnet node up on launch; a
+  never-signed-in person hit "Waiting for login…" with no other path visible.
+  `HubSignInPane` (shared, TailscreenHubUI) now offers **Your tailnet** and
+  **A share link** side by side, driven by one portable decision
+  (`WelcomePaneDecision.linkShareAction`), and all three hosts read the same
+  function — macOS's own welcome pane included.
 
-- **Sharer core**: `TailscaleScreenShareServer` (portable,
-  `Packages/TailscreenKit/Sources/TailscreenSharer/`) — `start(...,
-  existingNode:)` (`TailscaleScreenShareServer.swift:903-1005`) binds one
-  `PacketListener` (UDP 7447) plus a shared `TailscreenControlListener`
-  (framed TCP). Fan-out, pending/approve/deny (`SharerDecisions.swift:96-123`),
-  one-time admit list keyed by peer IP (`:460-473`), SERVER_BYE denial.
-- **Viewer identity**: keyed by UDP source addr, resolved to hostname +
-  StableNodeID via LocalAPI; `plans/viewer-consent-and-access-control.md`
-  documents why the source addr is trustworthy inside a WireGuard tunnel —
-  an argument that transfers verbatim to the guest tunnel, where the addr is
-  *derived from* the viewer's node key (`tcAddrForKey`: 80 bits of key in
-  `fd7a:115c:a1e0::/48`).
-- **Viewer core**: macOS `TailscaleScreenShareClient`; portable hosts use
-  `TsnetTransport` + `ViewerConfig(hostname:port:...)`
-  (`TailscreenViewerTsnet/TsnetTransport.swift:9-68`).
-- **UDP-over-socketpair bridge**: patches 013–020 already solved "get a
-  datagram across the C boundary" for tsnet (`[1B addr_len][addr][payload]`
-  framing). The guest node reuses this mechanism unchanged.
-- **Hub UI**: macOS `MainWindowView` (peer list, `connectToPeer`), menubar
-  sharer tool (`MenuBarView`, `PendingViewersList` at `:560-596`);
-  Linux/Windows share `TailscreenHubUI` (HubHeader/HubContent/HubViewerRoster).
-  All strings via `L(_:)` in TailscreenL10n.
-- **Proven** (see the evaluation doc): tailcat's e2e passes on v1.102.3 —
-  DERP bootstrap → disco → direct-path upgrade → WG handshake → payload;
-  libtailscale bumps to v1.102.3 with build/vet/test/c-archive green and our
-  UDP exports intact; the wgengine seams (`SetPeerConfigFunc`,
-  `SetPeerByIPPacketFunc`) are public interface methods there.
+## Rejected alternatives worth remembering
 
-## Design
+- A `Destination`/`ViewerIdentity` enum for guest vs tailnet, everywhere —
+  rejected in favor of a flag + node key, twice (server roster, viewer
+  `ViewerConfig.guestToken`), because the existing addr-keyed types made the
+  flag the smaller, more honest diff both times.
+- Upstreaming everything before building on it — rejected; upstream
+  libtailscale is near-dormant, so blocking on it would have stalled the
+  whole feature for no benefit. Continued upstreaming happens in parallel.
 
-### Where the new Go lives — the forced move, made explicit
+## Where it lives now
 
-The guest backend is Go and must link into the **same** c-archive as tsnet
-(two Go c-archives cannot share a binary — the `TailscreenDifferential`
-lesson). Its dependencies (`tailscale.com@v1.102.3`) and its `go.mod` lines
-cannot be expressed as a `Patches/*.patch` (generated lockfile content under
-`patch -F0` — see "Where it actually breaks" in the evaluation). Therefore:
+- Fork: `middle-management/libtailscale`, branch `tailscreen-main`, `guest/`
+  package (vendored from tailcat `c04c5af`, BSD-3) + `guestnode.c` C exports
+  (`guest_server_*`, `guest_client_*`).
+- Swift wrapper: `Packages/TailscaleKit/Sources/GuestNode.swift`
+  (`GuestServerNode`/`GuestClientNode`), vending ordinary
+  `PacketListener`/`Listener`/`IncomingConnection` types (guest fds are
+  bit-compatible with tsnet's).
+- Sharer core: `TailscaleScreenShareServer` dual-listener routing (guest +
+  tailnet), `SharerDecisions` guest-approval rule, `SharerLinkSession`.
+- Viewer core: `TsnetTransport`/`GuestTransport` (portable hosts),
+  `TailscaleScreenShareClient.connectGuest` (macOS); shared session core is
+  `runSession`.
+- Token/link format: `ShareLinkFormat` (TailscreenProtocol), pinned by
+  `ShareLinkFormatTests`.
+- UI: macOS `SharingCard`/menubar Share-via-Link section, Settings → Link
+  sharing; shared `HubJoinCard`, `HubLinkSharing`, `HubGuestChip`, `HubSignInPane`
+  (TailscreenHubUI) for Linux/Windows.
+- Docs: `docs/usage.md` "Sharing via link (guests)", `docs/security.md`
+  guest sections, `docs/self-hosted.md` derper recipe, `docs/spec.md`
+  Appendix D, `docs/platform-support.md` matrix rows.
 
-**Fork `tailscale/libtailscale` under our org; point the submodule at the
-fork.** On the fork branch, as ordinary commits:
+## Known deviations / remaining gaps
 
-1. Absorb the 23 `Patches/` files as commits (mechanical: apply, commit each
-   with its filename as subject). The Makefile's patch machinery retires; the
-   `.patches-applied` marker, `-F0` loop, and `unapply-patches` all go.
-   `Patches/` remains in git history; the README gains a pointer to the fork.
-2. Bump `tailscale.com` to v1.102.3 (`go get` + `go mod tidy`, both verified).
-3. Add the guest backend as a new package `guest/` in the fork (below).
+- Guest naming in notifications (macOS) and roster rows (Linux/Windows)
+  falls back to the tunnel IP, not the key fingerprint — fingerprint polish
+  never landed.
+- Per-guest relay/direct indicator (the risk-section stretch item) deferred.
+- `Settings → Link sharing` (feature on/off, DERP override) is macOS-only;
+  Linux/Windows have no off-switch for the feature.
+- `tailscreen:` scheme registration: AppImage registers only after desktop
+  integration; the Windows zip build (unpackaged) registers nothing (MSIX
+  does). Both noted in the platform matrix.
+- No single-instance redirection for a scheme-handler launch — each click
+  starts a new process; `ProtocolActivation.observe` is the wire a future
+  redirect would use.
 
-Upstreaming the upstreamable patches (missing imports, the poll-timeout fix,
-the fd race, Linux portability, Windows support) continues from the fork —
-now as normal PRs — and shrinks our delta over time. Rebasing on upstream's
-(nearly dormant: one additive commit) main is a merge, not a patch re-roll.
+## Risks (still relevant)
 
-### The guest backend (`guest/` package in the fork)
-
-Vendored from tailcat at `c04c5af` (BSD-3, header preserved), modified:
-
-- **UDP through the tunnel**: a second `filter.Match` for `ipproto.UDP`
-  (destinations: the server's own address, port 7447 only), a UDP forwarder
-  registered on the gVisor stack, and a real `NetstackDialUDP` on the client
-  side. This is the code tailcat lacks and we own outright — no upstream wait.
-  (Still file the tailcat issue; if it lands we converge, but nothing here
-  blocks on it.)
-- **Eviction**: `RemoveClient(nodekey)` — delete from the clients map, rebuild
-  the netmap without the peer, push to magicsock, and add the key to a local
-  denylist so a re-`meow` is ignored. Node IDs become monotonic (a counter,
-  not `len(clients)+2`) so removal can't collide IDs. This closes the
-  "append-only clients map" gap the evaluation found.
-- **Token**: tailcat's `ConnBlob` unchanged (CBOR, field names pinned by the
-  vendored `TestWireFieldNames`). We always emit the **full-address** form
-  (embedded DERP region) so viewers never fetch a DERP map. Presented to
-  users as `tailscreen:join?t=<blob>` and as the bare blob for copy-paste.
-- **DERP**: default to the tailcat public map for bootstrap; a settings
-  override (`derpmap URL` / region hostname) feeds straight through to the
-  vendored `DERPMapURL`/`Region` fields. `docs/self-hosted.md` gains the
-  derper recipe. (Public relays are rate-limited: fine for bootstrap +
-  hole-punched direct paths, **not** a place to sustain relayed video — the
-  UI copy and docs must say so, and the sharer should surface "relayed"
-  per-guest, which magicsock status already exposes.)
-
-C exports (same style as the existing `tailscale_*` surface; socketpair
-bridge for data paths, reusing the patch-013 framing):
-
-```
-guest_server_start(derp_config) -> handle          // fresh ephemeral key
-guest_server_token(handle, buf)                    // full-address ConnBlob
-guest_server_listen_packet(handle, port) -> fd     // UDP 7447 in guest stack
-guest_server_listen(handle, port) -> ld            // TCP 7447 (control)
-guest_server_remove_peer(handle, nodekey)          // eviction + denylist
-guest_server_set_peer_callback(handle, cb)         // join/leave + nodekey↔addr
-guest_server_stop(handle)                          // key discarded; token dead
-guest_client_connect(token) -> handle              // viewer side
-guest_client_dial(handle, "udp"/"tcp", port) -> fd
-guest_client_close(handle)
-```
-
-Go tests in the fork (Phase 1's spike grows into these): loopback server +
-client with real DERP/STUN test servers (tailcat's harness, vendored), RTP-
-shaped datagrams both directions, relayed and direct, eviction mid-stream.
-
-### Swift: `GuestNode` in TailscaleKit
-
-A small wrapper mirroring the slice of `TailscaleNode` the share stack uses:
-`PacketListener`-compatible UDP listen, TCP listen for the control listener,
-dial for the viewer. Deliberately shaped so `TailscreenSharer`/
-`TailscreenViewerTsnet` code stays transport-agnostic — the seams:
-
-- **Sharer**: `TailscaleScreenShareServer.start` grows an optional
-  `guestListeners:` alongside `existingNode:`. Internally the server keeps a
-  small routing table addr→owning socket so the fan-out/ACK path
-  (`:1894-1904`) replies out the socket a viewer arrived on. Guest addrs
-  (`fd7a:115c:a1e0::/48` derived) can never collide with tailnet 100.x/fd7a
-  peer addrs *of the tailnet stack* because they live in a different netstack;
-  the routing table is still keyed explicitly, not inferred.
-- **Identity**: a `ViewerIdentity` enum — `.tailnet(stableID:)` /
-  `.guest(nodeKey:)` — replaces the bare StableNodeID in pending rows,
-  notifications, and the remembered-decision store. Guest node keys come from
-  the peer callback, not from any payload claim. Persisted guest decisions are
-  **session-scoped** in v1 (ephemeral keys make "always allow" meaningless
-  across shares; the store simply drops `.guest` entries on share stop).
-- **Admission**: `SharerDecisions.admissionDecision` gains the rule *guest ⇒
-  approval required*, ignoring the toggle. Pure function, CI-tested, same
-  pattern as today (`SharerDecisions.swift:105-123`).
-- **Eviction**: deny/drop on a `.guest` viewer calls SERVER_BYE (as today)
-  **and** `guest_server_remove_peer` — the tunnel actually closes, which is
-  stronger than the tailnet case.
-- **Viewer**: `ViewerConfig` destination becomes
-  `enum Destination { case host(String, port: UInt16); case token(String) }`
-  (hostname init kept as a convenience). `TsnetTransport` grows a sibling
-  `GuestTransport` sharing the run loop/DatagramInbox machinery — the socket
-  comes from `guest_client_dial`, everything above it is untouched. macOS
-  `TailscaleScreenShareClient` gets the same branch.
-
-### UI
-
-All new strings through `L(_:)`; `make test-l10n` enforces catalog coverage
-across all three apps.
-
-**Sharer — macOS menubar (the sharer tool) + main window:**
-
-- A **Share via Link** row in the menubar share controls, visible while
-  sharing (and as an option when starting): toggling it on brings up the
-  guest node, shows the token as a one-line code field with **Copy Link** /
-  **Copy Token**, a guest count, and **New Link** (rotates: stop guest node,
-  fresh key, new token — old token dead). Toggle off / stop share → token
-  dead, all guests dropped, copy explains that.
-- Pending guests appear in the existing `PendingViewersList` and hub roster
-  with a **Guest** badge and the short node-key fingerprint (`nodekey:9c8d…`
-  style, first/last 4) instead of a hostname. Same Accept/Deny buttons, same
-  notification surfaces (macOS notifications, Windows toast via the existing
-  `WindowsToastPayload` identity threading, GNotify on Linux).
-- Roster rows for admitted guests show the badge + fingerprint + relay/direct
-  indicator; the existing drop control works (and actually evicts, above).
-
-**Viewer — hub, all three apps:**
-
-- **Join a Share…** as a hub-header action (next to Refresh/Add Account in
-  `HubHeader`) and in the macOS empty state: a sheet with one paste field
-  (accepts bare token or `tailscreen:` URL), a short "you're joining as a
-  guest; the sharer must approve you" line, and Join. Errors (bad token,
-  unreachable DERP, timeout) surface through the existing placard states.
-- `tailscreen:` URL scheme: register on macOS (Info.plist via SwiftPM
-  resources), open straight into the join sheet with the token pre-filled.
-  Linux `.desktop` / Windows registry registration are follow-ups tracked in
-  `docs/platform-support.md`, not v1 blockers.
-- While connected, the viewer toolbar shows the same session UI; a small
-  "Guest" chip in the stats overlay is the only difference.
-
-**Settings (macOS `SettingsView`, mirrored later on the other two):**
-
-- "Link sharing" section: enable/disable the feature (default **on** but
-  inert until a share uses it), DERP relay override (URL or hostname,
-  default public map), and static copy: guests bypass tailnet ACLs; approval
-  is always required for them; links die when the share stops.
-
-**Consent posture** (`docs/security.md` gets the matching section): a token
-is *capability to knock*, never capability to watch. The knock produces a
-pending row; only the sharer's explicit approval admits. Remembered-deny for
-a guest key holds for the life of the share (covers "I denied them, they
-keep re-knocking" — the tunnel-level denylist silences repeats entirely).
-
-### Wire protocol / spec impact
-
-None on 7447 — the point of the design. The token is transport-plane, owned
-by the vendored Go (its CBOR field names pinned by the vendored test, the Go
-side being the only parser; Swift treats tokens as opaque strings).
-`docs/spec.md` gets a short informative appendix: "Transport bootstrap via
-connection token (guest mode)" describing scope — normative requirements
-stay zero because nothing on the wire inside the tunnel changed. Admission
-identity prose in `security.md`/spec notes the second identity class.
-`WireByteRegistryTests` untouched; no vectors added.
-
-## Phases & gates
-
-**Phase 0 — Own the archive.** Fork libtailscale; patches→commits;
-*(status: fork exists at `middle-management/libtailscale`; `tailscreen-main`
-carries the 23 converted patch commits — byte-identical to the old
-`make apply-patches` tree — plus the `tailscale.com` → v1.102.3 bump
-(`bf3db96`). The submodule, `Packages/TailscaleKit/Makefile`, the CI
-bootstrap action, and the docs are flipped to the fork and the patch
-machinery is gone. Remaining for the gate: green CI on all legs and a
-Swift-toolchain machine confirming `make build` / `make test-protocol` —
-this container has no Swift.)*
-`tailscale.com` → v1.102.3; submodule → fork; Makefile patch machinery
-removed; CI bootstrap uses `go: setup-go` wherever the archive builds.
-*Gate*: `make build`, `make test-protocol`, `make test-differential`,
-`make test-conformance`, `make test-l10n` all green on macOS + Linux CI, and
-a Swift-toolchain machine confirms the previously-unverified Swift half of
-the bump. **Land alone** — pure refactor+bump PR, no feature code. Also the
-moment `CLAUDE.md`'s "Go 1.21+" line gets corrected.
-
-**Phase 1 — The deciding spike.** In the fork: guest backend vendored, UDP
-filter+forwarder added, Go test pushes RTP-shaped datagrams both ways,
-relayed and direct. *Gate*: this passing turns the rest into schedule; a
-failure here stops the plan and we fall back to TCP-profile investigation
-(the reliable-transport profile from the evaluation) before touching UI.
-*(status: **passed**. The fork's `guest/` package (PR
-middle-management/libtailscale#1) vendors tailcat at `c04c5af` and adds
-`OnUDP`/`ServedUDPPorts`/a UDP filter match/`DialUDPPort`. 32 RTP-shaped
-1200-byte datagrams round-trip byte-identical on a verified direct path and
-verified DERP-relayed, and a filtered port yields silence with `OnUDP`
-never called — all under `-race`.)*
-
-**Phase 2 — Guest node, exported.** Full C surface + eviction + tests in the
-fork; `GuestNode` Swift wrapper + unit tests in TailscaleKit. *Gate*: a
-headless Swift test (linux-runnable, `test-protocol`-adjacent) does
-token → connect → datagram echo → evict.
-*(status: eviction (`RemoveClient`: denylist, closed flows, monotonic IDs),
-the full `guest_*` C surface, and the Swift `GuestServerNode`/`GuestClientNode`
-wrappers are on the fork's `guest` branch. The token → connect → 1200-byte
-echo → evict → silence gate runs at the C layer — `TestGuestCAPI` drives the
-real exported symbols against a local DERP harness, tsnetctest-style — since
-a Swift-side full-tunnel test needs a relay harness Swift tests don't have;
-the Swift leg's gate is compile+link on `linux-tailscalekit`. Guest fds are
-bit-compatible with tsnet fds, so the wrappers vend the ordinary
-`PacketListener`/`Listener`/`IncomingConnection` types.)*
-
-**Phase 3 — Core integration.** Server dual-listener routing,
-`ViewerIdentity`, admission rule, viewer `Destination.token` +
-`GuestTransport`.
-*(status: core landed. Sharer: `start(guestPacketListener:)` feeds guest
-datagrams through the same pipeline via the `MediaSockets` routing facade;
-guests are tagged by arrival listener, always park behind the approval
-prompt (open-door, remembered-allow and pre-approval all excluded, pinned
-by truth-table tests), and a deny/remembered-deny fires
-`onGuestViewerDenied` for tunnel-level eviction. `ViewerInfo`/
-`PendingViewerInfo` carry `isGuest` — implemented as a flag plus the guest
-node key from `GuestServerNode.peers()` rather than the planned enum, since
-the addr-keyed rosters made the flag the smaller honest change. Viewer:
-`ViewerConfig.guestToken` (spelled so instead of a `Destination` enum —
-same reasoning) routes `TsnetTransport.run` through the guest tunnel with
-no tsnet node; the session core is extracted as `runSession`, shared by
-both paths; the dest filter comes from `guest_client_server_addr`, pinned
-in the fork's ctest against the address real frames carry. Deferred to a
-follow-up: the guest TCP control channel (annotations/remote control for
-guests) on both sides, and `test-local.sh --guest`, which needs the phase-4
-host wiring.)* Extend `test-local.sh` with a `--guest` mode; net-impair
-runs over the guest path. *Gate*: two local instances, one tailnet-less,
-full session: pending → approve → video+annotations+remote-control → drop.
-Pure-decision suites extended per the test-catalog conventions (admission
-with guest, routing pick, token/URL parse+display formatting).
-
-**Phase 4 — UI, macOS first.** Menubar Share-via-Link, join sheet, badges,
-settings, URL scheme, notifications copy. *Gate*: `make test-l10n` green;
-hand-run of the full flow on two Macs across different networks (one
-CGNAT'd), confirming direct-path upgrade and the relayed indicator.
-*(status: macOS UI landed. Sharer: SharingCard "Share via Link" section
-(toggle → `GuestServerNode` + mid-share `attachGuestPacketListener`, token
-with Copy Link / Copy Token / New Link rotation, guest count, failure
-copy), Settings → Link sharing (feature gate default-on + DERP relay
-override), guest rows badged with the node-key fingerprint
-(`ShareLinkFormat.keyFingerprint` over `GuestServerNode.peers()`), guest
-pending rows offer plain Accept/Deny (remembered variants are
-StableNodeID-keyed, which guests never have; Deny tunnel-denylists the key
-via `onGuestViewerDenied` → `removePeer`). Viewer: Join-a-Share sheet in
-the hub (header action + signed-out welcome pane), `tailscreen://join`
-URL scheme (Info.plist rides `app-macos.yml`; `.onOpenURL` pre-fills the
-sheet), `connectGuest` on the mac client (annotations/remote-control
-affordances stay off — no guest TCP yet), Reconnect redials by token, and
-a "Guest link" connection row in the stats overlay. The link/token
-formats live in portable `ShareLinkFormat` (TailscreenProtocol), pinned by
-`ShareLinkFormatTests`. Deviations: guest naming in *notifications* still
-falls back to the tunnel IP (fingerprint polish pending); the per-guest
-relay/direct indicator is deferred with the risk-section stretch item.
-Remaining for the gate: the two-Mac hand-run.)*
-
-**Phase 5 — Cross-platform viewer + docs.** HubUI join entry (lights up
-Linux+Windows viewers nearly for free via `GuestTransport`), platform matrix
-updates, `docs/usage.md` walkthrough, `docs/security.md` guest section,
-`docs/self-hosted.md` derper recipe, spec appendix. Sharer-side guest mode on
-Linux/Windows rides the same `SharerModel`/WGC hosts afterwards, tracked as
-matrix gaps per `plans/platform-alignment.md`'s rule (a *decision* — approve,
-deny, drop a guest — must exist wherever guests can exist, so those land with
-the sharer port, not after it).
-*(status: landed. `HubJoinCard` (TailscreenHubUI, parsing via the shared
-`ShareLinkFormat`) renders in `PickerContent` on both swift-cross-ui hosts
-— including before sign-in, and on the Windows `SignInPane`, since joining
-needs no account — and both apps route it through the phase-3
-`ViewerConfig.guestToken` path (GTK: `startSession(guestToken:)` + a
-`--join` CLI twin of the direct-host mode; Windows: `joinShare(token:)`
-over the extracted `startSession`, with no `phase` guard so a signed-out
-join works). Both hosts gate the TCP-backed affordances (annotations,
-remote control) off for guest sessions and redial by token on Reconnect.
-Docs: `usage.md` "Sharing via link (guests)", `security.md` "Guests:
-sharing outside the tailnet", `self-hosted.md` derper recipe for the
-relay override, `spec.md` Appendix D (informative guest-bootstrap scope
-statement against TS-GEN-017), and the platform matrix flips the
-join rows for Linux/Windows (`tailscreen:` URL registration stays a
-macOS-only row — paste works everywhere). Sharer-side guest mode on
-Linux/Windows remains the tracked matrix gap.)*
-
-**Phase 6 — Guest-only shares (share without signing in), macOS.** The
-original "share screen without a control plane" use case completed: a
-share whose only transport is the guest tunnel — no Tailscale account,
-no tsnet node, the link is the only way in.
-*(status: landed. Server: `MediaSockets` takes an optional primary (with
-no tailnet listener the guest socket carries everything, and every addr
-is a guest by construction); `startGuestOnly(filterData:quality:
-guestPacketListener:)` brings the server up with no node, no tailnet
-listener, and no TCP control listener; the guest receive loop's death is
-the share's death when no tailnet listener exists (read live from the
-lifecycle, since a share can gain/lose its tailnet half); and the
-identity resolver skips guest addrs outright — they are in no netmap,
-and each guest join was spinning it through its full retry budget.
-macOS: `startSharing` runs guest-only automatically when signed out
-(nothing signed out could start a share before, so no plumbing through
-the picker); the guest node comes up first and its token exists the
-moment the share does; the welcome pane gains "Share your screen via
-Link…" (gated on the Settings feature switch, with a TS-LINK error
-pair for the off-gate and bring-up-failure cases); the menubar shows the
-full sharer tool while signed out + sharing, with the approval toggle
-hidden (it governs tailnet viewers, of which there are none) and the
-link section's off-toggle replaced by a mode line (Stop Sharing is the
-way out — turning off a link-only share's only transport would strand
-it). `TAILSCREEN_AUTOSHARE_LINK=1` mints the link at share start and
-prints an `E2E_MARKER shareLink token=…` line for scripted two-instance
-runs. Docs: usage/security link-only sections, matrix row (macOS-only —
-the GTK/WinUI sharer side stays with their sharer-port work). Remaining
-for the gate: a hand-run signed-out share on a real Mac.)*
-
-**Phase 7 — Sharer-side link sharing on Linux and Windows.** The matrix
-gap phase 5 tracked, closed for signed-in shares.
-*(status: landed. The lifecycle is written once as `SharerLinkSession`
-(TailscreenSharer, an actor so neither engine's isolation model has to
-adapt): guest node up → listener attached via
-`attachGuestPacketListener` → token; disable detaches first so guests
-get HELLO_DENY + SERVER_BYE through the still-open socket; rotate;
-`evict(ip:)` behind `onGuestViewerDenied`; teardown with the share. Both
-engines (`LinuxShareSession` @MainActor, `WindowsShareSession`
-lock-guarded) hold one and expose setLinkSharing/rotateLink + link state;
-their roster rows carry `isGuest`. The shared card gains
-`HubLinkSharing` (toggle, the link as SELECTABLE text — these toolkits
-have no clipboard affordance, the `HubLoginCard` lesson — guest count,
-New Link, consent caption) and `HubGuestChip` badges on roster rows and
-approval prompts, with the remember-actions withheld for guests (nothing
-StableNodeID-keyed applies; Deny tunnel-denylists the key). Zero new
-catalog keys — every string reuses phase 4's. Deviations: guest rows are
-named by tunnel IP, not key fingerprint (the resolve is async and the
-row mapping isn't; same polish bucket as the macOS notification labels);
-link-only (signed-out) sharing stays macOS-only, tracked in the matrix
-— **closed by phase 9**.)*
-
-**Phase 8 — `tailscreen:` scheme handlers on Linux and Windows.** A copied
-link that must be *pasted* on two of three platforms is half a link; this
-closes the click.
-*(status: landed. Linux: the `.desktop` entries (Flatpak file, AppImage
-script) gain `MimeType=x-scheme-handler/tailscreen;` + `Exec … %u`, and the
-GTK app accepts the link as a bare positional argument — the same parse as
-`--join`, via `ShareLinkFormat.token(fromUserInput:)` — so a scheme-handler
-launch is just a spelled-differently `--join`. Windows: the MSIX manifest
-declares `uap:Protocol Name="tailscreen"`, and `ProtocolActivation.swift`
-(third Windows-bound file, same `#if os(Windows)` + stub pattern) reads the
-launch URI from the AppLifecycle activation args with an argv fallback. On
-both platforms a link launch goes STRAIGHT to the guest session and skips
-sign-in auto-resume: each click on Windows starts a new process (packaged
-Win32 apps are multi-instance, nothing redirects), and a guest session
-needs no tsnet node, so a second instance never contends for the state
-directory — the same semantics as the GTK `--join` run. Deviations: an
-AppImage registers the scheme only after desktop integration, and the
-Windows zip build registers nothing (both noted in the matrix); a running
-instance is not reused — single-instance redirection is future work, and
-`ProtocolActivation.observe` is already the wire it would use.)*
-
-**Phase 9 — Guest TCP control channel.** The follow-up phases 3–5 deferred:
-annotations and remote control for guests, on both sides of the wire.
-*(status: landed. No fork changes and no new wire bytes — the guest C
-surface always had TCP (`GuestServerNode.listen` / `GuestClientNode.dial`,
-fds bit-compatible with tsnet's), so the whole phase is adoption. One new
-seam each side: `TailscreenControlListener.start(adopting:)` reuses the
-entire accept/framed-dispatch machinery over a guest-bound `Listener`, and
-`FramedControlChannel` (TailscreenTransport) names the three-call overlap
-between `OutgoingConnection` and `IncomingConnection` so the viewers' one
-channel implementation dials either tunnel. Server: a second
-`guestControlListener` lifecycle slot (attach via
-`attachGuestControlListener` mid-share or `startGuestOnly`'s new param;
-detach and share-stop close it), with the SAME handler closures installed
-on both listeners — guests pass the same admitted-viewer gate (their addrs
-are in the fan-out set), the same single-grantee control gate, the same
-per-connection annotation bookkeeping; outbound send/broadcast/expel-close
-loop over both channels (connection UUIDs are process-unique, so by-ID
-sends route by no-op). `SharerLinkSession.enable` and both macOS link
-paths bind the TCP side fail-soft (a link whose bind failed still carries
-video/voice). Viewers: `ViewerBackChannel` grew a guest init (a `Wire`
-enum, not an injected closure — nothing non-Sendable crosses the actor),
-`TsnetTransport`'s guest path now fires `onBackChannelReady`, the mac
-client's channel loop took a redial closure, and all three hosts dropped
-their guest caps-masking — the sharer's advertised caps decide, guest or
-not (a sharer that predates the channel doesn't advertise over a link).
-Docs: usage, the matrix row, and a security.md bullet — every control-
-channel protection was already identity-anchored (admitted-viewer gate,
-one grantee by connection ID, revoke-on-disconnect), so what changed is
-only what admission means for a guest: explicit approval, every time.
-No new catalog keys. Validation is the hand-run: guest draws on a mac
-sharer's overlay, requests control, drives, sharer revokes.)*
-
-Each phase is a separate PR; 0 and 1 can proceed in parallel (1 targets the
-fork directly). Docs ship with their phases per the repo rule, safe under the
-/next preview channel.
-
-## Files to change / add (by phase)
-
-- **0**: `.gitmodules` (fork URL), `Packages/TailscaleKit/Makefile` (patch
-  machinery out), `Patches/` (removed; README pointer), `.github/**`
-  (bootstrap `go: setup-go`), `CLAUDE.md` (Go floor).
-- **1–2 (fork)**: `guest/` package (~vendored 2 kloc + our UDP/eviction),
-  `guestnode.c`/exports, tests. **(repo)**
-  `Packages/TailscaleKit/Sources/GuestNode.swift` (+ PacketListener conformance).
-- **3**: `TailscaleScreenShareServer.swift` (dual listeners, routing,
-  identity), `SharerDecisions.swift`, `SharerAskToShareCoordinator.swift`
-  (guest control listener attach), `TailscreenViewerTsnet/GuestTransport.swift`,
-  `ViewerConfig`, macOS `TailscaleScreenShareClient.swift`,
-  `scripts/test-local.sh`, new suites per test-catalog.
-- **4**: `MenuBarView.swift`, `MainWindowView.swift`, `SettingsView.swift`,
-  `AppState.swift`, `ViewerApproval.swift` (guest copy),
-  `TailscreenUserNotifications.swift`, L10n catalog.
-- **5**: `TailscreenHubUI/HubHeader.swift` + join sheet, `Apps/linux`,
-  `Apps/windows` glue, `docs/{usage,security,self-hosted,platform-support}.md`,
-  `docs/spec.md` appendix.
-
-**Phase 9 — Link-only (signed-out) sharing on Linux and Windows, and a
-GTK app that stops assuming a login.** Phase 7's remaining deviation, plus
-the first-launch behaviour that made it invisible: the GTK app opened by
-bringing a tsnet node up nobody had asked for, so a person who had never
-signed in met "Waiting for login…" — with the two accountless paths (join
-by link, share by link) behind it.
-*(status: landed. The lifecycle is again written once:
-`SharerLinkSession.startLinkOnly(on:filterData:quality:)` is the mirror
-image of `enable` — guest node first because it *is* the transport, then
-`server.startGuestOnly` with its listeners as the only sockets, then the
-token — unwinding its own node on failure. Both engines take it through
-one new parameter (`LinuxShareSession.beginShare(node:)` now optional,
-`WindowsShareSession.beginSharing(linkOnly:)`), and both publish
-`isLinkOnlyShare`/`linkIsOnlyWayIn` so the shared card states the mode
-instead of drawing a toggle with no off position — the same split the
-macOS `ShareViaLinkSection` makes. The GTK app gains a `signedOut` picker
-phase (the initial one) and restores a saved session only when the
-profile's state directory holds one, the same test as the macOS hub's
-`attemptSessionRestore`; a restore that turns out to need the browser
-again returns to the pane carrying the URL, so the button opens the page
-the parked `up()` is already waiting on rather than starting a second
-bring-up behind it. The pane itself is now shared —
-`TailscreenHubUI.HubSignInPane`, the Windows app's own `SignInPane` moved
-up — and follows PR #303's macOS welcome pane card for card: **Your
-tailnet** (sign in, and what signing in buys) beside **A share link**
-(both accountless directions — an inline paste field for joining, a button
-for minting). Its one branch is the portable
-`WelcomePaneDecision.linkShareAction`, pinned by
-`WelcomePaneDecisionTests`. Where the mac pane points a running link-only
-share at the menu bar, these hosts render the live share card under the
-two: its link, roster and approvals have no other surface. All three hosts now read that one
-function: macOS's `AppState.welcomeLinkShareAction` became an argument
-mapping — its Settings switch into `canShare` — and its duplicate suite
-went with the duplicate branch. The link lifecycle is converged too: macOS's
-`AppState` drives the same `SharerLinkSession` — enable/disable/rotate/
-evict/teardown and `startLinkOnly` — and keeps only the published mirrors
-its SwiftUI reads synchronously plus the `onGuestViewerDenied` wire, which
-needs its own server instance. Remaining deviation: `Settings → Link
-sharing` stays macOS-only, so the two swift-cross-ui hosts have no off
-switch for the feature.)*
-
-## Risks & mitigations
-
-- **Relayed guests saturate public DERP** → per-guest relay indicator, docs
-  push to self-hosted derper, and (stretch) a sharer-side cap: warn when a
-  guest stays relayed at high bitrate. The quality-settings machinery already
-  adapts bitrate per viewer (`plans/per-viewer-fairness.md`).
-- **MTU**: tunnel MTU 1360 (< tsnet path today). RTP packetization already
-  targets ≤1200 B payloads (`DatagramInbox` sizing) — verify in the Phase 1
-  spike, clamp there if needed.
-- **Fork drift**: upstream libtailscale is near-dormant (one commit in the
-  evaluation window), and continued upstreaming of the old patches shrinks
-  the delta. The fork is strictly less fragile than the `-F0` patch series
-  it replaces (already bitten once: patch 021).
-- **Token leakage**: mandatory approval + ephemeral keys bound the damage to
-  "someone can knock until the share ends"; tunnel-level denylist silences a
-  noisy knocker; New Link rotates instantly.
-- **Two netstacks' memory/CPU** on the sharer: guest node starts only when
-  Share-via-Link toggles on, torn down on stop; measure in Phase 3's
-  net-impair runs.
-
-## Estimated scope
-
-Phase 0 ~a week including CI soak; Phase 1 days (the code exists, the test is
-the work); Phase 2 ~a week (C surface + Swift wrapper + tests); Phase 3 the
-core week-to-two (routing + identity threading is the bulk); Phase 4 ~a week
-of UI + copy + l10n; Phase 5 spread out. Nothing blocks on upstream.
+- **Relayed guests on public DERP**: mitigated by the per-guest relay
+  indicator (deferred, see above) and pushing self-hosted derper in docs; no
+  hard cap shipped.
+- **Tunnel MTU (1360) vs RTP packetization** (`DatagramInbox` targets ≤1200 B
+  payloads) — verified fine in the Phase 1 spike, no clamp needed.
+- **Token leakage**: bounded by mandatory approval, ephemeral keys, and
+  tunnel-level denylist on deny; New Link rotates instantly.
