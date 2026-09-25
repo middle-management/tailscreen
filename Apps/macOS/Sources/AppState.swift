@@ -748,6 +748,19 @@ class AppState: ObservableObject {
     /// `frameAutosaveName` for the viewer window.
     private static let viewerFrameAutosaveName = "TailscreenViewerWindow"
 
+    /// How long a join-by-link may sit in the relay bootstrap before the hub
+    /// gives up on it.
+    ///
+    /// Matched to the viewer's own idle-disconnect window so the two ways a
+    /// join can fail — the tunnel never comes up, or it comes up and the
+    /// sharer never answers — time out alike rather than one of them looking
+    /// broken next to the other. Generous on purpose: a first relay
+    /// bootstrap over a slow link is legitimately several seconds, and the
+    /// cost of waiting too long is now a spinner with a Cancel on it rather
+    /// than a dead end.
+    private static let linkJoinTimeoutSeconds =
+        Double(TransportTuning.clientIdleDisconnectNs) / 1_000_000_000
+
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
@@ -2120,6 +2133,22 @@ class AppState: ObservableObject {
 
     func toggleMic() async {
         guard let voice = voiceChannel, let cap = micCapture else {
+            // "Not yet" is not a failure. The voice channel is built when a
+            // session is admitted, and the mic chord is a GLOBAL hotkey — it
+            // arrives here whatever is on screen — so pressing it four
+            // seconds into a connect used to raise a modal error about a
+            // condition that was about to stop being true. One rc.16 bundle
+            // records exactly that, mid-handshake, on a connection that was
+            // still retrying its HELLO.
+            //
+            // Silent rather than a softer alert, because nothing was
+            // transmitting to mute: with no capture running the press has
+            // already got what it asked for. The error stays for a genuinely
+            // idle app, where it is the true answer.
+            if connectionState == .connecting || sharingState == .starting {
+                logger.log("Mic toggle ignored — session still coming up")
+                return
+            }
             presentError(.voiceNotReady())
             return
         }
@@ -2499,6 +2528,30 @@ class AppState: ObservableObject {
 
             if let guestToken {
                 // The token names the relay and sharer: no node, no sign-in.
+                //
+                // Bounded, because the bootstrap is not. A token names a
+                // relay and a node key; dialing a node that is gone — an
+                // expired link, a rotated one, a mistyped paste — simply
+                // waits, and `connectGuest` has no deadline to end that wait.
+                // A watchdog rather than `withTimeout` around the call: the
+                // dial blocks down in the guest tunnel's own code, where
+                // cancelling the Swift task does not reach, so what has to
+                // happen on the deadline is the same teardown Cancel
+                // performs. The dial may outlive it; the person does not.
+                let watchdog = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(Self.linkJoinTimeoutSeconds))
+                    guard !Task.isCancelled, let self else { return }
+                    // Only if this very session is still trying. A join that
+                    // succeeded, was cancelled, or was replaced has moved on,
+                    // and tearing down whatever is live now would be worse
+                    // than the hang.
+                    guard self.viewerPresentation.isCurrent(sessionID),
+                        self.connectionState == .connecting
+                    else { return }
+                    self.presentError(.linkJoinUnreachable())
+                    await self.disconnect()
+                }
+                defer { watchdog.cancel() }
                 try await c.connectGuest(token: guestToken)
             } else {
                 // Reuse the AppState-owned tsnet node rather than spinning up

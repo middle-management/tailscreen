@@ -56,6 +56,10 @@ final class AppErrorTests: XCTestCase {
             (.loginFailed(underlying), "TS-AUTH-001"),
             (.signOutFailed(underlying), "TS-AUTH-002"),
             (.sharingGeneric(underlying), "TS-SCREEN-100"),
+            // The link codes were missing from this list, not from the app.
+            (.linkSharingDisabled(), "TS-LINK-001"),
+            (.linkShareStartFailed(underlying), "TS-LINK-002"),
+            (.linkJoinUnreachable(), "TS-LINK-003"),
             (.legacy(title: "t", message: "m"), "TS-GENERIC-001")
         ]
         for (error, code) in expectations {

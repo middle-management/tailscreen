@@ -787,7 +787,21 @@ private struct ShareStatusSection: View {
                         .font(.system(.headline, design: .rounded))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 8)
+                    // The only way out until the session reaches a state with
+                    // its own exit. The viewer window's placard carries a
+                    // Cancel, but that window is not brought to the front
+                    // until admission or the first frame, so while connecting
+                    // it is invisible and its button unreachable — leaving
+                    // this row, a spinner with no control on it, as the whole
+                    // interface. A dead share link spends that time in a
+                    // `dialUDP` with no deadline; one rc.16 bundle sat here
+                    // for three and a half minutes on a connection that had
+                    // given up after fifteen seconds.
+                    Button(L("Cancel")) {
+                        Task { await appState.disconnect() }
+                    }
+                    .accessibilityHint(L("Stops trying to connect"))
                 }
             default:
                 // A failed start says so above the retry button; the alert is

@@ -175,12 +175,17 @@ extension AppError {
         )
     }
 
-    /// Toggle mic but no active voice session.
+    /// Toggle mic but no active voice session — and none on the way, which
+    /// `AppState.toggleMic` checks first: during bring-up this condition
+    /// resolves itself in seconds and is not worth an alert.
     static func voiceNotReady() -> AppError {
         AppError(
             code: "TS-VOICE-003",
             title: L("Voice Not Ready"),
-            message: L("Voice is only available during an active share."),
+            // Viewing counts. The old wording said "during an active share",
+            // which reads as sharer-only and is wrong — a viewer has voice
+            // too, and a viewer is who is most likely to reach for the mic.
+            message: L("Voice is available while you are sharing or viewing a screen."),
             underlying: nil,
             action: nil
         )
@@ -264,6 +269,27 @@ extension AppError {
             title: L("Couldn't Start Sharing"),
             message: L("The share link couldn't be created. Check the network and try again."),
             underlying: String(describing: underlying),
+            action: nil
+        )
+    }
+
+    /// A join-by-link that never got off the ground: the relay bootstrap
+    /// for an expired, revoked or mistyped token.
+    ///
+    /// The bootstrap has no deadline of its own — a token names a relay and
+    /// a node key, and a dial at a node that is gone simply waits. Without
+    /// this the hub sat on a spinner indefinitely; one rc.16 bundle shows a
+    /// viewer window open for three and a half minutes on a connection that
+    /// had given up after fifteen seconds.
+    static func linkJoinUnreachable() -> AppError {
+        AppError(
+            code: "TS-LINK-003",
+            title: L("Couldn't Join That Link"),
+            message:
+                L(
+                    "Nothing answered at that share link. It may have expired, been replaced by a new link, or the sharer may have stopped sharing. Ask for a fresh link and try again."
+                ),
+            underlying: nil,
             action: nil
         )
     }
