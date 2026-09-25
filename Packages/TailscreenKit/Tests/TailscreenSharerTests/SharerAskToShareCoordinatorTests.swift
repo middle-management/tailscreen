@@ -5,19 +5,11 @@ import XCTest
 
 @testable import TailscreenSharer
 
-/// Pins the ask-to-share sequencing all three hosts now share — the piece
-/// protocol.md's pitfall section documents rule by rule, because each rule was
-/// once hand-written per host and each has a silent failure mode: an answer
-/// that dials back reaches whoever holds the address now; an accept that skips
-/// pre-approval parks the person just invited at this machine's own gate; a
-/// stale row is a button that does nothing.
-///
-/// No tsnet node anywhere: the reply send is observed through the
-/// coordinator's internal seam (`sendResponseForTesting`) — which is also why
-/// this suite, unlike its neighbours, needs `@testable`: the decision
-/// *surface* stays public, the seam stays internal. The inbox arithmetic
-/// (coalescing key, cap, expiry math) is `ShareRequestInboxTests`' — what is
-/// pinned here is the sequencing around it.
+/// Pins the ask-to-share sequencing all three hosts share (see
+/// `.claude/rules/protocol.md`'s pitfall section). No tsnet node anywhere:
+/// the reply send is observed through `sendResponseForTesting`, an internal
+/// seam — hence `@testable`. Inbox arithmetic (coalescing, cap, expiry) is
+/// `ShareRequestInboxTests`'; this pins the sequencing around it.
 final class SharerAskToShareCoordinatorTests: XCTestCase {
 
     @MainActor
@@ -61,8 +53,6 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
             from: "fresh", sourceAddr: "100.64.0.2:2000", connectionID: UUID(),
             nowNs: second + SharerAskToShareCoordinator.requestTTLNs + 1)
 
-        // The requester waits 120 s and gives up; a row past that is a Share
-        // button answering a connection that has already gone.
         XCTAssertEqual(coordinator.requests.map(\.fromHostname), ["fresh"])
     }
 
@@ -100,11 +90,11 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.requests.isEmpty)
         XCTAssertEqual(replies().count, 1)
         XCTAssertEqual(replies().first?.0, true)
-        // ON the connection the ask arrived on — a dial-back would answer
+        // On the connection the ask arrived on — a dial-back would answer
         // whoever currently holds the requester's claimed address.
         XCTAssertEqual(replies().first?.1, connection)
-        // Pre-approve strictly before the share flow: the invitee's HELLO can
-        // arrive the moment the share is up.
+        // Pre-approve strictly before the share flow: the invitee's HELLO
+        // can arrive the moment the share is up.
         XCTAssertEqual(order, ["preapprove:100.64.0.7", "start"])
     }
 
@@ -123,8 +113,6 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         let request = try XCTUnwrap(coordinator.requests.first)
         coordinator.answer(id: request.id, accept: true)
 
-        // The old connection is most likely why the peer retried; an answer
-        // sent down it reaches nobody.
         XCTAssertEqual(replies().map(\.1), [fresh])
     }
 
@@ -147,9 +135,9 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    /// A legacy transport that never learned the connection has nothing to
+    /// reply on, but the share must still happen.
     func testAcceptWithNoConnectionStillPreApprovesAndStarts() async throws {
-        // A legacy transport that never learned the connection: nothing to
-        // reply on, but the person still said yes — the share must happen.
         let (coordinator, replies) = makeCoordinator()
         var order: [String] = []
         coordinator.onPreApproveViewer = { order.append("preapprove:\($0)") }
@@ -191,30 +179,21 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         XCTAssertEqual(published.last, [])
         let count = published.count
 
-        // Empty already — a second clear must not republish (and re-notify).
         coordinator.clearRequests()
         XCTAssertEqual(published.count, count)
     }
 
     // MARK: Listener bring-up
     //
-    // Driven through `ensureListenerForTesting`, which supplies the bind step
-    // the real `ensureListener` gets from `TailscreenControlListener.start` —
-    // a `TailscaleNode` cannot be constructed without standing a real tsnet
-    // node up, and none of what is pinned here is about the node.
-    //
-    // What is pinned is the gap the old `(listener, listenerNode)` pair could
-    // not express: **created, not bound yet.** A listener stopped in that
-    // state is not stopped at all (`stop()` clears `isRunning`, `start()` sets
-    // it again on its way to binding), so a supersede or a teardown landing
-    // there used to leave a listener holding port 7447 that nothing tracked.
+    // Driven through `ensureListenerForTesting` (the bind step, without a
+    // real tsnet node). What's pinned is the "created, not bound yet" gap
+    // the old `(listener, listenerNode)` pair couldn't express — a listener
+    // stopped in that state isn't stopped at all, so a supersede or teardown
+    // landing there used to leave a listener holding port 7447 untracked.
 
-    /// A start that throws must leave nothing behind.
-    ///
-    /// The old code assigned the listener before starting it and never
-    /// unassigned it, so a failed bind wedged the coordinator permanently: the
-    /// next `ensure` saw "already bound to this node" and returned, and this
-    /// machine never heard an ask again short of a restart.
+    /// A start that throws must leave nothing behind — the old code assigned
+    /// the listener before starting it and never unassigned it on failure,
+    /// wedging the coordinator until a restart.
     @MainActor
     func testAFailedListenerStartLeavesTheBringUpRetryable() async throws {
         let (coordinator, _) = makeCoordinator()
@@ -259,9 +238,8 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.controlListener === binding.value)
     }
 
-    /// A supersede that lands while the previous listener is still binding
-    /// must wait for that bind to settle before stopping it — the whole reason
-    /// the phase exists.
+    /// A supersede while the previous listener is still binding must wait
+    /// for that bind to settle before stopping it.
     @MainActor
     func testASupersededStartingListenerIsStoppedAfterItsStartSettles() async throws {
         let (coordinator, _) = makeCoordinator()
@@ -283,9 +261,8 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
             until: { coordinator.listenerPhaseForTesting == "running" },
             "the superseding bring-up never bound")
 
-        // Stopping the first one HERE is what the old code did, and it did
-        // nothing: its `start` had not returned, so the bind that followed put
-        // it back on 7447 next to the one that replaced it.
+        // The old code stopped the first one HERE, before its start had
+        // returned, so the bind that followed put it back on 7447 anyway.
         XCTAssertTrue(stopped.isEmpty, "nothing can be stopped until its own bind returns")
 
         await gate.open()
@@ -295,8 +272,7 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.controlListener === second.value)
     }
 
-    /// A listener that HAS bound is stopped immediately on supersede — the
-    /// deferral above is for the starting case only.
+    /// A listener that HAS bound is stopped immediately on supersede.
     @MainActor
     func testASupersededRunningListenerIsStoppedAtOnce() async throws {
         let (coordinator, _) = makeCoordinator()
@@ -314,8 +290,8 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         XCTAssertTrue(stopped.contains(try XCTUnwrap(first.value)))
     }
 
-    /// Teardown racing a bring-up: `stopListener()` clears the state at once,
-    /// and the listener that goes on to bind is stopped when it does.
+    /// `stopListener()` clears state at once; a listener that goes on to
+    /// bind is stopped when it does.
     @MainActor
     func testStopListenerDuringABringUpTearsDownWhatItWasBinding() async throws {
         let (coordinator, _) = makeCoordinator()
@@ -345,10 +321,8 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
 
     // MARK: Helpers
 
-    /// Let the coordinator's detached bring-up work run until `condition`
-    /// holds. Yielding rather than `wait(for:)`: these tests are on the main
-    /// actor and so is the bring-up, so blocking would deadlock the thing
-    /// being waited for.
+    /// Yields until `condition` holds, rather than blocking with
+    /// `wait(for:)` — the bring-up is also on the main actor.
     @MainActor
     private func settle(
         until condition: @MainActor () -> Bool,
@@ -364,7 +338,6 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         XCTFail(message, file: file, line: line)
     }
 
-    /// A start step the test decides when to complete.
     private actor Gate {
         private var waiters: [CheckedContinuation<Void, Never>] = []
         private var opened = false
@@ -382,7 +355,6 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         }
     }
 
-    /// The listener a bring-up was handed, captured from its start step.
     private final class ListenerBox: @unchecked Sendable {
         private let lock = NSLock()
         private var listener: TailscreenControlListener?
@@ -390,7 +362,6 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
         var value: TailscreenControlListener? { lock.withLock { listener } }
     }
 
-    /// Which listeners the coordinator asked to stop, and in what order.
     private final class ListenerLog: @unchecked Sendable {
         private let lock = NSLock()
         private var ids: [ObjectIdentifier] = []

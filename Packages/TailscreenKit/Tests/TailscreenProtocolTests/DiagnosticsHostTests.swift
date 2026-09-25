@@ -3,18 +3,13 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// `DiagnosticsHost` — bring-up, the on/off switch, and export.
+/// `DiagnosticsHost` — bring-up, the on/off switch, and export. One type
+/// rather than three app copies because the ordering is easy to get wrong:
+/// `recording.stopped` must record before the switch moves, and
+/// `recording.exported` must precede the snapshot.
 ///
-/// This exists as one type rather than three copies in three apps because the
-/// sequence has ordering in it that is easy to get wrong and impossible to
-/// notice at a glance: `recording.stopped` has to be recorded before the
-/// switch moves or the event is itself dropped, and `recording.exported` has
-/// to precede the snapshot or a bundle never contains the record of its own
-/// export. Those orderings are what this suite pins.
-///
-/// `DiagnosticsCenter.shared` is process-wide, so these tests write to it. It
-/// is installed fresh in `setUp` and the `UserDefaults` suite is per-test, so
-/// they neither leak into each other nor touch a developer's real settings.
+/// `DiagnosticsCenter.shared` is process-wide; installed fresh in `setUp`
+/// with a per-test `UserDefaults` suite so tests don't leak into each other.
 final class DiagnosticsHostTests: XCTestCase {
 
     private var suiteName = ""
@@ -49,8 +44,7 @@ final class DiagnosticsHostTests: XCTestCase {
 
     // MARK: - Bring-up
 
-    /// A candidate records from the first line, and that line carries the
-    /// build stamp — which is the first thing anybody reading a bundle needs.
+    /// A candidate records from the first line, carrying the build stamp.
     func testStartOpensTheRecordWithTheBuildStamp() {
         let recorder = start()
 
@@ -62,8 +56,8 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(first?.fields["commit"], .string("abc1234"))
     }
 
-    /// A shipped release does not record unless asked — and the recorder is
-    /// still installed, because the on/off state lives inside it.
+    /// A shipped release doesn't record unless asked, but the recorder is
+    /// still installed since the on/off state lives inside it.
     func testStableReleaseInstallsARecorderButDoesNotRecord() {
         let stable = DiagnosticsEnvironment(
             platform: "test-os", appVersion: "0.10.0", commit: "abc1234",
@@ -81,9 +75,8 @@ final class DiagnosticsHostTests: XCTestCase {
 
     // MARK: - The switch
 
-    /// The ordering that motivates this type existing: the event saying
-    /// recording stopped must survive, or the bundle just ends and reads like
-    /// a crash rather than a deliberate stop.
+    /// The event saying recording stopped must survive, or the bundle reads
+    /// like a crash rather than a deliberate stop.
     func testStoppingRecordsItsOwnStopEvent() {
         start()
         DiagnosticsHost.setRecording(false, defaults: defaults)
@@ -94,9 +87,8 @@ final class DiagnosticsHostTests: XCTestCase {
             recorder?.events().last?.name, DiagnosticEventName.recordingStopped.rawValue)
     }
 
-    /// Stopping keeps what was already recorded: the user flips the switch
-    /// *after* something went wrong, and a switch that erased the evidence
-    /// would be a trap.
+    /// Stopping keeps what was already recorded — flipped after something
+    /// went wrong, so erasing the evidence would be a trap.
     func testStoppingKeepsWhatWasRecorded() {
         let recorder = start()
         recorder.record(.helloSent)
@@ -107,8 +99,6 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(recorder.events().count, before + 1)
     }
 
-    /// Turning it back on resumes into the same recorder, so the session
-    /// record is continuous rather than starting over.
     func testRestartingResumesTheSameRecorder() {
         let recorder = start()
         DiagnosticsHost.setRecording(false, defaults: defaults)
@@ -122,8 +112,6 @@ final class DiagnosticsHostTests: XCTestCase {
             "the earlier stop must still be in the record")
     }
 
-    /// The choice persists, so a tester who opts out stays opted out when the
-    /// next candidate is installed.
     func testChoicePersistsAcrossRestart() {
         start()
         DiagnosticsHost.setRecording(false, defaults: defaults)
@@ -135,9 +123,6 @@ final class DiagnosticsHostTests: XCTestCase {
 
     // MARK: - Export
 
-    /// A bundle always contains the record of its own export — which is how
-    /// you tell one somebody sent you from one they exported, looked at, and
-    /// exported again after actually reproducing the problem.
     func testExportedBundleContainsItsOwnExportEvent() throws {
         let recorder = start()
         recorder.record(.helloSent)
@@ -157,8 +142,6 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(parsed.header.channel, .releaseCandidate)
     }
 
-    /// The filename names the device, so two bundles in a chat thread stay
-    /// distinguishable.
     func testExportFilenameNamesTheDevice() throws {
         let recorder = start()
         recorder.record(.helloSent)
@@ -173,9 +156,7 @@ final class DiagnosticsHostTests: XCTestCase {
     }
 
     /// Exporting with nothing recorded refuses rather than writing an empty
-    /// file: a bundle full of nothing is indistinguishable from a session
-    /// where nothing happened, and handing one over wastes the round trip this
-    /// whole feature exists to save.
+    /// bundle indistinguishable from a session where nothing happened.
     func testExportingNothingRefusesRatherThanWritingAnEmptyBundle() {
         let stable = DiagnosticsEnvironment(
             platform: "test-os", appVersion: "0.10.0", commit: "abc1234",
@@ -191,11 +172,10 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
     }
 
-    /// **The documented workflow: reproduce, stop, export.** A stopped
-    /// recorder keeps what it has and export is deliberately still allowed —
-    /// so the bundle must still carry the record of its own export. An
-    /// ordinary `record` no-ops when disabled, which silently broke the one
-    /// guarantee `DiagnosticsBundle` makes about every bundle.
+    /// The documented workflow (reproduce, stop, export): a stopped
+    /// recorder's export must still carry the record of its own export —
+    /// an ordinary `record` no-ops when disabled, which would silently
+    /// break that guarantee.
     func testExportWhileStoppedStillRecordsItsOwnExport() throws {
         let recorder = start()
         recorder.record(.helloSent)
@@ -218,8 +198,8 @@ final class DiagnosticsHostTests: XCTestCase {
             "stopping must keep what was already recorded")
     }
 
-    /// The lifecycle bypass must not become a general back door: it is for the
-    /// two events that describe the switch, and ordinary recording stays off.
+    /// The lifecycle bypass must not become a general back door — it's for
+    /// the two events that describe the switch; ordinary recording stays off.
     func testLifecycleBypassDoesNotReopenOrdinaryRecording() {
         let recorder = start()
         DiagnosticsHost.setRecording(false, defaults: defaults)
@@ -232,18 +212,14 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(recorder.events().count, before + 1)
     }
 
-    /// `TAILSCREEN_DIAGNOSTICS` pins the LIVE value for the whole run — that is
-    /// the entire point of it. Applying it only at `start` left a UI toggle
-    /// able to countermand it mid-run, which made a scripted run depend on
-    /// nobody clicking anything.
+    /// `TAILSCREEN_DIAGNOSTICS` pins the live value for the whole run —
+    /// applying it only at `start` would let a UI toggle countermand it mid-run.
     func testEnvironmentOverrideSurvivesAUserToggle() throws {
         let forcedOff = ["TAILSCREEN_DIAGNOSTICS": "0"]
         let recorder = DiagnosticsHost.start(
             environment: environment, defaults: defaults, processEnvironment: forcedOff)
         XCTAssertFalse(recorder.isRecording)
 
-        // The user flips the switch on. The choice is stored, but the run
-        // stays as the harness pinned it.
         DiagnosticsHost.setRecording(
             true, defaults: defaults, processEnvironment: forcedOff)
         XCTAssertFalse(
@@ -254,11 +230,9 @@ final class DiagnosticsHostTests: XCTestCase {
             "the user's choice must still be persisted for the next run")
     }
 
-    /// The host's own channel must reach the policy. A macOS PR artifact is
-    /// stamped `0.0.<PR>` (the plist demands numeric), which classifies as a
-    /// stable release — so a host told by CI "this is a candidate" has to be
-    /// able to say so. Re-deriving from `appVersion` silently discarded it and
-    /// left the recorder off while the Settings toggle said on.
+    /// A macOS PR artifact is stamped `0.0.<PR>` (plist demands numeric),
+    /// which classifies as stable — so a host told by CI "this is a
+    /// candidate" must be able to say so explicitly.
     func testExplicitChannelOutranksTheVersionString() {
         let prArtifact = DiagnosticsEnvironment(
             platform: "test-os", appVersion: "0.0.311", commit: "abc1234",
@@ -273,8 +247,6 @@ final class DiagnosticsHostTests: XCTestCase {
             "a PR artifact must record — it is exactly what testers are handed")
     }
 
-    /// Omitting it still derives from the version, so a host with nothing extra
-    /// to say passes nothing.
     func testChannelDefaultsToTheVersionDerivedAnswer() {
         let stable = DiagnosticsEnvironment(
             platform: "test-os", appVersion: "0.10.0", commit: "abc1234",
@@ -282,10 +254,9 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(stable.channel, .stable)
     }
 
-    /// The marker and the switch move together. Done as two calls, a transport
-    /// or logging thread can append in between — landing an event before the
-    /// `recording.started` that claims to open the session, or after the
-    /// `recording.stopped` that claims to close it.
+    /// The marker and the switch move together — done as two calls, another
+    /// thread could append an event before `recording.started` or after
+    /// `recording.stopped`.
     func testStartMarkerIsTheFirstEventAndStopMarkerIsTheLast() {
         let recorder = start()
         XCTAssertEqual(
@@ -303,13 +274,13 @@ final class DiagnosticsHostTests: XCTestCase {
     }
 
     /// A failed write must not leave `recording.exported` behind, or the next
-    /// bundle that DOES succeed claims an export that never happened.
+    /// successful export claims one that never happened.
     func testFailedWriteDoesNotLeaveAnExportMarkerBehind() {
         let recorder = start()
         recorder.record(.helloSent)
         let before = recorder.events().count
 
-        // A path that cannot be created: an existing FILE used as a directory.
+        // A path that can't be created: an existing file used as a directory.
         let file = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("diagnostics-not-a-dir-\(UUID().uuidString)")
         FileManager.default.createFile(atPath: file.path, contents: Data("x".utf8))
@@ -322,7 +293,7 @@ final class DiagnosticsHostTests: XCTestCase {
     }
 
     /// Two exports inside one second must not overwrite each other — the
-    /// filename stamp has one-second resolution and a double-click is enough.
+    /// filename stamp has one-second resolution.
     func testRepeatedExportsInOneSecondDoNotOverwrite() throws {
         let recorder = start()
         recorder.record(.helloSent)
@@ -340,7 +311,6 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
     }
 
-    /// The errors reach a person, so they are sentences rather than enum cases.
     func testHostErrorsReadAsSentences() {
         for error in [DiagnosticsHostError.notRecording, .nothingRecorded] {
             let text = error.localizedDescription
@@ -350,12 +320,9 @@ final class DiagnosticsHostTests: XCTestCase {
         }
     }
 
-    /// **And `localizedDescription` is the only way to those sentences.**
-    /// Interpolating the error value itself renders the enum case, so a call
-    /// site writing `"…: \(error)"` puts `nothingRecorded` in front of a user
-    /// while a suite that only reads `localizedDescription` — like the one
-    /// above — stays green. That is exactly how it happened: the friendly
-    /// messages were written, tested, and then not reached by the alert.
+    /// `localizedDescription` is the only way to those sentences —
+    /// interpolating the error (`"…: \(error)"`) renders the raw enum case
+    /// instead.
     func testInterpolatingTheErrorDoesNotProduceTheSentence() {
         for error in [DiagnosticsHostError.notRecording, .nothingRecorded] {
             XCTAssertNotEqual(
@@ -366,8 +333,8 @@ final class DiagnosticsHostTests: XCTestCase {
 
     // MARK: - The log tee
 
-    /// The free coverage: an existing `LogSink` line lands in the record with
-    /// no new instrumentation at the call site.
+    /// An existing `LogSink` line lands in the record with no new
+    /// instrumentation at the call site.
     func testLogLinesAreCaptured() {
         start()
         DiagnosticsCenter.shared.captureLog(source: "Discovery", message: "found 3 peers")
@@ -377,8 +344,6 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(last?.fields["source"], .string("Discovery"))
     }
 
-    /// A disabled recorder captures nothing, so a stable release pays a
-    /// Boolean load per log line and nothing else.
     func testLogLinesAreNotCapturedWhileStopped() {
         start()
         DiagnosticsHost.setRecording(false, defaults: defaults)
@@ -388,9 +353,8 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(DiagnosticsCenter.shared.recorder?.events().count, before)
     }
 
-    /// Severity is guessed from the line's own text, because `LogSink` has no
-    /// levels. Biased toward under-classifying: a false `error` sends a reader
-    /// chasing a non-problem.
+    /// Severity is guessed from the line's own text (`LogSink` has no
+    /// levels), biased toward under-classifying.
     func testLogSeverityIsInferredConservatively() {
         XCTAssertEqual(DiagnosticsCenter.severity(of: "node up failed: timeout"), .error)
         XCTAssertEqual(DiagnosticsCenter.severity(of: "acceptLoop fatal: broken pipe"), .error)
@@ -399,10 +363,7 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertEqual(DiagnosticsCenter.severity(of: "Viewer admitted 100.64.0.3"), .info)
     }
 
-    /// The author's own marker outranks the prose. This codebase prefixes log
-    /// lines with `❌` and `⚠` where it means them, and that is real severity
-    /// information written by someone who knew what the line meant — guessing
-    /// from keywords while ignoring it would be strictly worse.
+    /// The author's own `❌`/`⚠` marker outranks a keyword guess.
     func testExplicitMarkersOutrankKeywords() {
         XCTAssertEqual(
             DiagnosticsCenter.severity(of: "⚠ Microphone did not start (busy)"), .warning,
@@ -415,10 +376,8 @@ final class DiagnosticsHostTests: XCTestCase {
             DiagnosticsCenter.severity(of: "❌ Failed to check auth status: denied"), .error)
     }
 
-    /// A line about *surviving* errors is a success message. This is the one
-    /// false positive a plain keyword scan produces against the real call
-    /// sites, and it is the shape that would send a reader chasing a
-    /// non-problem in every clean session's bundle.
+    /// A line about surviving errors is a success message, not a failure a
+    /// plain keyword scan would flag.
     func testGoodOutcomesAreNotReportedAsFailures() {
         XCTAssertEqual(
             DiagnosticsCenter.severity(
@@ -430,7 +389,6 @@ final class DiagnosticsHostTests: XCTestCase {
 
     // MARK: - Merge
 
-    /// A scratch directory per test, cleaned up on the way out.
     private func scratch() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("DiagnosticsHostMerge-\(UUID().uuidString)")
@@ -439,8 +397,7 @@ final class DiagnosticsHostTests: XCTestCase {
         return dir
     }
 
-    /// Write a bundle out as the app would, so the merge reads real JSONL
-    /// rather than a value handed straight across.
+    /// Writes a bundle out as the app would, so the merge reads real JSONL.
     private func writeBundle(
         role: DiagnosticRole, device: String, events: [DiagnosticEvent], to dir: URL
     ) throws -> URL {
@@ -467,8 +424,6 @@ final class DiagnosticsHostTests: XCTestCase {
             fields: ["ssrc": .int(2)])
     }
 
-    /// The point of the whole feature: a file somebody sent you, merged with
-    /// what this device recorded, in one ordered timeline.
     func testMergeCombinesAPickedBundleWithTheLocalRecording() throws {
         let dir = try scratch()
         let recorder = start()
@@ -492,9 +447,8 @@ final class DiagnosticsHostTests: XCTestCase {
                 + "is what the caller asked for")
     }
 
-    /// Somebody sent BOTH files and this Mac was never in the session. That is
-    /// a real way to arrive here, not a misuse, so it merges what it was given
-    /// rather than refusing.
+    /// Both files were sent and this Mac was never in the session — merges
+    /// what it was given rather than refusing.
     func testMergeWorksWithNoLocalRecording() throws {
         let dir = try scratch()
         let a = try writeBundle(
@@ -511,8 +465,8 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertTrue(text.contains("pc-two"))
     }
 
-    /// Merging is a READ. Unlike export it must leave no trace in the
-    /// recording, or every merge would alter the evidence it was run on.
+    /// Merging is a read — unlike export it must leave no trace in the
+    /// recording.
     func testMergeRecordsNothing() throws {
         let dir = try scratch()
         let recorder = start()
@@ -530,8 +484,7 @@ final class DiagnosticsHostTests: XCTestCase {
                 + "operation that writes its own marker")
     }
 
-    /// Two merges inside one second must not silently destroy the first
-    /// answer — the same one-second-resolution trap the bundle filename has.
+    /// Same one-second-resolution trap as the bundle filename.
     func testTwoMergesInOneSecondBothSurvive() throws {
         let dir = try scratch()
         let at = Date(timeIntervalSince1970: 1_800_000_500)
@@ -547,8 +500,8 @@ final class DiagnosticsHostTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
     }
 
-    /// An unreadable or wrong file names ITSELF. A merge is given several
-    /// paths, so "it could not be read" does not say which to go and look at.
+    /// An unreadable or wrong file names itself — a merge takes several
+    /// paths, so "it could not be read" alone wouldn't say which.
     func testMergeFailuresNameTheOffendingFile() throws {
         let dir = try scratch()
 
@@ -570,8 +523,6 @@ final class DiagnosticsHostTests: XCTestCase {
         }
     }
 
-    /// Nothing picked and nothing recorded is the one case that genuinely has
-    /// no answer, and it says so rather than writing an empty file.
     func testMergeWithNothingAtAllRefuses() throws {
         let dir = try scratch()
         XCTAssertThrowsError(try DiagnosticsHost.merge(with: [], into: dir)) { error in

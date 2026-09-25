@@ -5,22 +5,18 @@ import XCTest
 
 /// What a viewer bundle says about the picture — the media events
 /// `ViewerSession` records into its `recorder`, driven exactly as
-/// `ViewerSessionTests` drives the session (real packetizers, an explicit
-/// clock, no socket), with a real `DiagnosticsRecorder` read back.
+/// `ViewerSessionTests` (real packetizers, an explicit clock, no socket).
 ///
-/// Recorded in the session rather than per host so a macOS, GTK and WinUI
-/// bundle say the same things; this suite is the only place that is pinned,
-/// since none of the three hosts has a call site of its own for these.
-/// Two legs are about NOT recording: `decode.failed` once per failing run
-/// rather than once per frame, and `transport.summary` only once admitted
-/// and only once per window — both are the per-packet firehose the
-/// recorder's rules forbid, and both would look fine in a short test.
+/// Recorded in the session rather than per host so macOS/GTK/WinUI bundles
+/// agree; this is the only place it's pinned. Two legs are about NOT
+/// recording: `decode.failed` once per failing run (not per frame), and
+/// `transport.summary` only once admitted and once per window.
 final class ViewerSessionDiagnosticsTests: XCTestCase {
 
     // MARK: - Test doubles
 
-    /// Decoder stub whose frame size can be changed between decodes, for
-    /// `render.size.changed`, and flipped to fail, for the decode events.
+    /// Frame size changeable between decodes (for `render.size.changed`);
+    /// flippable to fail (for the decode events).
     private final class StubDecoder: VideoDecoding {
         var onDecodedFrame: ((any DecodedFrame) -> Void)?
         var onDecodeFailure: (() -> Void)?
@@ -107,8 +103,6 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
 
     // MARK: - First frame
 
-    /// The first decoded frame is recorded exactly once, with the time from
-    /// admission and what the wait was spent on.
     func testFirstFrameRecordedOnceWithTimeSinceAdmission() {
         let h = makeHarness()
         h.session.tick(nowNs: 2 * second)
@@ -125,15 +119,11 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(first.first?.fields["codec"], .string("h264"))
         XCTAssertEqual(first.first?.fields["ms_since_ack"], .int(500))
         XCTAssertEqual(first.first?.fields["pre_keyframe_drops"], .int(0))
-        // The one PLI the session sends on its first tick after admission,
-        // asking for the keyframe the sharer's one-shot may have lost.
         XCTAssertEqual(first.first?.fields["keyframe_requests"], .int(1))
     }
 
     // MARK: - Size change
 
-    /// A frame of a different size than the last is recorded with both
-    /// sizes; same-size frames record nothing.
     func testRenderSizeChangeRecordedOnlyOnChange() {
         let h = makeHarness()
         admit(h.session)
@@ -149,9 +139,8 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
 
         h.decoder.frameSize = (4, 4)
         feedAUs(h.session, count: 1, startSeq: seq)
-        // A frame is accounted for at the next receive-side call — here a
-        // snapshot read, in a host the next packet or tick — never inside
-        // the decoder callback, which may be on another thread.
+        // Accounted for at the next receive-side call, never inside the
+        // decoder callback (may run on another thread).
         XCTAssertEqual(h.events(named: .renderSizeChanged).count, 1, "not yet drained")
         _ = h.session.diagnostics
         XCTAssertEqual(h.events(named: .renderSizeChanged).count, 2, "and back is a second change")
@@ -159,9 +148,8 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
 
     // MARK: - Decode failures
 
-    /// `decode.failed` is recorded once per failing run, not once per frame —
-    /// a wedged decoder fails at frame rate — and a decoded frame closes the
-    /// run so the next failure opens a new one.
+    /// Once per failing run, not once per frame — a decoded frame closes
+    /// the run so the next failure opens a new one.
     func testDecodeFailedRecordedOncePerEpisode() {
         let h = makeHarness()
         admit(h.session)
@@ -182,9 +170,8 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(failures.last?.fields["frames_total"], .int(1))
     }
 
-    /// In ladder mode each rung is recorded once, in order, and the terminal
-    /// rung also records `video.stalled` at `error` severity — the event a
-    /// reader searches for.
+    /// Each rung is recorded once in order; the terminal rung also records
+    /// `video.stalled` at `error` severity.
     func testLadderRungsAndStallAreRecorded() {
         let h = makeHarness()
         admit(h.session)
@@ -215,15 +202,13 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
             stalls.first?.fields["consecutive_failures"],
             .int(Int64(DecodeRecovery.surfaceErrorFailureThreshold)))
 
-        // Latched: a hundred more failures add no rung and no second stall.
+        // Latched: more failures add no rung and no second stall.
         feedAUs(h.session, count: 100, startSeq: seq)
         XCTAssertEqual(h.events(named: .decodeRecoveryAction).count, 4)
         XCTAssertEqual(h.events(named: .videoStalled).count, 1)
         XCTAssertEqual(h.events(named: .decodeFailed).count, 1, "still one episode")
     }
 
-    /// The flat path (no ladder callbacks) records the failure episode but no
-    /// rungs — there are none.
     func testFlatPathRecordsNoRungs() {
         let h = makeHarness()
         admit(h.session)
@@ -236,9 +221,7 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
 
     // MARK: - Transport summary
 
-    /// One `transport.summary` per window once admitted, carrying that
-    /// window's deltas — not session totals — so a reader sees "no frames
-    /// in these five seconds" without subtracting two rows.
+    /// One row per window, carrying that window's deltas, not session totals.
     func testTransportSummaryOncePerWindowWithDeltas() {
         let h = makeHarness()
         h.session.tick(nowNs: 0)
@@ -271,7 +254,6 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
                     + "\(String(describing: first.fields["video_packets"]))")
         }
 
-        // Second window: two more frames → deltas of 2, total of 6.
         seq = feedAUs(h.session, count: 2, startSeq: seq)
         h.session.tick(nowNs: 11 * second)
         rows = h.events(named: .transportSummary)
@@ -280,7 +262,6 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(rows[1].fields["frames_total"], .int(6))
         XCTAssertEqual(rows[1].fields["aus"], .int(2))
 
-        // An empty window is still a row — "nothing arrived" is the finding.
         h.session.tick(nowNs: 16 * second)
         rows = h.events(named: .transportSummary)
         XCTAssertEqual(rows.count, 3)
@@ -289,10 +270,7 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(rows[2].fields["frames_total"], .int(6))
     }
 
-    /// Nothing is summarized before admission: a viewer parked on the
-    /// approval prompt for a minute must not record twelve rows of zeros
-    /// ahead of the handshake, and the first window is measured from the
-    /// admission, not from `start()`.
+    /// The first window is measured from admission, not `start()`.
     func testNoSummaryBeforeAdmissionAndWindowStartsAtAdmission() {
         let h = makeHarness()
         h.session.start()
@@ -302,22 +280,19 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(h.events(named: .transportSummary).count, 0, "not admitted: no rows")
 
         admit(h.session)
-        h.session.tick(nowNs: 61 * second)  // the sampler's first call: opens
+        h.session.tick(nowNs: 61 * second)  // sampler's first call: opens
         h.session.tick(nowNs: 65 * second)
         XCTAssertEqual(h.events(named: .transportSummary).count, 0, "four seconds after admission")
         h.session.tick(nowNs: 66 * second)
         XCTAssertEqual(h.events(named: .transportSummary).count, 1, "five seconds after admission")
     }
 
-    /// A gap in the stream shows up in the window it happened in: the NACK
-    /// sent for it is counted, and the loss the viewer reported rides along.
     func testSummaryCountsFeedbackTheSessionSent() {
         let h = makeHarness()
         h.session.tick(nowNs: 0)
         admit(h.session)
         h.session.tick(nowNs: 1 * second)
-        // Skip a sequence number, then keep going so the reorder tolerance
-        // is exceeded and the scheduler NACKs the gap.
+        // Skip a sequence number past the reorder tolerance so the scheduler NACKs.
         var seq = feedAUs(h.session, count: 2)
         seq &+= 3
         seq = feedAUs(h.session, count: 20, startSeq: seq)
@@ -334,7 +309,6 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(rows[0].fields["loss_q8"], .int(Int64(h.session.diagnostics.lastReportedLossQ8)))
     }
 
-    /// The pure delta arithmetic, on two snapshots with no session at all.
     func testSummaryFieldsAreDeltasOfCountersAndCurrentGauges() {
         var previous = ViewerSession.Diagnostics()
         previous.videoPacketsReceived = 100
@@ -374,8 +348,8 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         }
     }
 
-    /// With no recorder installed none of this runs — the stable-release
-    /// default — and the session behaves identically.
+    /// With no recorder installed (stable-release default) the session
+    /// behaves identically.
     func testNoRecorderRecordsNothingAndChangesNothing() {
         let h = makeHarness()
         h.session.recorder = nil
@@ -391,16 +365,13 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
 
     // MARK: - Host-counted failures, and the frame side on another thread
 
-    /// A host whose decoder runs the ladder itself (mac) counts its per-frame
-    /// failures through `noteHostDecodeFailure`: no PLI, no ladder rung, but
-    /// the same counter, the same once-per-run `decode.failed`, and the same
-    /// `decode_failures` column in the next summary row.
+    /// A host that runs the ladder itself (mac) counts per-frame failures
+    /// through `noteHostDecodeFailure`: no PLI, no ladder rung, but the
+    /// same counter and once-per-run `decode.failed`.
     func testHostDecodeFailuresAreCountedWithoutRunningTheLadder() {
         let h = makeHarness()
         h.session.tick(nowNs: 0)
         admit(h.session)
-        // One keyframe first, so the session's own pre-keyframe request is
-        // spent and any PLI from here on would be a decode-recovery one.
         feedAUs(h.session, count: 1)
         h.session.tick(nowNs: 1 * second)
         var plis = 0
@@ -414,7 +385,6 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(h.events(named: .decodeRecoveryAction).count, 0, "the host owns the ladder")
         XCTAssertEqual(plis, plisBefore, "and the host owns the PLI")
 
-        // A decoded frame closes the run; the next host failure opens another.
         feedAUs(h.session, count: 1, startSeq: 1)
         h.session.noteHostDecodeFailure()
         h.session.tick(nowNs: 3 * second)
@@ -428,26 +398,19 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
         XCTAssertEqual(row?.fields["frames"], .int(2))
     }
 
-    /// Frames and host failures reported from another thread — the mac
-    /// adapter's shape — while the receive side ticks and reads. The
-    /// invariant is interleaving-independent: every report is counted once,
-    /// and the first frame is recorded exactly once. This is the case the
-    /// TSan gate needs in order to watch the mailbox at all.
+    /// Frames and host failures reported from another thread (the mac
+    /// adapter's shape) must be counted exactly once, interleaving-independent.
     func testFrameSideOnAnotherThreadIsCountedExactlyOnce() {
         let h = makeHarness()
         h.session.tick(nowNs: 0)
         admit(h.session)
-        // Open the keyframe gate on the receive side so decoded frames can
-        // flow, then stop touching the decoder from this thread.
         feedAUs(h.session, count: 1)
 
         let frames = 2_000
         let failures = 500
         let session = h.session
         // The session is deliberately not Sendable (the host serializes it);
-        // this test IS the host, and the two calls it makes off-thread are
-        // the two the session documents as safe, so the box only says so
-        // to the compiler.
+        // the box only tells the compiler what's already safe.
         let producerSide = UncheckedSendableBox((session: session, decoder: h.decoder))
         let producer = Thread {
             let (session, decoder) = producerSide.value
@@ -455,9 +418,6 @@ final class ViewerSessionDiagnosticsTests: XCTestCase {
                 if i % 5 == 4 {
                     session.noteHostDecodeFailure()
                 } else {
-                    // The same entry point the adapter uses: the decoder's
-                    // frame callback, which `ViewerSession` installed on the
-                    // stub in `init`.
                     decoder.onDecodedFrame?(
                         DecodedVideoFrame(
                             width: 4, height: 4,

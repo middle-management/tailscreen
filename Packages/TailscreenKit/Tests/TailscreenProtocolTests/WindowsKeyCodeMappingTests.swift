@@ -8,12 +8,8 @@ import XCTest
 final class WindowsKeyCodeMappingTests: XCTestCase {
     private typealias Key = WindowsKeyCodeMapping.WindowsKey
 
-    /// The property that matters: every key survives HID → Windows → HID
-    /// unchanged.
-    ///
-    /// A collision — two HID usages claiming one Windows key — would silently
-    /// make one of them inject as the other, and only for the one that lost the
-    /// dictionary race.
+    /// A collision (two HID usages claiming one Windows key) would silently
+    /// make one inject as the other.
     func testRoundTripIsExact() {
         for (usage, key) in WindowsKeyCodeMapping.windowsKeyByHIDUsage {
             let back = WindowsKeyCodeMapping.hidUsage(
@@ -25,18 +21,16 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
         }
     }
 
-    /// No two HID usages may map to the same Windows key. Implied by the round
-    /// trip, but asserted directly so a failure names the count rather than one
-    /// arbitrary loser.
+    /// Implied by the round trip, but asserted directly so a failure names
+    /// the count rather than one arbitrary loser.
     func testWindowsKeysAreUnique() {
         let keys = WindowsKeyCodeMapping.windowsKeyByHIDUsage.values
         XCTAssertEqual(Set(keys).count, keys.count, "two HID usages map to one Windows key")
     }
 
-    /// Return and keypad Enter share `VK_RETURN` and differ only in the
-    /// extended bit. This is the case that forced the table to key on the pair
-    /// rather than on the virtual-key code alone — if the model regresses, this
-    /// is where it shows.
+    /// Return and keypad Enter share `VK_RETURN`, differing only in the
+    /// extended bit — the case that forced the table to key on the pair
+    /// rather than the virtual-key code alone.
     func testKeypadEnterIsReturnPlusExtended() {
         let ret = WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x28)
         let keypad = WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x58)
@@ -46,7 +40,6 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
         XCTAssertNotEqual(ret, keypad)
     }
 
-    /// Spot rows, written independently of the table's construction.
     func testKnownKeys() {
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x04), Key(0x41))  // A
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x1D), Key(0x5A))  // Z
@@ -56,20 +49,14 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x3A), Key(0x70))  // F1
     }
 
-    /// '0' sits at the END of HID's digit run and the START of ASCII's. An
-    /// off-by-one here shifts every digit and is invisible until someone types
-    /// a number.
+    /// '0' sits at the END of HID's digit run and the START of ASCII's.
     func testDigitZeroIsNotOffByOne() {
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x27), Key(0x30))  // 0
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x1E), Key(0x31))  // 1
     }
 
-    /// The mac and Windows tables are reference tables for the same wire
-    /// vocabulary, so every usage a mac can SEND must be one a Windows sharer
-    /// can INJECT — or be explicitly listed as unmappable.
-    ///
-    /// This test found nine real gaps on first run, including keypad Enter,
-    /// which is what exposed the virtual-key-code-alone model as wrong.
+    /// Every usage a mac can SEND must be one Windows can INJECT, or be
+    /// explicitly listed as unmappable.
     func testEveryUsageAMacCanSendIsHandled() {
         let windows = Set(WindowsKeyCodeMapping.windowsKeyByHIDUsage.keys)
         let mac = Set(MacKeyCodeMapping.hidUsageByMacKeyCode.values)
@@ -82,9 +69,8 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
                 + "\(unhandled.sorted().map { "0x" + String($0, radix: 16) })")
     }
 
-    /// The unmappable set must be exactly what a mac can send and Windows does
-    /// not handle — no more. An entry for a usage that IS mapped, or that no
-    /// peer sends, is dead documentation that reads as a considered decision.
+    /// An entry for a usage that IS mapped, or that no peer sends, is dead
+    /// documentation that reads as a considered decision.
     func testUnmappedSetIsExactlyTheRealGaps() {
         let windows = Set(WindowsKeyCodeMapping.windowsKeyByHIDUsage.keys)
         let mac = Set(MacKeyCodeMapping.hidUsageByMacKeyCode.values)
@@ -93,7 +79,6 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
             "the documented-unmappable set has drifted from the actual gap")
     }
 
-    /// Nothing may be both mapped and documented as unmappable.
     func testUnmappedSetDoesNotOverlapTheTable() {
         for usage in WindowsKeyCodeMapping.deliberatelyUnmapped {
             XCTAssertNil(
@@ -104,9 +89,8 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
 
     // MARK: - The extended bit
 
-    /// Keys sharing a virtual-key code with a keypad twin MUST carry the
-    /// extended bit. Omitting it does not fail — it injects the numpad key
-    /// instead, so Home arrives as keypad-7 whenever NumLock is off.
+    /// Omitting the extended bit injects the numpad key instead — Home
+    /// arrives as keypad-7 whenever NumLock is off.
     func testNavigationClusterIsExtended() {
         // Insert, Home, PageUp, Delete, End, PageDown, →, ←, ↓, ↑
         for usage: UInt16 in [0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52] {
@@ -117,8 +101,7 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
         }
     }
 
-    /// Right-hand modifiers likewise: without the bit, right Alt injects as
-    /// left Alt, which breaks AltGr layouts specifically.
+    /// Without the bit, right Alt injects as left Alt, breaking AltGr layouts.
     func testRightHandModifiersAreExtended() {
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0xE4)?.isExtended, true)  // RCtl
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0xE6)?.isExtended, true)  // RAlt
@@ -126,8 +109,6 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
         XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0xE2)?.isExtended, false)  // LAlt
     }
 
-    /// The main-row keys must NOT be extended: setting the bit on a plain
-    /// letter is as wrong as omitting it on an arrow.
     func testOrdinaryKeysAreNotExtended() {
         for usage: UInt16 in [0x04, 0x1E, 0x28, 0x2C, 0x3A] {  // A, 1, Return, Space, F1
             XCTAssertEqual(WindowsKeyCodeMapping.windowsKey(forHIDUsage: usage)?.isExtended, false)
@@ -136,8 +117,7 @@ final class WindowsKeyCodeMappingTests: XCTestCase {
 
     // MARK: - Refusals
 
-    /// An unmappable usage returns nil rather than a plausible neighbour.
-    /// Guessing types the wrong character, which is worse than typing nothing.
+    /// Guessing types the wrong character, worse than typing nothing.
     func testUnknownUsageIsNil() {
         XCTAssertNil(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0x00))
         XCTAssertNil(WindowsKeyCodeMapping.windowsKey(forHIDUsage: 0xFF))

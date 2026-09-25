@@ -3,15 +3,8 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// `DiagnosticsBundle` — the file format, and the cross-side merge that is the
-/// whole reason for recording.
-///
-/// The format is pinned because it is an interface to a reader that is not
-/// this codebase: an agent triaging a report, a `jq` filter, the next version
-/// of this app parsing a bundle written by this one. The merge is pinned
-/// because its failure mode is the worst one a timeline has — plausible order
-/// that is actually wrong, which a reader will confidently interpret as
-/// causality.
+/// `DiagnosticsBundle`: the file format, and the cross-side merge that
+/// aligns two devices' clocks into one causally-ordered timeline.
 final class DiagnosticsBundleTests: XCTestCase {
 
     private let epoch = Date(timeIntervalSince1970: 1_800_000_000)
@@ -34,15 +27,8 @@ final class DiagnosticsBundleTests: XCTestCase {
             fields: fields)
     }
 
-    /// Re-stamp `monotonicNs` as elapsed since the FIRST event, which is the
+    /// Re-stamp `monotonicNs` as elapsed since the first event, matching the
     /// invariant `DiagnosticsRecorder` actually maintains.
-    ///
-    /// The fixtures used to derive it from a fixed epoch with negatives clamped
-    /// to zero, which no real recorder would ever produce — and the merge now
-    /// replays each side from its anchor plus that elapsed, so an inconsistent
-    /// fixture produced an inconsistent timeline. Building the fixtures the way
-    /// the recorder builds them keeps the suite testing the code rather than
-    /// testing a fiction.
     private func normalized(_ events: [DiagnosticEvent]) -> [DiagnosticEvent] {
         guard let start = events.first?.wallClock else { return events }
         return events.map { event in
@@ -76,8 +62,7 @@ final class DiagnosticsBundleTests: XCTestCase {
 
     // MARK: - The file format
 
-    /// Header first, one event per line, trailing newline. `head -1` must be a
-    /// complete answer to "what am I looking at".
+    /// Header first, one event per line, trailing newline.
     func testFormatIsHeaderThenOneEventPerLine() throws {
         let events = [
             event(seq: 1, .helloReceived, atOffset: 0),
@@ -93,7 +78,6 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertTrue(lines[2].contains("hello.ack.sent"))
     }
 
-    /// A round trip must not lose anything a reader depends on.
     func testRoundTripPreservesEvents() throws {
         let events = [
             event(seq: 1, .helloReceived, atOffset: 0, fields: ["addr": "100.64.0.3"]),
@@ -114,8 +98,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(parsed.events[1].name, DiagnosticEventName.helloAckSent.rawValue)
     }
 
-    /// Whole numbers must come back whole. An SSRC rendered `2.0` breaks the
-    /// merge's field match, which compares values exactly.
+    /// An SSRC rendered `2.0` would break the merge's exact field match.
     func testIntegersSurviveAsIntegers() throws {
         let events = [event(seq: 1, .helloAckSent, atOffset: 0, fields: ["ssrc": .int(42)])]
         let text = try bundle(role: .sharer, device: "mac", events: events).jsonLines()
@@ -125,8 +108,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(parsed.events[0].fields["ssrc"], .int(42))
     }
 
-    /// Booleans must not decay into 0/1 — the decode order is what guarantees
-    /// this and it is easy to get wrong.
+    /// Booleans must not decay into 0/1.
     func testBooleansSurviveAsBooleans() throws {
         let events = [event(seq: 1, .linkEnabled, atOffset: 0, fields: ["guest": .bool(true)])]
         let parsed = try DiagnosticsBundle.parse(
@@ -134,8 +116,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(parsed.events[0].fields["guest"], .bool(true))
     }
 
-    /// Two exports of the same events are byte-identical, so a bundle diffs
-    /// against itself usefully and a re-export is not noise in a bug report.
+    /// Two exports of the same events are byte-identical.
     func testEncodingIsDeterministic() throws {
         let events = [
             event(
@@ -146,11 +127,8 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(try one.jsonLines(), try one.jsonLines())
     }
 
-    /// Elapsed time is written in milliseconds, which is the column a reader's
-    /// eye runs down. Raw nanoseconds would be correct and useless.
+    /// Elapsed time is written in milliseconds, not raw nanoseconds.
     func testElapsedIsWrittenInMilliseconds() throws {
-        // Two events, because elapsed is measured from the first one — which
-        // is always zero. The second is what shows the unit.
         let events = [
             event(seq: 1, .helloReceived, atOffset: 0),
             event(seq: 2, .helloAckSent, atOffset: 1.8412)
@@ -161,8 +139,8 @@ final class DiagnosticsBundleTests: XCTestCase {
             "expected a millisecond field, got: \(text)")
     }
 
-    /// Every bundle states what is in it. The file is what gets forwarded, and
-    /// the second recipient never saw the dialog that produced it.
+    /// Every bundle states what's in it, since the file gets forwarded to
+    /// someone who never saw the dialog that produced it.
     func testHeaderCarriesTheContentNotice() throws {
         let parsed = try DiagnosticsBundle.parse(
             jsonLines: try bundle(role: .sharer, device: "mac", events: []).jsonLines())
@@ -172,9 +150,8 @@ final class DiagnosticsBundleTests: XCTestCase {
 
     // MARK: - Tolerant parsing
 
-    /// A bundle from a newer build must stay readable. The person with the
-    /// problem is by definition the one running the newer build, so a reader
-    /// that refuses it fails exactly when it is needed.
+    /// A bundle from a newer build must stay readable: unknown names/categories
+    /// fall back instead of failing the parse.
     func testUnknownEventNamesAndCategoriesSurviveParsing() throws {
         let header = try bundle(role: .sharer, device: "mac", events: []).jsonLines()
         let futureLine = """
@@ -189,41 +166,32 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(parsed.events[0].severity, .info, "unknown severity should fall back")
     }
 
-    /// A valid-JSON but absurd number must not crash the reader.
-    ///
-    /// `UInt64(someDouble)` traps on NaN, infinity and anything past
-    /// `UInt64.max`, and `"elapsed_ms":1e300` is perfectly legal JSON. Every
-    /// other malformation on a line is tolerated or skipped here; a process
-    /// death is the one failure the person chasing a bug cannot work around.
+    /// A valid-JSON but absurd number (`elapsed_ms:1e300`) must not crash the
+    /// reader — `UInt64(someDouble)` traps on NaN/infinity/overflow.
     func testAbsurdElapsedDoesNotCrashTheReader() throws {
         let header = try bundle(role: .sharer, device: "mac", events: []).jsonLines()
         for value in ["1e300", "-1e300", "1e999", "1e-300"] {
             let line = """
                 {"at":"2027-01-01T00:00:00.000Z","category":"media","elapsed_ms":\(value),                "event":"decode.failed","role":"viewer","seq":9,"severity":"warning"}
                 """
-            // The assertion is that this RETURNS. Whether the line survives or
-            // is skipped is the tolerant parser's business — `1e999` exceeds
-            // Double, so JSONDecoder rejects the line outright. What must not
-            // happen is the process dying.
+            // Assertion is that this returns; surviving vs. being skipped is
+            // the parser's business.
             let parsed = try DiagnosticsBundle.parse(jsonLines: header + line + "\n")
             XCTAssertLessThanOrEqual(parsed.events.count, 1, "value \(value)")
         }
     }
 
-    /// The clamp itself, at its edges.
     func testNanosecondConversionSaturatesInsteadOfTrapping() {
         XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: 1.5), 1_500_000)
         XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: 0), 0)
         XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: -5), 0)
         XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: .nan), 0)
-        // Not finite is garbage, and 0 is the honest answer — `.max` would sort
-        // the event to the very end of the session, asserting something the
-        // data does not support. Only a finite value past `UInt64` saturates.
+        // Non-finite maps to 0, not `.max` — `.max` would sort the event to the
+        // end of the session, asserting more than the data supports.
         XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: .infinity), 0)
         XCTAssertEqual(DiagnosticEvent.nanoseconds(fromMilliseconds: 1e300), .max)
     }
 
-    /// One corrupt line must not cost the other four thousand.
     func testCorruptLinesAreSkippedNotFatal() throws {
         let good = try bundle(
             role: .sharer, device: "mac",
@@ -235,20 +203,15 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(parsed.events.count, 1)
     }
 
-    /// A file with no header is not a bundle, and saying so beats returning an
-    /// empty one that looks like a session where nothing happened.
+    /// A missing header must error, not parse as an empty (nothing-happened) session.
     func testMissingHeaderIsAnError() {
         XCTAssertThrowsError(try DiagnosticsBundle.parse(jsonLines: "{\"a\":1}\n")) { error in
             XCTAssertEqual(error as? DiagnosticsBundleError, .missingHeader)
         }
     }
 
-    /// **The one thing the tolerant parser refuses.** Unknown names, unknown
-    /// categories and corrupt lines are skipped on purpose, because a reader
-    /// that rejects a newer build's bundle fails exactly when it is needed. A
-    /// schema bump is the opposite case by definition — `currentSchema` moves
-    /// only when an older reader would produce the WRONG answer — so guessing
-    /// yields a confidently incorrect timeline.
+    /// The one thing the tolerant parser refuses: a future schema, since
+    /// `currentSchema` bumps only when an older reader would misread it.
     func testAFutureSchemaIsRefusedRatherThanMisread() throws {
         let text = try bundle(
             role: .sharer, device: "mac",
@@ -261,8 +224,6 @@ final class DiagnosticsBundleTests: XCTestCase {
         }
     }
 
-    /// An older schema stays readable: nothing about a bundle written by an
-    /// earlier build is beyond this reader.
     func testAnOlderSchemaStillParses() throws {
         let text = try bundle(
             role: .sharer, device: "mac",
@@ -274,9 +235,8 @@ final class DiagnosticsBundleTests: XCTestCase {
 
     // MARK: - Merging two sides
 
-    /// Build the two bundles of one handshake, with the viewer's clock
-    /// deliberately offset. `skew` is how far the viewer's clock is BEHIND the
-    /// sharer's.
+    /// Builds the two bundles of one handshake, with the viewer's clock
+    /// offset `skew` seconds behind the sharer's.
     private func handshakePair(
         skew: TimeInterval,
         oneWayDelay: TimeInterval = 0.02
@@ -296,7 +256,6 @@ final class DiagnosticsBundleTests: XCTestCase {
                 seq: 3, .helloAckSent, role: .sharer, atOffset: t3True,
                 fields: ["ssrc": .int(2), "addr": "100.64.0.3"])
         ]
-        // The viewer's own clock reads `skew` seconds low.
         let viewerEvents = [
             event(seq: 1, .helloSent, role: .viewer, atOffset: t1True - skew),
             event(
@@ -309,9 +268,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         )
     }
 
-    /// The offset estimate recovers the skew from the handshake's four
-    /// timestamps — the NTP formula, with the four values the protocol
-    /// already records.
+    /// The NTP formula recovers skew from the handshake's four timestamps.
     func testClockSkewIsEstimatedFromTheHandshake() throws {
         let pair = handshakePair(skew: 2.5)
         let estimate = try XCTUnwrap(
@@ -322,8 +279,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(estimate.ssrc, 2)
     }
 
-    /// The payoff: with the correction applied, cause precedes effect. Without
-    /// it the viewer's HELLO would sort 2.5 s before the share even started.
+    /// With the correction applied, cause precedes effect.
     func testMergedTimelineRestoresCausalOrder() {
         let pair = handshakePair(skew: 2.5)
         let timeline = DiagnosticsMerge.merge([pair.sharer, pair.viewer])
@@ -341,9 +297,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(timeline.referenceDevice, "sharer-mac")
     }
 
-    /// Each send must precede its own receive after correction. Stated
-    /// separately from the order above because this is the invariant that
-    /// makes the timeline trustworthy at all.
+    /// Each send must precede its own receive after correction.
     func testEverySendPrecedesItsReceiveAfterCorrection() throws {
         for skew in [-5.0, -0.3, 0.0, 0.3, 5.0] {
             let pair = handshakePair(skew: skew)
@@ -362,8 +316,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         }
     }
 
-    /// The correction is reported, never silently applied. An offset a reader
-    /// cannot see is exactly as misleading as a skew they cannot see.
+    /// The correction is reported, never silently applied.
     func testSkewCorrectionIsDisclosed() throws {
         let pair = handshakePair(skew: 2.5)
         let timeline = DiagnosticsMerge.merge([pair.sharer, pair.viewer])
@@ -374,8 +327,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertTrue(note.contains("SSRC 2"))
     }
 
-    /// The original stamp is kept beside the corrected one, so a reader can
-    /// always get back to what the device itself said.
+    /// The original stamp is kept beside the corrected one.
     func testOriginalTimestampIsPreserved() throws {
         let pair = handshakePair(skew: 2.5)
         let timeline = DiagnosticsMerge.merge([pair.sharer, pair.viewer])
@@ -389,9 +341,8 @@ final class DiagnosticsBundleTests: XCTestCase {
             accuracy: 0.002)
     }
 
-    /// Two bundles that never talked to each other cannot be aligned, and
-    /// saying so beats inventing an offset. A confidently wrong timeline is
-    /// worse than one labelled uncertain.
+    /// Two bundles that never talked cannot be aligned; say so rather than
+    /// inventing an offset.
     func testUnpairedBundlesAreShownAsRecordedAndFlagged() {
         let sharer = bundle(
             role: .sharer, device: "sharer-mac",
@@ -406,8 +357,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertTrue(timeline.clockNotes[0].contains("no handshake"))
     }
 
-    /// Ties break deterministically, so a timeline does not reorder itself
-    /// between runs and can be cited line by line.
+    /// Ties break deterministically, so a timeline can be cited line by line.
     func testMergeIsDeterministicUnderTies() {
         let a = bundle(
             role: .sharer, device: "aaa",
@@ -422,8 +372,6 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(first, ["aaa", "zzz"])
     }
 
-    /// A merge of one side is just that side — the common case when only one
-    /// person could get a bundle out.
     func testSingleBundleMergesToItself() {
         let only = bundle(
             role: .viewer, device: "viewer-pc",
@@ -435,14 +383,11 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertTrue(timeline.clockNotes.isEmpty)
     }
 
-    /// One process can be both ends at once — a Mac sharing its screen to one
-    /// person while watching another's. The merge must pair on what the
-    /// bundles CONTAIN, not on their header role, or the dual-role side pairs
-    /// as whichever one it happened to default to and the offset is solved
-    /// from the wrong handshake.
+    /// One process can be both ends at once — a Mac sharing while also
+    /// viewing. The merge must pair on what the bundles CONTAIN, not on
+    /// their header role, or the offset is solved from the wrong handshake.
     func testDualRoleBundlePairsOnEventsNotHeaderRole() {
-        // This side both answered a HELLO (as sharer) and, separately, is the
-        // one whose clock we want aligned. Its header says `.app`.
+        // Answered a HELLO (as sharer) but its header says `.app`.
         let dualEvents = [
             event(seq: 1, .helloReceived, role: .sharer, atOffset: 0.02),
             event(
@@ -451,7 +396,6 @@ final class DiagnosticsBundleTests: XCTestCase {
         ]
         let dual = bundle(role: .app, device: "dual-mac", events: dualEvents)
 
-        // The plain viewer, whose clock reads 3 s low.
         let viewerEvents = [
             event(seq: 1, .helloSent, role: .viewer, atOffset: 0 - 3.0),
             event(
@@ -463,14 +407,11 @@ final class DiagnosticsBundleTests: XCTestCase {
         let estimate = DiagnosticsMerge.estimateOffset(of: viewer, against: dual)
         XCTAssertEqual(estimate?.seconds ?? 0, 3.0, accuracy: 0.002)
 
-        // And the dual-role bundle is chosen as the reference, because it is
-        // the side that sent the ack.
+        // The dual-role bundle is the reference: it's the side that sent the ack.
         XCTAssertEqual(DiagnosticsMerge.merge([viewer, dual]).referenceDevice, "dual-mac")
     }
 
-    /// The estimate works with the arguments the other way round too — the
-    /// sign has to flip, and getting that wrong would double the skew instead
-    /// of removing it.
+    /// Reversing the arguments must flip the sign, not double the skew.
     func testOffsetEstimateIsSymmetric() {
         let pair = handshakePair(skew: 2.5)
         let forward = DiagnosticsMerge.estimateOffset(of: pair.viewer, against: pair.sharer)
@@ -480,10 +421,8 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(backward?.seconds ?? 0, -2.5, accuracy: 0.002)
     }
 
-    /// With several viewers joining at once, the sharer's bundle holds many
-    /// interleaved `hello.received`. Pairing on time alone would take another
-    /// viewer's retry as `t2` and produce an offset that looks entirely
-    /// plausible and is wrong — so the ack's `addr` has to be matched too.
+    /// With several viewers joining at once, pairing on time alone could pick
+    /// another viewer's HELLO — the ack's `addr` must be matched too.
     func testOffsetPairsTheRightViewersHello() throws {
         let sharer = bundle(
             role: .sharer, device: "sharer-mac",
@@ -491,8 +430,7 @@ final class DiagnosticsBundleTests: XCTestCase {
                 event(
                     seq: 1, .helloReceived, atOffset: 0.00,
                     fields: ["addr": "100.64.0.3"]),
-                // A SECOND viewer's HELLO lands between the first viewer's and
-                // the ack that answers it. Time-only pairing picks this one.
+                // A second viewer's HELLO between this one and its ack.
                 event(
                     seq: 2, .helloReceived, atOffset: 0.01,
                     fields: ["addr": "100.64.0.9"]),
@@ -511,17 +449,15 @@ final class DiagnosticsBundleTests: XCTestCase {
 
         let estimate = try XCTUnwrap(
             DiagnosticsMerge.estimateOffset(of: viewer, against: sharer))
-        // Paired against the 0.00 HELLO (this viewer's), not the 0.01 one.
+        // Paired against the 0.00 HELLO, not the 0.01 one.
         XCTAssertEqual(estimate.roundTripSeconds, 0.04, accuracy: 0.002)
     }
 
     /// A wall clock that steps mid-session must not reorder one device's own
-    /// events. This is what `monotonicNs` is recorded for, and sorting on the
-    /// wall clock alone threw it away — inventing a causal inversion inside a
-    /// single machine's story, which is the one thing a timeline must never do.
+    /// events — this is what `monotonicNs` is for.
     func testClockStepDoesNotReorderOneDevicesOwnEvents() {
-        // Three events, monotonic and increasing, but the middle one's wall
-        // clock jumped backwards a minute — an NTP correction mid-share.
+        // Monotonic and increasing, but the middle event's wall clock jumps
+        // backwards a minute (an NTP correction mid-share).
         let events = [
             DiagnosticEvent(
                 seq: 1, monotonicNs: 0, wallClock: epoch, role: .sharer,
@@ -553,17 +489,11 @@ final class DiagnosticsBundleTests: XCTestCase {
             "a backwards clock step reordered one device's own events")
     }
 
-    /// **A backward clock step on the SHARER, between receiving the HELLO and
-    /// answering it, must not lose the pairing.**
-    ///
-    /// The "which HELLO came before this ack" tests are WITHIN one bundle,
-    /// where `seq` is exact and monotonic by construction. Comparing wall
-    /// clocks there let a step make the legitimate `hello.received` look later
-    /// than the ack that answered it, so it was excluded and the whole pairing
-    /// was abandoned — on exactly the bundles whose clocks most needed
-    /// aligning. (The viewer-side version of the step is caught anyway by the
-    /// negative-round-trip guard, which is right: a `t1` and `t4` on two
-    /// different clock bases make the formula itself invalid.)
+    /// A backward clock step on the sharer, between receiving the HELLO and
+    /// answering it, must not lose the pairing. Within one bundle `seq` is
+    /// exact and monotonic; comparing wall clocks there let a step make the
+    /// HELLO look later than its own ack, defeating the pairing on exactly
+    /// the bundles most needing alignment.
     func testBackwardClockStepOnTheSharerStillPairs() {
         let viewer = bundle(
             role: .viewer, device: "viewer-pc",
@@ -573,7 +503,7 @@ final class DiagnosticsBundleTests: XCTestCase {
                     seq: 2, .helloAckReceived, role: .viewer, atOffset: 0.04,
                     fields: ["ssrc": .int(7)])
             ])
-        // The sharer's clock steps back 3 s in the 5 ms between the two.
+        // Steps back 3 s in the 5 ms between receiving and answering.
         let sharer = bundle(
             role: .sharer, device: "sharer-mac",
             events: [
@@ -592,15 +522,10 @@ final class DiagnosticsBundleTests: XCTestCase {
 
     // MARK: - Sessions
 
-    /// **The pairing must not reach back into an earlier session.**
-    ///
-    /// A process shares or views several times and a bundle retains the last
-    /// few, so a session whose own HELLO was evicted — its prologue released
-    /// under the retention cap — still has its ACK. `last(where: seq <= ack)`
-    /// then happily walks back past the session boundary and pairs that ACK
-    /// with a HELLO from an hour earlier, producing an offset out by the whole
-    /// gap between them. Refusing is right: a confidently wrong clock
-    /// correction is worse than saying the two bundles could not be aligned.
+    /// The pairing must not reach back into an earlier session: a session
+    /// whose own HELLO was evicted under the retention cap still has its ACK,
+    /// and `last(where: seq <= ack)` could walk back past the session
+    /// boundary and pair it with a HELLO from an hour earlier.
     func testHandshakePairingDoesNotReachIntoAnEarlierSession() {
         func viewerEvent(
             _ seq: UInt64, _ name: DiagnosticEventName, _ session: UInt32,
@@ -612,7 +537,7 @@ final class DiagnosticsBundleTests: XCTestCase {
                 role: .viewer, category: name.category, name: name.rawValue,
                 severity: name.defaultSeverity, fields: fields)
         }
-        // Session 0's HELLO survived; session 1's did not, but its ACK did.
+        // Session 0's HELLO survived; session 1's didn't, but its ACK did.
         let viewer = bundle(
             role: .viewer, device: "viewer-pc",
             events: [
@@ -635,9 +560,8 @@ final class DiagnosticsBundleTests: XCTestCase {
             "paired an ACK with a HELLO from the previous session")
     }
 
-    /// Applying one offset to a multi-session bundle is disclosed rather than
-    /// silently papered over — the later sessions are corrected by an estimate
-    /// taken during an earlier one.
+    /// Applying one offset to a multi-session bundle is disclosed: later
+    /// sessions are corrected by an estimate taken during an earlier one.
     func testASingleOffsetOverManySessionsIsDisclosed() {
         let pair = handshakePair(skew: 2.5)
         var viewer = pair.viewer
@@ -656,11 +580,9 @@ final class DiagnosticsBundleTests: XCTestCase {
 
     // MARK: - Holes in a stream
 
-    /// **The rendered timeline must not present a hole as adjacency.** Once
-    /// the ring wraps, the retained prologue and the recent ring sit next to
-    /// each other with an unknown interval between them, and a reader will
-    /// draw a causal line straight across it. The JSONL header carried the
-    /// drop count all along; nothing carried it into what people read.
+    /// The rendered timeline must not present a hole as adjacency: once the
+    /// ring wraps, the retained prologue and the recent ring sit next to each
+    /// other with an unknown interval between them.
     func testDroppedEventsBecomeAGapInTheMergedTimeline() {
         let events = [
             event(seq: 1, .helloSent, role: .viewer, atOffset: 0),
@@ -674,10 +596,8 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(timeline.gaps.first?.device, "pc")
     }
 
-    /// A gap is located by WHERE it is, not just counted. The marker sits at
-    /// the first event after the hole, which is what tells a reader whether
-    /// the missing interval is anywhere near the two events they are drawing
-    /// a conclusion between.
+    /// A gap is located by where it is, not just counted: the marker sits at
+    /// the first event after the hole.
     func testGapIsPlacedAtTheEventThatFollowsIt() {
         let events = [
             event(seq: 1, .helloSent, role: .viewer, atOffset: 0),
@@ -692,9 +612,8 @@ final class DiagnosticsBundleTests: XCTestCase {
             "the marker belongs immediately before the first surviving event")
     }
 
-    /// A bundle that starts at a sequence above 1 lost a whole session
-    /// prologue to the retention cap — a hole with no event in front of it,
-    /// and the one a reader is least likely to suspect.
+    /// A bundle starting at a sequence above 1 lost a whole session prologue
+    /// to the retention cap — a hole with no event in front of it.
     func testAReleasedLeadingPrologueIsAGapToo() {
         let events = [
             event(seq: 12, .helloSent, role: .viewer, atOffset: 0),
@@ -706,9 +625,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(timeline.gaps.first?.missing, 11)
     }
 
-    /// And a dense stream reports no gap at all. A timeline that cried loss on
-    /// a complete recording would cost a reader's trust in the marker exactly
-    /// when it does appear.
+    /// A dense stream reports no gap at all.
     func testADenseStreamHasNoGaps() {
         let events = [
             event(seq: 1, .helloSent, role: .viewer, atOffset: 0),
@@ -722,10 +639,8 @@ final class DiagnosticsBundleTests: XCTestCase {
 
     // MARK: - Where each side's timeline is anchored
 
-    /// A bundle whose wall clock stepped between start-up and the handshake.
-    /// `startedAt` is the pre-step reading; the handshake carries the
-    /// post-step one, and its elapsed says how long after start-up it
-    /// happened — so the two disagree by exactly the step.
+    /// A bundle whose wall clock stepped between start-up and the handshake:
+    /// `startedAt` is the pre-step reading, the handshake the post-step one.
     private func steppedClockBundle(step: TimeInterval) -> DiagnosticsBundle {
         let events = [
             DiagnosticEvent(
@@ -749,21 +664,16 @@ final class DiagnosticsBundleTests: XCTestCase {
             exportedAt: epoch.addingTimeInterval(100))
     }
 
-    /// The anchor comes from the HANDSHAKE, not from the session start.
-    ///
-    /// The cross-device offset is estimated from handshake timestamps, so it
-    /// already contains any step that happened before them. Anchoring at
-    /// `startedAt` — a reading taken before the step — would replay the side
-    /// from a pre-step origin while correcting it by a post-step offset,
-    /// leaving the whole timeline shifted by exactly that discontinuity.
+    /// The anchor comes from the handshake, not the session start: the
+    /// cross-device offset is estimated from handshake timestamps, so
+    /// anchoring at a pre-step `startedAt` would shift the whole timeline
+    /// by the step.
     func testAnchorIsDerivedFromTheHandshakeNotTheSessionStart() throws {
         let anchor = try XCTUnwrap(DiagnosticsMerge.anchor(for: steppedClockBundle(step: 5)))
 
         XCTAssertEqual(anchor.timeIntervalSince(epoch), 5, accuracy: 0.001)
     }
 
-    /// The handshake therefore lands at the time it actually carries, and the
-    /// events before it move with it rather than being stretched apart.
     func testSteppedClockDoesNotStretchTheGapBeforeTheHandshake() {
         let timeline = DiagnosticsMerge.merge([steppedClockBundle(step: 5)])
 
@@ -773,9 +683,7 @@ final class DiagnosticsBundleTests: XCTestCase {
         XCTAssertEqual(gap, 1, accuracy: 0.001, "the step was replayed as elapsed time")
     }
 
-    /// Without a handshake there is nothing better to use, so `startedAt`
-    /// remains the fallback — a bundle from a session that never connected
-    /// still has to render.
+    /// Without a handshake, `startedAt` is the fallback.
     func testAnchorFallsBackToTheSessionStartWithoutAHandshake() throws {
         let events = [
             event(seq: 1, .captureStarted, role: .sharer, atOffset: 0),

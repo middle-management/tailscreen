@@ -4,11 +4,8 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `DiagnosticsExport` — the filenames, the write, and the rendered timeline.
-///
-/// The renderer is pinned because it is the actual deliverable of this whole
-/// feature: the bundle is what gets sent, but the timeline is what gets read.
-/// Its failure mode is not a crash, it is a wall of text nobody can scan —
-/// which looks like a working feature and helps nobody.
+/// The renderer is pinned because the bundle is what gets sent but the
+/// timeline is what gets read; its failure mode is an unscannable wall of text.
 final class DiagnosticsExportTests: XCTestCase {
 
     private let epoch = Date(timeIntervalSince1970: 1_800_000_000)
@@ -16,8 +13,7 @@ final class DiagnosticsExportTests: XCTestCase {
     // MARK: - Filenames
 
     /// Role and device are in the name because these files arrive in pairs,
-    /// in a chat thread, renamed. Two files called `diagnostics.jsonl` do not
-    /// survive that.
+    /// renamed, in a chat thread — two `diagnostics.jsonl` don't survive that.
     func testFilenameNamesTheSideItCameFrom() {
         let name = DiagnosticsExport.filename(
             role: .sharer, device: "Robert's MacBook Pro", at: epoch)
@@ -26,16 +22,13 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertTrue(name.hasSuffix(".jsonl"))
     }
 
-    /// The stamp sorts lexicographically, so one session's bundles land next
-    /// to each other in any file listing.
     func testTimestampsSortChronologically() {
         let earlier = DiagnosticsExport.stamp(epoch)
         let later = DiagnosticsExport.stamp(epoch.addingTimeInterval(3600))
         XCTAssertLessThan(earlier, later)
     }
 
-    /// Device names are user-chosen and arrive with anything in them. The
-    /// slug has to be safe on Windows too, which rejects `<>:"/\|?*`.
+    /// The slug has to be safe on Windows too, which rejects `<>:"/\|?*`.
     func testSlugIsSafeOnEveryPlatform() {
         let forbidden = Set("<>:\"/\\|?* '")
         for name in ["Robert's Mac", "desk<top>", "a/b\\c", "  spaced  out  "] {
@@ -48,17 +41,13 @@ final class DiagnosticsExportTests: XCTestCase {
         }
     }
 
-    /// A name with nothing ASCII in it must not slug away to nothing and
-    /// produce a filename with a hole in it.
     func testFullyNonASCIINameStillYieldsAName() {
         XCTAssertEqual(DiagnosticsExport.slug("日本語"), "device")
         XCTAssertEqual(DiagnosticsExport.slug(""), "device")
     }
 
-    /// The 40-character cap runs BEFORE the final trim. Capping after it can
-    /// hand back a trailing dash — a name whose 41st slug character is the
-    /// dash a space produced — which is exactly what the trim exists to
-    /// prevent, and it would land in the filename.
+    /// The 40-character cap runs BEFORE the final trim — capping after it
+    /// could hand back a trailing dash the trim exists to prevent.
     func testSlugCapDoesNotLeaveATrailingDash() {
         let slug = DiagnosticsExport.slug(String(repeating: "a", count: 39) + " workstation")
 
@@ -67,15 +56,11 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertEqual(slug, String(repeating: "a", count: 39))
     }
 
-    /// The second trim must not shorten a name that fits. An off-by-one here
-    /// would silently clip the last character off every 40-character device
-    /// name, which nothing else in the suite would notice.
     func testSlugKeepsANameThatExactlyFitsTheCap() {
         let exact = String(repeating: "b", count: 40)
         XCTAssertEqual(DiagnosticsExport.slug(exact), exact)
     }
 
-    /// One line of a hand-built timeline, for the gap tests below.
     private func line(
         device: String, _ name: DiagnosticEventName, at offset: TimeInterval
     ) -> DiagnosticsMerge.Line {
@@ -91,11 +76,9 @@ final class DiagnosticsExportTests: XCTestCase {
             appliedOffsetSeconds: 0)
     }
 
-    /// The gap reaches the rendered output, inline AND in the header. A total
-    /// at the top alone would not tell a reader whether the hole is anywhere
-    /// near the two events they are drawing a conclusion between — and drawing
-    /// that conclusion straight across a hole is the exact failure the drop
-    /// counter exists to prevent.
+    /// The gap reaches the rendered output, inline AND in the header — a
+    /// total alone wouldn't tell a reader whether the hole is near the two
+    /// events they're comparing.
     func testDroppedEventsAreMarkedWhereTheyHappened() throws {
         let timeline = DiagnosticsMerge.Timeline(
             lines: [
@@ -121,9 +104,8 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertTrue(rows[gapRow].contains("pc"), rows[gapRow])
     }
 
-    /// A session boundary is marked where one share gives way to the next.
-    /// Without it the stream reads as one long run and a reader draws
-    /// conclusions between two events belonging to different shares.
+    /// A session boundary is marked where one share gives way to the next,
+    /// or the stream reads as one long run.
     func testSessionBoundaryIsMarked() throws {
         var second = line(device: "pc", .helloSent, at: 30)
         second.event.session = 1
@@ -141,7 +123,6 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertEqual(marker + 1, following)
     }
 
-    /// The ordinary single-session bundle says nothing about sessions at all.
     func testASingleSessionRendersNoBoundary() {
         let rendered = DiagnosticsExport.renderTimeline(
             DiagnosticsMerge.Timeline(
@@ -155,9 +136,6 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertFalse(rendered.contains("session"), rendered)
     }
 
-    /// A complete recording says nothing about drops. A timeline that cried
-    /// loss on an intact one would cost a reader's trust in the marker exactly
-    /// when it does appear.
     func testACompleteTimelineRendersNoGapNotice() {
         let rendered = DiagnosticsExport.renderTimeline(
             DiagnosticsMerge.Timeline(
@@ -171,7 +149,6 @@ final class DiagnosticsExportTests: XCTestCase {
 
     // MARK: - Writing
 
-    /// Round-trip through the filesystem, including creating the directory.
     func testWriteCreatesDirectoriesAndRoundTrips() throws {
         let recorder = DiagnosticsRecorder(
             defaultRole: .viewer, deviceLabel: "viewer-pc", enabled: true)
@@ -199,15 +176,8 @@ final class DiagnosticsExportTests: XCTestCase {
 
     // MARK: - The rendered timeline
 
-    /// Re-stamp `monotonicNs` as elapsed since the FIRST event, which is the
+    /// Re-stamp `monotonicNs` as elapsed since the first event, matching the
     /// invariant `DiagnosticsRecorder` actually maintains.
-    ///
-    /// The fixtures used to derive it from a fixed epoch with negatives clamped
-    /// to zero, which no real recorder would ever produce — and the merge now
-    /// replays each side from its anchor plus that elapsed, so an inconsistent
-    /// fixture produced an inconsistent timeline. Building the fixtures the way
-    /// the recorder builds them keeps the suite testing the code rather than
-    /// testing a fiction.
     private func normalized(_ events: [DiagnosticEvent]) -> [DiagnosticEvent] {
         guard let start = events.first?.wallClock else { return events }
         return events.map { event in
@@ -260,14 +230,11 @@ final class DiagnosticsExportTests: XCTestCase {
         return DiagnosticsMerge.merge([sharer, viewer])
     }
 
-    /// The output has to be scannable: one line per event, aligned columns, so
-    /// a reader's eye can run down the device column and the event column.
     func testTimelineRendersOneAlignedLinePerEvent() {
         let text = DiagnosticsExport.renderTimeline(twoSidedTimeline())
         let body = text.split(separator: "\n").filter { $0.contains("hello.") || $0.contains("capture.") }
 
         XCTAssertEqual(body.count, 5)
-        // Device and category start at the same column on every row.
         let deviceColumns = body.map { line -> Int in
             line.distance(
                 from: line.startIndex,
@@ -276,8 +243,6 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertEqual(Set(deviceColumns).count, 1, "columns are not aligned:\n\(text)")
     }
 
-    /// Both devices appear, with the events interleaved in causal order —
-    /// which is the entire reason for merging rather than concatenating.
     func testTimelineInterleavesBothSidesInCausalOrder() {
         let text = DiagnosticsExport.renderTimeline(twoSidedTimeline())
         let order = text.split(separator: "\n").compactMap { line -> String? in
@@ -293,17 +258,12 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertTrue(text.contains("viewer-pc"))
     }
 
-    /// Times are relative to the first event — "three seconds in, the viewer
-    /// was denied" is what a reader wants, not a wall-clock stamp they have to
-    /// subtract in their head.
     func testTimesAreRelativeToTheFirstEvent() {
         let text = DiagnosticsExport.renderTimeline(twoSidedTimeline())
         XCTAssertTrue(text.contains("0.000s"), "first event should read zero:\n\(text)")
         XCTAssertTrue(text.contains("2.000s"), "decode failure at +2s:\n\(text)")
     }
 
-    /// Trouble is marked in the left margin, so scanning for it does not mean
-    /// reading every line.
     func testSeverityIsMarkedInTheMargin() throws {
         let text = DiagnosticsExport.renderTimeline(twoSidedTimeline())
         let decodeLine = try XCTUnwrap(
@@ -311,8 +271,6 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertTrue(decodeLine.hasPrefix("!"), "warning not marked: \(decodeLine)")
     }
 
-    /// Fields render sorted, so comparing two occurrences of one event shows
-    /// only the value that actually differs.
     func testFieldsRenderSortedAndUnambiguously() {
         let rendered = DiagnosticsExport.renderFields([
             "zeta": .int(1), "alpha": .string("two words"), "mid": .bool(true)
@@ -320,10 +278,8 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertEqual(rendered, "alpha=\"two words\" mid=true zeta=1")
     }
 
-    /// A value containing a newline would SPLIT one event across several lines
-    /// in a format that is one-event-per-line — silently turning a readable
-    /// trace into one that appears to contain events nothing recorded. Captured
-    /// log lines and error descriptions contain newlines routinely.
+    /// A raw newline would split one event across lines in a one-event-per-line
+    /// format, appearing to contain events nothing recorded.
     func testFieldValuesAreEscapedSoOneEventStaysOneLine() {
         let rendered = DiagnosticsExport.renderFields([
             "text": .string("line one\nline two"),
@@ -335,22 +291,18 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertTrue(rendered.contains("\\n"), rendered)
     }
 
-    /// A value needing escapes is quoted, so the escapes are unambiguous.
     func testEscapedValuesAreQuoted() {
         let rendered = DiagnosticsExport.renderFields(["k": .string("a\nb")])
         XCTAssertEqual(rendered, "k=\"a\\nb\"")
     }
 
-    /// Ordinary values keep their unquoted shape — escaping must not make the
-    /// common line noisier.
     func testOrdinaryValuesAreNotQuoted() {
         XCTAssertEqual(
             DiagnosticsExport.renderFields(["addr": .string("100.64.0.3")]), "addr=100.64.0.3")
     }
 
     /// A name that already exists gains a suffix rather than replacing the
-    /// file — for a feature whose job is preserving evidence, a silent
-    /// overwrite is the worst possible rounding error.
+    /// file — a silent overwrite is unacceptable for evidence.
     func testUniqueFilenameAvoidsAnExistingOne() {
         let taken: Set<String> = [
             DiagnosticsExport.filename(role: .sharer, device: "mac", at: epoch)
@@ -363,7 +315,6 @@ final class DiagnosticsExportTests: XCTestCase {
         XCTAssertTrue(next.contains("-2."), next)
     }
 
-    /// With nothing in the way it is the plain name.
     func testUniqueFilenameIsThePlainNameWhenFree() {
         XCTAssertEqual(
             DiagnosticsExport.uniqueFilename(
@@ -371,15 +322,11 @@ final class DiagnosticsExportTests: XCTestCase {
             DiagnosticsExport.filename(role: .sharer, device: "mac", at: epoch))
     }
 
-    /// An empty collection says so rather than rendering an empty file that
-    /// reads as a session where nothing went wrong.
     func testEmptyTimelineSaysSo() {
         let text = DiagnosticsExport.renderTimeline(DiagnosticsMerge.merge([]))
         XCTAssertTrue(text.contains("No diagnostic events"))
     }
 
-    /// The clock note reaches the rendered output. A correction the reader
-    /// cannot see is as misleading as the skew it corrected.
     func testClockNotesAppearInTheRenderedOutput() {
         let sharerEvents = [
             DiagnosticEvent(

@@ -57,13 +57,10 @@ final class ScreenShareProtocolTests: XCTestCase {
         let full = ScreenShareMessage.annotation(op).encode()
 
         var parser = ScreenShareMessageParser()
-        // Half the header — not enough to parse anything.
-        parser.append(full.prefix(2))
+        parser.append(full.prefix(2))  // half the header
         XCTAssertNil(parser.next())
-        // Header complete but payload truncated.
-        parser.append(full.subdata(in: 2..<min(10, full.count)))
+        parser.append(full.subdata(in: 2..<min(10, full.count)))  // payload still truncated
         XCTAssertNil(parser.next())
-        // Deliver the rest.
         if full.count > 10 {
             parser.append(full.subdata(in: 10..<full.count))
         }
@@ -104,9 +101,9 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())
     }
 
+    /// A hostile peer's huge hostname must be clamped before propagating,
+    /// so the UI banner can't be bloated.
     func testRequestToShareHostnameClampedOnReceive() throws {
-        // Hostile peer sends a payload with a huge hostname — receiver
-        // must clamp before propagating so the UI banner can't be bloated.
         let huge = String(repeating: "x", count: 4096)
         let payload = try JSONEncoder().encode(RequestToSharePayload(fromHostname: huge))
         var data = Data()
@@ -178,8 +175,8 @@ final class ScreenShareProtocolTests: XCTestCase {
             .scroll(x: 0.5, y: 0.5, deltaX: -3, deltaY: 4, modifiers: [.shift]),
             .keyDown(key: 0x28, modifiers: [.meta, .control]),
             .keyUp(key: 0x28, modifiers: []),
-            // Unknown future modifier bits must survive the round trip
-            // verbatim (they're ignored at injection, not at decode).
+            // Unknown future modifier bits survive verbatim (ignored at
+            // injection, not decode).
             .keyDown(key: 0x04, modifiers: KeyModifiers(rawValue: 0x8000))
         ]
         for event in events {
@@ -234,9 +231,9 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())
     }
 
+    /// The idle answer (reachable but not sharing) is a distinct state the
+    /// filter relies on.
     func testMetadataResponseNotSharingRoundTrip() throws {
-        // The idle answer (reachable but not sharing) is a distinct state
-        // the filter relies on — pin that isSharing=false survives the trip.
         let metadata = TailscreenMetadata(
             shareName: "",
             hostname: "wisp-2",
@@ -253,10 +250,9 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(got.videoCodec)
     }
 
+    /// Share name / hostname render in menubar rows — a hostile peer must
+    /// not bloat the popover.
     func testMetadataResponseDisplayStringsClampedOnReceive() throws {
-        // The share name / hostname render in menubar rows — a hostile
-        // peer must not be able to bloat the popover (same rule as
-        // `.requestToShare`'s hostname clamp).
         let huge = String(repeating: "x", count: 4096)
         let metadata = TailscreenMetadata(
             shareName: huge,
@@ -291,7 +287,6 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())  // garbage payload → nil, consumed
         XCTAssertFalse(parser.isCorrupt)  // decode-fail is not a framing error
 
-        // The stream is still usable for the next frame.
         parser.append(ScreenShareMessage.metadataRequest.encode())
         let decoded = try XCTUnwrap(parser.next())
         guard case .metadataRequest = decoded else {
@@ -300,8 +295,6 @@ final class ScreenShareProtocolTests: XCTestCase {
     }
 
     func testMalformedInputEventDecodesToNilWithoutCrashing() throws {
-        // A well-formed frame header (type 0x09) with garbage JSON payload
-        // must yield nil (no crash), and a following valid frame still parses.
         var frame = Data()
         frame.append(ScreenShareMessage.MessageType.inputEvent.rawValue)
         let garbage = Data([0x7B, 0x21, 0x40, 0x23])  // "{!@#"
@@ -317,7 +310,6 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())  // garbage input event → nil, consumed
         XCTAssertFalse(parser.isCorrupt)  // decode-fail is not a framing error
 
-        // The stream is still usable for the next frame.
         parser.append(ScreenShareMessage.controlRequest.encode())
         let decoded = try XCTUnwrap(parser.next())
         guard case .controlRequest = decoded else {
@@ -326,17 +318,9 @@ final class ScreenShareProtocolTests: XCTestCase {
     }
 
     /// Pins the load-bearing default `nonConformingFloatDecodingStrategy =
-    /// .throw` on `decodeInputEvent`'s JSONDecoder: `NaN` / `Infinity` /
-    /// `-Infinity` tokens and the out-of-range literal `1e999` in coordinate
-    /// or delta fields must all reject to nil. Without this, a NaN coordinate
-    /// would reach `RemoteControlMapping.globalPoint` (which now defends
-    /// itself too — belt and braces, see `RemoteControlMappingTests`).
-    ///
-    /// The quoted-string variants (`"NaN"`, `"Infinity"`, `"-Infinity"`) are
-    /// the rows that actually pin the *strategy*: the bare-token forms are
-    /// invalid JSON and reject under ANY strategy, but the quoted forms would
-    /// start decoding the moment someone "improves" the decoder with
-    /// `.convertFromString(...)` — so those rows are what turn red.
+    /// .throw` on `decodeInputEvent`'s JSONDecoder. The quoted-string
+    /// variants (`"NaN"`, etc.) are what actually pin the strategy — the
+    /// bare-token forms are invalid JSON and reject under any strategy.
     func testInputEventNonConformingFloatsRejectToNil() throws {
         let hostilePayloads = [
             #"{"mouseMove":{"x":NaN,"y":0.5}}"#,
@@ -370,8 +354,6 @@ final class ScreenShareProtocolTests: XCTestCase {
             XCTAssertNil(parser.next(), "non-conforming float must reject: \(hostile)")
             XCTAssertFalse(parser.isCorrupt, "a rejected payload is not a framing error")
 
-            // A valid frame after the rejected one still parses — the framing
-            // survived the hostile payload.
             parser.append(ScreenShareMessage.inputEvent(.mouseMove(x: 0.5, y: 0.5)).encode())
             let decoded = try XCTUnwrap(parser.next(), "valid frame after \(hostile) must parse")
             guard case .inputEvent(.mouseMove(let x, let y)) = decoded else {
@@ -382,10 +364,9 @@ final class ScreenShareProtocolTests: XCTestCase {
         }
     }
 
+    /// A hostile peer advertises a 4 GiB payload then slow-streams bytes —
+    /// the parser must reject at header-parse time and stop buffering.
     func testOversizedFrameLengthPoisonsParserAndBoundsBuffer() {
-        // A hostile peer advertises a 4 GiB payload then slow-streams bytes.
-        // The parser must reject at header-parse time, mark itself corrupt,
-        // and stop buffering — never grow toward the declared size.
         var frame = Data()
         frame.append(ScreenShareMessage.MessageType.annotation.rawValue)
         frame.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])  // len = 0xFFFFFFFF
@@ -395,16 +376,13 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())
         XCTAssertTrue(parser.isCorrupt, "oversized length must poison the parser")
 
-        // Further bytes are ignored (buffer stays bounded), and next() stays nil.
         parser.append(Data(repeating: 0xAB, count: 100_000))
         XCTAssertNil(parser.next())
         XCTAssertTrue(parser.isCorrupt)
     }
 
+    /// The ceiling is inclusive: exactly `maxPayloadLength` is honoured.
     func testFrameAtExactlyMaxPayloadLengthIsAccepted() throws {
-        // The ceiling is inclusive: a frame declaring exactly maxPayloadLength
-        // is honoured (not poisoned), so the bound doesn't reject legitimate
-        // large-but-in-spec frames.
         let payload = Data(repeating: 0x20, count: ScreenShareMessage.maxPayloadLength)
         var frame = Data()
         frame.append(ScreenShareMessage.MessageType.annotation.rawValue)
@@ -417,14 +395,12 @@ final class ScreenShareProtocolTests: XCTestCase {
 
         var parser = ScreenShareMessageParser()
         parser.append(frame)
-        // Payload is whitespace, not valid AnnotationOp JSON → decodes to nil,
-        // but crucially the parser is NOT corrupt (the length was in bounds).
+        // Decodes to nil, but is NOT corrupt — the length was in bounds.
         XCTAssertNil(parser.next())
         XCTAssertFalse(parser.isCorrupt)
     }
 
     func testUnknownMessageTypeIsSkipped() throws {
-        // Hand-build a bogus message with type=0xFF, then a valid annotation.
         var bogus = Data()
         bogus.append(0xFF)  // unknown type
         bogus.append(contentsOf: [0x00, 0x00, 0x00, 0x02])  // payload len = 2 BE
@@ -441,13 +417,10 @@ final class ScreenShareProtocolTests: XCTestCase {
         }
     }
 
+    /// TS-TCP-008: a known-type frame whose payload fails to decode is
+    /// discarded and parsing continues — `next()` returning nil for it used
+    /// to read as "need more bytes" and strand a message buffered behind it.
     func testUndecodablePayloadDoesNotStallFramesBufferedBehindIt() throws {
-        // TS-TCP-008: a KNOWN-type frame whose payload fails to decode is
-        // discarded and parsing continues with the next frame. next() used to
-        // return nil for the bad frame, which every receive loop's `while let`
-        // drain read as "need more bytes" — so a message already buffered
-        // behind the bad frame sat undelivered until further traffic happened
-        // to arrive on the connection, and forever if the peer went quiet.
         var bad = Data()
         bad.append(ScreenShareMessage.MessageType.annotation.rawValue)
         let junk = Data("not json".utf8)
@@ -461,7 +434,6 @@ final class ScreenShareProtocolTests: XCTestCase {
         var parser = ScreenShareMessageParser()
         parser.append(bad + ScreenShareMessage.controlReleased.encode())
 
-        // One next() must deliver the frame behind the undecodable one.
         let decoded = try XCTUnwrap(
             parser.next(), "the frame buffered behind the bad one must be delivered")
         guard case .controlReleased = decoded else {
@@ -473,12 +445,9 @@ final class ScreenShareProtocolTests: XCTestCase {
 
     // MARK: - .mediaDatagram (spec §2.2, the reliable-transport profile)
 
+    /// The one non-JSON payload on the channel: raw datagram bytes, byte
+    /// for byte — must reach the demultiplexer untouched.
     func testMediaDatagramRoundTripsRawBytes() throws {
-        // The one non-JSON payload on the channel: raw datagram bytes, byte
-        // for byte. An RTP-shaped payload (first byte 0x80–0xBF) is the
-        // interesting case, because everything else on this channel starts
-        // with a low type byte — the payload must reach the demultiplexer
-        // untouched, not be inspected here.
         let datagram = Data([0x80, 0xE0, 0x12, 0x34, 0x00, 0x01, 0x02, 0x03, 0xAB, 0xCD])
         var parser = ScreenShareMessageParser()
         parser.append(ScreenShareMessage.mediaDatagram(datagram).encode())
@@ -489,11 +458,9 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertEqual(payload, datagram)
     }
 
+    /// TS-STM-001: an empty payload is no datagram at all, and like an
+    /// undecodable payload, must not stall a frame buffered behind it.
     func testEmptyMediaDatagramIsDroppedWithoutStallingTheStream() throws {
-        // TS-STM-001: an empty payload is no datagram at all (the frame
-        // shape of TS-GEN-022's empty-UDP-datagram discard). Dropped like an
-        // undecodable payload — and, like one, it must not stall a frame
-        // buffered behind it.
         var parser = ScreenShareMessageParser()
         parser.append(
             ScreenShareMessage.mediaDatagram(Data()).encode()

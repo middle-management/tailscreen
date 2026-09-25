@@ -2,21 +2,13 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// The **viewer's** annotation canvas — the half that owns local drawing and
-/// applies what the sharer relays back.
-///
-/// Both defects this suite pins are silent in the worst way: the canvas keeps
-/// working, it just accumulates. An `.add` for an id already on the canvas used
-/// to APPEND, so one peer dragging a pen — which re-sends the same id with a
-/// longer point list every few milliseconds — grew the store without bound and
-/// had the renderer draw every copy of the stroke on top of itself. And nothing
-/// ever swept ephemeral strokes, so a `.click` marker that vanishes after 0.8 s
-/// on the sharer's screen stayed on the viewer's for the rest of the share.
-///
-/// Every case drives an explicit `nowNs`, the same discipline `VoicePathTests`
-/// uses: a lifetime measured against the process uptime clock is a rule that
-/// can only be tested by sleeping, and a test that sleeps is a test that is
-/// flaky on a loaded runner.
+/// The viewer's annotation canvas — the half that owns local drawing and
+/// applies what the sharer relays back. Two silent defects: an `.add` for an
+/// id already on the canvas used to APPEND, so a dragged pen stroke grew the
+/// store unbounded with every copy overdrawn; and nothing ever swept
+/// ephemeral strokes, so a `.click` marker that vanishes on the sharer's
+/// screen stayed on the viewer's for the rest of the share. Every case
+/// drives an explicit `nowNs`, so no test needs to sleep.
 final class AnnotationStoreTests: XCTestCase {
     private func stroke(
         _ id: UUID = UUID(), tool: AnnotationTool = .pen, points: Int = 2
@@ -43,9 +35,6 @@ final class AnnotationStoreTests: XCTestCase {
     }
 
     func testAddForAKnownIdUpdatesInPlaceRatherThanAppending() {
-        // The defect this exists for. A drag re-sends ONE id with a growing
-        // point list; appending stacked a copy per op — unbounded growth on the
-        // store and N overdrawn copies on the renderer, neither of which errors.
         let store = AnnotationStore()
         let id = UUID()
         store.apply(.add(stroke(id, points: 2)), nowNs: 0)
@@ -57,11 +46,9 @@ final class AnnotationStoreTests: XCTestCase {
         XCTAssertEqual(visible.first?.points.count, 9, "and it is the LATEST version")
     }
 
+    /// Replacing by remove-then-append would float the dragged stroke to
+    /// the top, jumping in front of one drawn over it.
     func testUpsertKeepsPositionSoDrawOrderIsStable() {
-        // Draw order is arrival order — later strokes paint over earlier ones.
-        // Replacing by remove-then-append would float whichever stroke is being
-        // dragged to the top, so a live stroke would jump in front of one drawn
-        // over it the moment its author twitched.
         let store = AnnotationStore()
         let first = UUID()
         let second = UUID()
@@ -110,10 +97,9 @@ final class AnnotationStoreTests: XCTestCase {
         XCTAssertEqual(store.visibleAnnotations.map(\.id), [marker.id])
     }
 
+    /// `<=`, matching `ReceivedAnnotations.expire` exactly — both halves
+    /// must drop the same marker on the same nanosecond.
     func testAClickMarkerGoesAtItsDeadline() {
-        // `<=`, matching `ReceivedAnnotations.expire` exactly — the sharer's
-        // half and the viewer's half must drop the same marker on the same
-        // nanosecond, or one gesture visibly outlives itself on one screen.
         let store = AnnotationStore()
         store.apply(.add(click()), nowNs: 1_000)
 
@@ -123,10 +109,9 @@ final class AnnotationStoreTests: XCTestCase {
         XCTAssertFalse(store.expire(nowNs: deadline), "nothing left to sweep")
     }
 
+    /// A host repaints per decoded frame, but ops arrive on the TCP
+    /// back-channel — so `apply` sweeps too, even if video has stalled.
     func testAnOpSweepsWhatHasAgedOutWithoutWaitingForARenderPass() {
-        // A host repaints per decoded frame, but ops arrive on the TCP
-        // back-channel — so `apply` sweeps too, and a canvas somebody is still
-        // drawing on stays swept even if video has stalled.
         let store = AnnotationStore()
         store.apply(.add(click()), nowNs: 0)
         let later = stroke()
@@ -135,8 +120,6 @@ final class AnnotationStoreTests: XCTestCase {
     }
 
     func testANonEphemeralStrokeIsNeverSwept() {
-        // The other half of the rule, and the one whose failure would be a
-        // catastrophe rather than a wart: a pen stroke silently deleted mid-share.
         let store = AnnotationStore()
         let permanent = stroke(tool: .arrow)
         store.apply(.add(permanent), nowNs: 0)
@@ -146,9 +129,9 @@ final class AnnotationStoreTests: XCTestCase {
         XCTAssertNil(store.nextExpiryNs, "a permanent stroke schedules nothing")
     }
 
+    /// Leaving the deadline behind would delete a pen stroke shortly after
+    /// it stopped being a click.
     func testReAddingAnIdUnderAPermanentToolDropsItsOldDeadline() {
-        // The upsert path can change a stroke's tool. Leaving the deadline
-        // behind would delete a pen stroke 0.8 s after it stopped being a click.
         let store = AnnotationStore()
         let id = UUID()
         store.apply(.add(click(id)), nowNs: 0)
@@ -176,7 +159,6 @@ final class AnnotationStoreTests: XCTestCase {
     }
 
     func testNextExpiryIsTheSoonestDeadline() {
-        // So a host can schedule a repaint instead of polling.
         let store = AnnotationStore()
         store.apply(.add(click()), nowNs: 5_000)
         store.apply(.add(click()), nowNs: 1_000)
@@ -184,9 +166,6 @@ final class AnnotationStoreTests: XCTestCase {
     }
 
     func testALocallyDrawnClickMarkerAgesOutLikeARelayedOne() {
-        // macOS's `AnnotationCanvasModel` already expires its own clicks. A
-        // viewer whose marker outlived the copy it just put on the sharer's
-        // screen would be the two halves of one gesture disagreeing.
         let store = AnnotationStore()
         store.mode = .drawing(.click)
         store.beginStroke(at: CGPoint(x: 0.5, y: 0.5))
@@ -208,10 +187,9 @@ final class AnnotationStoreTests: XCTestCase {
         XCTAssertEqual(store.visibleAnnotations.count, 1)
     }
 
+    /// The store outlives a session — a carried-over deadline would name an
+    /// id no longer on the canvas.
     func testResetForNewSessionForgetsDeadlinesAsWellAsStrokes() {
-        // The store outlives a session. A deadline carried into the next one
-        // would name an id that is no longer on the canvas — harmless today,
-        // and exactly the kind of leak that stops being harmless later.
         let store = AnnotationStore()
         store.apply(.add(click()), nowNs: 0)
         store.resetForNewSession()
@@ -221,9 +199,9 @@ final class AnnotationStoreTests: XCTestCase {
 
     // MARK: Relay
 
+    /// Re-firing `onLocalOp` for an inbound op would bounce every stroke
+    /// back at the sharer, once per viewer.
     func testRelayedOpsDoNotEchoBackOutOverTheWire() {
-        // `onLocalOp` is the host's relay hook. Re-firing it for an inbound op
-        // would bounce every stroke back at the sharer, once per viewer.
         let store = AnnotationStore()
         final class Box: @unchecked Sendable { var ops: [AnnotationOp] = [] }
         let box = Box()

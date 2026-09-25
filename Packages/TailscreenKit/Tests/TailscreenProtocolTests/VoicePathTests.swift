@@ -5,13 +5,9 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// The voice path both endpoints share: the capture thread that pumps a
-/// blocking device, the uplink that turns microphone buffers into RTP, and the
-/// downlink that turns RTP back into PCM.
-///
-/// All three are driven here through fakes rather than a device, which is the
-/// point: none of these decisions can be observed on a machine with a real
-/// microphone (there is no CI runner with one, and a person listening cannot
-/// tell a withheld packet from a quiet room).
+/// blocking device, the uplink turning mic buffers into RTP, the downlink
+/// turning RTP back into PCM. Driven through fakes rather than a device —
+/// none of this is observable on a machine with a real microphone.
 final class VoicePathTests: XCTestCase {
 
     // MARK: - ThreadedMicrophone
@@ -24,7 +20,6 @@ final class VoicePathTests: XCTestCase {
         private var queued: [[Float]]
         private var closed = false
         private let gate = DispatchSemaphore(value: 0)
-        /// Set to have the next read throw instead of returning audio.
         var failWith: Error?
         private(set) var closeCount = 0
 
@@ -34,7 +29,6 @@ final class VoicePathTests: XCTestCase {
         }
 
         struct Closed: Error {}
-        /// Set to have the next read report a device glitch alongside its audio.
         var glitchNext = false
 
         func readPCM() throws -> CapturedPCM {
@@ -46,7 +40,7 @@ final class VoicePathTests: XCTestCase {
             }
             let next = lock.withLock { queued.isEmpty ? nil : queued.removeFirst() }
             if let next { return CapturedPCM(samples: next, discontinuity: glitched) }
-            // Nothing queued: park like a real device would, until closed.
+            // Nothing queued: park like a real device, until closed.
             gate.wait()
             if lock.withLock({ closed }) { throw Closed() }
             return CapturedPCM(samples: [], discontinuity: glitched)
@@ -78,19 +72,11 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(received.value, [[0.1, 0.2], [0.3], [0.4, 0.5, 0.6]])
     }
 
-    /// The guarantee the lock discipline exists for: a buffer captured just
-    /// before `stop()` must not land just after, on a host that has already
-    /// torn its encoder down.
-    ///
-    /// Asserted by *timing* rather than by watching for a stray delivery,
-    /// which is the only version that can fail. The obvious wrong
-    /// implementation — read the flag, then call the callback outside the lock
-    /// — loses only in a window a few instructions wide, and a test that races
-    /// for it passes every time against the bug. So this drives the property
-    /// from the other end: if `stop()` truly cannot return while a delivery is
-    /// in flight, then stopping *during* a slow delivery must block until it
-    /// finishes. The check-then-call version returns immediately and fails
-    /// here every time.
+    /// A buffer captured just before `stop()` must not land just after, on a
+    /// host that already tore its encoder down. Asserted by timing (stopping
+    /// during a slow delivery must block until it finishes) rather than
+    /// watching for a stray delivery — a check-then-call implementation
+    /// races a window too narrow for the latter to reliably catch.
     func testStopWaitsForADeliveryAlreadyInFlight() throws {
         let source = FakeSource(buffers: [[0.5], [0.6]])
         let mic = ThreadedMicrophone(source: source)
@@ -133,9 +119,8 @@ final class VoicePathTests: XCTestCase {
         XCTAssertTrue(reported.value)
     }
 
-    /// A read that fails *because we closed the device* is the stop we asked
-    /// for. Reporting it as an error puts "your microphone disconnected" in
-    /// front of somebody who clicked mute.
+    /// A read that fails because we closed the device is the stop we asked
+    /// for, not an error to surface as "your microphone disconnected".
     func testAskedForStopIsNotReportedAsAnError() throws {
         let source = FakeSource()
         let mic = ThreadedMicrophone(source: source)
@@ -146,7 +131,6 @@ final class VoicePathTests: XCTestCase {
             stopped.fulfill()
         }
         try mic.start()
-        // Let the pump reach its park before stopping.
         Thread.sleep(forTimeInterval: 0.05)
         mic.stop()
         wait(for: [stopped], timeout: 5)
@@ -175,30 +159,28 @@ final class VoicePathTests: XCTestCase {
         mic.stop()
     }
 
-    /// A glitch resets the resampler's carried neighbour and must NOT drop the
-    /// framer's carry: those are samples the person actually said, and throwing
-    /// them away turns one device hole into two.
+    /// A glitch resets the resampler's carried neighbour but must NOT drop
+    /// the framer's carry — those are real samples, and discarding them
+    /// turns one device hole into two.
     func testDiscontinuityKeepsCapturedAudioButResetsInterpolation() throws {
         let pipeline = MicrophonePipeline(encoder: try OpusVoiceEncoder())
         var emitted = 0
         pipeline.onAccessUnit = { _ in emitted += 1 }
 
-        // 500 samples: not a whole 960-sample frame, so nothing is emitted and
-        // all of it sits in the framer's carry.
+        // 500 samples: less than a 960-sample frame, sits in the framer's carry.
         pipeline.ingest(Array(repeating: 0.1, count: 500), format: .wire)
         XCTAssertEqual(emitted, 0)
 
         pipeline.noteDiscontinuity()
 
-        // 460 more completes exactly one frame — but only if the carry survived.
+        // 460 more completes one frame — but only if the carry survived.
         pipeline.ingest(Array(repeating: 0.1, count: 460), format: .wire)
         XCTAssertEqual(emitted, 1, "noteDiscontinuity discarded audio it should have kept")
     }
 
     // MARK: - VoiceUplink
 
-    /// A microphone the test drives by hand — no thread, so delivery is
-    /// deterministic.
+    /// No thread, so delivery is deterministic.
     private final class ManualMic: MicrophoneCapturing, @unchecked Sendable {
         var onPCM: (([Float], AudioInputFormat) -> Void)?
         var onStopped: ((Error?) -> Void)?
@@ -207,7 +189,6 @@ final class VoicePathTests: XCTestCase {
         func start() throws { started = true }
         func stop() { stopCount += 1 }
 
-        /// Feed exactly one 20 ms frame of audible tone.
         func feedFrame(count: Int = 1) {
             for _ in 0..<count {
                 let pcm = (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }
@@ -232,7 +213,6 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(sent.value.count, 2)
         XCTAssertEqual(uplink.withheldPacketCount, 3, "the earlier frames stay withheld")
 
-        // And they go out under the assigned SSRC, as PT 98.
         let header = try XCTUnwrap(RTPHeader.decode(from: sent.value[0])?.0)
         XCTAssertEqual(header.ssrc, 7)
         XCTAssertEqual(header.payloadType, RTPHeader.voicePayloadType)
@@ -250,8 +230,7 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(RTPHeader.decode(from: sent.value[0])?.0.ssrc, RTPHeader.sharerVoiceSSRC)
     }
 
-    /// Mute is a privacy guarantee, so it is asserted on the wire rather than
-    /// on a flag: a leak here would be indistinguishable from working software.
+    /// Mute is a privacy guarantee, so it's asserted on the wire, not a flag.
     func testMuteStopsAudioLeavingTheMachine() throws {
         let mic = ManualMic()
         let sent = Mutexish<[Data]>([])
@@ -272,8 +251,8 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(sent.value.count, 3)
     }
 
-    /// A different SSRC is a different stream. Continuing the old sequence
-    /// numbering hands the receiver a stream that appears to have jumped.
+    /// A different SSRC is a different stream — continuing the old sequence
+    /// numbering would hand the receiver an apparent jump.
     func testReassigningTheSSRCRestartsTheStream() throws {
         let mic = ManualMic()
         let sent = Mutexish<[Data]>([])
@@ -305,8 +284,7 @@ final class VoicePathTests: XCTestCase {
     // MARK: - VoiceDownlink
 
     /// One decoder per SSRC, but ONE frame per playout slot: three voices
-    /// speaking in the same instant come out as a single summed frame, not
-    /// as three frames a playback queue would play in turn.
+    /// speaking at once come out as a single summed frame, not three.
     func testDownlinkDecodesEachSSRCIndependentlyAndMixesTheSlot() throws {
         let downlink = VoiceDownlink()
         var heard: [[Float]] = []
@@ -317,8 +295,7 @@ final class VoicePathTests: XCTestCase {
         let au = try XCTUnwrap(encoder.encode(pcm: tone))
 
         let now = ms(1000)
-        // One packetizer per SSRC, kept so a second packet continues its
-        // sequence rather than restarting at 0 (which would read as stale).
+        // One packetizer per SSRC so a second packet continues its sequence.
         let zero = AudioRTPPacketizer(ssrc: 0, payloadType: RTPHeader.voicePayloadType)
         let one = AudioRTPPacketizer(ssrc: 1, payloadType: RTPHeader.voicePayloadType)
         let nine = AudioRTPPacketizer(ssrc: 9, payloadType: RTPHeader.voicePayloadType)
@@ -326,14 +303,13 @@ final class VoicePathTests: XCTestCase {
             downlink.ingest(packetizer.packetize(au: au), nowNs: now)
         }
         XCTAssertEqual(downlink.voiceCount, 3, "each SSRC gets its own decoder")
-        // The first voice was alone and passed straight through; the second
-        // opened a slot the third joined, and that slot is still open — it
-        // closes on the next frame, not on a timer.
+        // First voice passed straight through; the slot the second/third
+        // joined is still open, closing on the next frame, not a timer.
         XCTAssertEqual(heard.count, 1, "three voices in one slot must not emit three frames")
         XCTAssertEqual(heard[0].count, 960)
 
-        // The next frame of voice 1 closes the slot: what comes out is the
-        // sum of 1 and 9, which for two identical decodes is exactly double.
+        // The next frame of voice 1 closes the slot: sum of 1 and 9, double
+        // for two identical decodes.
         downlink.ingest(one.packetize(au: au), nowNs: now + ms(20))
         XCTAssertEqual(heard.count, 2)
         for i in stride(from: 0, to: 960, by: 97) {
@@ -341,19 +317,15 @@ final class VoicePathTests: XCTestCase {
         }
     }
 
-    /// The bug this whole layer exists for, end to end: two viewers talking
-    /// over each other, decoded from real Opus packets, must reach the host
-    /// as one frame per 20 ms — not as two interleaved 50 Hz streams whose
-    /// alternation sounds garbled and whose doubled depth trips the host's
-    /// overrun cap. Both voices are decoded on their own too, so the mixed
-    /// frames can be checked against the actual sum rather than a count.
+    /// End-to-end with real Opus packets: two viewers talking over each
+    /// other must reach the host as one frame per 20ms, not two interleaved
+    /// 50Hz streams.
     func testTwoVoicesInTheSameSlotAreSummedIntoOneFrame() throws {
         let frames = 10
         let a = try voicePackets(count: frames, ssrc: 2)
         let b = try voicePackets(count: frames, ssrc: 3)
         try XCTSkipIf(a.count < frames || b.count < frames, "Opus encoder produced no usable output on this host")
 
-        // Reference: each voice through its own downlink, alone.
         func solo(_ packets: [Data]) -> [[Float]] {
             let downlink = VoiceDownlink()
             var heard: [[Float]] = []
@@ -366,7 +338,7 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(soloA.count, frames, "a lone voice is unchanged: one frame in, one frame out")
         XCTAssertEqual(soloB.count, frames)
 
-        // Together: B runs 5 ms behind A, the way two peers' clocks do.
+        // B runs 5 ms behind A, the way two peers' clocks do.
         let downlink = VoiceDownlink()
         var heard: [[Float]] = []
         downlink.onMixedPCM = { heard.append($0) }
@@ -377,9 +349,8 @@ final class VoicePathTests: XCTestCase {
         XCTAssertLessThan(heard.count, 2 * frames, "two voices must not double the frame rate")
         XCTAssertEqual(heard.count, frames, "one frame per 20 ms slot, whoever spoke in it")
 
-        // A's first frame was alone (nothing to wait for). From then on each
-        // slot is opened by B's frame k and joined by A's frame k+1, and the
-        // slot is released when B's next frame arrives.
+        // Each slot after the first is opened by B's frame k, joined by A's
+        // frame k+1, released when B's next frame arrives.
         XCTAssertEqual(heard[0], soloA[0], "a frame that passes through alone is byte-identical")
         for k in 0..<(frames - 1) {
             let mixed = heard[k + 1]
@@ -402,8 +373,8 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(downlink.voiceCount, 0)
     }
 
-    /// The SSRC is a field in a datagram from the network, so an unbounded
-    /// decoder map is a remote allocation primitive.
+    /// SSRC is a field in a network datagram — an unbounded decoder map is
+    /// a remote allocation primitive.
     func testDecoderMapIsBounded() throws {
         let downlink = VoiceDownlink()
         let encoder = try OpusVoiceEncoder()
@@ -417,8 +388,7 @@ final class VoicePathTests: XCTestCase {
         XCTAssertLessThanOrEqual(downlink.voiceCount, VoiceDownlink.maxConcurrentVoices)
     }
 
-    /// Eviction takes the quietest stream, so a participant who keeps talking
-    /// is never the one dropped to make room for a stranger.
+    /// Eviction takes the quietest stream, never a participant still talking.
     func testEvictionDropsTheStalestStream() throws {
         let downlink = VoiceDownlink()
         let encoder = try OpusVoiceEncoder()
@@ -439,9 +409,8 @@ final class VoicePathTests: XCTestCase {
 
         send(9999)  // a newcomer, forcing exactly one eviction
         XCTAssertEqual(downlink.voiceCount, VoiceDownlink.maxConcurrentVoices)
-        // Asserted per stream, not just on the count: a bound that holds while
-        // the policy drops whoever is currently talking is the failure this
-        // test exists to catch.
+        // Per-stream, not just count: catches a policy that drops whoever's
+        // currently talking while the bound still holds.
         XCTAssertFalse(downlink.hasVoice(0), "the quiet stream should have been evicted")
         XCTAssertTrue(downlink.hasVoice(9999), "the newcomer should have a decoder")
         for ssrc in 1..<UInt32(VoiceDownlink.maxConcurrentVoices) {
@@ -461,15 +430,10 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(downlink.voiceCount, 0)
     }
 
-    /// `reset()` genuinely races `ingest` in production: both sharer hosts
-    /// call `SharerVoice.stop()` while the server is still delivering inbound
-    /// audio, because `onAudioReceived`'s contract forbids detaching it
-    /// mid-share. Before the downlink took a lock this dropped the decoder and
-    /// the per-SSRC maps out from under a decode in flight.
-    ///
-    /// Passing here is necessary, not sufficient — it is the `--sanitize=thread`
-    /// leg that reads the accesses. A crash or a corrupt `voiceCount` on an
-    /// ordinary run is the loud version of the same bug.
+    /// `reset()` genuinely races `ingest` in production: `SharerVoice.stop()`
+    /// runs while the server still delivers inbound audio (`onAudioReceived`'s
+    /// contract forbids detaching mid-share). Passing here is necessary, not
+    /// sufficient — it's the `--sanitize=thread` leg that reads the accesses.
     func testResetIsSafeAgainstConcurrentIngest() throws {
         let downlink = VoiceDownlink()
         downlink.onMixedPCM = { _ in }
@@ -493,7 +457,6 @@ final class VoicePathTests: XCTestCase {
         }
         wait(for: [ingesting, resetting], timeout: 60)
 
-        // Whatever order the two landed in, the maps are coherent and bounded.
         XCTAssertLessThanOrEqual(downlink.voiceCount, packets.count)
         downlink.reset()
         XCTAssertEqual(downlink.voiceCount, 0)
@@ -504,8 +467,8 @@ final class VoicePathTests: XCTestCase {
     /// Milliseconds → the nanosecond clock `ingest` takes.
     private func ms(_ value: Int) -> UInt64 { UInt64(value) * 1_000_000 }
 
-    /// Encode `count` phase-continuous 20 ms tone frames and packetize them
-    /// under one sequence space, so tests can feed subsets and open real gaps.
+    /// Encodes `count` tone frames under one sequence space, so tests can
+    /// feed subsets and open real gaps.
     private func voicePackets(count: Int, ssrc: UInt32) throws -> [Data] {
         let encoder = try OpusVoiceEncoder()
         let packetizer = AudioRTPPacketizer(ssrc: ssrc, payloadType: RTPHeader.voicePayloadType)
@@ -530,8 +493,7 @@ final class VoicePathTests: XCTestCase {
         for i in 0..<3 { downlink.ingest(packets[i], nowNs: base + ms(20 * i)) }
         XCTAssertEqual(heard.count, 3)
 
-        // Packets 3...6 lost — a 4-frame gap. Concealment is capped at
-        // playbackSlackBuffers - 1 == 2 frames, then the arrived packet.
+        // Packets 3...6 lost. Concealment caps at playbackSlackBuffers - 1 == 2 frames.
         downlink.ingest(packets[7], nowNs: base + ms(140))
         XCTAssertEqual(heard.count, 6, "2 concealment frames + the decoded packet")
         XCTAssertEqual(downlink.concealedFrameCount, 2)
@@ -543,11 +505,9 @@ final class VoicePathTests: XCTestCase {
         XCTAssertGreaterThan(rms, 0.01, "Opus PLC should extrapolate the tone, not emit silence")
         XCTAssertEqual(heard[4].last, 0, "a capped gap's last concealment frame must end at silence")
 
-        // The first real frame after the uncovered remainder fades back in.
         XCTAssertLessThan(abs(heard[5][0]), 0.05, "the resume frame must start from (near) silence")
         XCTAssertGreaterThan(heard[5].map { abs($0) }.max() ?? 0, 0.05, "and still carry audio")
 
-        // The stream keeps flowing normally afterwards.
         downlink.ingest(packets[8], nowNs: base + ms(160))
         downlink.ingest(packets[9], nowNs: base + ms(180))
         XCTAssertEqual(heard.count, 8)
@@ -564,14 +524,12 @@ final class VoicePathTests: XCTestCase {
         let base = ms(1000)
         downlink.ingest(packets[0], nowNs: base)
         downlink.ingest(packets[1], nowNs: base + ms(20))
-        // Packet 2 lost; 3 arrives → one PLC frame (gap fully covered) + the
-        // decoded packet itself.
+        // Packet 2 lost; 3 arrives → one PLC frame + the decoded packet.
         downlink.ingest(packets[3], nowNs: base + ms(60))
         XCTAssertEqual(heard, 4)
         XCTAssertEqual(downlink.concealedFrameCount, 1)
 
-        // The lost packet finally straggles in — its 20 ms were already
-        // played as concealment, so it must not play again.
+        // The lost packet straggles in — already played as concealment.
         downlink.ingest(packets[2], nowNs: base + ms(80))
         XCTAssertEqual(heard, 4, "a late packet whose gap was concealed must not decode")
         XCTAssertEqual(downlink.concealedFrameCount, 1)
@@ -617,9 +575,7 @@ final class VoicePathTests: XCTestCase {
             downlink.decoderFailuresForTesting[4], record,
             "dropping packets must not mutate the failure record")
 
-        // Past the 5 s cooldown the retry is allowed, decodes, and clears the
-        // record — and the gate-dropped packets advanced the baseline, so the
-        // resume is not misread as a gap.
+        // Past the 5s cooldown the retry is allowed and clears the record.
         downlink.ingest(packets[3], nowNs: base + ms(6000))
         XCTAssertEqual(heard, 2, "an elapsed cooldown must allow the retry")
         XCTAssertNil(downlink.decoderFailuresForTesting[4])
@@ -638,9 +594,7 @@ final class VoicePathTests: XCTestCase {
         downlink.ingest(idle.packetize(au: au), nowNs: base)
         XCTAssertTrue(downlink.hasVoice(2))
 
-        // SSRC 3 keeps talking for 12 s; SSRC 2 stays silent past the 10 s
-        // idle window, so the ~1 Hz sweep forgets it — a departed peer's
-        // frozen jitter must not pin the target for the session.
+        // SSRC 3 keeps talking; SSRC 2 stays silent past the 10s idle window.
         let active = AudioRTPPacketizer(ssrc: 3, payloadType: RTPHeader.voicePayloadType)
         for i in 1...600 {
             downlink.ingest(active.packetize(au: au), nowNs: base + ms(20 * i))
@@ -655,8 +609,7 @@ final class VoicePathTests: XCTestCase {
         let tone = (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }
         let au = try XCTUnwrap(encoder.encode(pcm: tone))
 
-        // Hand-built RTP so the timestamps carry the deviation — the arrival
-        // clock has to stay monotonic, so it cannot.
+        // Hand-built RTP so timestamps carry the deviation the arrival clock can't.
         var seq: UInt16 = 0
         var ts: UInt32 = 0
         func packet(tsStep: UInt32) -> Data {
@@ -674,9 +627,8 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(
             downlink.currentJitterTargetDepth, VoiceReceiveDecisions.initialJitterTargetDepth)
 
-        // 5 s of sustained ~100 ms deviation (RTP steps alternate 0 and 9600
-        // samples against a steady 20 ms arrival cadence): the sweep deepens
-        // the recommended queue one step per second.
+        // 5s of sustained ~100ms deviation: the sweep deepens the queue
+        // target one step per second.
         var now = ms(1000)
         for i in 0..<250 {
             downlink.ingest(packet(tsStep: i % 2 == 0 ? 0 : 9600), nowNs: now)
@@ -685,8 +637,7 @@ final class VoicePathTests: XCTestCase {
         let noisyTarget = downlink.currentJitterTargetDepth
         XCTAssertGreaterThanOrEqual(noisyTarget, 5, "sustained jitter must deepen the target")
 
-        // 7 s of a perfectly paced stream: the estimator decays and the
-        // target steps back down to its floor.
+        // A perfectly paced stream decays the estimator back to the floor.
         for _ in 0..<350 {
             downlink.ingest(packet(tsStep: 960), nowNs: now)
             now += ms(20)
@@ -739,8 +690,8 @@ final class VoicePathTests: XCTestCase {
     }
 }
 
-/// A minimal lock box, so the capture-thread tests can read what the pump
-/// wrote without tripping strict concurrency.
+/// A minimal lock box so capture-thread tests can read pump output without
+/// tripping strict concurrency.
 private final class Mutexish<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: T
@@ -764,8 +715,7 @@ final class SharerVoiceTests: XCTestCase {
         }
     }
 
-    /// The one thing a host must not be able to get wrong, and the reason the
-    /// SSRC is not a parameter: viewers key their Opus decoders on it.
+    /// The SSRC is not a parameter because viewers key their Opus decoders on it.
     func testSharerSpeaksUnderTheReservedSSRCAndStartsMuted() throws {
         let mic = ManualMic()
         var sent: [Data] = []
@@ -782,9 +732,7 @@ final class SharerVoiceTests: XCTestCase {
         XCTAssertEqual(header.payloadType, RTPHeader.voicePayloadType)
     }
 
-    /// Two viewers, two decoders — and one frame per slot on the way to the
-    /// sharer's single output, since a sharer hearing two viewers at once is
-    /// exactly the case that used to come out interleaved.
+    /// Two viewers, two decoders, one frame per slot to the sharer's output.
     func testViewerVoicesAreDecodedPerSSRCAndMixedPerSlot() throws {
         let voice = try SharerVoice(
             microphone: ManualMic(), encoder: OpusVoiceEncoder(), send: { _ in })
@@ -802,14 +750,12 @@ final class SharerVoiceTests: XCTestCase {
         voice.receive(two.packetize(au: au), nowNs: base + 20_000_000)
         voice.receive(three.packetize(au: au), nowNs: base + 22_000_000)
         XCTAssertEqual(voice.voiceCount, 2)
-        // Viewer 2's first frame was alone; the slot viewer 3 then opened took
-        // viewer 2's second frame and closed on viewer 3's next.
         XCTAssertEqual(heard.count, 2, "two voices in one slot must come out as one frame")
         XCTAssertTrue(heard.allSatisfy { $0.count == 960 })
     }
 
-    /// An open capture device after Stop Sharing keeps the OS microphone
-    /// indicator lit, which reads to everyone in the room as "still recording".
+    /// An open capture device after Stop Sharing keeps the OS mic indicator
+    /// lit — reads as "still recording" to everyone in the room.
     func testStopReleasesTheDeviceAndForgetsTheViewers() throws {
         let mic = ManualMic()
         let voice = try SharerVoice(

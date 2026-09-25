@@ -6,21 +6,13 @@ import XCTest
 @testable import TailscreenTransport
 
 /// `TailscaleIPNWatcher`'s reconnect loop, through the `startWatching(subscriber:)`
-/// seam — no tsnet node, no LocalAPI: the "subscription" is a fake handle
-/// that records whether it was cancelled, and the bus is driven by calling
-/// the consumer the watcher handed us.
+/// seam — no tsnet node, no LocalAPI. `@testable` because the seam and the
+/// tunable initializer are internal; the app only ever sees `startWatching(node:)`.
 ///
-/// Here rather than in `TailscreenProtocolTests` because the watcher lives in
-/// TailscreenTransport, which this is the test target that depends on; and
-/// `@testable` because the seam and the tunable initializer are internal —
-/// the app only ever sees `startWatching(node:)`.
-///
-/// The bug this pins was invisible for a whole release cycle because its
-/// failure is a *silence*: the watch-ipn-bus request timed out after a
-/// minute of tailnet quiet, the consumer got one `error(_:)`, the watcher
-/// logged it — and then nothing, for the rest of the session, because
-/// `isWatching` stayed true and every owner guards on the watcher already
-/// existing. Every case below fails against that code.
+/// The bug this pins was a silent one: the watch-ipn-bus request timed out
+/// after a minute of tailnet quiet, the watcher logged the error — and then
+/// nothing, because `isWatching` stayed true and every owner guards on the
+/// watcher already existing.
 final class IPNWatcherReconnectTests: XCTestCase {
 
     // MARK: Fakes
@@ -31,16 +23,13 @@ final class IPNWatcherReconnectTests: XCTestCase {
         var isCancelled: Bool { cancelled.withLock { $0 } }
     }
 
-    /// Records every consumer the watcher subscribes with, and the handle it
-    /// got back, so a test can fail a subscription from the outside and check
-    /// which one the watcher is listening to now.
+    /// Records every consumer the watcher subscribes with, and its handle.
     final class FakeBus: @unchecked Sendable {
         struct Attempt {
             let consumer: IPNMessageConsumer
             let handle: FakeSubscription
         }
         private let attempts = Guarded<[Attempt]>([])
-        /// Errors to throw, in order, before attempts start succeeding.
         private let failures: Guarded<[Error]>
 
         init(failing failures: [Error] = []) {
@@ -69,12 +58,9 @@ final class IPNWatcherReconnectTests: XCTestCase {
     private func makeWatcher(
         delays: [TimeInterval] = [0.01, 0.02], watchdog: Double = 15
     ) -> TailscaleIPNWatcher {
-        // Tiny backoff so a reconnect lands within a poll, not a second.
         TailscaleIPNWatcher(reconnectDelays: delays, reconnectWatchdogSeconds: watchdog)
     }
 
-    /// Poll for `condition` up to `timeout`, yielding to the main actor's
-    /// queue between checks so the watcher's own hops get to run.
     @MainActor
     private func eventually(
         _ timeout: TimeInterval = 2, file: StaticString = #filePath, line: UInt = #line,
@@ -88,8 +74,7 @@ final class IPNWatcherReconnectTests: XCTestCase {
         XCTFail("condition not met within \(timeout)s", file: file, line: line)
     }
 
-    /// Hold for a moment and assert `condition` stayed true the whole time —
-    /// for the "nothing happens" legs, where a plain assert would pass before
+    /// For "nothing happens" legs, where a plain assert would pass before
     /// the thing it denies had a chance to happen.
     @MainActor
     private func consistently(
@@ -132,8 +117,6 @@ final class IPNWatcherReconnectTests: XCTestCase {
 
     @MainActor
     func testIsWatchingIsOffBetweenFailureAndReconnect() async throws {
-        // A subscriber that parks the second attempt until released, so the
-        // gap between the failure and the reconnect is observable.
         let release = Guarded<CheckedContinuation<Void, Never>?>(nil)
         let parkedAttempts = Guarded(0)
         let bus = FakeBus()
@@ -212,8 +195,6 @@ final class IPNWatcherReconnectTests: XCTestCase {
         await eventually { bus.count == 2 && watcher.isWatching }
         let second = bus.attempt(1)
 
-        // The dead stream's reader delivers one more error late. That must
-        // not tear down the healthy subscription that replaced it.
         await first.consumer.error(StreamDied())
 
         await consistently { bus.count == 2 && watcher.isWatching && !second.handle.isCancelled }
@@ -283,7 +264,6 @@ final class IPNWatcherReconnectTests: XCTestCase {
 
     @MainActor
     func testFailedReconnectRetries() async throws {
-        // First reconnect throws, the next succeeds.
         let bus = FakeBus()
         let inner = bus.subscriber
         let calls = Guarded(0)
@@ -319,8 +299,6 @@ final class IPNWatcherReconnectTests: XCTestCase {
         try await watcher.startWatching(subscriber: bus.subscriber)
         XCTAssertTrue(watcher.isWatching)
         XCTAssertEqual(bus.count, 1)
-
-        // And no reconnect loop was left behind by the failed first start.
         await consistently { bus.count == 1 }
     }
 
@@ -332,8 +310,6 @@ final class IPNWatcherReconnectTests: XCTestCase {
         try await watcher.startWatching(subscriber: bus.subscriber)
         XCTAssertEqual(bus.count, 1)
 
-        // Still idempotent in the gap between a failure and its reconnect:
-        // the second start must not open a competing subscription.
         await bus.attempt(0).consumer.error(StreamDied())
         try await watcher.startWatching(subscriber: bus.subscriber)
         await eventually { watcher.isWatching }
@@ -341,9 +317,8 @@ final class IPNWatcherReconnectTests: XCTestCase {
     }
 
     /// The processor starts inside the subscribe call, a hop before the
-    /// watcher adopts the handle, so the first message can land in that
-    /// window — and with `.initialState` the first message is the one that
-    /// carries the login URL.
+    /// watcher adopts the handle, so the first message can land there — and
+    /// with `.initialState` the first message carries the login URL.
     @MainActor
     func testNotifyDeliveredWhileStillOpeningIsHonoured() async throws {
         let release = Guarded<CheckedContinuation<Void, Never>?>(nil)
@@ -373,8 +348,7 @@ final class IPNWatcherReconnectTests: XCTestCase {
         XCTAssertTrue(watcher.isWatching)
     }
 
-    /// The mirror image: a stream that dies in that same window is not lost
-    /// as a straggler — the watcher adopts it, fails it, and reconnects.
+    /// A stream that dies in that same window is not lost as a straggler.
     @MainActor
     func testErrorDeliveredWhileStillOpeningStillReconnects() async throws {
         let release = Guarded<CheckedContinuation<Void, Never>?>(nil)
@@ -408,13 +382,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         XCTAssertTrue(bus.attempt(0).handle.isCancelled, "the stream that died while opening is released")
     }
 
-    /// The reconnect watchdog gives up on a parked attempt without being able
-    /// to stop it, so two attempts can be opening at once. If the older one's
-    /// stream dies before it returns, and then it returns first, it must not
-    /// be installed as the live subscription: with one opening slot the
-    /// newer attempt would have overwritten the record of that death, and
-    /// the watcher would sit on a dead stream reporting `isWatching == true`
-    /// with no reconnect scheduled — the original silence, back again.
+    /// Two attempts can be opening at once. If the older one's stream dies
+    /// before it returns, and it returns first, it must not be installed as
+    /// the live subscription — or the watcher sits on a dead stream
+    /// reporting `isWatching == true` with no reconnect scheduled.
     @MainActor
     func testTimedOutAttemptThatDiedWhileParkedIsNotAdoptedLive() async throws {
         let parked = Guarded<[(IPNMessageConsumer, CheckedContinuation<Void, Never>)]>([])
@@ -422,8 +393,6 @@ final class IPNWatcherReconnectTests: XCTestCase {
         let bus = FakeBus()
         let inner = bus.subscriber
         let subscriber: TailscaleIPNWatcher.Subscriber = { consumer in
-            // The first attempt (the initial start) goes straight through;
-            // every reconnect parks until the test releases it.
             if attemptsSeen.withLock({
                 $0 += 1
                 return $0
@@ -438,14 +407,10 @@ final class IPNWatcherReconnectTests: XCTestCase {
         try await watcher.startWatching(subscriber: subscriber)
         await bus.attempt(0).consumer.error(StreamDied())
 
-        // Reconnect #1 parks, the watchdog gives up on it, reconnect #2 parks
-        // beside it.
         await eventually { parked.withLock { $0.count } == 2 }
         let (older, releaseOlder) = parked.withLock { $0[0] }
         let (_, releaseNewer) = parked.withLock { $0[1] }
 
-        // The older attempt's stream dies while both are still parked, then
-        // the older one returns first.
         await older.error(StreamDied())
         releaseOlder.resume()
 
@@ -453,7 +418,6 @@ final class IPNWatcherReconnectTests: XCTestCase {
         await eventually { bus.attempt(1).handle.isCancelled }
         XCTAssertFalse(watcher.isWatching, "a stream that died while opening is never live")
 
-        // The newer attempt (or a further reconnect) then carries the watcher.
         releaseNewer.resume()
         await eventually { watcher.isWatching }
         XCTAssertFalse(bus.last.handle.isCancelled)
@@ -469,14 +433,12 @@ final class IPNWatcherReconnectTests: XCTestCase {
 
         XCTAssertTrue(bus.attempt(0).handle.isCancelled)
         XCTAssertFalse(watcher.isWatching)
-        // An error from the cancelled stream after stop is not a reconnect.
         await bus.attempt(0).consumer.error(StreamDied())
         await consistently { bus.count == 1 }
     }
 
     // MARK: Fixtures
 
-    /// A netmap-bearing notify in the shape tailscale.com v1.102.x emits.
     static let netmapNotifyJSON = #"""
         {
           "Version": "1.102.3",

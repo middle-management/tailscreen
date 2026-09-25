@@ -4,22 +4,12 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// Runs the language-neutral conformance vectors (`conformance/vectors/`)
-/// against the production codecs.
-///
-/// The vectors are the contract behind `docs/spec.md`; the Go suite under
-/// `conformance/go` runs the same files against an implementation that
-/// shares no code with this one. This suite is the other half: it is what
-/// stops the vectors from drifting away from what Tailscreen actually puts
-/// on the wire. A vector that only the Go side passes is a specification
-/// that describes nobody's implementation.
-///
-/// Each case names an `op`, an `in` object and the expected `out` object;
-/// `run(op:in:)` below is the same dispatch table the Go runner implements,
-/// so porting the suite to a third language means porting one function.
-///
-/// Where a vector exercises a payload rather than a framing, it is fed
-/// through the real `ScreenShareMessageParser` inside a real frame, so the
-/// clamps and rejections that live in that parser are the thing under test.
+/// against the production codecs — the other half of the contract behind
+/// `docs/spec.md`, alongside the Go suite under `conformance/go`. Each case
+/// names an `op`, an `in` object and the expected `out` object; `run(op:in:)`
+/// is the same dispatch table the Go runner implements. Where a vector
+/// exercises a payload, it's fed through the real `ScreenShareMessageParser`
+/// inside a real frame, so the shipping clamps and rejections are under test.
 final class ConformanceVectorTests: XCTestCase {
 
     // MARK: - Vector loading
@@ -303,9 +293,6 @@ final class ConformanceVectorTests: XCTestCase {
 
         // ----------------------------------------------------- TCP framing
         case "frame.encode":
-            // Round-trips the vector's raw frame through the production
-            // parser and back out through `encode()`, so this exercises the
-            // shipping encoder rather than re-implementing the header here.
             let raw = Self.frame(type: try uint8(input, "type"), payload: try bytes(input, "payload"))
             var parser = ScreenShareMessageParser()
             parser.append(raw)
@@ -496,8 +483,7 @@ final class ConformanceVectorTests: XCTestCase {
     }
 
     /// Every integer in a vector is exactly representable as a `Double`
-    /// (the one field that is not — the 64-bit ping echo — travels as a
-    /// string), so one numeric accessor serves them all.
+    /// (the 64-bit ping echo travels as a string instead).
     private func number(_ input: [String: Any], _ key: String) throws -> Double {
         if let value = input[key] as? NSNumber { return value.doubleValue }
         if let value = input[key] as? Int { return Double(value) }
@@ -521,9 +507,6 @@ final class ConformanceVectorTests: XCTestCase {
         UInt32(UInt64(try number(input, key)) & 0xFFFF_FFFF)
     }
 
-    /// A decoded value or `NSNull`, in one place — the dictionaries handed
-    /// back to the comparison are `[String: Any]`, and every "or null" leg
-    /// spelling this inline invited a type-inference surprise per call site.
     private static func orNull<Wrapped>(_ value: Wrapped?, _ transform: (Wrapped) -> Any) -> Any {
         let mapped: Any? = value.map(transform)
         return mapped ?? NSNull()
@@ -539,9 +522,8 @@ final class ConformanceVectorTests: XCTestCase {
     }
 }
 
-/// Comparison form for vector results. Booleans collapse into numbers on both
-/// sides, because `JSONSerialization` hands back `NSNumber` for both and
-/// telling them apart portably is not worth a wire-format test's while.
+/// Comparison form for vector results. Booleans collapse into numbers on
+/// both sides since `JSONSerialization` hands back `NSNumber` for both.
 private enum JSONValue: Equatable, CustomStringConvertible {
     case null
     case number(Double)

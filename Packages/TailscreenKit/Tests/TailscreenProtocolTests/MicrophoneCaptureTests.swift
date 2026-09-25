@@ -11,11 +11,10 @@ final class MicrophoneCaptureTests: XCTestCase {
 
     // MARK: Downmix
 
+    /// A headset presenting a mono mic as stereo may put the signal on
+    /// either channel — channel 0 alone gives silence half the time.
     func testStereoIsAveragedNotChannelZero() {
         let converter = CapturePCMConverter()
-        // A headset that presents a mono mic as stereo may put the signal on
-        // EITHER channel. Taking channel 0 gives silence half the time, on
-        // hardware nobody tested against.
         let leftOnly = converter.convert(
             [1, 0, 1, 0], from: AudioInputFormat(sampleRate: 48_000, channelCount: 2))
         let rightOnly = converter.convert(
@@ -32,22 +31,16 @@ final class MicrophoneCaptureTests: XCTestCase {
 
     func testAPartialTrailingFrameIsIgnoredRatherThanMisread() {
         let converter = CapturePCMConverter()
-        // Five values on a stereo stream is two whole frames plus a stray.
-        // Reading the stray as a frame would pair it with whatever comes next.
         let out = converter.convert(
             [1, 1, 1, 1, 1], from: AudioInputFormat(sampleRate: 48_000, channelCount: 2))
         XCTAssertEqual(out.count, 2)
     }
 
+    /// If already-mono samples are forwarded alongside the device's real
+    /// channel count, 960 mono samples read as 480 stereo frames, halving
+    /// the rate and dropping the pitch an octave.
     func testAlreadyMonoDataMustDeclareOneChannel() {
         let converter = CapturePCMConverter()
-        // The seam's one way to be misused, pinned as arithmetic. Both shipped
-        // backends fold to mono THEMSELVES and separately publish the device's
-        // channel count, because a sharer wants to know their interface is
-        // 8-channel. An adapter that forwards that number alongside
-        // already-mono samples lands here: 960 mono samples read as 480 stereo
-        // frames, which halves the rate and drops the pitch an octave. Nothing
-        // errors — it just sounds wrong.
         let mono = [Float](repeating: 0.5, count: 960)
         let honest = converter.convert(mono, from: AudioInputFormat(sampleRate: 48_000, channelCount: 1))
         XCTAssertEqual(honest.count, 960)
@@ -63,7 +56,6 @@ final class MicrophoneCaptureTests: XCTestCase {
 
     func testDownsamplingProducesRoughlyTheRightCount() {
         let converter = CapturePCMConverter()
-        // One second of 96 kHz should land near 48 000 samples.
         let input = [Float](repeating: 0.25, count: 96_000)
         let out = converter.convert(
             input, from: AudioInputFormat(sampleRate: 96_000, channelCount: 1))
@@ -81,10 +73,8 @@ final class MicrophoneCaptureTests: XCTestCase {
     func testBufferBoundariesStayContinuous() {
         let converter = CapturePCMConverter()
         let format = AudioInputFormat(sampleRate: 44_100, channelCount: 1)
-        // A constant signal must stay constant across a boundary. If the
-        // carried neighbour were dropped, the first output of each buffer
-        // would interpolate from silence — a click ~50 times a second, which
-        // is audible and is exactly what this state exists to prevent.
+        // If the carried neighbour were dropped, the first output of each
+        // buffer would interpolate from silence — a click ~50 times a second.
         _ = converter.convert([Float](repeating: 0.5, count: 441), from: format)
         let second = converter.convert([Float](repeating: 0.5, count: 441), from: format)
         for sample in second {
@@ -95,10 +85,8 @@ final class MicrophoneCaptureTests: XCTestCase {
     func testTheFractionalRemainderIsCarriedAcrossBuffers() {
         let converter = CapturePCMConverter()
         let format = AudioInputFormat(sampleRate: 44_100, channelCount: 1)
-        // Twenty 10 ms buffers at 44.1 kHz is 200 ms of audio, which is 9 600
-        // samples at 48 kHz. Re-aligning to a sample boundary every buffer
-        // instead of carrying the phase would lose a fraction each time and
-        // drift — inaudible per buffer, a rising pitch over a call.
+        // Re-aligning to a sample boundary every buffer instead of carrying
+        // the phase would lose a fraction each time — a rising pitch over a call.
         var total = 0
         for _ in 0..<20 {
             total += converter.convert([Float](repeating: 0.1, count: 441), from: format).count
@@ -111,8 +99,7 @@ final class MicrophoneCaptureTests: XCTestCase {
         _ = converter.convert(
             [Float](repeating: 0.9, count: 441),
             from: AudioInputFormat(sampleRate: 44_100, channelCount: 1))
-        // The device was reconfigured under the stream. The new buffer must be
-        // measured against the NEW rate — which is the whole reason the format
+        // The new buffer must be measured against the NEW rate, why format
         // rides every callback instead of being read once at start.
         let out = converter.convert(
             [Float](repeating: 0.0, count: 960),
@@ -140,9 +127,7 @@ final class MicrophoneCaptureTests: XCTestCase {
         let frames = framer.push([Float](repeating: 0, count: 500))
         XCTAssertEqual(frames.count, 1)
         XCTAssertEqual(frames[0].count, 960)
-        // 40 left over — carried, not dropped. Dropping is inaudible per
-        // buffer and a rising pitch over a call.
-        XCTAssertEqual(framer.pendingSamples, 40)
+        XCTAssertEqual(framer.pendingSamples, 40)  // carried, not dropped
     }
 
     func testFramerDrainsMultipleFramesFromOneBuffer() {
@@ -165,10 +150,8 @@ final class MicrophoneCaptureTests: XCTestCase {
         XCTAssertEqual(framer.pendingSamples, 0)
     }
 
-    /// An exact-boundary push emits the frame and carries nothing — the
-    /// off-by-one that would either hold a completed frame back or carry a
-    /// phantom zero-length remainder. (Moved from the mac-side
-    /// `SystemAudioFramerTests` when that duplicate framer was deleted.)
+    /// An off-by-one here would either hold a completed frame back or
+    /// carry a phantom zero-length remainder.
     func testFramerExactBoundaryEmitsOneFrameAndCarriesNothing() {
         var framer = PCMFramer(frameSamples: 960)
         let frames = framer.push([Float](repeating: 0.5, count: 960))
@@ -177,7 +160,6 @@ final class MicrophoneCaptureTests: XCTestCase {
         XCTAssertEqual(framer.pendingSamples, 0)
     }
 
-    /// An empty push emits nothing and buffers nothing.
     func testFramerEmptyPushDrainsNothing() {
         var framer = PCMFramer(frameSamples: 960)
         XCTAssertTrue(framer.push([]).isEmpty)
@@ -192,7 +174,6 @@ final class MicrophoneCaptureTests: XCTestCase {
         pipeline.onAccessUnit = { _ in emitted += 1 }
 
         pipeline.isMuted = true
-        // Well over a frame's worth of loud audio.
         for _ in 0..<10 {
             pipeline.ingest([Float](repeating: 0.8, count: 960), format: .wire)
         }
@@ -210,9 +191,8 @@ final class MicrophoneCaptureTests: XCTestCase {
         pipeline.ingest([Float](repeating: 0.8, count: 480), format: .wire)
         XCTAssertEqual(emitted, 0)
 
-        // Unmute and supply exactly half a frame. If the pre-mute remainder
-        // had survived, this would complete a frame and ship audio captured
-        // around the moment the user pressed mute.
+        // If the pre-mute remainder had survived, this would complete a
+        // frame with audio from around when the user pressed mute.
         pipeline.isMuted = false
         pipeline.ingest([Float](repeating: 0.8, count: 480), format: .wire)
         XCTAssertEqual(emitted, 0, "the partial frame is dropped at mute, not held")
@@ -223,8 +203,7 @@ final class MicrophoneCaptureTests: XCTestCase {
         var packets: [Data] = []
         pipeline.onAccessUnit = { packets.append($0) }
 
-        // A real signal rather than silence, so a codec that elides digital
-        // silence cannot make this pass vacuously.
+        // A real signal, so a codec that elides digital silence can't pass vacuously.
         var tone = [Float](repeating: 0, count: 960 * 4)
         for i in tone.indices {
             tone[i] = sin(Float(i) * 0.05) * 0.5
@@ -238,8 +217,6 @@ final class MicrophoneCaptureTests: XCTestCase {
         let pipeline = MicrophonePipeline(encoder: try OpusVoiceEncoder())
         var packets = 0
         pipeline.onAccessUnit = { _ in packets += 1 }
-        // One second of 44.1 kHz stereo — the format a laptop actually hands
-        // over — must come out as ~50 packets, not 44 or 48.
         let format = AudioInputFormat(sampleRate: 44_100, channelCount: 2)
         var tone = [Float](repeating: 0, count: 44_100 * 2)
         for i in tone.indices { tone[i] = sin(Float(i) * 0.01) * 0.4 }

@@ -3,13 +3,9 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `SharerNoticeDecision` — when to interrupt the sharer, and about whom.
-///
-/// Worth pinning because both failure directions are invisible in normal use.
-/// Under-notifying strands a viewer at an approval gate the sharer never sees;
-/// over-notifying trains the sharer to swipe the banner away, which strands the
-/// next viewer just as thoroughly. Neither produces an error or a log line, and
-/// neither is reproducible without a second machine — so the rules are pinned
-/// here instead.
+/// Both failure directions are invisible in normal use and produce no error:
+/// under-notifying strands a viewer at an approval gate; over-notifying
+/// trains the sharer to swipe banners away, stranding the next one too.
 final class SharerNoticeTests: XCTestCase {
 
     private func candidates(_ pairs: (String, String)...) -> [NoticeCandidate] {
@@ -30,11 +26,9 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertEqual(result.notified, ["100.64.0.1"])
     }
 
-    /// The core anti-spam rule. Every host delivers whole-list snapshots, and
-    /// those snapshots are re-emitted for reasons that have nothing to do with
-    /// the peer in question — a hostname finally resolving off the netmap, or
-    /// another row changing. Re-announcing on each would make the notification
-    /// useless within one share.
+    /// The core anti-spam rule: whole-list snapshots get re-emitted for
+    /// reasons unrelated to a given peer (hostname resolving, another row
+    /// changing), so re-announcing on each would make notices useless.
     func testResendingTheSameSnapshotPostsNothing() {
         let rows = candidates(("100.64.0.1", "wisp"), ("100.64.0.2", "ember"))
         let first = SharerNoticeDecision.noticesToPost(
@@ -47,8 +41,7 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertEqual(second.notified, first.notified)
     }
 
-    /// A label change on an already-notified identity is exactly the
-    /// hostname-resolution case: same peer, better name, no second banner.
+    /// Same peer, better name (hostname resolving), no second banner.
     func testLabelChangeAloneDoesNotRepost() {
         let first = SharerNoticeDecision.noticesToPost(
             kind: .viewerPending,
@@ -79,22 +72,19 @@ final class SharerNoticeTests: XCTestCase {
 
     // MARK: - Forget-on-leave
 
-    /// The other half of the rule: a peer that gives up and genuinely asks
-    /// again must be announced again. Without the prune, one denied request
-    /// would silence that peer for the rest of the share.
+    /// A peer that gives up and genuinely asks again must be announced
+    /// again — without the prune, one denied request silences it for good.
     func testLeavingAndReturningPostsAgain() {
         let first = SharerNoticeDecision.noticesToPost(
             kind: .controlRequested,
             candidates: candidates(("100.64.0.1", "wisp")),
             alreadyNotified: [])
 
-        // Request withdrawn / denied — the row leaves the snapshot.
         let empty = SharerNoticeDecision.noticesToPost(
             kind: .controlRequested, candidates: [], alreadyNotified: first.notified)
         XCTAssertTrue(empty.post.isEmpty)
         XCTAssertTrue(empty.notified.isEmpty, "a departed identity must be forgotten")
 
-        // Same peer asks again.
         let again = SharerNoticeDecision.noticesToPost(
             kind: .controlRequested,
             candidates: candidates(("100.64.0.1", "wisp")),
@@ -102,7 +92,6 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertEqual(again.post.count, 1)
     }
 
-    /// One row leaving must not amnesty the rows that stayed.
     func testPruningOneIdentityKeepsTheOthersSuppressed() {
         let first = SharerNoticeDecision.noticesToPost(
             kind: .viewerPending,
@@ -120,9 +109,7 @@ final class SharerNoticeTests: XCTestCase {
 
     // MARK: - Shape
 
-    /// Kinds share one notified-set on the host side, so their ids must not
-    /// collide: a peer's pending notice must not suppress its later control
-    /// request.
+    /// Kinds share one notified-set, so their ids must not collide.
     func testIDsAreDistinctAcrossKindsForOneIdentity() {
         let pending = SharerNotice(kind: .viewerPending, identity: "100.64.0.1", label: "wisp")
         let control = SharerNotice(kind: .controlRequested, identity: "100.64.0.1", label: "wisp")
@@ -146,8 +133,6 @@ final class SharerNoticeTests: XCTestCase {
 
     // MARK: - Actions and urgency
 
-    /// A notice that offers a choice with no consequence trains people to
-    /// ignore the ones that have one.
     func testOnlyTheAsksAreActionable() {
         XCTAssertEqual(SharerNoticeKind.viewerPending.actions, [.approve, .deny])
         XCTAssertEqual(SharerNoticeKind.controlRequested.actions, [.approve, .deny])
@@ -156,8 +141,7 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertTrue(SharerNoticeKind.viewerLeft.actions.isEmpty)
     }
 
-    /// Drives each platform's break-through-Focus level. Only the notices that
-    /// strand somebody in a *running* session qualify.
+    /// Drives each platform's break-through-Focus level.
     func testOnlyMidSessionAsksBlockSomeone() {
         XCTAssertTrue(SharerNoticeKind.viewerPending.blocksSomeone)
         XCTAssertTrue(SharerNoticeKind.controlRequested.blocksSomeone)
@@ -165,28 +149,21 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertFalse(SharerNoticeKind.viewerLeft.blocksSomeone)
     }
 
-    /// The case that makes urgency a *narrower* thing than actionability.
-    ///
-    /// A request-to-share is an ask with buttons, but it arrives while this
-    /// machine is idle: nobody is mid-flow, and an invitation has a natural
-    /// retry. Marking it urgent would also disarm the ones that are — Time
-    /// Sensitive is revoked per app, not per notification, so one over-eager
-    /// kind takes the whole set down with it.
+    /// Urgency is narrower than actionability: a request-to-share arrives
+    /// while idle and has a natural retry, so marking it urgent would also
+    /// get Time Sensitive (revoked per app, not per notification) disarmed.
     func testRequestToShareIsActionableButNotUrgent() {
         XCTAssertFalse(SharerNoticeKind.requestToShare.actions.isEmpty)
         XCTAssertFalse(SharerNoticeKind.requestToShare.blocksSomeone)
     }
 
-    /// Urgency implies actionability, not the reverse: a kind that strands
-    /// somebody without offering a way to unstrand them is a bug in the table.
+    /// Urgency implies actionability, not the reverse.
     func testEveryBlockingKindIsActionable() {
         for kind in SharerNoticeKind.allCases where kind.blocksSomeone {
             XCTAssertFalse(kind.actions.isEmpty, "\(kind) blocks a peer but offers no way to act")
         }
     }
 
-    /// Joined/left are a matched pair — one without the other reads as a bug
-    /// to a sharer who saw the first and waited for the second.
     func testJoinAndLeaveAreSymmetric() {
         XCTAssertEqual(
             SharerNoticeKind.viewerJoined.actions, SharerNoticeKind.viewerLeft.actions)
@@ -195,9 +172,7 @@ final class SharerNoticeTests: XCTestCase {
             SharerNoticeKind.viewerLeft.blocksSomeone)
     }
 
-    /// Dismiss must never be synthesizable from the button list — closing a
-    /// banner is not a decision about a peer, and a host that treated it as
-    /// one would deny people by inattention.
+    /// Closing a banner is not a decision about a peer.
     func testDismissIsNeverAnOfferedButton() {
         for kind in SharerNoticeKind.allCases {
             XCTAssertFalse(kind.actions.contains(.dismiss), "\(kind) offers dismiss as a button")
@@ -206,20 +181,17 @@ final class SharerNoticeTests: XCTestCase {
 
     // MARK: - Action keys
 
-    /// The keys hosts put in the identifier slot of a notification button.
-    /// Pinned because they leave the process: the notification daemon stores
-    /// them with the banner and hands them back verbatim, so a rename lands on
-    /// buttons that are already on screen and silently stops routing them.
+    /// Pinned because these keys leave the process — the notification daemon
+    /// stores and hands them back verbatim, so a rename breaks buttons
+    /// already on screen.
     func testActionKeysAreStable() {
         XCTAssertEqual(NoticeAction.approve.rawValue, "approve")
         XCTAssertEqual(NoticeAction.deny.rawValue, "deny")
         XCTAssertEqual(NoticeAction.dismiss.rawValue, "dismiss")
     }
 
-    /// The mistake this type is shaped to prevent. A host that passes its
-    /// button *label* as the key gets a working English build and a localized
-    /// build where every press is dropped — no error, no log line. The lookup
-    /// must reject anything it did not mint, including the English label.
+    /// A host passing its button label as the key gets a working English
+    /// build and a localized build where every press silently drops.
     func testALabelIsNotAnActionKey() {
         XCTAssertNil(NoticeAction(rawValue: "Accept"))
         XCTAssertNil(NoticeAction(rawValue: "Deny"))
@@ -230,11 +202,8 @@ final class SharerNoticeTests: XCTestCase {
 
     // MARK: - Round-tripping the identifier
 
-    /// A press comes back as opaque strings and nothing else — the identifier
-    /// plus an action key on macOS and freedesktop, a single activation
-    /// argument on Windows — with no live state, no notice object, and possibly
-    /// an hour of delay. Every kind has to survive that round trip or its
-    /// buttons do nothing.
+    /// A press comes back as opaque strings only — no live state, no notice
+    /// object, possibly an hour of delay. Every kind must survive that round trip.
     func testEveryKindRoundTripsThroughItsID() {
         for kind in SharerNoticeKind.allCases {
             let notice = SharerNotice(kind: kind, identity: "100.64.0.1:49152", label: "wisp")
@@ -244,10 +213,8 @@ final class SharerNoticeTests: XCTestCase {
         }
     }
 
-    /// The reason the split is on the FIRST colon. An IPv6 identity is almost
-    /// entirely colons, and a last-colon split reads as correct right up until
-    /// somebody shares over IPv6 — at which point Accept lands on a peer key
-    /// that never existed.
+    /// The split is on the FIRST colon — a last-colon split works right up
+    /// until IPv6, where it lands Accept on a peer key that never existed.
     func testIdentityMayContainColons() {
         let identities = [
             "100.64.0.1:51820",
@@ -261,12 +228,9 @@ final class SharerNoticeTests: XCTestCase {
         }
     }
 
-    /// Anything we did not mint decodes to nil rather than to a guess. Two
-    /// realistic sources: a banner posted by another build still sitting in
-    /// notification centre across an app update, and — on Windows, where the
-    /// platform delivers activation arguments from whatever posted them — a
-    /// string that was never ours at all. Acting on the wrong peer is worse
-    /// than a button that does nothing.
+    /// Anything not minted here decodes to nil rather than a guess (e.g. a
+    /// banner from another build still in notification centre after an
+    /// update). Acting on the wrong peer is worse than a dead button.
     func testUnmintedIdentifiersDecodeToNil() {
         XCTAssertNil(SharerNotice.decodeID("viewerPending"), "no separator")
         XCTAssertNil(SharerNotice.decodeID("viewerPending:"), "empty identity")
@@ -280,24 +244,18 @@ final class SharerNoticeTests: XCTestCase {
 
     // MARK: - Sound
 
-    /// A notification that succeeds is a notification on the screen being
-    /// captured, and the ding is played by the notification daemon — another
-    /// process, so the "exclude our own audio" flag every platform offers does
-    /// not drop it. It goes out with the share.
+    /// The ding is played by the notification daemon — another process, so
+    /// "exclude our own audio" doesn't drop it. It goes out with the share.
     func testNothingSoundsWhileCapturing() {
         XCTAssertFalse(SharerNoticeDecision.playsSound(isCapturing: true))
     }
 
-    /// The one notice that arrives at an idle machine keeps its sound: there
-    /// is no capture for it to leak into, and it is the non-urgent kind, so
-    /// the sound is the only thing that makes it noticeable at all.
+    /// No capture to leak into, and it's the non-urgent kind — the sound is
+    /// the only thing that makes it noticeable.
     func testAnIdleMachineStillDings() {
         XCTAssertTrue(SharerNoticeDecision.playsSound(isCapturing: false))
     }
 
-    /// Every kind that can only occur mid-share is therefore always silent —
-    /// stated as a test so the rule can't be relaxed for one kind without the
-    /// leak coming back with it.
     func testMidShareKindsAreAlwaysSilent() {
         for kind in SharerNoticeKind.allCases where kind.blocksSomeone {
             XCTAssertFalse(
@@ -316,15 +274,14 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertFalse(SharerNoticeDecision.isStale(generation: 6, lastApplied: 5))
     }
 
-    /// Two racing notifies can legitimately observe the same pair, and
-    /// re-applying it is idempotent. Treating equality as stale would drop the
-    /// first delivery of every generation.
+    /// Treating equality as stale would drop the first delivery of every
+    /// generation.
     func testEqualGenerationIsNotStale() {
         XCTAssertFalse(SharerNoticeDecision.isStale(generation: 5, lastApplied: 5))
     }
 
-    /// The failure this exists to prevent: a reordered `nil` clearing a grant
-    /// that is still live, which on macOS also unregisters the panic hotkey.
+    /// Prevents a reordered `nil` from clearing a grant that's still live
+    /// (which on macOS also unregisters the panic hotkey).
     func testReorderedClearAfterNewerGrantIsDropped() {
         var lastApplied: UInt64 = 0
         for (generation, grantIsLive) in [(UInt64(1), true), (UInt64(3), true), (UInt64(2), false)] {

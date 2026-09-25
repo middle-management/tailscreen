@@ -4,16 +4,11 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `PortableMuteHotkey` — the controller both swift-cross-ui apps wrap their
-/// platform hotkey shim in.
-///
-/// Driven a tick at a time through a fake binding, so every rule is asserted
-/// without an X server, a `RegisterHotKey`, or a 50 ms sleep. Before the
-/// extraction each app had its own copy and neither had a test: the shims'
-/// suites cover the chord mapping and the repeat latch, and stopped at the
-/// controller.
+/// platform hotkey shim in. Driven a tick at a time through a fake binding,
+/// so every rule is asserted without an X server, `RegisterHotKey`, or a
+/// 50ms sleep.
 final class PortableMuteHotkeyTests: XCTestCase {
 
-    /// A held chord that counts its own release, and can be fed activations.
     private final class FakeHotkey: GlobalHotkeyHolding {
         var pending = 0
         private(set) var releaseCount = 0
@@ -25,11 +20,9 @@ final class PortableMuteHotkeyTests: XCTestCase {
         func release() { releaseCount += 1 }
     }
 
-    /// A binding whose answer the test chooses, counting how often it was asked.
     private final class FakeBinding: GlobalHotkeyBinding {
         var answer: Result<any GlobalHotkeyHolding, GlobalHotkeyUnavailability>
         private(set) var holdCount = 0
-        /// The last successfully handed-out hotkey, so a test can feed it.
         private(set) var live: FakeHotkey?
 
         init(answer: Result<any GlobalHotkeyHolding, GlobalHotkeyUnavailability>) {
@@ -51,7 +44,6 @@ final class PortableMuteHotkeyTests: XCTestCase {
         }
     }
 
-    /// Mutable mic availability plus the two toggle counters, on the main actor.
     @MainActor
     private final class Host {
         var sharerMic = false
@@ -65,9 +57,8 @@ final class PortableMuteHotkeyTests: XCTestCase {
     private func makeController(
         binding: FakeBinding, host: Host
     ) throws -> PortableMuteHotkey {
-        // `notes` is appended from a `@Sendable` closure that this suite only
-        // ever drives on the main actor; `assumeIsolated` is the honest spelling
-        // of that, and keeps the seam's real signature under test.
+        // `notes` is appended from a `@Sendable` closure driven only on the
+        // main actor; `assumeIsolated` is the honest spelling of that.
         let controller = PortableMuteHotkey(
             binding: binding,
             sharerMicAvailable: { host.sharerMic },
@@ -82,9 +73,8 @@ final class PortableMuteHotkeyTests: XCTestCase {
 
     // MARK: Holding the chord
 
-    /// A global grab is exclusive — whoever takes a chord takes it from every
-    /// other app on the machine — so holding it while there is nothing to mute
-    /// is taking it for a handler with nothing to do.
+    /// A global grab is exclusive — it takes it from every other app on the
+    /// machine — so holding it with nothing to mute has no handler.
     @MainActor
     func testTheChordIsNotHeldWhileThereIsNothingToMute() async throws {
         let binding = FakeBinding.granting()
@@ -115,9 +105,9 @@ final class PortableMuteHotkeyTests: XCTestCase {
         XCTAssertNil(controller.target)
     }
 
-    /// **Re-taking the chord is expensive on Windows** — it destroys and
-    /// recreates the shim's pump thread — so the hold decision is acted on only
-    /// when it changes, not re-asserted 20 times a second.
+    /// Re-taking the chord is expensive on Windows (destroys and recreates
+    /// the shim's pump thread), so the hold decision is acted on only when
+    /// it changes.
     @MainActor
     func testTheChordIsTakenOnceAndNotReTakenEveryTick() async throws {
         let binding = FakeBinding.granting()
@@ -132,10 +122,8 @@ final class PortableMuteHotkeyTests: XCTestCase {
 
     // MARK: Routing a press
 
-    /// The routing rule itself is `MuteHotkeyRouting`'s; what is asserted here
-    /// is that the press goes to whichever microphone it named — and that a
-    /// double press inside one tick is two toggles, which for a mute means it
-    /// lands back where it started.
+    /// A double press inside one tick is two toggles, which for a mute
+    /// means it lands back where it started.
     @MainActor
     func testAPressFlipsTheTargetedMicrophoneOncePerActivation() async throws {
         let binding = FakeBinding.granting()
@@ -150,9 +138,8 @@ final class PortableMuteHotkeyTests: XCTestCase {
         XCTAssertEqual(host.sharerToggles, 0)
     }
 
-    /// The sharer wins when both are live — the hotkey is fundamentally a
-    /// sharer affordance, because during a share the window carrying the button
-    /// is behind whatever is being shown.
+    /// The sharer wins when both are live — during a share the window
+    /// carrying the button is behind whatever is being shown.
     @MainActor
     func testStartingAShareRetargetsThePressAndSaysSo() async throws {
         let binding = FakeBinding.granting()
@@ -175,7 +162,6 @@ final class PortableMuteHotkeyTests: XCTestCase {
             "a silent retarget is a user finding out by pressing it")
     }
 
-    /// Said once per change, not once per tick.
     @MainActor
     func testTheTargetIsAnnouncedOnChangeOnly() async throws {
         let binding = FakeBinding.granting()
@@ -191,9 +177,8 @@ final class PortableMuteHotkeyTests: XCTestCase {
 
     // MARK: Failure
 
-    /// A mute hotkey that was never registered looks exactly like one that
-    /// works, right up to the moment somebody presses it believing they have
-    /// gone quiet — so the reason is surfaced, and `chordHint` withholds the
+    /// A mute hotkey that never registered looks exactly like one that works
+    /// until pressed — the reason is surfaced, and `chordHint` withholds the
     /// chord so no UI teaches it.
     @MainActor
     func testAnUnavailableChordIsReportedAndNeverAdvertised() async throws {
@@ -210,8 +195,6 @@ final class PortableMuteHotkeyTests: XCTestCase {
         XCTAssertEqual(mirrored, [.alreadyOwned])
     }
 
-    /// A line per 50 ms tick is a log nobody reads, and a mirror write per tick
-    /// is a re-render per tick.
     @MainActor
     func testAFailureIsLoggedAndMirroredOnceNotPerTick() async throws {
         let binding = FakeBinding(answer: .failure(.noDisplay))
@@ -224,13 +207,10 @@ final class PortableMuteHotkeyTests: XCTestCase {
         for _ in 0..<10 { controller.tick() }
         XCTAssertEqual(host.notes.count, 1)
         XCTAssertEqual(mirrored, 1)
-        // It kept trying, though — a chord another app is holding can be given
-        // back, and the next attempt is what notices.
+        // Kept trying — a chord another app holds can be given back.
         XCTAssertEqual(binding.holdCount, 10)
     }
 
-    /// And when it finally succeeds the reason clears, so the chord becomes
-    /// advertisable again.
     @MainActor
     func testRecoveringFromAFailureClearsTheReasonAndReAdvertises() async throws {
         let binding = FakeBinding(answer: .failure(.alreadyOwned))
@@ -250,8 +230,6 @@ final class PortableMuteHotkeyTests: XCTestCase {
         XCTAssertEqual(mirrored, [.alreadyOwned, nil])
     }
 
-    /// A press that arrives while nothing is targetable is dropped rather than
-    /// sent to whichever microphone happens to exist next.
     @MainActor
     func testActivationsAreNotRoutedOnceTheTargetIsGone() async throws {
         let binding = FakeBinding.granting()

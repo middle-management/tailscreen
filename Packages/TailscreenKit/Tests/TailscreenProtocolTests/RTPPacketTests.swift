@@ -40,19 +40,16 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.decode(hello), .hello)
         XCTAssertEqual(ScreenShareControlMessage.decode(pli), .pli)
 
-        // CODEC_NO (the viewer's "I can't decode this, fall back to H.264"
-        // signal) must round-trip and read as control, not RTP.
+        // CODEC_NO: viewer's "fall back to H.264" signal.
         let codecNo = ScreenShareControlMessage.encode(.codecUnsupported)
         XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(codecNo))
         XCTAssertEqual(ScreenShareControlMessage.decode(codecNo), .codecUnsupported)
 
-        // PROFILE_NO (the viewer's "I can't decode this bit depth, fall back
-        // to 8-bit" signal) must round-trip and read as control, not RTP.
+        // PROFILE_NO: viewer's "fall back to 8-bit" signal.
         let profileNo = ScreenShareControlMessage.encode(.profileUnsupported)
         XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(profileNo))
         XCTAssertEqual(ScreenShareControlMessage.decode(profileNo), .profileUnsupported)
-        // Old parsers (no 0x09 case) get nil from decode and ignore it — the
-        // backward-compatibility contract for the new byte.
+        // Old parsers (no 0x09 case) get nil and ignore it — back-compat contract.
         XCTAssertEqual(profileNo, Data([0x09]))
 
         // A real RTP packet's first byte is 0x80; must not look like control.
@@ -77,7 +74,6 @@ final class RTPPacketTests: XCTestCase {
     }
 
     func testSingleNALPacketization() throws {
-        // Small NAL fits in one Single NAL packet.
         let nal = Data([0x67, 0x42, 0x00, 0x1F, 0xAC])  // SPS
         let packets = H264Packetizer().packetize(
             nals: [nal], timestamp: 9000, ssrc: 0x11_22_33_44, startSequence: 100
@@ -86,14 +82,14 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(packets.count, 1)
         let packet = packets[0]
         let (header, offset) = try XCTUnwrap(RTPHeader.decode(from: packet))
-        XCTAssertTrue(header.marker)  // last (and only) packet of AU
+        XCTAssertTrue(header.marker)
         XCTAssertEqual(header.sequenceNumber, 100)
         XCTAssertEqual(header.timestamp, 9000)
         XCTAssertEqual(packet.suffix(from: packet.startIndex + offset), nal)
     }
 
     func testFragmentedNALPacketization() throws {
-        // Build a NAL larger than maxPayloadBytes to force FU-A.
+        // NAL larger than maxPayloadBytes forces FU-A.
         let bodySize = H264Packetizer.maxPayloadBytes * 3 - 7
         var nal = Data([0x65])  // IDR slice header (NRI=11, type=5)
         nal.append(contentsOf: (0..<bodySize).map { UInt8($0 & 0xFF) })
@@ -102,7 +98,6 @@ final class RTPPacketTests: XCTestCase {
             nals: [nal], timestamp: 18000, ssrc: 1, startSequence: 0
         )
 
-        // Body is split into ceil(bodySize / (maxPayload-2)) fragments.
         let fragSize = H264Packetizer.maxPayloadBytes - 2
         let expectedFragments = (bodySize + fragSize - 1) / fragSize
         XCTAssertEqual(packets.count, expectedFragments)
@@ -128,7 +123,7 @@ final class RTPPacketTests: XCTestCase {
     func testSingleNALRoundTripThroughDepacketizer() throws {
         let sps = Data([0x67, 0x42, 0x00, 0x1F])
         let pps = Data([0x68, 0xCB, 0x83])
-        let slice = Data([0x65, 0xAA, 0xBB, 0xCC, 0xDD])  // small IDR slice
+        let slice = Data([0x65, 0xAA, 0xBB, 0xCC, 0xDD])
 
         let packets = H264Packetizer().packetize(
             nals: [sps, pps, slice], timestamp: 12345, ssrc: 0xCAFE, startSequence: 7
@@ -149,7 +144,6 @@ final class RTPPacketTests: XCTestCase {
     }
 
     func testFragmentedNALRoundTripThroughDepacketizer() throws {
-        // Mix small + large NALs in one access unit to exercise both modes.
         let sps = Data([0x67, 0x42, 0x00, 0x1F])
         let bodySize = H264Packetizer.maxPayloadBytes * 2 + 137
         var slice = Data([0x65])
@@ -172,8 +166,7 @@ final class RTPPacketTests: XCTestCase {
     }
 
     func testSequenceWraparoundIsAccepted() throws {
-        // First packet seq = 0xFFFF, second seq = 0x0000. The depacketizer
-        // must treat the wraparound as in-sequence (not as packet loss).
+        // seq 0xFFFF → 0x0000 must read as in-sequence, not as loss.
         let nal1 = Data([0x41, 0xAA])
         let nal2 = Data([0x41, 0xBB])
 
@@ -181,8 +174,6 @@ final class RTPPacketTests: XCTestCase {
         var p1Packets = packetizer.packetize(
             nals: [nal1], timestamp: 1, ssrc: 1, startSequence: 0xFFFF
         )
-        // Packetizer puts marker on the last packet of the AU it's given,
-        // which is what we want here — that flushes AU1.
         let p2Packets = packetizer.packetize(
             nals: [nal2], timestamp: 2, ssrc: 1, startSequence: 0x0000
         )
@@ -210,21 +201,16 @@ final class RTPPacketTests: XCTestCase {
         )
         XCTAssertEqual(packets.count, 3)
 
-        // reorderDepth: 1 so the reorder window gives up on the missing packet
-        // as soon as one *newer* packet piles up behind the gap — i.e. this
-        // exercises genuine loss, not the reorder-tolerance path. With the
-        // default depth the depacketizer would (correctly) hold the gap open
-        // waiting for the "missing" packet to arrive late.
+        // reorderDepth: 1 forces genuine loss (not reorder-tolerance): the
+        // window gives up on the gap as soon as one newer packet piles behind it.
         let depacketizer = H264Depacketizer(reorderDepth: 1)
         _ = depacketizer.ingest(packets[0])
-        // Drop the middle packet (seq 11). packets[2] (seq 12) gets buffered
-        // pending the gap, so no AU is emitted yet.
+        // Drop seq 11; packets[2] (seq 12) buffers behind the gap.
         let result = depacketizer.ingest(packets[2])
         XCTAssertNil(result)
 
-        // The next frame's packet is the second to pile up behind the gap,
-        // exceeding the depth-1 window: the depacketizer gives up on seq 11,
-        // drops the torn AU, and flags the next clean AU as lost-before.
+        // A second pile-up exceeds the depth-1 window: gives up on seq 11,
+        // drops the torn AU, flags the next AU as lost-before.
         let nal4 = Data([0x41, 0xDD])
         let next = packetizer.packetize(
             nals: [nal4], timestamp: 60, ssrc: 1, startSequence: 13
@@ -234,11 +220,10 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertTrue(au?.lostBeforeThisAU ?? false)
     }
 
+    /// Delivered out of order (10, 12, 11) — the WAN reordering case
+    /// loopback never hits. Buffer must hold seq 12 and emit a clean AU
+    /// once seq 11 fills the gap.
     func testReorderedPacketsRecoverWithoutLoss() throws {
-        // A 3-NAL AU split across 3 packets, delivered out of order
-        // (seq 10, 12, 11). The reorder buffer must hold seq 12, slot seq 11
-        // in when it arrives, and emit a complete, in-order AU — no loss flag,
-        // no dropped frame. This is the WAN reordering case loopback never hits.
         let nal1 = Data([0x41, 0xAA])
         let nal2 = Data([0x41, 0xBB])
         let nal3 = Data([0x41, 0xCC])
@@ -256,21 +241,16 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(AVCCParser.nalUnits(from: au.avcc), [nal1, nal2, nal3])
     }
 
+    /// A keyframe spans hundreds of RTP packets. A single early loss used
+    /// to tear the AU because a count-based reorder window (64) overflowed
+    /// in tens of ms, before a NACK retransmit (~1 RTT, ~160ms) could land.
+    /// Holding the gap by TIME (`gapHoldNs`) under a generous count cap
+    /// fixes it — the late retransmit fills the gap and the frame stays whole.
     func testDeepKeyframePileupTornByCountButHeldByTime() {
-        // Regression (WAN keyframe stall): a keyframe spans hundreds of RTP
-        // packets. A single early loss used to tear the whole AU because the
-        // count-based reorder window (64 in NACK mode) overflowed in tens of
-        // ms — long before a NACK retransmit could arrive ~1 RTT (~160 ms)
-        // later. The retransmit then landed "behind" the advanced cursor and
-        // was dropped as a straggler, so the keyframe never reassembled and
-        // the viewer never installed parameter sets. In NACK mode the buffer
-        // now holds a gap by TIME (`gapHoldNs`) under a generous hard cap, so
-        // the late retransmit fills it and the frame stays whole.
         let t0: UInt64 = 1_000_000_000
 
-        // Old behavior: count window 64. Pile 100 packets behind an early gap
-        // (seq 101) → overflow → the gap is abandoned (torn) before any
-        // retransmit could land.
+        // Old behavior: count window 64 overflows and abandons the gap
+        // before any retransmit can land.
         var countBased = RTPReorderBuffer(maxDepth: 64)
         _ = countBased.push(seq: 100, packet: Data([0]))
         var tornEarly = false
@@ -284,8 +264,6 @@ final class RTPPacketTests: XCTestCase {
         var timeBased = RTPReorderBuffer(maxDepth: 512, gapHoldNs: 250_000_000)
         XCTAssertEqual(timeBased.push(seq: 100, packet: Data([0]), nowNs: t0).count, 1)
         for (i, seq) in (102...201).enumerated() {
-            // ~0.3 ms apart — the whole 100-packet pileup lands within ~30 ms,
-            // far inside the 250 ms hold.
             let rel = timeBased.push(
                 seq: UInt16(seq), packet: Data([UInt8(seq & 0xff)]),
                 nowNs: t0 &+ UInt64(i) &* 300_000)
@@ -298,25 +276,20 @@ final class RTPPacketTests: XCTestCase {
             filled.contains(where: { $0.lostBefore }), "no loss — the frame stays whole")
     }
 
+    /// The hold is bounded — abandoned once `gapHoldNs` elapses so a
+    /// genuinely lost packet can't wedge the stream forever.
     func testGapHeldByTimeStillDeclaresLossAfterDeadline() {
-        // The hold is bounded: if the retransmit never comes, the gap must
-        // still be abandoned once `gapHoldNs` elapses so a genuinely lost
-        // packet can't wedge the stream forever.
         let t0: UInt64 = 1_000_000_000
         var buf = RTPReorderBuffer(maxDepth: 512, gapHoldNs: 200_000_000)
         XCTAssertEqual(buf.push(seq: 10, packet: Data([10]), nowNs: t0).count, 1)
         XCTAssertTrue(buf.push(seq: 12, packet: Data([12]), nowNs: t0).isEmpty)  // gap at 11 held
-        // A packet arriving past the deadline abandons the gap (loss declared).
         let releases = buf.push(seq: 13, packet: Data([13]), nowNs: t0 &+ 250_000_000)
         XCTAssertEqual(releases.first?.lostBefore, true, "gap abandoned after the hold expires")
     }
 
+    /// End-to-end version of the deep-keyframe-pileup case above, at the
+    /// depacketizer.
     func testNACKModeDepacketizerReassemblesDeepKeyframeWithLateRetransmit() throws {
-        // End-to-end at the depacketizer: a keyframe-sized AU (100 packets)
-        // loses an early packet; its retransmit arrives ~160 ms later. In NACK
-        // mode (deep window + time hold) the AU must reassemble whole, with no
-        // loss flag — the exact path that used to tear the keyframe (the
-        // count-based window overflowed in tens of ms) and wedge the viewer.
         let t0: UInt64 = 1_000_000_000
         let nals = (0..<100).map { Data([0x41, UInt8($0)]) }
         let packets = H264Packetizer().packetize(
@@ -324,20 +297,19 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(packets.count, 100)
 
         let depacketizer = H264Depacketizer(reorderDepth: 512, gapHoldNs: 300_000_000)
-        // Deliver every packet except seq 1001 (index 1), spread over ~30 ms.
         for (i, pkt) in packets.enumerated() where i != 1 {
             let au = depacketizer.ingest(pkt, nowNs: t0 &+ UInt64(i) &* 300_000)
             XCTAssertNil(au, "AU withheld while the early gap is open")
         }
-        // The retransmit of seq 1001 lands ~160 ms later — inside the hold.
+        // Retransmit of seq 1001 lands ~160 ms later — inside the hold.
         let au = try XCTUnwrap(depacketizer.ingest(packets[1], nowNs: t0 &+ 160_000_000))
         XCTAssertFalse(au.lostBeforeThisAU, "keyframe reassembled intact")
         XCTAssertEqual(AVCCParser.nalUnits(from: au.avcc), nals)
     }
 
+    /// DERP can duplicate packets; a duplicate of an already-released seq
+    /// must be dropped silently, not treated as loss.
     func testDuplicatePacketIsIgnored() throws {
-        // DERP can duplicate packets. A duplicate of an already-released
-        // sequence number must be dropped silently, not treated as loss.
         let nal1 = Data([0x41, 0xAA])
         let nal2 = Data([0x41, 0xBB])
         let packets = H264Packetizer().packetize(
@@ -360,16 +332,13 @@ final class RTPPacketTests: XCTestCase {
         let firstSession = packetizer.packetize(
             nals: [nal], timestamp: 1, ssrc: 0xAAAA, startSequence: 50
         )
-        // New session (server restart): different SSRC, sequence starts over.
         let secondSession = packetizer.packetize(
             nals: [nal], timestamp: 1, ssrc: 0xBBBB, startSequence: 0
         )
 
         let depacketizer = H264Depacketizer()
         _ = depacketizer.ingest(firstSession[0])
-        // Without SSRC reset, seq=0 after seq=50 would look like a wild
-        // jump and the AU would be flagged as lost. SSRC change should
-        // wipe state and treat the second session as fresh.
+        // Without SSRC reset, seq=0 after seq=50 reads as a wild jump/loss.
         let au = try XCTUnwrap(depacketizer.ingest(secondSession[0]))
         XCTAssertFalse(au.lostBeforeThisAU)
     }
@@ -386,8 +355,8 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertNotEqual(RTPHeader.h264PayloadType, RTPHeader.hevcPayloadType)
     }
 
+    /// VPS=32, SPS=33, PPS=34, IDR_W_RADL=19.
     func testHEVCSingleNALRoundTrip() throws {
-        // VPS=32, SPS=33, PPS=34, IDR_W_RADL=19.
         let vps = Data(Self.hevcHeader(type: 32) + [0x00, 0x00])
         let sps = Data(Self.hevcHeader(type: 33) + [0x11, 0x22])
         let pps = Data(Self.hevcHeader(type: 34) + [0x33])
@@ -420,19 +389,18 @@ final class RTPPacketTests: XCTestCase {
 
     func testHEVCFragmentedNALRoundTrip() throws {
         let bodySize = H265Packetizer.maxPayloadBytes * 3 + 211
-        var slice = Data(Self.hevcHeader(type: 19))  // IDR slice
+        var slice = Data(Self.hevcHeader(type: 19))
         slice.append(contentsOf: (0..<bodySize).map { UInt8(($0 * 7) & 0xFF) })
 
         let packets = H265Packetizer().packetize(
             nals: [slice], timestamp: 22_222, ssrc: 1, startSequence: 0xFFFD
         )
 
-        // FU mode reserves 3 bytes per packet (PayloadHdr 2 + FU header 1).
+        // FU mode reserves 3 bytes/packet (PayloadHdr 2 + FU header 1).
         let fragSize = H265Packetizer.maxPayloadBytes - 3
         let expected = (bodySize + fragSize - 1) / fragSize
         XCTAssertEqual(packets.count, expected)
 
-        // Validate first/last fragment headers.
         let first = packets.first!
         let firstPayload = first.suffix(from: first.startIndex + RTPHeader.size)
         let firstHdr0 = firstPayload[firstPayload.startIndex]
@@ -471,8 +439,7 @@ final class RTPPacketTests: XCTestCase {
         )
         XCTAssertEqual(packets.count, 3)
 
-        // reorderDepth: 1 — see the H.264 sibling test; forces the window to
-        // give up on the missing packet rather than hold the gap open.
+        // See the H.264 sibling test for why reorderDepth: 1.
         let depacketizer = H265Depacketizer(reorderDepth: 1)
         _ = depacketizer.ingest(packets[0])
         let result = depacketizer.ingest(packets[2])
@@ -529,18 +496,12 @@ final class RTPPacketTests: XCTestCase {
 
     // MARK: - Buffer-pool correctness
 
-    /// Repeatedly packetize through a single instance, retaining every
-    /// prior batch the whole time. If the pool ever mutated a buffer that
-    /// a previous consumer was still holding, the held bytes would change
-    /// out from under them. We verify that doesn't happen by saving each
-    /// batch and re-decoding it after many subsequent calls.
+    /// Retains every prior batch while packetizing more; if the pool ever
+    /// mutated a buffer a previous consumer still held, this would catch it.
     func testPacketizerReuseAcrossManyCallsDoesNotAliasPriorBatches() throws {
         let packetizer = H264Packetizer()
         var saved: [(seq: UInt16, ts: UInt32, packets: [Data])] = []
 
-        // Build a NAL that fits in one MTU so each call's packet count is
-        // small and deterministic — keeps the test focused on correctness,
-        // not throughput.
         let nal = Data([0x41] + (0..<200).map { UInt8($0 & 0xFF) })
 
         var seq: UInt16 = 0
@@ -553,9 +514,6 @@ final class RTPPacketTests: XCTestCase {
             seq &+= UInt16(packets.count)
         }
 
-        // Decode every saved batch through fresh depacketizers; if the
-        // pool aliased the bytes of an earlier batch, the seq/ts here
-        // would have been overwritten with later values.
         for entry in saved {
             let depacketizer = H264Depacketizer()
             var au: VideoAccessUnit?
@@ -566,14 +524,12 @@ final class RTPPacketTests: XCTestCase {
             XCTAssertEqual(unwrapped.timestamp, entry.ts)
             XCTAssertEqual(AVCCParser.nalUnits(from: unwrapped.avcc), [nal])
 
-            // And the RTP header's seq matches what we asked for.
             let (header, _) = try XCTUnwrap(RTPHeader.decode(from: entry.packets[0]))
             XCTAssertEqual(header.sequenceNumber, entry.seq)
             XCTAssertEqual(header.timestamp, entry.ts)
         }
     }
 
-    /// Same test for HEVC, exercising the parallel `H265Packetizer` path.
     func testHEVCPacketizerReuseDoesNotAliasPriorBatches() throws {
         let packetizer = H265Packetizer()
         var saved: [(seq: UInt16, ts: UInt32, packets: [Data])] = []
@@ -603,13 +559,11 @@ final class RTPPacketTests: XCTestCase {
         }
     }
 
-    /// Stress the FU-A path so each call returns ≥ 2 packets. Verifies
-    /// that buffer reuse across calls produces correct fragment layout
-    /// (S/E bits, fragment bytes, marker on last) every time.
+    /// Stresses the FU-A path (≥2 fragments/call) to verify buffer reuse
+    /// across calls doesn't corrupt fragment layout (S/E bits, marker).
     func testPacketizerReuseWithFragmentedNALs() throws {
         let packetizer = H264Packetizer()
 
-        // Each NAL forces ~5 fragments (5500 bytes body ÷ ~1098 per frag).
         let body: [UInt8] = (0..<5500).map { UInt8(($0 * 7) & 0xFF) }
         var nal = Data([0x65])
         nal.append(contentsOf: body)
@@ -626,7 +580,6 @@ final class RTPPacketTests: XCTestCase {
             savedBatches.append(packets)
         }
 
-        // Round-trip every saved batch — bytes must still be intact.
         for batch in savedBatches {
             let dp = H264Depacketizer()
             var au: VideoAccessUnit?
@@ -636,7 +589,6 @@ final class RTPPacketTests: XCTestCase {
             let unwrapped = try XCTUnwrap(au)
             XCTAssertEqual(AVCCParser.nalUnits(from: unwrapped.avcc), [nal])
 
-            // Marker bit must be set ONLY on the last packet of each batch.
             for (i, p) in batch.enumerated() {
                 let isLast = i == batch.count - 1
                 let (header, _) = try XCTUnwrap(RTPHeader.decode(from: p))
@@ -645,14 +597,11 @@ final class RTPPacketTests: XCTestCase {
         }
     }
 
-    /// Marker bit on the last packet must be set even when reusing a
-    /// pooled buffer that, in a *previous* batch, was the marker-bearing
-    /// packet for that batch. Header encode writes byte 1 fresh, so the
-    /// marker from the prior packet should not leak.
+    /// Marker bit must not leak across a pooled buffer reused from a
+    /// previous batch where it was the marker-bearing packet.
     func testMarkerBitDoesNotLeakAcrossPooledReuse() throws {
         let packetizer = H264Packetizer()
 
-        // First batch: 3 packets. Last gets marker.
         let nal = Data([0x41, 0x01, 0x02, 0x03])
         let b1 = packetizer.packetize(nals: [nal, nal, nal], timestamp: 100, ssrc: 1, startSequence: 0)
         XCTAssertEqual(b1.count, 3)
@@ -663,12 +612,9 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertFalse(h1_1.marker)
         XCTAssertTrue(h1_2.marker)
 
-        // Drop our hold on b1 so the pool's buffers go to refcount=1 and
-        // can be reused in place on the next call.
-        _ = b1.count  // ensure b1 isn't optimized away before this point
-        // Second batch: 3 packets. The pool may hand us back the same
-        // underlying buffers; the marker bit must reflect this batch's
-        // own last-packet status, not the previous batch's.
+        // Drop our hold on b1 so the pool's buffers reach refcount=1 and
+        // can be reused; b2's marker must reflect its own status, not b1's.
+        _ = b1.count
         let b2 = packetizer.packetize(nals: [nal, nal, nal], timestamp: 200, ssrc: 1, startSequence: 10)
         XCTAssertEqual(b2.count, 3)
         let (h2_0, _) = try XCTUnwrap(RTPHeader.decode(from: b2[0]))
@@ -681,21 +627,18 @@ final class RTPPacketTests: XCTestCase {
 
     // MARK: - Depacketizer pre-allocation
 
-    /// Large fragmented AU (~600 KB) should reassemble correctly. This
-    /// exercises the pre-allocated `currentAU` buffer — if pre-allocation
-    /// were sized wrong, Data would still grow on demand, but this test
-    /// also verifies bytes survive that growth intact.
+    /// Exercises the pre-allocated `currentAU` buffer with a ~600 KB IDR
+    /// slice (10x a typical P-frame) — bytes must survive growth intact.
     func testLargeFragmentedAUDepacketizesCorrectly() throws {
         let packetizer = H264Packetizer()
-        // Build a ~600 KB IDR slice (10x typical 60 KB P-frame).
         let bodySize = 600 * 1024
-        var slice = Data([0x65])  // IDR slice NAL header
+        var slice = Data([0x65])
         slice.append(contentsOf: (0..<bodySize).map { UInt8(($0 * 31) & 0xFF) })
 
         let packets = packetizer.packetize(
             nals: [slice], timestamp: 5_000, ssrc: 1, startSequence: 0
         )
-        XCTAssertGreaterThan(packets.count, 500)  // ~600 KB / ~1098 frag
+        XCTAssertGreaterThan(packets.count, 500)
 
         let depacketizer = H264Depacketizer()
         var au: VideoAccessUnit?
@@ -707,10 +650,8 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(AVCCParser.nalUnits(from: unwrapped.avcc), [slice])
     }
 
-    /// Many AUs in a row through one depacketizer instance — the buffer
-    /// pre-allocation should keep `currentAU` capacity stable across
-    /// flushes (each new AU starts with the pre-reserved capacity, not
-    /// growing from zero).
+    /// `currentAU` capacity should stay stable across flushes, not
+    /// regrowing from zero for each new AU.
     func testDepacketizerHandlesManyAUsInARow() throws {
         let packetizer = H264Packetizer()
         let depacketizer = H264Depacketizer()
@@ -776,16 +717,12 @@ final class HelloAckTests: XCTestCase {
     }
 }
 
-/// Wire codecs for the loss-recovery control messages (NACK / receiver report
-/// / ping) and the capability handshake that negotiates them. Backward
-/// compatibility is the load-bearing property: new bytes stay ≤ 0x7F so
-/// `looksLikeControl` is untouched, and the extended HELLO_ACK is rejected by
-/// the legacy 5-byte `decodeHelloAck` — that rejection is exactly what keeps an
+/// Wire codecs for NACK/receiver-report/ping and their capability handshake.
+/// Back-compat is load-bearing: new bytes stay ≤ 0x7F (`looksLikeControl`),
+/// and legacy 5-byte `decodeHelloAck` rejects the extended form, keeping an
 /// old viewer on the PLI path.
 final class LossRecoveryWireTests: XCTestCase {
-    /// Round-trip only — the exact byte values (and the ≤ 0x7F control-range
-    /// invariant across every case) are pinned by `WireByteRegistryTests`,
-    /// the single source of truth for wire constants.
+    /// Exact byte values are pinned by `WireByteRegistryTests`.
     func testNewControlBytesRoundTrip() {
         let kinds: [ScreenShareControlMessage] = [.nack, .receiverReport, .ping]
         for kind in kinds {
@@ -808,10 +745,9 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(decoded[1].blp, 0x00FF)
     }
 
+    /// A gap set spanning the 65535→0 wrap packs into two FCI groups
+    /// (pinned in NACKSchedulerTests); the codec must carry both intact.
     func testNACKWrapSpanningEntriesRoundTrip() {
-        // A gap set spanning the 65535 → 0 wrap packs into two FCI groups
-        // (packFCI's numeric sort splits at the boundary — pinned in
-        // NACKSchedulerTests); the wire codec must carry both groups intact.
         let entries = NACKScheduler.packFCI([65534, 65535, 0, 1])
         let data = ScreenShareControlMessage.encodeNACK(entries)
         let decoded = ScreenShareControlMessage.decodeNACK(data)
@@ -828,8 +764,8 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.decodeNACK(data).count, 16)
     }
 
+    /// Claims 2 entries but carries only one's worth of bytes.
     func testNACKDecodeRejectsTruncated() {
-        // Claims 2 entries but carries only one entry's worth of bytes.
         let bad = Data([0x0A, 0x02, 0x00, 0x01, 0x00, 0x02])
         XCTAssertTrue(ScreenShareControlMessage.decodeNACK(bad).isEmpty)
     }
@@ -863,23 +799,19 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.decodeHelloCaps(Data([0x00])), [])
     }
 
+    /// `.tenBit` (bit 5) rides the existing extended HELLO; a pre-`.tenBit`
+    /// viewer's HELLO is unchanged on the wire and reads as "no 10-bit", and
+    /// an old sharer still parses the caps it understands from a new HELLO.
     func testTenBitCapRidesTheSameHelloByte() {
-        // `.tenBit` (bit 5) is a VIEWER capability — "I can decode 10-bit" —
-        // carried by the extended HELLO that already exists, so a sharer
-        // learns it in the handshake instead of after a failed frame.
         XCTAssertEqual(ScreenShareCaps.tenBit.rawValue, 1 << 5)
         let caps: ScreenShareCaps = [.nack, .receiverReport, .fec, .tenBit]
         let hello = ScreenShareControlMessage.encodeHello(caps: caps)
         XCTAssertEqual(hello, Data([0x00, 0x27]))
         XCTAssertEqual(ScreenShareControlMessage.decodeHelloCaps(hello), caps)
         XCTAssertTrue(ScreenShareControlMessage.decodeHelloCaps(hello).contains(.tenBit))
-        // A pre-`.tenBit` viewer's HELLO is unchanged on the wire and reads as
-        // "no 10-bit" — the whole back-compat story in two assertions.
         let legacy = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport, .fec])
         XCTAssertEqual(legacy, Data([0x00, 0x07]))
         XCTAssertFalse(ScreenShareControlMessage.decodeHelloCaps(legacy).contains(.tenBit))
-        // And an old SHARER, which knows nothing of bit 5, still parses the
-        // caps it does understand out of a `.tenBit` viewer's HELLO.
         XCTAssertTrue(ScreenShareControlMessage.decodeHelloCaps(hello).contains(.fec))
     }
 
@@ -892,10 +824,8 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(data))
         XCTAssertLessThanOrEqual(ScreenShareControlMessage.fec.rawValue, 0x7F)
         XCTAssertEqual(ScreenShareControlMessage.decode(data), .fec)
-        // Legacy-peer proof: an old peer's decode of the raw byte is what the
-        // unknown-byte → nil contract covers (0x0D was exactly such a byte to
-        // pre-FEC peers, as 0x0E is to us today); pin that contract, and that
-        // the caps bit is the advertised one.
+        // 0x0D was an unknown byte to pre-FEC peers, as 0x0E is to us today —
+        // pins the unknown-byte-decodes-to-nil contract.
         XCTAssertNil(ScreenShareControlMessage.decode(Data([0x0E])), "unknown control bytes decode to nil")
         XCTAssertEqual(ScreenShareCaps.fec.rawValue, 1 << 2)
     }
@@ -911,9 +841,9 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(decoded?.body, body)
     }
 
+    /// Max envelope: 7-byte XOR prefix + a full payload region (same MTU
+    /// reasoning as a media packet).
     func testFECRoundTripMaxSizeBody() {
-        // Max envelope: 7-byte XOR prefix + a full 1100-byte payload region —
-        // same MTU reasoning as a media packet.
         let body = Data((0..<(7 + H264Packetizer.maxPayloadBytes)).map { UInt8($0 & 0xFF) })
         let data = ScreenShareControlMessage.encodeFEC(baseSeq: 42, count: 16, body: body)
         let decoded = ScreenShareControlMessage.decodeFEC(data)
@@ -940,8 +870,6 @@ final class LossRecoveryWireTests: XCTestCase {
         var wrongTag = ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 2, body: okBody)
         wrongTag[wrongTag.startIndex] = 0x0C
         XCTAssertNil(ScreenShareControlMessage.decodeFEC(wrongTag), "wrong control byte")
-        // Body-length sanity cap: nothing legitimate exceeds the XOR prefix
-        // plus one full MTU payload region.
         let oversized = Data(count: FECCodec.maxBodyBytes + 1)
         XCTAssertNil(
             ScreenShareControlMessage.decodeFEC(
@@ -958,27 +886,22 @@ final class LossRecoveryWireTests: XCTestCase {
         let report = ReceiverReport(
             fracLostQ8: 3, extHighestSeq: 0x0002_0001, jitterTicks: 0,
             lastPingTs: 77, delaySincePingMs: 9, fecRecovered: 1234)
-        // Default encode stays the exact legacy 20-byte layout.
         let legacy = ScreenShareControlMessage.encodeReceiverReport(report)
         XCTAssertEqual(legacy.count, 20)
         let legacyDecoded = ScreenShareControlMessage.decodeReceiverReport(legacy)
         XCTAssertEqual(legacyDecoded?.fecRecovered, 0, "20-byte form reads fecRecovered as 0")
         XCTAssertEqual(legacyDecoded?.fracLostQ8, 3)
-        // Extended 24-byte form round-trips the recovery fields.
         let extended = ScreenShareControlMessage.encodeReceiverReport(report, includeRecoveryFields: true)
         XCTAssertEqual(extended.count, 24)
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended), report)
-        // And the extended form is still one tolerant decode away for a
-        // NACK-era server (its `>= 20` guard reads the first 20 bytes).
+        // Still one tolerant decode away for a NACK-era server (`>= 20` guard).
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended)?.fracLostQ8, 3)
     }
 
+    /// The FEC arm reconstructs raw link loss as residual + recovered.
+    /// A served retransmit also masks loss, so without carrying the
+    /// NACK-recovered count too, FEC never gates on a high-RTT lossy link.
     func testReceiverReportNackRecoveredRoundTrip() {
-        // The FEC arm reconstructs raw link loss as residual + recovered. NACK
-        // recoveries mask loss too (a served retransmit counts as received), so
-        // without carrying the NACK-recovered count the arm can't see raw loss
-        // once NACK is working — FEC never gates on a high-RTT lossy link. The
-        // 24-byte extended RR carries both recovery counters.
         let report = ReceiverReport(
             fracLostQ8: 3, extHighestSeq: 0x0002_0001, jitterTicks: 0,
             lastPingTs: 77, delaySincePingMs: 9, fecRecovered: 1234, nackRecovered: 567)
@@ -986,15 +909,13 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(extended.count, 24)
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended), report)
 
-        // A 22-byte (FEC-era, pre-NACK-counter) report reads nackRecovered as 0
-        // but still round-trips fecRecovered.
+        // 22-byte (FEC-era, pre-NACK-counter): nackRecovered reads 0, fecRecovered survives.
         var short22 = extended
         short22.removeLast(2)
         XCTAssertEqual(short22.count, 22)
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(short22)?.nackRecovered, 0)
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(short22)?.fecRecovered, 1234)
 
-        // Legacy 20-byte reads both counters as 0.
         let legacy = ScreenShareControlMessage.encodeReceiverReport(report)
         XCTAssertEqual(legacy.count, 20)
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(legacy)?.nackRecovered, 0)
@@ -1003,9 +924,8 @@ final class LossRecoveryWireTests: XCTestCase {
     func testExtendedHelloAckBackCompat() {
         let extended = ScreenShareControlMessage.encodeHelloAck(ssrc: 0xAABB_CCDD, caps: [.nack])
         XCTAssertEqual(extended.count, 6)
-        // The compat mechanism: legacy strict decode rejects the 6-byte form.
+        // Compat mechanism: legacy strict decode rejects the 6-byte form.
         XCTAssertNil(ScreenShareControlMessage.decodeHelloAck(extended))
-        // The tolerant decode reads both forms.
         let parsedExtended = ScreenShareControlMessage.decodeHelloAckCaps(extended)
         XCTAssertEqual(parsedExtended?.ssrc, 0xAABB_CCDD)
         XCTAssertEqual(parsedExtended?.caps, [.nack])
