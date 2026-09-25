@@ -26,7 +26,7 @@ final class OpenLinkTests: XCTestCase {
 
     func testEncodesSlashesUnescaped() {
         let frame = ScreenShareMessage.openLink(url: "https://a.example/").encode()
-        let payload = String(decoding: frame.dropFirst(ScreenShareMessage.headerSize), as: UTF8.self)
+        let payload = String(bytes: frame.dropFirst(ScreenShareMessage.headerSize), encoding: .utf8)
         XCTAssertEqual(payload, #"{"url":"https://a.example/"}"#)
     }
 
