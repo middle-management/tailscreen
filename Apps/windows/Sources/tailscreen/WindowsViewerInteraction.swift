@@ -12,6 +12,7 @@ import enum TailscreenProtocol.AnnotationOp
 import class TailscreenProtocol.AnnotationStore
 import enum TailscreenProtocol.AnnotationTool
 import enum TailscreenProtocol.InputEvent
+import struct TailscreenProtocol.OpenLinkPayload
 import struct TailscreenProtocol.ScreenShareCaps
 import enum TailscreenProtocol.ViewerZoomMath
 import struct TailscreenProtocol.ViewerZoomState
@@ -42,6 +43,11 @@ final class WindowsViewerInteraction: ObservableObject {
     /// Same shape: drawing at a sharer with no overlay would only reach
     /// other viewers, looking like a bug with one viewer connected.
     @Published private(set) var annotationsAvailable = false
+
+    /// Whether the sharer advertised `ScreenShareCaps.openLink` (bit 6).
+    /// Same shape as the other two: hides "Open Link on Sharer…" rather than
+    /// offer a send that reaches a sharer that never prompts anyone.
+    @Published private(set) var openLinkAvailable = false
 
     // MARK: Remote control
 
@@ -130,6 +136,7 @@ final class WindowsViewerInteraction: ObservableObject {
         case input(InputEvent)
         case requestControl
         case releaseControl
+        case openLink(String)
     }
 
     init() {
@@ -149,6 +156,7 @@ final class WindowsViewerInteraction: ObservableObject {
         self.channel = channel
         remoteControlAvailable = false
         annotationsAvailable = false
+        openLinkAvailable = false
         controlState = .idle
         activeTool = nil
         annotations.resetForNewSession()
@@ -162,6 +170,7 @@ final class WindowsViewerInteraction: ObservableObject {
         activeTool = nil
         remoteControlAvailable = false
         annotationsAvailable = false
+        openLinkAvailable = false
         annotations.resetForNewSession()
         resetZoom()
     }
@@ -170,6 +179,7 @@ final class WindowsViewerInteraction: ObservableObject {
     func setCaps(_ caps: ScreenShareCaps) {
         remoteControlAvailable = caps.contains(.remoteControl)
         annotationsAvailable = caps.contains(.annotations)
+        openLinkAvailable = caps.contains(.openLink)
         // A sharer with no annotations render must not leave a tool armed.
         if !annotationsAvailable { activeTool = nil }
     }
@@ -245,6 +255,21 @@ final class WindowsViewerInteraction: ObservableObject {
         send(.input(event))
     }
 
+    /// Offer `text` to the sharer as a link to open, after trimming and
+    /// validating it. Validated HERE rather than in the composer view, so
+    /// there is one place that can be wrong about what the sharer would
+    /// accept — the sharer re-validates on arrival regardless.
+    /// - Returns: true if it was accepted and sent; false leaves `text` in
+    ///   the composer for the caller to show as unsent.
+    @discardableResult
+    func sendLink(_ text: String) -> Bool {
+        guard openLinkAvailable else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard OpenLinkPayload.isAcceptable(trimmed) else { return false }
+        send(.openLink(trimmed))
+        return true
+    }
+
     // MARK: Zoom
 
     /// Zoom about a viewport point by a multiplicative step. `fit` is passed
@@ -290,6 +315,7 @@ final class WindowsViewerInteraction: ObservableObject {
                 case .input(let event): await channel.sendInputEvent(event)
                 case .requestControl: await channel.requestControl()
                 case .releaseControl: await channel.releaseControl()
+                case .openLink(let url): await channel.sendOpenLink(url)
                 }
             }
         }

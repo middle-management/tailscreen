@@ -20,6 +20,7 @@ import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.DiagnosticsHost
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import struct TailscreenProtocol.LinkOfferInfo
 import enum TailscreenProtocol.NodeBringUpPhase
 import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.PeerListFilter
@@ -308,6 +309,11 @@ struct TailscreenWindowsApp: App {
                     }
                 }
                 .padding(12)
+            }
+            if interaction.openLinkAvailable {
+                OpenLinkComposer(onSend: { interaction.sendLink($0) })
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
             }
         }
     }
@@ -823,6 +829,15 @@ final class AppUIState: ObservableObject {
                         id: $0.id.uuidString,
                         message: L("\($0.displayName) wants to control this machine"))
                 }
+                // Links a viewer sent: the whole URL is the detail line, so
+                // it can't hide truncated the way a notification banner's can.
+                + sharing.linkOffers.map {
+                    HubPrompt(
+                        id: $0.id.uuidString,
+                        message: L("\($0.displayName) sent a link"),
+                        detail: $0.url,
+                        acceptLabel: L("Open"), declineLabel: L("Dismiss"))
+                }
                 // Somebody asking this machine to START sharing — last, since
                 // the other two are about people already blocked on an answer.
                 + shareRequests.map {
@@ -979,6 +994,13 @@ final class AppUIState: ObservableObject {
             candidates: status.controlRequests.map {
                 NoticeCandidate(identity: $0.id.uuidString, label: $0.displayName)
             })
+        // Informational (`.linkOffered.actions` is empty) — this only gets
+        // the banner on/off screen, never a routed answer.
+        notifications.applyAsk(
+            kind: .linkOffered,
+            candidates: status.linkOffers.map {
+                NoticeCandidate(identity: $0.id.uuidString, label: $0.displayName)
+            })
     }
 
     /// An ask to share, from the inbox rather than a share status — arrives
@@ -1011,11 +1033,23 @@ final class AppUIState: ObservableObject {
             answerShareRequest(id: requestID, accept: accept)
             return
         }
-        guard sharing.controlRequests.contains(where: { $0.id == requestID }) else { return }
+        if sharing.controlRequests.contains(where: { $0.id == requestID }) {
+            if accept {
+                grantControl(to: requestID)
+            } else {
+                declineControl(requestID)
+            }
+            return
+        }
+        guard sharing.linkOffers.contains(where: { $0.id == requestID }) else { return }
         if accept {
-            grantControl(to: requestID)
+            // `takeLinkOffer` removes it; only open what actually came back —
+            // it can already be gone (the viewer disconnected first).
+            if let offer = shareSession.takeLinkOffer(id: requestID) {
+                openPeerLink(offer.url)
+            }
         } else {
-            declineControl(requestID)
+            shareSession.dismissLinkOffer(id: requestID)
         }
     }
 
@@ -1703,6 +1737,26 @@ final class AppUIState: ObservableObject {
         // The empty argument is `start`'s title parameter. Without it, a URL in
         // quotes is taken AS the title and no browser opens.
         process.arguments = ["/c", "start", "", url]
+        do {
+            try process.run()
+        } catch {
+            detail = L("Could not open a browser — copy the URL above. (\(error))")
+        }
+    }
+
+    /// Open a URL a VIEWER sent, in the default browser.
+    ///
+    /// Deliberately NOT `openBrowser(_:)`: that one shells out through
+    /// `cmd.exe /c start`, and a peer-supplied URL can carry `&`/`|`/`^` —
+    /// all printable ASCII, all legal in a URL, all shell metacharacters —
+    /// which `cmd.exe` would parse as a second command. `rundll32.exe
+    /// url.dll,FileProtocolHandler <url>` opens the same way but as a
+    /// `Process` argument, never through a shell, so nothing in `url` is
+    /// ever interpreted.
+    private func openPeerLink(_ url: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "C:\\Windows\\System32\\rundll32.exe")
+        process.arguments = ["url.dll,FileProtocolHandler", url]
         do {
             try process.run()
         } catch {
