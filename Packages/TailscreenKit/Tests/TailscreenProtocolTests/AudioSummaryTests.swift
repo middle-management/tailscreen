@@ -16,14 +16,16 @@ final class AudioSummaryTests: XCTestCase {
 
     private func context(
         voiceStreams: Int = 1,
-        systemAudio: Bool = false,
+        systemAudioIn: Bool = false,
+        systemAudioOut: Bool = false,
         micOn: Bool = false,
         queueTracked: Bool = true,
         outputDevice: String? = "MacBook Pro Speakers"
     ) -> VoiceStats.PlaybackContext {
         VoiceStats.PlaybackContext(
             voiceStreams: voiceStreams,
-            systemAudioPlaying: systemAudio,
+            systemAudioIn: systemAudioIn,
+            systemAudioOut: systemAudioOut,
             microphoneOn: micOn,
             jitterTargetDepth: 3,
             outputDevice: outputDevice,
@@ -97,10 +99,10 @@ final class AudioSummaryTests: XCTestCase {
         var now = VoiceStats()
         now.systemAudioClampedBuffers = 11
         let row = now.audioSummaryFields(
-            since: VoiceStats(), windowNs: window, context: context(systemAudio: true))
+            since: VoiceStats(), windowNs: window, context: context(systemAudioIn: true))
         XCTAssertEqual(row["sys_clamped"], .int(11))
         XCTAssertEqual(row["clamped"], .int(0), "voice did not clip; only system audio did")
-        XCTAssertEqual(row["system_audio"], .bool(true))
+        XCTAssertEqual(row["system_audio_in"], .bool(true))
     }
 
     // MARK: - What was playing
@@ -110,13 +112,48 @@ final class AudioSummaryTests: XCTestCase {
     func testContextIsCarriedOnTheRow() {
         let row = VoiceStats().audioSummaryFields(
             since: VoiceStats(), windowNs: window,
-            context: context(voiceStreams: 2, systemAudio: true, micOn: true))
+            context: context(voiceStreams: 2, systemAudioIn: true, micOn: true))
         XCTAssertEqual(row["voice_streams"], .int(2))
-        XCTAssertEqual(row["system_audio"], .bool(true))
+        XCTAssertEqual(row["system_audio_in"], .bool(true))
         XCTAssertEqual(row["mic_on"], .bool(true))
         XCTAssertEqual(row["jitter_target"], .int(3))
         XCTAssertEqual(row["output_device"], .string("MacBook Pro Speakers"))
         XCTAssertEqual(row["window_ms"], .int(5000))
+    }
+
+    /// The two halves of the system-audio question are separate fields, and
+    /// the sharer's is the one that used to be unanswerable.
+    ///
+    /// A single receive-side flag meant the machine that had just turned
+    /// system audio ON reported `false` for every row while the viewer
+    /// opposite it reported `true` — one pair, two contradictory answers to
+    /// "was system audio in this call". The inequality is the point: folding
+    /// them back into one flag would satisfy any test that merely looked for
+    /// a `true` somewhere.
+    func testSendingAndReceivingSystemAudioAreSeparateAnswers() {
+        let sharer = VoiceStats().audioSummaryFields(
+            since: VoiceStats(), windowNs: window,
+            context: context(systemAudioIn: false, systemAudioOut: true))
+        XCTAssertEqual(sharer["system_audio_out"], .bool(true))
+        XCTAssertEqual(sharer["system_audio_in"], .bool(false), "a sharer never receives its own")
+
+        let viewer = VoiceStats().audioSummaryFields(
+            since: VoiceStats(), windowNs: window,
+            context: context(systemAudioIn: true, systemAudioOut: false))
+        XCTAssertEqual(viewer["system_audio_in"], .bool(true))
+        XCTAssertEqual(viewer["system_audio_out"], .bool(false))
+
+        XCTAssertNotEqual(
+            sharer["system_audio_out"], viewer["system_audio_out"],
+            "the two seats of one call must not give the same send-side answer")
+    }
+
+    /// Sending system audio with nothing inbound is still a window worth a
+    /// row — it is exactly the sharer's side of a call.
+    func testSendingSystemAudioAloneIsWorthARow() {
+        XCTAssertTrue(
+            VoiceStats.shouldRecordSummary(
+                context: context(voiceStreams: 0, systemAudioIn: false, systemAudioOut: true)))
     }
 
     func testUnknownOutputDeviceIsAbsentRatherThanNamed() {
@@ -144,7 +181,7 @@ final class AudioSummaryTests: XCTestCase {
     func testAnyLiveAudioIsWorthARow() {
         XCTAssertTrue(VoiceStats.shouldRecordSummary(context: context(voiceStreams: 1)))
         XCTAssertTrue(
-            VoiceStats.shouldRecordSummary(context: context(voiceStreams: 0, systemAudio: true)))
+            VoiceStats.shouldRecordSummary(context: context(voiceStreams: 0, systemAudioIn: true)))
         XCTAssertTrue(
             VoiceStats.shouldRecordSummary(context: context(voiceStreams: 0, micOn: true)))
     }
@@ -155,7 +192,7 @@ final class AudioSummaryTests: XCTestCase {
     func testNoAudioMeansNoRow() {
         XCTAssertFalse(
             VoiceStats.shouldRecordSummary(
-                context: context(voiceStreams: 0, systemAudio: false, micOn: false)))
+                context: context(voiceStreams: 0, systemAudioIn: false, micOn: false)))
     }
 
     /// "The other side can't hear me" and "I can't hear the other side" are

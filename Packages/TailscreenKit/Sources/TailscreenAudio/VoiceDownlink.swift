@@ -134,7 +134,12 @@ public final class VoiceDownlink: @unchecked Sendable {
         guard let windowNs = summarySampler.windowClosed(nowNs: nowNs) else { return [:] }
         let context = VoiceStats.PlaybackContext(
             voiceStreams: voiceSSRCsThisWindow.count,
-            systemAudioPlaying: systemAudioThisWindow,
+            systemAudioIn: systemAudioThisWindow,
+            // No non-mac host captures system audio today, so there is
+            // nothing to send and `false` is the true answer rather than a
+            // placeholder. A host that gains the capability pushes it in,
+            // exactly as the mac host does.
+            systemAudioOut: false,
             microphoneOn: false,
             jitterTargetDepth: jitterTarget,
             burstDepth: max(burstDepthSinceSummary, playoutBacklog.peakDepth),

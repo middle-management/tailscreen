@@ -1649,7 +1649,7 @@ class AppState: ObservableObject {
                         srv?.sendAudioRTP(packet)
                     }
                     self.voiceChannel = voice
-                    self.publishOutputDeviceToVoice()
+                    self.publishVoiceHostContext()
                     srv.onAudioReceived = { [weak voice] packet in
                         voice?.receive(packet)
                     }
@@ -2041,15 +2041,25 @@ class AppState: ObservableObject {
                 snapshot: current,
                 selectedInput: selectedInputDeviceName,
                 selectedOutput: selectedOutputDeviceName))
-        publishOutputDeviceToVoice()
+        publishVoiceHostContext()
     }
 
-    /// Tell the voice path which output every `audio.summary` row was
-    /// measured through. Pushed on each device change and on attach, since a
-    /// `VoiceChannel` built after the last change would otherwise record
-    /// rows naming no device.
-    private func publishOutputDeviceToVoice() {
+    /// Tell the voice path the half of an `audio.summary` row it cannot
+    /// observe for itself: which output the numbers were measured through,
+    /// and whether this host is sending system audio.
+    ///
+    /// Both are pushed rather than read because both live here. The device
+    /// is Core Audio state on the MainActor; system audio leaves through the
+    /// capture helper and never passes anything the voice path can see, so
+    /// without this a sharer's row says `system_audio_out: false` on the
+    /// machine that just turned it on.
+    ///
+    /// Called on every device change, on every system-audio toggle, and on
+    /// attach — a `VoiceChannel` built after the last change would otherwise
+    /// record rows carrying neither.
+    private func publishVoiceHostContext() {
         voiceChannel?.setOutputDeviceName(selectedOutputDeviceName ?? systemDefaultOutputName)
+        voiceChannel?.setSharingSystemAudio(isSystemAudioOn)
     }
 
     /// Name of the selected input, or nil for "system default" — a real
@@ -2158,6 +2168,7 @@ class AppState: ObservableObject {
         isSystemAudioOn.toggle()
         AppDiagnostics.action(.actionSystemAudioToggle, ["on": .bool(isSystemAudioOn)])
         server?.setShareSystemAudio(isSystemAudioOn)
+        publishVoiceHostContext()
     }
 
     // MARK: - Link sharing (share-by-token) actions
@@ -2473,7 +2484,7 @@ class AppState: ObservableObject {
                             c?.sendAudioRTP(packet)
                         }
                         self.voiceChannel = voice
-                        self.publishOutputDeviceToVoice()
+                        self.publishVoiceHostContext()
                         c.onAudioReceived = { [weak voice] packet in
                             voice?.receive(packet)
                         }

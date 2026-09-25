@@ -79,6 +79,10 @@ final class VoiceChannel: @unchecked Sendable {
     private let jitterTargetDepth = OSAllocatedUnfairLock<Int>(
         initialState: VoiceChannel.initialJitterTargetDepth)
     private let outputDeviceName = OSAllocatedUnfairLock<String?>(initialState: nil)
+    /// Whether this host is capturing and sending system audio. Pushed by
+    /// `AppState` — system audio leaves through the capture helper, so
+    /// nothing on this path can observe it.
+    private let sharingSystemAudio = OSAllocatedUnfairLock<Bool>(initialState: false)
     private let logger = TSLogger()
 
     // Portable constants, forwarded so `MicCapture` and the mac tests keep
@@ -173,6 +177,16 @@ final class VoiceChannel: @unchecked Sendable {
     /// other way), keeping each row self-contained.
     func setOutputDeviceName(_ name: String?) {
         outputDeviceName.withLock { $0 = name }
+    }
+
+    /// Tell the row whether this host is SENDING system audio.
+    ///
+    /// The receive-side flag beside it (`system_audio_in`) is set from
+    /// inbound PT 99, which a sharer never gets — so without this the
+    /// machine that turned system audio on reports `false` for the whole
+    /// share while the viewer opposite reports `true`.
+    func setSharingSystemAudio(_ sharing: Bool) {
+        sharingSystemAudio.withLock { $0 = sharing }
     }
 
     /// Called from the MainActor (`MicCapture`).
@@ -503,7 +517,8 @@ final class VoiceChannel: @unchecked Sendable {
 
         let context = VoiceStats.PlaybackContext(
             voiceStreams: streams,
-            systemAudioPlaying: systemAudio,
+            systemAudioIn: systemAudio,
+            systemAudioOut: sharingSystemAudio.withLock { $0 },
             microphoneOn: !_isMuted,
             jitterTargetDepth: jitterTargetDepth.withLock { $0 },
             burstDepth: takeBurstDepthForSummary(),
