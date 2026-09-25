@@ -166,19 +166,127 @@ public enum VoiceReceiveDecisions {
         return .discontinuity
     }
 
-    /// Pure jitter-buffer sizing: target queue depth in 20 ms buffers. One
-    /// buffer of slack per frame-duration of smoothed jitter, +1 base;
-    /// clamped, moves at most one step per call.
+    /// One frame's playout duration in nanoseconds — 20 ms at 48 kHz.
+    public static let frameDurationNs = UInt64(samplesPerFrame) * 1_000_000_000 / 48_000
+
+    /// How deep the playback queue would have had to be to keep every frame
+    /// the network actually delivered.
+    ///
+    /// Exists because smoothed jitter cannot answer that question. RFC 3550
+    /// jitter is a smoothed *mean* deviation, so it barely moves on the one
+    /// arrival pattern that overflows a queue — a stall followed by a burst,
+    /// where the burst's negative deviations cancel the stall's positive one.
+    /// A 0.10.0-rc.16 bundle is the worked example: smoothed jitter sat
+    /// between 32 and 39 ms for two minutes, which asks for a target of 3
+    /// buffers and is exactly where the target stayed, while the path's round
+    /// trip ranged from 1 ms to 756 ms and the receiver dropped 550 frames it
+    /// had already been handed — 9 % of everything that arrived — and starved
+    /// 327 times. Every counter that could have sized the buffer was calm; the
+    /// queue was thrashing.
+    ///
+    /// So this measures the quantity directly, by modelling the same queue
+    /// with no cap on it: playout consumes one frame per frame-duration while
+    /// there is anything to consume, an arrival adds one, and the peak depth
+    /// that model reaches is the room the burst actually needed. Feed it where
+    /// frames are handed to the playback queue — *after* the mixer, since the
+    /// mixer collapses one slot's several speakers into the single frame the
+    /// queue receives, and counting raw arrivals would read two people talking
+    /// as a burst.
+    ///
+    /// One honest limitation: this does not distinguish a burst from a sender
+    /// whose clock simply runs fast. Both back the queue up, and the right
+    /// answer differs — a burst wants a deeper buffer, drift wants the cap to
+    /// bound the latency and drop the excess, which is what the cap was always
+    /// for. Sizing on backlog lets the buffer follow drift up to `maxDepth`
+    /// before dropping starts, so a persistently fast sender reaches more
+    /// mouth-to-ear latency than it used to. Bounded either way, and slow at
+    /// the rates that actually occur: at a realistic 0.1 % the climb to
+    /// `maxDepth` takes minutes.
+    public struct PlayoutBacklog: Equatable, Sendable {
+        /// Ceiling on the modelled depth. Far above `jitterBufferTarget`'s
+        /// own `maxDepth`, so it never truncates an answer that matters, but
+        /// finite so a pathological clock cannot make the drain loop long.
+        public static let depthCeiling = 64
+
+        private var depth = 0
+        private var peak = 0
+        /// When the next frame is due out; nil before the first arrival and
+        /// whenever the model has drained.
+        private var playoutDueNs: UInt64?
+
+        public init() {}
+
+        /// The deepest the modelled queue has been since the last
+        /// ``drainPeak()``.
+        public var peakDepth: Int { peak }
+
+        /// Record one frame handed to the playback queue.
+        public mutating func noteFrameQueued(nowNs: UInt64) {
+            if let due = playoutDueNs, depth > 0, nowNs >= due {
+                // Consume whole frames' worth of elapsed playout. Bounded by
+                // `depth`, which is bounded by `depthCeiling`.
+                var next = due
+                while depth > 0, next <= nowNs {
+                    depth -= 1
+                    next &+= VoiceReceiveDecisions.frameDurationNs
+                }
+                playoutDueNs = next
+            }
+            if depth == 0 {
+                // Nothing to play means playout is not running: the clock
+                // restarts from this frame rather than charging the silence
+                // as consumption it never made. (This is the underrun, seen
+                // from the model's side.)
+                playoutDueNs = nowNs &+ VoiceReceiveDecisions.frameDurationNs
+            }
+            depth = min(depth + 1, Self.depthCeiling)
+            peak = max(peak, depth)
+        }
+
+        /// Take the peak for the window that just closed and open the next.
+        ///
+        /// The new window starts at the depth still outstanding rather than
+        /// at zero: a burst that is still draining when the window closes is
+        /// a demand the next window inherits, and resetting to zero would
+        /// under-report it exactly when it matters.
+        public mutating func drainPeak() -> Int {
+            let closing = peak
+            peak = depth
+            return closing
+        }
+
+        /// Forget everything — a new session, or a sharer switch.
+        public mutating func reset() { self = PlayoutBacklog() }
+    }
+
+    /// Pure jitter-buffer sizing: target queue depth in 20 ms buffers.
+    ///
+    /// The target is the deeper of two readings. One buffer of slack per
+    /// frame-duration of smoothed jitter (+1 base) is the steady-state
+    /// answer; `burstDepth` — see ``PlayoutBacklog`` — is what the last
+    /// window's worst burst actually demanded, and on a stalling path it is
+    /// the larger of the two by a wide margin.
+    ///
+    /// **Growth is immediate, shrink is one step per call.** They are
+    /// asymmetric on purpose. Climbing one step at a time from 3 to 12 takes
+    /// nine calls, and on a ~1 Hz sweep that is nine more seconds of dropping
+    /// audio already in hand — the cost of being too shallow is paid every
+    /// frame, while the cost of being too deep is latency the next shrink
+    /// gives back. Decay stays gradual so a single quiet window cannot
+    /// collapse a buffer the path still needs, which is what would turn this
+    /// into an oscillation.
     public static func jitterBufferTarget(
         smoothedJitterMs: Double,
+        burstDepth: Int = 0,
         currentTarget: Int,
         minDepth: Int = 2,
         maxDepth: Int = 12
     ) -> Int {
         let frameMs = Double(VoiceReceiveDecisions.samplesPerFrame) / 48.0
         let slack = Int((max(0, smoothedJitterMs) / frameMs).rounded(.up))
-        let ideal = min(max(1 + slack, minDepth), maxDepth)
-        if ideal > currentTarget { return min(currentTarget + 1, maxDepth) }
+        let wanted = max(1 + slack, burstDepth)
+        let ideal = min(max(wanted, minDepth), maxDepth)
+        if ideal > currentTarget { return ideal }
         if ideal < currentTarget { return max(currentTarget - 1, minDepth) }
         return currentTarget
     }

@@ -89,6 +89,14 @@ public final class VoiceDownlink: @unchecked Sendable {
     private var systemAudioClamped = 0
     /// Worst live stream's smoothed jitter as of the last sweep, in ms.
     private var worstJitterMs = 0.0
+    /// Models the playback queue with no cap, so the jitter target is sized
+    /// on what a burst actually demanded rather than on smoothed jitter,
+    /// which does not see bursts. Fed after the mixer — the queue's own
+    /// input — and drained by the sweep.
+    private var playoutBacklog = VoiceReceiveDecisions.PlayoutBacklog()
+    /// Worst backlog since the last `audio.summary`, so a row can say what
+    /// the target was sized against.
+    private var burstDepthSinceSummary = 0
 
     var concealedFrameCount: Int { lock.withLock { concealed } }
     var discontinuityCount: Int { lock.withLock { discontinuities } }
@@ -129,10 +137,12 @@ public final class VoiceDownlink: @unchecked Sendable {
             systemAudioPlaying: systemAudioThisWindow,
             microphoneOn: false,
             jitterTargetDepth: jitterTarget,
+            burstDepth: max(burstDepthSinceSummary, playoutBacklog.peakDepth),
             outputDevice: nil,
             playbackQueueTracked: false)
         voiceSSRCsThisWindow.removeAll(keepingCapacity: true)
         systemAudioThisWindow = false
+        burstDepthSinceSummary = 0
         guard VoiceStats.shouldRecordSummary(context: context) else { return [:] }
         let snapshot = statsSnapshot
         let previous = lastSummaryStats
@@ -176,6 +186,10 @@ public final class VoiceDownlink: @unchecked Sendable {
             sweepIfDue(nowNs: now)
             // Per-SSRC output becomes per-slot output here, in decode order.
             let mixed = out.flatMap { mixer.add(ssrc: $0.ssrc, samples: $0.samples, nowNs: now) }
+            // After the mixer, not before: one slot's several speakers leave
+            // as the single frame the playback queue receives, so counting
+            // raw arrivals would read two people talking as a burst.
+            for _ in mixed { playoutBacklog.noteFrameQueued(nowNs: now) }
             // Taken under the lock, recorded outside it — the recorder takes
             // its own lock, and nesting the two is how a deadlock gets built.
             return (pcmSink, mixed, audioSummaryRowLocked(nowNs: now))
@@ -205,6 +219,8 @@ public final class VoiceDownlink: @unchecked Sendable {
             clampedBuffers = 0
             systemAudioClamped = 0
             worstJitterMs = 0
+            playoutBacklog.reset()
+            burstDepthSinceSummary = 0
             summarySampler.reset()
             lastSummaryStats = VoiceStats()
             voiceSSRCsThisWindow.removeAll()
@@ -430,8 +446,10 @@ public final class VoiceDownlink: @unchecked Sendable {
             lastSeen.removeValue(forKey: ssrc)
         }
         worstJitterMs = receiveStates.values.map(\.smoothedJitterMs).max() ?? 0
+        let burstDepth = playoutBacklog.drainPeak()
+        burstDepthSinceSummary = max(burstDepthSinceSummary, burstDepth)
         jitterTarget = VoiceReceiveDecisions.jitterBufferTarget(
-            smoothedJitterMs: worstJitterMs, currentTarget: jitterTarget)
+            smoothedJitterMs: worstJitterMs, burstDepth: burstDepth, currentTarget: jitterTarget)
     }
 
     // MARK: - Decoder pool
