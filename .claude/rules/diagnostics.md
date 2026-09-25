@@ -227,6 +227,67 @@ for. Before admission nothing is summarized — the sampler is only ticked once
 there is an SSRC — because a viewer parked on the approval prompt for a
 minute would otherwise put twelve rows of zeros ahead of the handshake.
 
+**The audio path gets the same treatment, one release later, for the same
+reason.** `audio.summary` is one event per sampler window carrying the voice
+receive path's `concealed` / `discontinuities` / `overruns` / `underruns` /
+`clamped` / `sys_clamped` deltas and its jitter, from the pure
+`VoiceStats.audioSummaryFields` (`AudioSummaryTests`) — the mac
+`VoiceChannel` and the portable `VoiceDownlink` both record it, so all three
+hosts say the same things. Those counters existed long before the event and
+reached a bundle only through a log line gated on "at most once a minute, and
+only when a counter moved", which is the `Viewer stats` mistake in the audio
+path: a 0.10.0-rc.15 pair from a call both ends described as crackly carries
+not one such line, and a reader cannot tell that from a call with no voice in
+it. Three things make the row mean something. It carries **what was playing**
+— `voice_streams` (SSRCs that delivered in THIS window, so a stream that
+stops reads as 0 rather than holding its last count), `system_audio`,
+`mic_on`, `jitter_target` and `output_device` — because "concealed 0, clamped
+0" is equally true of a clean call and of one distorting somewhere the voice
+path never looks, and on macOS one such place is `mainMixerNode`, where a
+remote voice and the sharer's shared system audio are summed with no headroom
+of ours. It counts system-audio clipping **apart** from voice clipping, since
+voice alone says one stream arrived hot while both together say the mix is
+the problem. And a host with no playback queue of its own **omits**
+`overruns` / `underruns` rather than reporting zero, on the same principle as
+`rr_age_ms` being absent when no report has ever arrived: a zero there reads
+as "nothing was dropped", which is the opposite of "nobody was counting".
+
+The gate is different from `transport.summary`'s and deliberately so. A row
+is recorded for every window in which audio is running **whether or not a
+counter moved** — that half is the same, and is the whole point. But a window
+with no voice, no system audio and no live microphone records nothing,
+because the lifecycle events (`mic.attached`, `system_audio.started`,
+`voice.ssrc.assigned`) already say whether audio should have been running, so
+an absent row reads as "there was none" rather than as "nobody looked".
+
+**The sharer's row carries the upstream half too.** `audio_packets_in` and
+`audio_rejected_in` are inbound viewer audio, accepted and refused, per
+viewer per window. Every other field on that row describes what the sharer
+sent or what the viewer said about it, so "the sharer cannot hear me" left
+nothing behind at all: a muted microphone, a viewer whose audio never reached
+the wire, and audio arriving and being refused by the source-SSRC anti-spoof
+gate all produced an identical row. The two are separate numbers because only
+the third looks like silence from the sharer's seat while the viewer's own
+bundle shows it sending at a steady fifty packets a second.
+
+**`annotation.summary` inverts the clean-window rule, and that is not a
+regression.** It is recorded only for a window in which a viewer annotation
+actually crossed the framed control channel, carrying `applied` / `dropped` /
+`relayed`. A transport row's silence on a clean window is the failure that
+summary exists to break, because the transport is always running and "nothing
+to report" and "nothing measured" look alike. Annotations are discrete acts:
+a window with none means nobody drew, which is the answer rather than the
+absence of one, and a row per empty window would crowd the ring for a feature
+most sessions never use. The three numbers separate the three explanations of
+"I drew and the sharer saw nothing" that were one symptom before it existed —
+`applied` climbing moves the question to what is on screen, `dropped`
+climbing names the admitted-viewer gate, and no row at all points back at the
+viewer or the channel. The viewer's half is deliberately not an event: the
+mac client and `ViewerBackChannel` each log one line the first time an
+annotation reaches the wire and one the first time the back-channel is not
+open to take it, which is enough to tell viewer-never-sent from
+sharer-never-got and costs no row per stroke.
+
 **`decode.failed` is once per episode.** A wedged decoder fails at frame
 rate; the event is recorded on the first failure after a decoded frame and
 the total rides along in `failures_total`. `decode.recovery.action` is

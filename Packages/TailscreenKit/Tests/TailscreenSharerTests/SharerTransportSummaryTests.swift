@@ -172,4 +172,70 @@ final class SharerTransportSummaryTests: XCTestCase {
             XCTAssertFalse(key.contains(" ") || key.contains("-"), "\(key) is not snake_case")
         }
     }
+
+    // MARK: - Inbound audio
+
+    /// The upstream half. Every other field on this row describes what the
+    /// sharer SENT or what the viewer said about it, so "the sharer cannot
+    /// hear me" left no trace at all — which is what these two are for.
+    func testInboundAudioIsCountedOnTheRow() {
+        let row = fields(
+            Server.ViewerTransportSample(audioPacketsReceived: 250, audioPacketsRejected: 0))
+        XCTAssertEqual(row["audio_packets_in"], .int(250))
+        XCTAssertEqual(row["audio_rejected_in"], .int(0))
+    }
+
+    /// Rejected is its own number, not folded into the accepted one.
+    ///
+    /// The anti-spoof gate is the single case that looks like silence from
+    /// the sharer's seat while the viewer's own bundle shows it sending at a
+    /// steady 50 packets a second: the audio arrives and goes nowhere. Summing
+    /// the two, or reporting only the total, would restore exactly the
+    /// ambiguity the pair exists to remove.
+    func testRejectedAudioIsDistinguishableFromAcceptedAudio() {
+        let spoofed = fields(
+            Server.ViewerTransportSample(audioPacketsReceived: 0, audioPacketsRejected: 250))
+        let silent = fields(
+            Server.ViewerTransportSample(audioPacketsReceived: 0, audioPacketsRejected: 0))
+        XCTAssertEqual(spoofed["audio_packets_in"], silent["audio_packets_in"])
+        XCTAssertNotEqual(
+            spoofed["audio_rejected_in"], silent["audio_rejected_in"],
+            "a viewer whose audio is being refused must not read as a viewer saying nothing")
+    }
+
+    // MARK: - Annotations
+
+    /// `annotation.summary` separates the three explanations of "I drew and
+    /// the sharer saw nothing" that were one symptom before it existed.
+    func testAnnotationRowCarriesTheThreeOutcomes() {
+        let row = Server.annotationSummaryFields(
+            counters: Server.AnnotationCounters(applied: 7, dropped: 2, relayed: 5),
+            windowNs: window)
+        XCTAssertEqual(row["applied"], .int(7))
+        XCTAssertEqual(row["dropped"], .int(2))
+        XCTAssertEqual(row["relayed"], .int(5))
+        XCTAssertEqual(row["window_ms"], .int(5000))
+    }
+
+    /// The emptiness test the sweep gates on. Unlike `transport.summary`,
+    /// whose silence on a clean window is the failure it exists to break,
+    /// a window with no annotations in it means nobody drew — so an empty
+    /// window records nothing rather than a row of zeros.
+    func testEmptyWindowIsRecognisedAsEmpty() {
+        XCTAssertTrue(Server.AnnotationCounters().isEmpty)
+        XCTAssertFalse(Server.AnnotationCounters(applied: 1).isEmpty)
+        XCTAssertFalse(Server.AnnotationCounters(dropped: 1).isEmpty)
+        XCTAssertFalse(Server.AnnotationCounters(relayed: 1).isEmpty)
+    }
+
+    /// A dropped-only window is a row, not silence. It is the single most
+    /// diagnostic shape this event has — ops arriving and being refused —
+    /// and the once-per-share log line it replaces could say it only once.
+    func testDroppedOnlyWindowStillRecords() {
+        let counters = Server.AnnotationCounters(applied: 0, dropped: 4, relayed: 0)
+        XCTAssertFalse(counters.isEmpty)
+        let row = Server.annotationSummaryFields(counters: counters, windowNs: window)
+        XCTAssertEqual(row["applied"], .int(0))
+        XCTAssertEqual(row["dropped"], .int(4))
+    }
 }

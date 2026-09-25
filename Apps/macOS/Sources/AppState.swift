@@ -2000,6 +2000,7 @@ class AppState: ObservableObject {
                         srv?.sendAudioRTP(packet)
                     }
                     self.voiceChannel = voice
+                    self.publishOutputDeviceToVoice()
                     srv.onAudioReceived = { [weak voice] packet in
                         voice?.receive(packet)
                     }
@@ -2449,6 +2450,15 @@ class AppState: ObservableObject {
                 snapshot: current,
                 selectedInput: selectedInputDeviceName,
                 selectedOutput: selectedOutputDeviceName))
+        publishOutputDeviceToVoice()
+    }
+
+    /// Tell the voice path which output every `audio.summary` row it records
+    /// was measured through. Pushed on each device change and on attach,
+    /// since a `VoiceChannel` built after the last change would otherwise
+    /// record rows naming no device at all.
+    private func publishOutputDeviceToVoice() {
+        voiceChannel?.setOutputDeviceName(selectedOutputDeviceName ?? systemDefaultOutputName)
     }
 
     /// Name of the selected input, or nil for "system default" — which is a
@@ -2922,6 +2932,7 @@ class AppState: ObservableObject {
                             c?.sendAudioRTP(packet)
                         }
                         self.voiceChannel = voice
+                        self.publishOutputDeviceToVoice()
                         c.onAudioReceived = { [weak voice] packet in
                             voice?.receive(packet)
                         }

@@ -17,6 +17,17 @@ public struct VoiceStats: Equatable, Sendable {
     public var discontinuities = 0
     /// Decoded buffers that contained at least one out-of-[-1, 1] sample.
     public var clampedBuffers = 0
+    /// Decoded SYSTEM-AUDIO buffers that contained at least one
+    /// out-of-[-1, 1] sample.
+    ///
+    /// Counted apart from `clampedBuffers` because the two clip for
+    /// different reasons and only one of them is the voice path's doing.
+    /// System audio is a separate stream that meets voice only at the
+    /// host's output mixer, so a session clipping here and not there is
+    /// the sharer's machine sending hot audio, while both at once is the
+    /// sum — and the counters are the only way to tell those apart from
+    /// "it sounded bad".
+    public var systemAudioClampedBuffers = 0
     /// RFC 3550 smoothed inter-arrival jitter of the worst SSRC, in ms.
     public var smoothedJitterMs = 0.0
 

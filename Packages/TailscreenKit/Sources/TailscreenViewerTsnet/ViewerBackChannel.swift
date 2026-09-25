@@ -178,13 +178,33 @@ public actor ViewerBackChannel {
     /// writer type (the mac client needs `ConnectionWriter` only because it
     /// sends from multiple isolation domains).
     private func send(_ message: ScreenShareMessage, label: String) async {
-        guard let connection else { return }
+        guard let connection else {
+            // Annotations only, and only the first: a viewer drawing before
+            // the channel is up loses those strokes with nothing said, which
+            // from the sharer's seat looks exactly like the sharer having
+            // dropped them. Actor-isolated, so the latch needs no lock.
+            if case .annotation = message, !annotationDropLogged {
+                annotationDropLogged = true
+                logger.log("[backchannel] annotation dropped — channel not open")
+            }
+            return
+        }
         do {
             try await connection.send(message.encode())
+            if case .annotation = message, !annotationSentLogged {
+                annotationSentLogged = true
+                logger.log("[backchannel] first annotation op sent")
+            }
         } catch {
             logger.log("[backchannel] send \(label) failed: \(error)")
         }
     }
+
+    /// One-shot latches for the two annotation lines above — the bundle needs
+    /// to answer "did this viewer's strokes ever reach the wire", not to carry
+    /// a line per stroke.
+    private var annotationSentLogged = false
+    private var annotationDropLogged = false
 
     // MARK: Inbound + reconnect
 
