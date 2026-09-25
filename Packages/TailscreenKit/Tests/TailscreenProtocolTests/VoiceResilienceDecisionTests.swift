@@ -215,7 +215,6 @@ final class VoiceResilienceDecisionTests: XCTestCase {
         }
     }
 
-
     // MARK: - PlayoutBacklog
 
     private static let frameNs = VoiceReceiveDecisions.frameDurationNs
