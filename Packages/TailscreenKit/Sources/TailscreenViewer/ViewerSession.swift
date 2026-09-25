@@ -61,6 +61,19 @@ public final class ViewerSession {
     /// duplicate requests behind it. Stops entirely at the first keyframe.
     public static let keyframeRequestIntervalNs: UInt64 = 1_000_000_000
 
+    /// Spacing between HELLO re-sends while the sharer has not answered (see
+    /// `maybeResendHello`). One second, the same reasoning as the keyframe
+    /// cadence above: a lost HELLO costs about a second rather than the
+    /// session, and a HELLO already in flight does not collect duplicates.
+    public static let helloRetryIntervalNs: UInt64 = 1_000_000_000
+
+    /// How many HELLOs to send in total before falling silent. Ten seconds of
+    /// cover at `helloRetryIntervalNs`, which is far past any plausible run of
+    /// UDP loss on a path that is otherwise carrying a share. It is a bound on
+    /// the *lost-HELLO* window, not on how long somebody may sit at the
+    /// approval prompt: the first answer of any kind stops the retries.
+    public static let helloAttemptLimit = 10
+
     // MARK: Collaborators
 
     /// Capabilities this viewer advertises in its HELLO (NACK / receiver-report
@@ -305,6 +318,10 @@ public final class ViewerSession {
     /// Whether a pre-keyframe request has been sent, so the first one fires on
     /// the next tick after admission rather than an interval later.
     private var sentKeyframeRequest = false
+    /// Clock reading of the last HELLO sent, and how many have gone out. See
+    /// `maybeResendHello`.
+    private var lastHelloSentNs: UInt64 = 0
+    private var helloAttempts = 0
 
     /// - Parameters:
     ///   - caps: capabilities to advertise (NACK / receiver-report / FEC).
@@ -382,7 +399,22 @@ public final class ViewerSession {
     /// returned bytes to the sharer; the sharer replies with a HELLO_ACK
     /// (handled in `receiveRTP`).
     public func start() {
-        recorder?.record(.helloSent, role: .viewer, fields: ["caps": .string(caps.diagnosticDescription)])
+        sendHello()
+    }
+
+    /// Emit one HELLO and record it. `attempt` is 1 for the first and counts up
+    /// through `maybeResendHello`'s retries, so a bundle says outright whether
+    /// the handshake needed more than one try — which is the whole diagnosis
+    /// when it did.
+    private func sendHello() {
+        helloAttempts += 1
+        lastHelloSentNs = nowNs
+        recorder?.record(
+            .helloSent, role: .viewer,
+            fields: [
+                "caps": .string(caps.diagnosticDescription),
+                "attempt": DiagnosticValue(helloAttempts)
+            ])
         onControlToSend(ScreenShareControlMessage.encodeHello(caps: caps))
     }
 
@@ -581,6 +613,7 @@ public final class ViewerSession {
         }
 
         maybeDisarmFEC()
+        maybeResendHello()
         maybeRequestKeyframe()
         maybeSendReceiverReport()
         maybeRecordTransportSummary()
@@ -605,6 +638,53 @@ public final class ViewerSession {
             role: .viewer,
             fields: now.transportSummaryFields(since: previous, windowNs: windowNs)
                 .merging(["ssrc": DiagnosticValue(assignedSSRC ?? 0)]) { current, _ in current })
+    }
+
+    /// Re-send the HELLO, on a cadence, until the sharer answers.
+    ///
+    /// `start()` used to send it exactly once, and a HELLO is one UDP datagram:
+    /// lose it and the viewer never sends another. The session still came up,
+    /// which is what made this expensive — the sharer registers an unknown
+    /// address from its KEEPALIVE or PLI instead (`registerOrRefresh`), and
+    /// that path has no capabilities to record, because `viewerCaps` is only
+    /// written where a HELLO is parsed. So the sharer admits a viewer it
+    /// believes is legacy and answers with the 5-byte ack, and the whole
+    /// negotiated feature set silently does not exist for that session: the
+    /// viewer hides its annotation toolbar and Request Control (both gated on
+    /// the ack's caps), the sharer never records the viewer's seq ranges for
+    /// retransmission so every NACK it sends is answered with nothing, it
+    /// never sends the RTT PING (gated on `.receiverReport`), and FEC can
+    /// never arm because it needs that RTT. A 0.10.0-rc.15 bundle pair shows
+    /// exactly this: `server_caps="none (legacy ack)"`, the sharer's 27
+    /// summary rows all reading `rtt_ms: 0` and `nack_served: 0` against a
+    /// viewer reporting 60 ms and three NACKs sent, and no `hello.received`
+    /// on the sharer at all.
+    ///
+    /// The sharer was already written expecting this — it re-acks on every
+    /// HELLO and re-sends HELLO_PENDING "on every HELLO retry in case an
+    /// earlier one was lost on the UDP path" — so nothing on that side
+    /// changes; the retries it was waiting for simply never existed.
+    ///
+    /// **Any answer stops it.** A HELLO_ACK means we are admitted, and a
+    /// HELLO_PENDING is proof the sharer parsed our HELLO and therefore holds
+    /// our caps (the keepalive registration path does not send one), so it is
+    /// as good a stop as the ack. That is what keeps a viewer parked at the
+    /// approval prompt from re-sending for the length of somebody's coffee
+    /// break: the bound is on the lost-HELLO window, not on the wait.
+    private func maybeResendHello() {
+        guard assignedSSRC == nil, !isPendingApproval, !isStopped else { return }
+        guard helloAttempts < Self.helloAttemptLimit else { return }
+        // `start()` runs before the host's first `tick`, so the HELLO it sent
+        // was stamped with an unset clock. Seed the retry clock on the first
+        // tick rather than reading that 0 as "sent at time zero", which would
+        // make the very first tick look an eternity overdue and fire a
+        // duplicate HELLO back-to-back with the original.
+        guard lastHelloSentNs != 0 else {
+            lastHelloSentNs = nowNs
+            return
+        }
+        guard nowNs &- lastHelloSentNs >= Self.helloRetryIntervalNs else { return }
+        sendHello()
     }
 
     /// Ask for a keyframe, on a cadence, while admitted with none yet.

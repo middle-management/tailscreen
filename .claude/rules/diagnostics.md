@@ -494,6 +494,8 @@ therefore the weakest kind of event — a safety net **under** the named
 registry events, never a substitute. When a log line turns out to be
 load-bearing in an investigation, give it a registry case.
 
+**The app's own `TSLogger`s are a separate, per-file decision, and most of them still only print.** There are seven private `TSLogger`s in the macOS app and each tees or does not on its own; only `TailscaleScreenShareClient`'s and `VoiceChannel`'s do. The voice one was added after a 0.10.0-rc.15 pair from a call both ends called crackly could rule out audio loss (a steady 250 packets per five-second window, exactly one 20 ms frame per 20 ms) and rule out link saturation (video at roughly one packet per frame, about half a megabit against a 4.4 Mbps anchor) and then had nothing further to say — because `VoiceChannel`'s once-a-minute `stats concealed=… discontinuities=… overruns=… underruns=… clamped=… jitter=…ms`, and every `MicCapture:` engine line (playback started, VPIO engaged or refused, tap reinstalled after a configuration change, a device bind that failed), went to stdout and nowhere else. `VideoDecoder`, `VideoEncoder`, `HelperScreenCapture`, `ViewerApproval` and `GlobalHotkey` are still stdout-only; tee one when a bundle needs it rather than as a sweep, and prefer a registry event for anything that turns out to be load-bearing.
+
 **Two places keep an identity out of the tee, and they use different
 mechanisms because the shape of the problem differs.**
 `PrintLogSink(prefix: "Auth", capturesDiagnostics: false)` in `TailscaleAuth`
