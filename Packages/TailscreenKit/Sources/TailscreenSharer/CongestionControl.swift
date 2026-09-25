@@ -1,19 +1,14 @@
-// Congestion-control decisions for `TailscaleScreenShareServer`, moved
-// verbatim out of TailscaleScreenShareServer.swift: PLI accounting,
-// per-viewer loss attribution + fairness throttling, the adaptive-bitrate
-// arm, the fps ladder, and the receiver-feedback congestion decision.
-// Everything here is a pure `static func` on the server (plus its
-// input/output value types): no instance state, no locks, no callbacks.
-// `CongestionDecisionTests` and `PerViewerFairnessDecisionTests` exercise
-// it through the public API.
+// Congestion-control decisions for `TailscaleScreenShareServer`: PLI
+// accounting, per-viewer loss attribution + fairness throttling, the
+// adaptive-bitrate arm, the fps ladder, and the receiver-feedback decision.
+// Pure `static func`s, no instance state. See `CongestionDecisionTests`,
+// `PerViewerFairnessDecisionTests`.
 
 import Foundation
 import TailscreenProtocol
 
 extension TailscaleScreenShareServer {
-    /// Pure PLI-ring append: add `timestampNs` and drop the oldest entries
-    /// once the ring exceeds `cap`. Extracted from `recordPLI` so the
-    /// bounded-growth invariant is unit testable.
+    /// PLI-ring append: add `timestampNs`, drop oldest entries past `cap`.
     public static func appendingPLI(_ ring: [UInt64], timestampNs: UInt64, cap: Int = 32) -> [UInt64] {
         var out = ring
         out.append(timestampNs)
@@ -38,12 +33,10 @@ extension TailscaleScreenShareServer {
         case widespread(worstPLIs: Int)
     }
 
-    /// Pure loss attribution. Rules: no viewer over `lossThreshold` →
-    /// `.healthy`; exactly one over threshold with every other viewer at 0
-    /// PLIs and ≥2 viewers total → `.isolated`; anything else → `.widespread`
-    /// (with a single viewer there is no "everyone else", so it stays
-    /// `.widespread` — identical to today's behavior). Extracted so the
-    /// precedence is unit testable, same pattern as `audioRelayDecision`.
+    /// Loss attribution. No viewer over `lossThreshold` → `.healthy`; exactly
+    /// one over threshold with every other viewer at 0 PLIs and ≥2 viewers
+    /// total → `.isolated`; anything else → `.widespread` (a single viewer
+    /// has no "everyone else", so it stays `.widespread`).
     public static func lossAttribution(pliCounts: [String: Int], lossThreshold: Int = 2) -> LossVerdict {
         let worst = pliCounts.values.max() ?? 0
         guard worst > lossThreshold else { return .healthy }
@@ -70,17 +63,13 @@ extension TailscaleScreenShareServer {
         }
     }
 
-    /// Pure fairness decision layered over `lossAttribution`. An `.isolated`
-    /// viewer is throttled (keyframe-only) so its bad link stops dragging the
-    /// session; an already-throttled viewer is renewed while it keeps losing
-    /// (over threshold) and expires after a clean window (asymmetric
-    /// hysteresis, matching the sweep's style). Throttled viewers never drive
-    /// the global bitrate — they're deliberately frame-skipped, so their PLIs
-    /// are expected and must not re-introduce the worst-link-wins coupling.
-    /// The global input is therefore the worst PLI count over the
-    /// *non-throttled* viewers, which for a `.widespread` verdict with nobody
-    /// throttled equals the true max (today's path, so `AdaptiveBitrateTests`
-    /// stay valid).
+    /// Fairness decision layered over `lossAttribution`. An `.isolated`
+    /// viewer is throttled (keyframe-only); an already-throttled viewer is
+    /// renewed while still over threshold, expires after a clean window.
+    /// Throttled viewers never drive the global bitrate — they're
+    /// deliberately frame-skipped, so their PLIs must not re-introduce
+    /// worst-link-wins coupling. Global input is the worst PLI count over
+    /// non-throttled viewers.
     public static func fairnessDecision(
         pliCounts: [String: Int],
         currentlyThrottled: Set<String>,
@@ -95,28 +84,22 @@ extension TailscaleScreenShareServer {
         return FairnessDecision(throttle: throttle.sorted(), globalBitrateInput: globalInput)
     }
 
-    /// Pure per-viewer broadcast gate: does this viewer receive this frame
-    /// (and advance its sequence cursor)? A throttled viewer skips inter
-    /// frames — but ALWAYS receives keyframes — so it gets a decodable
-    /// keyframe-only slideshow. Crucially the caller advances `nextSequence`
+    /// Per-viewer broadcast gate: does this viewer receive this frame (and
+    /// advance its sequence cursor)? A throttled viewer skips inter frames
+    /// but always receives keyframes. Caller must advance `nextSequence`
     /// only when this returns true, so the throttled viewer sees a contiguous
-    /// stream, not a perceived-loss gap that would provoke a PLI storm.
+    /// stream rather than a gap that provokes a PLI storm.
     public static func shouldSendFrame(isKeyframe: Bool, throttledUntilNs: UInt64, nowNs: UInt64) -> Bool {
         if isKeyframe { return true }
         return nowNs >= throttledUntilNs
     }
 
-    /// Pure adaptive-bitrate decision: given the worst per-viewer PLI count in
-    /// the last window, the current and baseline bitrates, and how long since
-    /// the last change, return the next bitrate — or `nil` to hold steady.
-    ///
-    /// Cut 25 % (never below the floor of 30 % of baseline or 500 kbps) when
-    /// loss exceeds `lossThreshold` and the down-hysteresis has elapsed; recover
-    /// +10 % (min 100 kbps step, capped at baseline) after a clean window once
-    /// the longer up-hysteresis has elapsed. Asymmetric hysteresis makes cuts
-    /// fast and recovery slow. A `current` above `baseline` clamps straight
-    /// down to it with no hysteresis (see below). Extracted from the sweep so
-    /// the math is unit testable without a live encoder.
+    /// Adaptive-bitrate decision: next bitrate given worst per-viewer PLI
+    /// count, current/baseline bitrates, and time since last change (`nil` =
+    /// hold). Cut 25% (floor: 30% of baseline or 500kbps) when loss exceeds
+    /// `lossThreshold` past down-hysteresis; recover +10% (min 100kbps step)
+    /// after a clean window past up-hysteresis. Asymmetric: cuts fast,
+    /// recovery slow. `current` above `baseline` clamps straight down.
     public static func nextAdaptiveBitrate(
         worstPLIs: Int,
         current: Int,
@@ -127,12 +110,9 @@ extension TailscaleScreenShareServer {
         upHysteresisNs: UInt64 = 10_000_000_000
     ) -> Int? {
         guard baseline > 0 else { return nil }
-        // Self-heal: a mid-share ceiling drop can race an in-flight sweep
-        // apply and leave `current` parked above the (new, lower) baseline,
-        // where neither arm below would ever fire on a loss-free link (the
-        // raise arm requires current < baseline). Clamp straight down, no
-        // hysteresis — the encoder should never run above the effective
-        // ceiling.
+        // Self-heal: a mid-share ceiling drop can leave `current` parked
+        // above the new baseline, where neither arm below would fire on a
+        // clean link. Clamp straight down, no hysteresis.
         if current > baseline { return baseline }
         // 30 % of baseline, never below 500 kbps (see TransportTuning).
         let floor = TransportTuning.adaptiveBitrateFloor(baseline: baseline)
@@ -144,11 +124,9 @@ extension TailscaleScreenShareServer {
         return nil
     }
 
-    /// Measured congestion inputs for `nextCongestionDecision`. Bundled so the
-    /// decision stays under the argument-count limit and the sweep builds it in
-    /// one place. Legacy viewers contribute only `pliCount` (their RR fraction
-    /// is 0 and they never NACK), so a PLI-only session degrades to exactly the
-    /// `nextAdaptiveBitrate` behavior `AdaptiveBitrateTests` pins.
+    /// Measured congestion inputs for `nextCongestionDecision`. Legacy
+    /// viewers contribute only `pliCount` (RR fraction 0, never NACK), so a
+    /// PLI-only session degrades to `nextAdaptiveBitrate` behavior.
     public struct CongestionInputs: Equatable {
         /// Worst per-viewer RR "fraction lost" this window, Q8 (0…255).
         public var lossFractionQ8: Int
@@ -166,14 +144,11 @@ extension TailscaleScreenShareServer {
         /// must not be pushed to 60.
         public var fpsCap: Int = 60
         public var elapsedSinceChangeNs: UInt64
-        /// At least one viewer that negotiated `.receiverReport`, and that
-        /// this sweep is not isolating, has stopped reporting (see
-        /// `feedbackIsStale`). It suppresses the
-        /// up-ramp and nothing else: silence is not evidence of loss, so it
-        /// never drives a cut — but it is not evidence of a clean link
-        /// either, and treating it as one is what let the rate climb against
-        /// a viewer nobody was hearing from. Defaults false, so a legacy
-        /// PLI-only session is byte-identical to before.
+        /// At least one non-isolated `.receiverReport` viewer has stopped
+        /// reporting (see `feedbackIsStale`). Suppresses the up-ramp only —
+        /// silence is not evidence of loss (never drives a cut) but also not
+        /// evidence of a clean link. Defaults false for legacy PLI-only
+        /// sessions.
         public var feedbackStale: Bool = false
 
         public init(
@@ -194,29 +169,16 @@ extension TailscaleScreenShareServer {
     }
 
     /// Whether one viewer's receiver feedback has gone missing, as distinct
-    /// from arriving and saying "clean".
+    /// from reporting "clean" (0). The sweep decays a stale RR's loss to 0,
+    /// so without this check a dead feedback path reads as a perfect link and
+    /// the recovery arm keeps climbing against a viewer nobody hears from.
     ///
-    /// The sweep decays a stale RR's loss fraction to 0 so a viewer that
-    /// reported badly and then went quiet can't pin the shared rate down.
-    /// That is right, and it leaves a hole: a decayed report and a genuinely
-    /// clean one are the same 0, so the `clean` predicate reads a dead
-    /// feedback path as a perfect link and the +10 % recovery arm keeps
-    /// climbing toward the baseline against a viewer whose reports stopped
-    /// arriving. The stats log line was no help either — it only fired on a
-    /// nonzero count, so the bundle looked exactly like a healthy share.
+    /// Two clocks: a viewer that HAS reported goes stale one window after its
+    /// last report; one that has NEVER reported is measured from admission
+    /// with `graceWindows` of slack (it may just not have sent one yet).
     ///
-    /// Two clocks, because "has not reported" has two shapes:
-    /// - A viewer that HAS reported is stale one window after its last report.
-    ///   Reports are ~1 Hz against a ~5 s window, so a single dropped RR
-    ///   can't trip it.
-    /// - A viewer that has NEVER reported is measured from admission and
-    ///   gets `graceWindows` of slack, because a viewer admitted moments ago
-    ///   legitimately has not sent one yet.
-    ///
-    /// `expectsReports` is the whole safety rail: a viewer that never
-    /// negotiated `.receiverReport` is silent by design, and treating its
-    /// silence as missing feedback would freeze the rate for the entire
-    /// session on every legacy or stream-transport viewer.
+    /// `expectsReports` gates it: a viewer that never negotiated
+    /// `.receiverReport` is silent by design and must not be flagged stale.
     public static func feedbackIsStale(
         expectsReports: Bool,
         hasReported: Bool,
@@ -230,9 +192,7 @@ extension TailscaleScreenShareServer {
     }
 
     /// Bitrate + fps-tier decision from receiver feedback. `nil` on either
-    /// field means "leave it". Extracted as a pure func (same pattern as
-    /// `nextAdaptiveBitrate`) so the loss bands, NACK weighting, and fps-ladder
-    /// transitions are unit testable without a live encoder.
+    /// field means "leave it".
     public struct CongestionDecision: Equatable, Sendable {
         public var bitrate: Int?
         public var fpsTier: Int?
@@ -245,9 +205,8 @@ extension TailscaleScreenShareServer {
         if tier > 15 { return 15 }
         return nil
     }
-    /// Next tier up, clamped to the session `cap` — a capped (e.g. 30 fps
-    /// `.low`) session must never be raised above its cap. `nil` when already
-    /// at the top rung or the cap.
+    /// Next tier up, clamped to the session `cap`. `nil` when already at the
+    /// top rung or the cap.
     public static func raiseFpsTier(_ tier: Int, cap: Int) -> Int? {
         let next: Int
         if tier < 30 {
@@ -261,29 +220,24 @@ extension TailscaleScreenShareServer {
         return clamped > tier ? clamped : nil
     }
 
-    /// Convert an RR "fraction lost" (Q8, 0…255) into a PLI-equivalent loss
-    /// count so RR loss flows through the SAME per-viewer fairness/isolation
-    /// gate as PLIs. ~10 % loss (highLossQ8 = 26) maps to just over the 2-PLI
-    /// threshold, so a viewer reporting high RR loss with no PLIs is still
-    /// eligible for keyframe-only isolation instead of dragging the global rate.
+    /// Convert an RR "fraction lost" (Q8, 0…255) into a PLI-equivalent count
+    /// so RR loss flows through the same fairness/isolation gate as PLIs.
+    /// ~10% loss maps just over the 2-PLI threshold.
     public static func rrLossPLIEquivalent(fracLostQ8: Int) -> Int {
         max(0, fracLostQ8) / 8
     }
 
-    /// Global congestion inputs derived from per-viewer signals, folding RR
-    /// loss into the same isolation gate as PLI. Returns the viewers to throttle
-    /// (keyframe-only) and the worst PLI / RR-loss over ONLY the non-throttled
-    /// viewers — so one viewer's (possibly fabricated) RR loss gets it isolated
-    /// first and can't set the shared rate for everyone.
+    /// Global congestion inputs, folding RR loss into the same isolation gate
+    /// as PLI. Returns viewers to throttle and the worst PLI/RR-loss over
+    /// only the non-throttled viewers, so one lossy viewer gets isolated
+    /// rather than setting the shared rate for everyone.
     public struct GlobalCongestionInputs: Equatable {
         public var throttle: [String]
         public var pliInput: Int
         public var lossQ8Input: Int
-        /// Any viewer whose feedback has gone missing, excluding the ones
-        /// this sweep decided to isolate — the same `throttle` set, and for
-        /// the same reason, as the loss and PLI inputs beside it. Isolating a
-        /// viewer is taking its link out of the shared decision, so its
-        /// silence must not hold the rate everyone else sees.
+        /// Any viewer whose feedback has gone missing, excluding those this
+        /// sweep isolated — isolating a viewer removes its link from the
+        /// shared decision, so its silence must not hold back the rate.
         public var feedbackStale: Bool = false
     }
     public static func congestionInputs(
@@ -293,8 +247,8 @@ extension TailscaleScreenShareServer {
         lossThreshold: Int = 2,
         feedbackStaleAddrs: Set<String> = []
     ) -> GlobalCongestionInputs {
-        // Combined per-viewer loss folds RR into PLI-equivalent units so the
-        // fairness gate can isolate an RR-lossy-but-PLI-quiet viewer.
+        // Folds RR into PLI-equivalent units so fairness can isolate an
+        // RR-lossy-but-PLI-quiet viewer.
         var combined: [String: Int] = [:]
         for key in Set(pliCounts.keys).union(lossQ8ByAddr.keys) {
             let pli = pliCounts[key] ?? 0
@@ -312,27 +266,21 @@ extension TailscaleScreenShareServer {
             feedbackStale: stale)
     }
 
-    /// Receiver-feedback congestion control. Bitrate is the primary lever (cut
-    /// 25 % on heavy loss, recover 10 % on a clean window, asymmetric
-    /// hysteresis — same math as `nextAdaptiveBitrate`); the fps ladder is the
-    /// second lever once bitrate bottoms out. Loss severity comes from the RR
-    /// fraction (> ~10 % Q8 cut, < ~2 % clean) *or* the legacy PLI count, so a
-    /// PLI-only session behaves exactly as before. NACK-served packets soften
-    /// the cut (recoverable loss the retransmit path already handled).
+    /// Receiver-feedback congestion control. Bitrate is the primary lever
+    /// (cut 25% on heavy loss, recover 10% on a clean window, same
+    /// hysteresis as `nextAdaptiveBitrate`); fps ladder is the second lever
+    /// once bitrate bottoms out. Loss severity: RR fraction (>~10% cut,
+    /// <~2% clean) or legacy PLI count. NACK-served packets soften the cut.
     ///
-    /// fps rules: downshift only when the bitrate is already at the floor and
-    /// loss persists; on recovery, restore fps *before* letting bitrate climb
-    /// past ~60 % of baseline (frame rate hurts perception less than blocking
-    /// artifacts).
+    /// fps: downshift only once bitrate is at the floor and loss persists;
+    /// on recovery restore fps before letting bitrate climb past ~60% of
+    /// baseline.
     ///
-    /// Known property (recorded design trade-off, not a bug): this arm sees
-    /// **residual** loss only — FEC-recovered packets count as received — so
-    /// on a congestion-limited link FEC can mask the loss, let the
-    /// clean-window up-ramp raise the rate, and re-induce the loss: a slow
-    /// sawtooth bounded by the up-hysteresis and the +10 % step. The RR's
-    /// `fecRecovered` term de-oscillates only the FEC arm by design; feeding
-    /// raw loss here would double-penalize loss the parity already repaired
-    /// and suppress recovery exactly on the links FEC targets.
+    /// Deliberate trade-off: this arm sees **residual** loss only (FEC
+    /// recoveries count as received), so on a congestion-limited link FEC can
+    /// mask loss, let the up-ramp raise the rate, and re-induce it — a slow
+    /// sawtooth bounded by hysteresis. Feeding raw loss here would
+    /// double-penalize loss FEC already repaired.
     public static func nextCongestionDecision(
         _ inputs: CongestionInputs,
         lossThreshold: Int = 2,
@@ -347,18 +295,13 @@ extension TailscaleScreenShareServer {
         let highLossQ8 = 26  // ~10 %
         let lowLossQ8 = 5  // ~2 %
         let floor = TransportTuning.adaptiveBitrateFloor(baseline: inputs.baseline)
-        // NACK recoveries halve the effective PLI weight — the loss was fixed
-        // cheaply, so it shouldn't drive a full-rate cut on its own.
+        // NACK recoveries halve the effective PLI weight — cheaply-fixed loss
+        // shouldn't drive a full-rate cut alone.
         let effectivePLIs = inputs.pliCount - min(inputs.pliCount, inputs.nackServed / 2)
         let heavyLoss = inputs.lossFractionQ8 > highLossQ8 || effectivePLIs > lossThreshold
-        // Recovery is NOT gated on `nackServed == 0`: on a real WAN a NACK is
-        // served most windows, and the retransmit already repaired that loss,
-        // so requiring literally zero NACKs would suppress recovery exactly on
-        // the lossy links NACK targets. Low RR loss + no PLIs is "clean enough"
-        // — provided the quiet is a viewer saying so rather than a viewer we
-        // have stopped hearing from at all. `feedbackStale` only ever
-        // subtracts from `clean`: the cut path below never reads it, because
-        // missing feedback is not evidence of loss.
+        // Not gated on nackServed == 0: a NACK-repaired link is still "clean
+        // enough". feedbackStale only subtracts from `clean` — missing
+        // feedback is never evidence of loss, so the cut path ignores it.
         let clean =
             inputs.lossFractionQ8 <= lowLossQ8 && inputs.pliCount == 0 && !inputs.feedbackStale
 

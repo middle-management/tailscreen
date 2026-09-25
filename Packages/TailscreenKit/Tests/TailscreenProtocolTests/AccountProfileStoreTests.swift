@@ -4,12 +4,10 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// Covers the shared multi-account registry both swift-cross-ui hosts use:
-/// first-launch seeding (with and without a directory to adopt), the two
-/// migration paths, unique per-profile state dirs, active-selection
-/// persistence, the remove-refuses-active/last invariants, corrupt-blob
-/// degradation, and the two platform layouts — including the Windows one,
-/// which no Windows machine is needed to check because the layout is a pure
-/// string derivation.
+/// first-launch seeding, migration paths, unique per-profile state dirs,
+/// active-selection persistence, remove-refuses-active/last invariants,
+/// corrupt-blob degradation, and the two platform layouts (Windows checked
+/// on Linux since the layout is pure string derivation).
 final class AccountProfileStoreTests: XCTestCase {
     private var scratch: URL!
 
@@ -215,11 +213,9 @@ final class AccountProfileStoreTests: XCTestCase {
     /// the seed must be the `%LOCALAPPDATA%\Tailscreen\tailscale` directory the
     /// single-account build used.
     func testWindowsLayoutRootsUnderLocalAppDataAndSeedsTheOldStateDirectory() throws {
-        // Asserted with a POSIX base so the exact strings are checkable here:
-        // Foundation on Linux resolves a `C:\…` base against the CWD, which no
-        // Windows build does. What the derivation itself is — `URL`
-        // path-appending — is platform-independent, and the shape below is
-        // what the Windows build produces from the same code.
+        // Asserted with a POSIX base: Foundation on Linux resolves a `C:\…`
+        // base against the CWD, unlike Windows. The derivation itself (`URL`
+        // path-appending) is platform-independent.
         let layout = AccountProfileLayout.windowsLocalAppData(
             environment: ["LOCALAPPDATA": "/local-app-data"])
         XCTAssertEqual(layout.root, "/local-app-data/Tailscreen")
@@ -233,26 +229,12 @@ final class AccountProfileStoreTests: XCTestCase {
             .path
         XCTAssertEqual(layout.seedStatePath, preRegistry)
 
-        // And the invariant behind those two exact strings: the seed is the
-        // root's `tailscale` child, whatever the base.
-        //
-        // Checked with a POSIX base for the same reason the first assertion
-        // is, and the point is sharp enough to be worth stating: a literal
-        // `C:\Users\…` base CANNOT be used here. Foundation's `URL` disagrees
-        // with itself across platforms about what such a string even is.
-        // Windows parses the drive letter; Linux treats the whole thing as one
-        // relative filename and resolves it against the CWD (harmless, still
-        // ends in `Tailscreen`); Darwin does neither and yields an EMPTY path
-        // from `appendingPathComponent(_:).path`. This test asserted against
-        // that literal and so failed on macOS only — taking `make
-        // test-protocol` down with it, which is the target CLAUDE.md points at
-        // for smoke-testing this package and which developers run on a Mac.
-        //
-        // Nothing about the SHIPPING behaviour is at stake: `.windowsLocalAppData`
-        // is called from exactly two places, the Windows app and
-        // `WindowsShareSession`, both Windows-only. The empty path is a
-        // Foundation platform difference the product never reaches, and
-        // pinning it here would be pinning Foundation, not us.
+        // The invariant behind those two exact strings: the seed is the
+        // root's `tailscale` child, whatever the base. A literal `C:\Users\…`
+        // base CANNOT be used here — Foundation's `URL` disagrees across
+        // platforms about what such a string is (Windows parses the drive
+        // letter; Linux resolves it as a relative filename; Darwin yields an
+        // EMPTY path), which once failed this test on macOS only.
         let other = AccountProfileLayout.windowsLocalAppData(
             environment: ["LOCALAPPDATA": "/some/other/base"])
         let seed = try XCTUnwrap(other.seedStatePath)

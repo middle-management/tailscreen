@@ -8,20 +8,13 @@ import TailscreenProtocol
 //
 // or `make merge-diagnostics FILES="sharer.jsonl viewer.jsonl"`.
 //
-// This exists because the merge was the point of recording two sides and had
-// no way to be run: `DiagnosticsMerge` and `DiagnosticsExport.renderTimeline`
-// shipped complete and tested, called from nothing but their own suites. The
-// macOS app can export one bundle; nothing could read a pair.
+// Deliberately thin: the pairing, clock-skew solve, ordering, and rendering
+// belong to the library and are pinned by `DiagnosticsBundleTests` and
+// `DiagnosticsExportTests`. This file owns only argument handling and
+// naming which file failed.
 //
-// Deliberately thin. Every decision here — the pairing, the clock-skew solve,
-// the ordering, the rendering — belongs to the library and is pinned by
-// `DiagnosticsBundleTests` and `DiagnosticsExportTests`. What this file owns
-// is argument handling and saying which file failed, so it is not worth a
-// suite of its own.
-//
-// It depends on `TailscreenProtocol` alone, which is the Foundation-only
-// tier — so it needs no `libtailscale.a`, no Go and no libopus, and anyone
-// holding a pair of bundles can build it with nothing but a Swift toolchain.
+// Depends on `TailscreenProtocol` alone (Foundation-only), so it needs no
+// `libtailscale.a`, Go, or libopus.
 
 func fail(_ message: String, code: Int32) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -49,8 +42,8 @@ for path in paths {
     do {
         text = try String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
     } catch {
-        // Name the file. A merge is run with several paths and a bare
-        // "couldn't read it" leaves the reader guessing which.
+        // Name the file — a bare "couldn't read it" leaves the reader
+        // guessing which of several paths failed.
         fail("\(path): could not be read — \(error.localizedDescription)", code: 1)
     }
     do {

@@ -4,44 +4,33 @@ import TailscreenProtocol
 /// Bounded hand-off between the task that reads the UDP socket and the
 /// `@MainActor` run loop that feeds `ViewerPipeline`.
 ///
-/// WHY THIS EXISTS: the run loop used to call `recv` itself, on the MainActor,
-/// which on both swift-cross-ui hosts is the UI thread. That made the inbound
-/// packet rate a function of how fast the UI could get back around the loop —
-/// measured at 15.6 datagrams/s on the Windows viewer against a sharer sending
-/// several hundred, so ~96% of the stream overflowed the socket buffer and the
-/// window stayed blank. Draining harder per pass (the previous change) raises
-/// that ceiling; moving the socket off the actor removes the coupling, so a
-/// busy or janky UI can no longer cost packets.
+/// Why: the run loop used to call `recv` itself on the MainActor (the UI
+/// thread on both swift-cross-ui hosts), making inbound rate a function of UI
+/// responsiveness — measured at 15.6 datagrams/s against a sharer sending
+/// hundreds, ~96% loss, blank window. Moving the socket off the actor removes
+/// that coupling.
 ///
-/// The queue is the whole point: it decouples arrival from consumption, and it
-/// is bounded because an unbounded one just moves an overflow the OS used to
-/// absorb into this process, where it grows until something dies. Overflow
-/// drops the OLDEST datagram — for RTP, holding stale packets in front of
-/// fresh ones adds latency to the fresh ones and helps nobody, and the
-/// reorder buffer treats either choice as loss.
+/// Bounded so overflow can't grow unbounded in this process; drops the OLDEST
+/// datagram, since stale packets ahead of fresh ones just add latency.
 ///
-/// A non-zero `droppedCount` means the *consumer* can't keep up (decode, or
-/// the actor being busy), which is a different problem from the socket ceiling
-/// this replaces — and the reason the count is reported rather than inferred.
+/// A non-zero `droppedCount` means the *consumer* can't keep up — a
+/// different problem from the socket ceiling this replaces.
 ///
-/// Not an `actor`: the MainActor side needs a *synchronous* drain so it can
-/// service the queue and still own its tick cadence, and `await`ing an actor
-/// from the loop would reintroduce a suspension per pass.
+/// Not an `actor`: the MainActor side needs a synchronous drain to keep its
+/// own tick cadence; `await`ing an actor would reintroduce a suspension per pass.
 final class DatagramInbox: Sendable {
     struct Datagram: Sendable {
         let payload: Data
         let from: String
     }
 
-    /// Live datagrams held before overflow starts dropping. ~2048 × 1200 B ≈
-    /// 2.5 MB worst case, and about five seconds of a healthy stream — deep
-    /// enough to ride out a UI hitch, shallow enough that a consumer which has
-    /// genuinely stopped can't balloon the process.
+    /// Live datagrams held before overflow starts dropping. ~2048 × 1200B ≈
+    /// 2.5MB worst case, about five seconds of a healthy stream.
     static let defaultCapacity = 2048
 
     private struct State {
-        /// Storage with a moving `head` rather than `removeFirst`, which is O(n)
-        /// per call and would be on the hot path for every overflow drop.
+        /// Moving `head` rather than `removeFirst`, which is O(n) per call
+        /// and would be on the hot path for every overflow drop.
         var storage: [Datagram] = []
         var head = 0
         var dropped = 0
@@ -66,10 +55,8 @@ final class DatagramInbox: Sendable {
                 s.dropped += 1
             }
             s.storage.append(datagram)
-            // Reclaim the consumed prefix once it has grown past one capacity's
-            // worth. Amortized O(1): at most one compaction per `capacity`
-            // pushes. The fully-drained case below is the common one; this
-            // covers a consumer that keeps up only partially.
+            // Reclaim the consumed prefix past one capacity's worth —
+            // amortized O(1), covers a consumer that only partially keeps up.
             if s.head > capacity {
                 s.storage.removeFirst(s.head)
                 s.head = 0
@@ -118,13 +105,12 @@ final class DatagramInbox: Sendable {
 
 /// One-way flag the socket-reading task raises when its receive-error budget
 /// is spent (see `TsnetTransport.receiveFailureIsFatal`), read synchronously
-/// by the `@MainActor` run loop on each pass — the same cross-task hand-off
-/// shape as `DatagramInbox`, and a separate object for the same reason the
-/// inbox is not an actor: the loop needs a suspension-free read.
+/// by the `@MainActor` run loop — same cross-task hand-off shape as
+/// `DatagramInbox`, for the same suspension-free-read reason.
 ///
-/// Without this, the detached receiver's `catch { continue }` swallowed a dead
-/// socket forever: the loop kept ticking against an inbox that would never
-/// fill again, and the viewer froze on its last frame with a live-looking UI.
+/// Without this, a dead socket's `catch { continue }` never surfaced: the loop
+/// kept ticking against an inbox that would never fill again, freezing the
+/// viewer on its last frame with a live-looking UI.
 final class ReceiveFailureFlag: Sendable {
     private let raised = Guarded(false)
 

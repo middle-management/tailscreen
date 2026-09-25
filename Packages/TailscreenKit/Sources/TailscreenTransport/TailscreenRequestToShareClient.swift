@@ -19,16 +19,11 @@ public enum ShareRequestOutcome: Sendable, Equatable {
 /// `.requestToShare`, and hold the connection open for the `.shareResponse`.
 ///
 /// The answer rides **the connection the request arrived on**, so this call
-/// parks rather than returning immediately and waiting for a dial-back. That
-/// is the whole point of the design: a dial-back would answer whoever currently
-/// holds the requester's address, whereas an answer on the open socket provably
-/// reaches the process that asked.
+/// parks rather than returning immediately and waiting for a dial-back — a
+/// dial-back would answer whoever currently holds the requester's address.
 ///
-/// Portable counterpart of the macOS `TailscreenMetadataService`
-/// implementation, which was unreachable off macOS only because it lived in an
-/// `import AppKit` file — nothing in the flow is platform-specific. Shaped
-/// after `TailscreenMetadataClient`, which does the same dial/watchdog/drain
-/// against the other half of the same wire pair.
+/// Shaped after `TailscreenMetadataClient`, the other half of the same wire
+/// pair.
 public enum TailscreenRequestToShareClient {
     /// - Parameter responseTimeout: how long to hold the connection open. The
     ///   default matches macOS's: long enough for somebody to notice a banner
@@ -41,18 +36,14 @@ public enum TailscreenRequestToShareClient {
         via node: TailscaleNode,
         responseTimeout: TimeInterval = 120
     ) async throws -> ShareRequestOutcome {
-        // Throws rather than reading as `.noAnswer`: no interface handle is a
-        // fault on THIS machine, and reporting it as "they didn't reply" would
-        // send someone to go ask a colleague why they ignored a request that
-        // never left. Callers who genuinely cannot act on the difference —
-        // `TsnetTransport.requestToShare` — collapse it themselves.
+        // Throws rather than reading as `.noAnswer`: no interface handle is
+        // a fault on THIS machine, not "they didn't reply".
         guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
         }
         let target = "\(host):\(port)"
-        // Watchdogs because `tailscale_dial` and the connection init's actor
-        // handshake can block indefinitely on an ACL-dropped SYN or a cold
-        // netmap — with no error and no timeout of their own.
+        // Watchdogs: dial and the connection init's handshake can block
+        // indefinitely on an ACL-dropped SYN or a cold netmap.
         let conn = try await TailscalePeerDiscovery.withWatchdog(seconds: 5) {
             try await OutgoingConnection(
                 tailscale: tailscaleHandle,
@@ -67,24 +58,12 @@ public enum TailscreenRequestToShareClient {
         }
         try await conn.send(
             ScreenShareMessage.requestToShare(fromHostname: hostname).encode())
-        // Drain frames until a `.shareResponse` arrives, the peer closes, or
-        // the deadline passes. Anything else on the wire is ignored, which is
-        // what makes this forward compatible with frames added later; the loop
-        // itself is `FramedResponseDrain`, shared with
-        // `TailscreenMetadataClient`.
+        // Drain until `.shareResponse`, close, or deadline; other frames are
+        // ignored (forward compatible). 5s poll, not 1s: the wait is two
+        // minutes, so a 1s interval would wake 120 times for nothing.
         //
-        // A 5 s poll, not 1 s: the wait here is two MINUTES — long enough for
-        // somebody to walk back to their desk — and a one-second interval just
-        // wakes 120 times to learn nothing. Still far above the 200 ms
-        // dead-socket threshold the drain classifies against.
-        //
-        // Every failure mode arrives as nil and becomes `.noAnswer`, which is
-        // the case that exists so a timeout, an EOF and a legacy peer are not
-        // told apart in a UI that could not act on the difference.
-        // The closure yields the OUTCOME rather than the wire's bool, so the
-        // drain's "no match yet" nil and a decline stay different things — a
-        // `Bool?` here would have been a tri-state where two of the three
-        // states mean "no".
+        // The closure yields the OUTCOME, not the wire's bool, so the drain's
+        // "no match yet" nil and a decline stay distinct.
         let outcome = await FramedResponseDrain.awaitResponse(
             on: conn, timeout: responseTimeout, pollMilliseconds: 5_000
         ) { message -> ShareRequestOutcome? in

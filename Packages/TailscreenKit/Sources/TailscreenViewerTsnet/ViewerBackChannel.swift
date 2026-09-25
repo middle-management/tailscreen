@@ -4,24 +4,14 @@ import TailscreenProtocol
 import TailscreenTransport
 
 /// Viewer-side outbound TCP back-channel to the sharer — the portable
-/// counterpart of the macOS client's annotation/control channel
-/// (`TailscaleScreenShareClient.runAnnotationChannel`). It dials
+/// counterpart of the macOS client's annotation/control channel. Dials
 /// `sharer:7447` over the tailnet, frames `ScreenShareMessage`s outbound
-/// (annotation ops, remote-control request / release, input events), and
-/// drains the sharer's fan-out inbound (relayed strokes + control grant /
-/// revoke), reconnecting with capped backoff if the connection drops
-/// mid-session.
+/// (annotation ops, remote-control request/release, input events), drains
+/// the sharer's fan-out inbound, reconnecting with capped backoff on drop.
+/// Wire format identical to the mac client's, so strokes land unchanged.
 ///
-/// This closes the porting plan's named "last gap before shippable": the
-/// UDP path is receive-only, so without this a Linux viewer could watch but
-/// never draw, request control, or send input. The wire format is identical
-/// to the mac client's — `ScreenShareMessage.encode()` / `Parser` — so a
-/// Linux viewer's strokes land on a mac sharer's overlay unchanged.
-///
-/// **Live tsnet is local-only** (the repo's documented constraint), so this
-/// is compile-gated by CI; a live run needs a real Mac sharer + tailnet.
-/// The framing/parse logic it drives is the same CI-tested code the sharer
-/// uses (`ScreenShareProtocolTests`, `WireByteRegistryTests`).
+/// **Live tsnet is local-only**, so this is compile-gated by CI; a live run
+/// needs a real Mac sharer + tailnet.
 public actor ViewerBackChannel {
     /// Inbound-message handlers. Set once before `start`; invoked on the
     /// back-channel's own task. `@Sendable` because the host (the GTK app)
@@ -34,12 +24,10 @@ public actor ViewerBackChannel {
         public var onControlGranted: (@Sendable () -> Void)?
         /// The sharer revoked (or declined) control, with a short reason.
         public var onControlRevoked: (@Sendable (String) -> Void)?
-        /// One raw datagram of the sharer's media/control plane, carried as a
-        /// `.mediaDatagram` frame (spec §2.2, the reliable-transport
-        /// profile). Set by `TsnetTransport` itself when the session runs in
-        /// stream mode — it feeds the same inbox the UDP socket would — and
-        /// nil otherwise, in which case a frame from a confused sharer is
-        /// dropped here like any other unexpected type.
+        /// One raw datagram of the sharer's media/control plane, as a
+        /// `.mediaDatagram` frame (spec §2.2, reliable-transport). Set by
+        /// `TsnetTransport` in stream mode (feeds the same inbox the UDP
+        /// socket would); nil otherwise, dropping stray frames.
         public var onMediaDatagram: (@Sendable (Data) -> Void)?
 
         public init(
@@ -147,13 +135,10 @@ public actor ViewerBackChannel {
     /// the same reliable, ordered TCP channel as annotations so a `mouseDown`
     /// never arrives without its `mouseUp`.
     ///
-    /// ORDERING CONTRACT (for the future input-capture wiring): the actor
-    /// preserves send order only for calls that reach it in order. Do NOT
-    /// dispatch one detached `Task { await sendInputEvent(…) }` per GTK event —
-    /// two independently-spawned tasks can enter the actor in either order and
-    /// invert a down/up pair. Feed events from a single serial producer (or an
-    /// `AsyncStream` drained by one consumer, like `TsnetTransport`'s outbound
-    /// UDP queue).
+    /// ORDERING CONTRACT: the actor preserves send order only for calls that
+    /// reach it in order. Do NOT spawn one detached `Task` per event — two
+    /// independent tasks can invert a down/up pair. Feed from a single serial
+    /// producer.
     public func sendInputEvent(_ event: InputEvent) async {
         await send(.inputEvent(event), label: "inputEvent")
     }
@@ -173,16 +158,13 @@ public actor ViewerBackChannel {
         await send(.mediaDatagram(datagram), label: "mediaDatagram")
     }
 
-    /// Serialize on the actor: `OutgoingConnection.send` is synchronous, so a
-    /// single actor-isolated call site keeps writes ordered without a separate
-    /// writer type (the mac client needs `ConnectionWriter` only because it
-    /// sends from multiple isolation domains).
+    /// Serialize on the actor: `OutgoingConnection.send` is synchronous, so
+    /// one actor-isolated call site keeps writes ordered with no separate
+    /// writer type.
     private func send(_ message: ScreenShareMessage, label: String) async {
         guard let connection else {
-            // Annotations only, and only the first: a viewer drawing before
-            // the channel is up loses those strokes with nothing said, which
-            // from the sharer's seat looks exactly like the sharer having
-            // dropped them. Actor-isolated, so the latch needs no lock.
+            // Annotations only, and only the first — else strokes drawn
+            // before the channel is up vanish silently.
             if case .annotation = message, !annotationDropLogged {
                 annotationDropLogged = true
                 logger.log("[backchannel] annotation dropped — channel not open")
@@ -200,9 +182,7 @@ public actor ViewerBackChannel {
         }
     }
 
-    /// One-shot latches for the two annotation lines above — the bundle needs
-    /// to answer "did this viewer's strokes ever reach the wire", not to carry
-    /// a line per stroke.
+    /// One-shot latches for the two annotation lines above.
     private var annotationSentLogged = false
     private var annotationDropLogged = false
 
@@ -214,11 +194,9 @@ public actor ViewerBackChannel {
     private static let minHealthyConnNs: UInt64 = 1_000_000_000  // 1 s
 
     /// Own the connection for the whole session: dial, drain inbound, and
-    /// reconnect with capped backoff on a mid-session drop — mirroring
-    /// `TailscaleScreenShareClient.runAnnotationChannel`, with one hardening:
-    /// the backoff resets only after a *healthy* connection, so an
-    /// accept-then-immediately-EOF sharer can't spin dial→EOF→dial with no
-    /// delay (the mac client resets on every successful dial).
+    /// reconnect with capped backoff on a mid-session drop. Backoff resets
+    /// only after a *healthy* connection, so an accept-then-EOF sharer can't
+    /// spin dial→EOF→dial with no delay.
     private func runChannel() async {
         var reconnectAttempts = 0
         while !Task.isCancelled && !stopped {
@@ -309,16 +287,11 @@ public actor ViewerBackChannel {
                 }
             } catch TailscaleError.readFailed {
                 if Task.isCancelled || stopped { return }
-                // `OutgoingConnection.receive` collapses THREE cases into
-                // `readFailed`: a benign poll timeout, peer EOF (read → 0), and
-                // a hard error (read → -1). Only the first should keep looping —
-                // an EOF/RST fd polls readable *instantly* forever, so a blind
-                // `continue` here busy-spins a core and never reaches the
-                // reconnect path. Distinguish by wall time (the shared
-                // `ReceiveLoopPolicy` rule the other loops use): a `readFailed`
-                // returning far faster than the 5 s poll interval is a dead
-                // socket — return so `runChannel` redials; a full-interval one
-                // is a real timeout — keep reading.
+                // `receive` collapses poll timeout, EOF, and hard error into
+                // `readFailed`; only the first should keep looping, or an
+                // EOF/RST fd busy-spins a core forever. Distinguish by wall
+                // time (`ReceiveLoopPolicy`): near-instant is a dead socket
+                // (return, redial); a full interval is a real timeout.
                 let elapsedNs = DispatchTime.now().uptimeNanoseconds &- startNs
                 if ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
                     return

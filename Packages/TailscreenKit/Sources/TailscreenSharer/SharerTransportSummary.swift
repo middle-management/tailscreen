@@ -1,9 +1,7 @@
 // The sharer's `transport.summary` row for one viewer and one sweep window,
-// as a pure function on `TailscaleScreenShareServer` — the same
-// extract-the-decision shape as `AdaptiveFEC.swift`. The adaptive sweep
-// that records it cannot run in a test (it no-ops without a capture helper
-// attached), so the field set is pinned here, through the public API, by
-// `SharerTransportSummaryTests` in the package's `TailscreenSharerTests`.
+// as a pure function on `TailscaleScreenShareServer`. The adaptive sweep that
+// records it can't run in a test (no-ops without a capture helper), so the
+// field set is pinned here by `SharerTransportSummaryTests`.
 
 import Foundation
 import TailscreenProtocol
@@ -17,10 +15,9 @@ extension TailscaleScreenShareServer {
     public struct ViewerTransportSample: Equatable, Sendable {
         /// PLIs received from this viewer in the window.
         public var pliCount: Int = 0
-        /// `fracLostQ8` of the most recent receiver report, undecayed. The
-        /// row carries this and `rr_age_ms` separately rather than the
-        /// sweep's freshness-decayed value, so a reader can see a stale
-        /// report *as* stale instead of as "no loss".
+        /// `fracLostQ8` of the most recent receiver report, undecayed —
+        /// carried separately from `rr_age_ms` so a stale report reads as
+        /// stale, not as "no loss".
         public var lossFractionQ8: Int = 0
         /// RTT derived from the most recent receiver report; 0 before one.
         public var rttNs: UInt64 = 0
@@ -97,14 +94,11 @@ extension TailscaleScreenShareServer {
 
     /// When a row is taken and how long it covers.
     ///
-    /// Two durations, on purpose. `nominalNs` is the sweep's window: the
-    /// freshness threshold `rr_fresh` is judged against, exactly as the
-    /// sweep decays a report. `elapsedNs` is how long it has actually been
-    /// since the previous row, which is what `window_ms` reports — the
-    /// sweep sleeps for the nominal window and *then* works, so the
-    /// counters it drains span the nominal window plus that work, and a row
-    /// claiming `window_ms=5000` over a longer interval would understate
-    /// every rate derived from it.
+    /// Two durations, on purpose: `nominalNs` is the sweep's window (the
+    /// `rr_fresh` freshness threshold); `elapsedNs` is the actual time since
+    /// the previous row, reported as `window_ms` — the sweep's work between
+    /// sleeps means the real interval runs longer than nominal, and claiming
+    /// the nominal value would understate every derived rate.
     public struct SummaryWindow: Equatable, Sendable {
         /// Uptime reading the row is taken at; ages are measured from it.
         public var nowNs: UInt64
@@ -142,17 +136,11 @@ extension TailscaleScreenShareServer {
         public var isEmpty: Bool { applied == 0 && dropped == 0 && relayed == 0 }
     }
 
-    /// The `annotation.summary` fields for one window.
-    ///
-    /// Three numbers because the three failures they separate were, until
-    /// this existed, one symptom: "I drew and the sharer saw nothing". A row
-    /// with `applied` climbing says the strokes arrived and were handed to
-    /// the overlay, which moves the question to what is on screen. A row with
-    /// `dropped` climbing says the admitted-viewer gate refused them, and
-    /// names a policy or an address-parsing problem. No row at all says
-    /// nothing reached this machine, which points back at the viewer or the
-    /// channel between them. The sharer's own once-per-share "dropped
-    /// annotation" log line could only ever say the middle one, and only once.
+    /// The `annotation.summary` fields for one window. Separates three
+    /// causes of "I drew and the sharer saw nothing": `applied` climbing
+    /// means strokes reached the overlay; `dropped` climbing means the
+    /// admitted-viewer gate refused them; no row at all means nothing reached
+    /// this machine.
     public static func annotationSummaryFields(
         counters: AnnotationCounters, windowNs: UInt64
     ) -> [String: DiagnosticValue] {
@@ -166,32 +154,20 @@ extension TailscaleScreenShareServer {
 
     /// The `transport.summary` fields for one viewer.
     ///
-    /// Two fields exist for the failure the summary was added to catch.
     /// `rr_received` says whether this viewer has EVER sent a receiver
-    /// report, and `rr_age_ms` how long ago the last one was: a clean-looking
-    /// share whose viewer's reports quietly stopped arriving used to be
-    /// indistinguishable from a clean share, because the sweep decays a
-    /// stale report to "no loss" and the log line only fires on a nonzero
-    /// count. `rr_fresh` is the sweep's own verdict — whether that report
-    /// still counted this window — so the row says both what the viewer
-    /// reported and whether the sharer believed it.
+    /// report; `rr_age_ms` how long ago; `rr_fresh` is the sweep's own
+    /// freshness verdict — without these a viewer whose reports quietly
+    /// stopped arriving looked identical to a clean share.
     ///
-    /// `loss_q8` is the last report's residual loss *undecayed*; `raw_loss_q8`
-    /// adds back what FEC and NACK recovered, against this viewer's own
-    /// expected count (`fecRecoveredQ8`), which is the number the FEC arm
-    /// gates on. Both are Q8 like the wire field (255 = 100 %), with
-    /// `loss_pct` beside them for a reader who does not want to divide.
+    /// `loss_q8` is the last report's residual loss undecayed; `raw_loss_q8`
+    /// adds back what FEC/NACK recovered (the number the FEC arm gates on).
+    /// Both Q8 like the wire field, `loss_pct` alongside for convenience.
     ///
-    /// `audio_packets_in` and `audio_rejected_in` are the upstream half this
-    /// row did not have. Every other field describes what the sharer sent
-    /// this viewer or what the viewer said about it, so "the sharer cannot
-    /// hear me" left nothing behind at all: a muted microphone, a viewer
-    /// whose audio never reached the wire, and audio arriving and being
-    /// rejected by the source-SSRC gate all produced the same row. The two
-    /// are separate because only the third case looks like silence from here
-    /// while the viewer's own bundle shows it sending.
+    /// `audio_packets_in`/`audio_rejected_in` distinguish "audio never
+    /// reached the wire" from "audio arrived and was rejected by the
+    /// source-SSRC gate" — both otherwise look like silence from here.
     ///
-    /// The window carries two durations, on purpose — see ``SummaryWindow``.
+    /// The window carries two durations — see ``SummaryWindow``.
     public static func transportSummaryFields(
         addr: String,
         sample: ViewerTransportSample,

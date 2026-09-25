@@ -5,23 +5,18 @@ import TailscreenProtocol
 extension FramedResponseDrain {
     /// Drain an `OutgoingConnection` until the frame `match` wants arrives.
     ///
-    /// The socket half of `FramedResponseDrain`: it supplies the clock, the
-    /// poll, and — the part worth having in exactly one place — the
-    /// classification of a `readFailed`. tsnet reports "the poll interval
-    /// expired" and "this socket is dead" as the SAME error, and the only
-    /// thing separating them is how long the call took
-    /// (`ReceiveLoopPolicy.classifyReadFailedAsError`: near-instant ⇒ dead,
-    /// a full interval ⇒ just the interval). Getting that backwards either
-    /// hot-spins against a closed connection for the whole timeout or
-    /// abandons a peer that simply had not answered yet.
+    /// The socket half of `FramedResponseDrain`: supplies the clock, poll,
+    /// and the `readFailed` classification — tsnet reports "poll expired"
+    /// and "socket dead" as the SAME error, distinguished only by elapsed
+    /// time (`ReceiveLoopPolicy.classifyReadFailedAsError`). Getting that
+    /// backwards either hot-spins against a dead connection or abandons a
+    /// peer that just hasn't answered yet.
     ///
     /// - Parameters:
-    ///   - pollMilliseconds: how long one `receive` waits. Sized to the
-    ///     overall timeout — a two-minute wait polled every second wakes 120
-    ///     times to learn nothing — but always well above the dead-socket
-    ///     threshold, or every poll would read as a dead socket.
-    /// - Returns: the matched payload, or nil for every failure mode. See the
-    ///   type's note: nil is status-unknown, never a positive answer.
+    ///   - pollMilliseconds: how long one `receive` waits, sized well above
+    ///     the dead-socket threshold or every poll reads as dead.
+    /// - Returns: the matched payload, or nil for every failure mode — nil is
+    ///   status-unknown, never a positive answer.
     static func awaitResponse<Response>(
         on conn: OutgoingConnection,
         timeout: TimeInterval,

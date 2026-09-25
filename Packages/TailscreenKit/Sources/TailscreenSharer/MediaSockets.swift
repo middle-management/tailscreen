@@ -1,15 +1,10 @@
-// The share's datagram sockets: the tailnet listener a signed-in share
-// has, and/or the guest (share-by-token) listener from a `GuestServerNode`
-// — at least one of the two, never neither (the `media` snapshot returns
-// nil for a stopped share instead of building an empty pair).
-//
-// One value, one `send`, so the ~15 fan-out/ACK/denial send sites in
-// `TailscaleScreenShareServer` stay written exactly as before — the routing
-// by destination happens here. Guest addresses can never collide with
-// tailnet ones (they are ULA addresses derived from guest node keys, in a
-// separate netstack), but membership is still decided explicitly: an addr
-// is a guest iff its datagrams arrive on the guest listener, recorded by
-// the guest receive loop for the life of the share.
+// The share's datagram sockets: the tailnet listener a signed-in share has,
+// and/or the guest (share-by-token) listener from a `GuestServerNode` — at
+// least one, never neither. One `send` routes by destination so the ~15
+// fan-out/ACK/denial call sites in `TailscaleScreenShareServer` are
+// unchanged. Guest addresses (ULA, derived from guest node keys) can't
+// collide with tailnet ones, but membership is still decided explicitly by
+// which listener the datagram arrived on.
 
 import Foundation
 import TailscaleKit
@@ -25,18 +20,14 @@ struct MediaSockets: Sendable {
     /// Reports whether addr was first seen on the guest listener.
     let isGuestAddr: @Sendable (String) -> Bool
     /// Route for stream (reliable-transport, spec §2.2) viewers: wraps the
-    /// datagram in a `.mediaDatagram` frame on the viewer's own framed TCP
-    /// connection and reports true. False means addr has no stream route
-    /// and the datagram falls through to the UDP listeners below. Checked
-    /// FIRST because a stream addr is synthetic (`ip:tcp-…`) — it never
-    /// names a real UDP flow, and sending it there would silently vanish.
+    /// datagram in a `.mediaDatagram` TCP frame, returns true. False falls
+    /// through to UDP. Checked first — a stream addr is synthetic
+    /// (`ip:tcp-…`) and would silently vanish if sent as UDP.
     let sendViaStream: @Sendable (Data, String) async -> Bool
 
     /// Send one datagram to addr via the listener its flows live on.
     /// Matches `PacketListener.send`'s signature so existing call sites
-    /// (`pl.send(x, to: addr)`) compile unchanged against this type.
-    /// With no primary every addr is a guest addr by construction, so the
-    /// guest socket carries everything.
+    /// compile unchanged.
     func send(_ data: Data, to addr: String) async throws {
         if await sendViaStream(data, addr) { return }
         if let guest, primary == nil || isGuestAddr(addr) {

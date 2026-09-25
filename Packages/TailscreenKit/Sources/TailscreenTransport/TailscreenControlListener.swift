@@ -31,63 +31,38 @@ public final class TailscreenControlListener: @unchecked Sendable {
     // `Guarded.swift`.
     private let connections = Guarded<[UUID: IncomingConnection]>([:])
 
-    /// Fires for every `.annotation` message. Arguments are the op, the
-    /// `UUID` of the connection it arrived on (so the sharer can avoid
-    /// echoing the op back to its origin), and the connection's remote
-    /// tailnet address (`ip:port`, nil if libtailscale couldn't report it)
-    /// so the sharer can gate annotations to *admitted* viewers only — the
-    /// TCP back-channel otherwise accepts ops from any peer that can dial
-    /// port 7447, including pending/denied ones.
+    /// Fires for every `.annotation` message: op, origin connection UUID
+    /// (to avoid echoing back), and remote address (nil if unreported) so
+    /// the sharer can gate to *admitted* viewers only.
     public var onAnnotation: ((AnnotationOp, UUID, String?) -> Void)?
 
-    /// Fires for every `.requestToShare` message. Arguments are the
-    /// requesting peer's friendly hostname (as sent in the payload), the
-    /// `UUID` of the TCP connection it arrived on (so the handler can send
-    /// the eventual `.shareResponse` back on the *same* connection — no
-    /// dial-back, so the answer provably reaches the actual requester), and
-    /// the connection's remote tailnet address (`ip:port`, nil if
-    /// unreported) so the handler can dedupe by source identity rather than
-    /// the spoofable wire-claimed hostname.
+    /// Fires for every `.requestToShare` message: hostname, connection UUID
+    /// (to answer on the SAME connection, no dial-back), and remote address
+    /// (for dedup by source identity, not the spoofable hostname).
     public var onRequestToShare: ((String, UUID, String?) -> Void)?
 
-    /// Fires for every `.controlRequest` message (viewer→sharer "please grant
-    /// me remote control"). Arguments are the connection's stable `UUID` (the
-    /// handle the grant + input-event gate key on) and its remote tailnet
-    /// address (`ip:port`, nil if unreported) so the sharer can confirm the
-    /// requester is an admitted viewer and label the request row.
+    /// Fires for every `.controlRequest` message: connection UUID (the
+    /// grant/gate key) and remote address.
     public var onControlRequest: ((UUID, String?) -> Void)?
 
-    /// Fires for every `.inputEvent` message (viewer→sharer mouse/scroll/key).
-    /// Arguments are the event, the connection's `UUID` (checked against the
-    /// live grant — events from any non-grantee connection are dropped
-    /// server-side), and the remote address. Fires off the connection's
-    /// receive task, which is single-threaded per connection so per-connection
-    /// event order is preserved.
+    /// Fires for every `.inputEvent` message: event, connection UUID
+    /// (checked against the live grant), remote address. Fires off the
+    /// connection's own receive task, preserving per-connection order.
     public var onInputEvent: ((InputEvent, UUID, String?) -> Void)?
 
-    /// Fires for a `.controlReleased` message (grantee viewer→sharer "I'm
-    /// done controlling"). Argument is the connection's `UUID`; the sharer
-    /// revokes the grant if this connection holds it, so the sharer UI and
-    /// the gate release in lockstep with the viewer leaving control mode.
+    /// Fires for a `.controlReleased` message (viewer done controlling).
+    /// Sharer revokes if this connection holds the grant.
     public var onControlReleased: ((UUID) -> Void)?
 
-    /// Fires for every `.metadataRequest` message (peer→peer "describe
-    /// yourself" — drives the requester's sharing-status filter). Argument
-    /// is the connection's stable `UUID`; the handler answers with
-    /// `.metadataResponse` on the SAME connection via `send(_:to:)` (no
-    /// dial-back, like `.shareResponse`).
+    /// Fires for every `.metadataRequest` message: answers with
+    /// `.metadataResponse` on the SAME connection (no dial-back).
     public var onMetadataRequest: ((UUID) -> Void)?
 
-    /// Fires for every `.mediaDatagram` message (spec §2.2, the
-    /// reliable-transport profile): one raw UDP-shaped datagram carried over
-    /// the framed channel by a viewer without usable UDP. Arguments are the
-    /// datagram bytes (never empty — the parser drops empty payloads), the
-    /// connection's stable `UUID` (the sharer's send route back — the
-    /// connection IS this viewer's media transport), and the remote address.
-    /// The handler runs the same first-byte demultiplex the UDP receive
-    /// loop does; a host with no share running leaves this nil and the
-    /// frames are dropped, which is the profile's degraded mode (the
-    /// electing viewer's HELLO simply goes unanswered).
+    /// Fires for every `.mediaDatagram` message (spec §2.2, reliable-transport
+    /// profile): datagram bytes (never empty), connection UUID (this
+    /// viewer's media transport), remote address. A host with no share
+    /// running leaves this nil, so frames drop and the electing viewer's
+    /// HELLO simply goes unanswered.
     public var onMediaDatagram: ((Data, UUID, String?) -> Void)?
 
     /// Fires when an accepted TCP connection closes. Argument is the
@@ -120,14 +95,10 @@ public final class TailscreenControlListener: @unchecked Sendable {
     }
 
     /// Adopt an already-bound TCP listener and start the accept loop over it.
-    ///
     /// The share-by-token path: a guest node binds its own TCP listener
-    /// through the tunnel (`GuestServerNode.listen(port:)`) — same `Listener`
-    /// type, guest fds being bit-compatible with tsnet fds — and everything
-    /// from accept through framed dispatch is identical, so the whole class
-    /// is reused rather than the guest side growing a second copy of the
-    /// receive loop. Idempotent like `start(node:)`; `stop()` closes the
-    /// adopted listener the same as an owned one.
+    /// (`GuestServerNode.listen(port:)` — bit-compatible fds), so this whole
+    /// class is reused instead of a second receive-loop copy. Idempotent;
+    /// `stop()` closes the adopted listener same as an owned one.
     public func start(adopting bound: Listener) {
         guard !isRunning else { return }
         self.listener = bound
@@ -162,11 +133,9 @@ public final class TailscreenControlListener: @unchecked Sendable {
         try? await conn.send(message.encode())
     }
 
-    /// Close and deregister a single accepted connection by ID. Used by the
-    /// share server to sever an expelled viewer's annotation back-channel so
-    /// a blocked peer loses it along with its video. The connection's own
-    /// receive loop then unwinds and fires `onConnectionClosed`, retiring the
-    /// peer's tracked strokes on every canvas.
+    /// Close and deregister a single accepted connection by ID — severs an
+    /// expelled viewer's annotation back-channel; the receive loop then
+    /// fires `onConnectionClosed`, retiring its tracked strokes.
     public func close(connectionID: UUID) async {
         guard let conn = connections.withLock({ $0.removeValue(forKey: connectionID) }) else { return }
         await conn.close()
@@ -215,10 +184,8 @@ public final class TailscreenControlListener: @unchecked Sendable {
     }
 
     private func receiveLoop(connection: IncomingConnection, id: UUID) async {
-        // Capture the peer address once: it's constant for the connection's
-        // lifetime, and `remoteAddress` is actor-isolated so it can only be
-        // read with `await` — doing it per message would needlessly hop the
-        // actor on every frame.
+        // Captured once: constant for the connection's lifetime, and
+        // actor-isolated, so per-message reads would hop the actor every frame.
         let peerAddress = await connection.remoteAddress
         defer {
             connections.withLock { _ = $0.removeValue(forKey: id) }

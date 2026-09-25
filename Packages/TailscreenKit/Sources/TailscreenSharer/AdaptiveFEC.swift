@@ -1,10 +1,7 @@
-// The adaptive-FEC decision cluster for `TailscaleScreenShareServer`,
-// moved verbatim out of TailscaleScreenShareServer.swift (see
-// plans/fec-xor-recovery.md): the sweep-window state machine, the per-viewer
-// parity gate, the raw-loss group-size ladder, and the encoder-rate
-// compensation. Everything here is a pure `static func` on the server (plus
-// its value types): no instance state, no locks, no callbacks.
-// `FECOverheadDecisionTests` exercises it through the public API.
+// Adaptive-FEC decisions for `TailscaleScreenShareServer`: sweep-window state
+// machine, per-viewer parity gate, raw-loss group-size ladder, encoder-rate
+// compensation. Pure `static func`s, no instance state. See
+// plans/fec-xor-recovery.md; tested via `FECOverheadDecisionTests`.
 
 import Foundation
 import TailscreenProtocol
@@ -34,20 +31,14 @@ extension TailscaleScreenShareServer {
         /// FEC-recovered packets this viewer reported this window.
         public var recovered: Int = 0
         /// NACK-recovered packets this viewer reported this window. Feeds
-        /// raw-loss reconstruction identically to `recovered`: a served
-        /// retransmit masks link loss (counts as received), so without it a
-        /// link NACK is quietly repairing reads clean and FEC never gates on —
-        /// even at the high RTT where NACK's per-loss round trip is the very
-        /// latency FEC's zero-RTT recovery removes.
+        /// raw-loss reconstruction like `recovered` — a served retransmit
+        /// also masks link loss, so without it NACK's own success would hide
+        /// the loss that should turn FEC on.
         public var nackRecovered: Int = 0
-        /// Video packets planned for THIS viewer this window — the
-        /// denominator for its own recovered-loss fraction. Per-viewer on
-        /// purpose: a shared template-stream count would sum recoveries
-        /// across viewers against one stream (two viewers each recovering
-        /// 3 % must not read as 6 %) and would deflate a keyframe-only
-        /// throttled viewer's rate (its expected count is a small fraction
-        /// of the templates), dropping its gate and inviting a
-        /// loss → PLI-storm → re-gate oscillation.
+        /// Video packets planned for THIS viewer this window — denominator
+        /// for its own recovered-loss fraction. Per-viewer, not shared: a
+        /// shared count would sum recoveries across viewers incorrectly and
+        /// deflate a throttled viewer's rate, dropping its gate.
         public var expectedPackets: Int = 0
         /// Viewer advertised `.fec` in its HELLO.
         public var fecCapable: Bool = false
@@ -88,37 +79,26 @@ extension TailscaleScreenShareServer {
         return 0
     }
 
-    /// Pure per-viewer parity gate: this viewer receives parity only when
-    /// its **own** measured path passes the on-gate — RTT > 150 ms and raw
-    /// (residual + recovered, against its own expected count) loss > 2 %.
-    /// Clean-link viewers pay zero overhead even mid-share with a lossy
-    /// peer; legacy / non-`.fec` viewers never pass (the caller keys the
-    /// gate off the caps map).
+    /// Per-viewer parity gate: RTT > 150ms AND raw loss > 2% on that
+    /// viewer's own path. Clean-link viewers pay zero overhead even mid-share
+    /// with a lossy peer.
     public static func fecViewerGate(rttNs: UInt64, rawLossQ8: Int) -> Bool {
         rttNs > TransportTuning.fecOnGateRTTNs && rawLossQ8 > TransportTuning.fecOnGateLossQ8
     }
 
-    /// Pure adaptive-FEC decision, one step per sweep window. Everything is
-    /// **per-viewer first**: each `.fec` viewer's raw loss is residual +
-    /// recovered against its own expected count (the recovered term is the
-    /// anti-oscillation input — FEC hiding all loss zeroes the residual,
-    /// and without it the decision would switch FEC off and re-trigger the
-    /// loss it was hiding), and its gate needs BOTH high RTT and raw loss on
-    /// the same path. Mixing worst-RTT and worst-loss across *different*
-    /// viewers is exactly wrong: viewer A (slow, clean) + viewer B (fast,
-    /// lossy) must not switch FEC on with nobody gated, paying the encoder
-    /// compensation for parity no one receives.
+    /// Adaptive-FEC decision, one step per sweep window. Per-viewer first:
+    /// each `.fec` viewer's raw loss is residual + recovered against its own
+    /// expected count (the recovered term prevents oscillation — FEC hiding
+    /// all loss must not switch itself off), and gating needs BOTH high RTT
+    /// and raw loss on the *same* viewer's path — mixing worst-RTT and
+    /// worst-loss across different viewers would arm FEC with nobody gated
+    /// to receive the parity.
     ///
-    /// - **On-gate** (FEC currently off): at least one viewer passes its own
-    ///   gate → ON, group size laddered from the worst raw loss over the
-    ///   gated viewers.
-    /// - **While on:** re-ladder from the gated viewers' worst raw loss.
-    ///   With loss present but nobody gated (gray zone / RTT recovered),
-    ///   hold N for a quick re-arm — the applier sends no parity and pays
-    ///   no compensation while `gated` is empty, so a held N is free.
-    /// - **Off-gate:** two consecutive windows with every `.fec` viewer's
-    ///   raw loss under ~1 % step FEC off (asymmetric hysteresis, matching
-    ///   the sweep's style).
+    /// - **On-gate:** any viewer passing its own gate → ON, laddered from the
+    ///   worst raw loss among gated viewers.
+    /// - **While on:** re-ladder from gated viewers; hold N if loss persists
+    ///   but nobody's gated (free, since no parity is sent while ungated).
+    /// - **Off-gate:** two consecutive clean windows (raw loss < ~1%) → off.
     public static func fecSweepDecision(
         samples: [String: FECViewerSample], state: FECState
     ) -> FECSweepDecision {
@@ -126,11 +106,8 @@ extension TailscaleScreenShareServer {
         var worstGatedRawQ8 = 0
         var worstRawQ8 = 0
         for (addr, sample) in samples where sample.fecCapable {
-            // Raw link loss = residual (post-recovery RR loss) + everything the
-            // link lost but a recovery masked. BOTH FEC and NACK recoveries
-            // count as received in `fracLostQ8`, so both must be added back to
-            // reconstruct raw loss — else NACK's own success on a high-RTT link
-            // hides the loss that justifies turning FEC on.
+            // Raw loss = residual + recovered; both FEC and NACK recoveries
+            // count as "received" in fracLostQ8, so both must be added back.
             let rawLossQ8 = min(
                 255,
                 sample.residualLossQ8
@@ -146,8 +123,8 @@ extension TailscaleScreenShareServer {
 
         let next: FECState
         if state.groupSize == 0 {
-            // A gated viewer's raw loss is > the on-gate by definition, so
-            // the ladder always yields a nonzero group here.
+            // Ladder always yields nonzero: a gated viewer's raw loss exceeds
+            // the on-gate by definition.
             next = gated.isEmpty ? FECState() : FECState(groupSize: fecLadder(rawLossQ8: worstGatedRawQ8))
         } else if worstRawQ8 < TransportTuning.fecCleanLossQ8 {
             let clean = state.cleanWindows + 1
@@ -164,13 +141,10 @@ extension TailscaleScreenShareServer {
         return FECSweepDecision(state: next, gated: next.groupSize > 0 ? gated : [])
     }
 
-    /// Encoder-rate compensation: with an effective group size of N, media +
-    /// parity together must stay at the congestion-controlled rate, so the
-    /// encoder runs at N/(N+1) of it. Skipping this would make FEC *add*
-    /// 10–20 % load precisely on lossy links. 0 (FEC off, or on with nobody
-    /// gated — no parity flowing) passes through unchanged. The result is
-    /// clamped so compensation can never push the encoder below the adaptive
-    /// floor's own compensated equivalent.
+    /// Encoder-rate compensation: with group size N, media+parity together
+    /// must stay at the congestion-controlled rate, so the encoder runs at
+    /// N/(N+1) of it — else FEC adds 10-20% load on already-lossy links. 0
+    /// (FEC off, or on with nobody gated) passes through unchanged.
     public static func fecCompensatedBitrate(_ bitrate: Int, groupSize: Int) -> Int {
         guard groupSize > 0 else { return bitrate }
         let scaled = bitrate * groupSize / (groupSize + 1)

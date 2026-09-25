@@ -23,8 +23,7 @@ public enum TailscreenMetadataClient {
         guard let tailscaleHandle = await node.tailscale else { return nil }
         let target = "\(host):\(port)"
         do {
-            // Watchdogs for the same reason `sendRequestToShareAwaitingResponse`
-            // has them: `tailscale_dial` (and the init's actor handshake) can
+            // Watchdogs: `tailscale_dial` (and the init's actor handshake) can
             // block indefinitely on ACL-dropped SYNs or a cold netmap.
             let conn = try await TailscalePeerDiscovery.withWatchdog(seconds: 5) {
                 try await OutgoingConnection(
@@ -39,12 +38,9 @@ public enum TailscreenMetadataClient {
                 try await conn.connect()
             }
             try await conn.send(ScreenShareMessage.metadataRequest.encode())
-            // Drain frames until a `.metadataResponse` arrives, the peer
-            // closes, or `timeout` elapses; anything else on the wire is
-            // ignored. The loop — including the dead-socket-vs-poll-timeout
-            // classification — is `FramedResponseDrain`, shared with
-            // `TailscreenRequestToShareClient`. A 1 s poll: the whole wait is
-            // seconds, so a longer interval would round the timeout up.
+            // Drain frames until `.metadataResponse`, close, or `timeout`.
+            // Shared loop: `FramedResponseDrain`. 1s poll — the whole wait
+            // is seconds, so a longer interval would round the timeout up.
             return await FramedResponseDrain.awaitResponse(
                 on: conn, timeout: timeout, pollMilliseconds: 1_000
             ) { message in

@@ -12,28 +12,22 @@ protocol IPNBusSubscription: AnyObject, Sendable {
 
 extension MessageProcessor: IPNBusSubscription {}
 
-/// Watches the Tailscale IPN bus for real-time peer status updates
+/// Watches the Tailscale IPN bus for real-time peer status updates.
 ///
 /// The subscription is meant to live for the node's lifetime, but the stream
-/// under it does not always cooperate: the LocalAPI HTTP request can time
-/// out, the loopback listener can hiccup, and either way the consumer gets a
-/// terminal `error(_:)` and no more messages. Before this class reconnected,
-/// that error was logged and nothing else — `isWatching` stayed true, the
-/// dead processor stayed set, and because every owner guards its start on the
-/// watcher already existing, no peer update ever arrived again for the rest
-/// of the session (both machines in a 0.10.0-rc.14 bundle pair show exactly
-/// that, ~63 s in). So a non-cancellation error now tears the subscription
-/// down and resubscribes with a small backoff: the node is still up and the
-/// loopback address unchanged, so a fresh `watch-ipn-bus` is all it takes.
+/// under it doesn't always cooperate — a LocalAPI HTTP timeout or loopback
+/// hiccup delivers a terminal `error(_:)` with no more messages. A
+/// non-cancellation error tears the subscription down and resubscribes with
+/// backoff: the node and loopback address are unchanged, so a fresh
+/// `watch-ipn-bus` is all it takes.
 @MainActor
 public class TailscaleIPNWatcher: ObservableObject {
     @Published public var peers: [String: TailscalePeerStatus] = [:]
 
     /// True while a subscription is live and delivering. Off between a
-    /// failure and the reconnect that follows it — a host can show that as
-    /// "reconnecting" — and off after `stopWatching()`. Whether the watcher
-    /// *wants* to be subscribed is `armed`, which is what the reconnect loop
-    /// and the start guard read.
+    /// failure and its reconnect (host can show "reconnecting"), and after
+    /// `stopWatching()`. Whether the watcher *wants* to be subscribed is
+    /// `armed`.
     @Published public var isWatching = false
 
     /// Fires whenever tsnet asks the host app to send the user to a URL —
@@ -53,27 +47,22 @@ public class TailscaleIPNWatcher: ObservableObject {
     static let defaultReconnectDelays: [TimeInterval] = [1, 2, 4, 8, 16, 30]
 
     /// A reconnect attempt that parks (LocalAPI briefly unreachable) must not
-    /// wedge the loop the way a parked first start once wedged discovery, so
-    /// each attempt runs under a watchdog. A late success past the deadline is
-    /// still adopted if nothing else has been by then, else cancelled — see
-    /// `adopt`.
+    /// wedge the loop, so each attempt runs under a watchdog. A late success
+    /// past the deadline is still adopted if nothing else has been by then,
+    /// else cancelled — see `adopt`.
     static let defaultReconnectWatchdogSeconds: Double = 15
 
     private var subscription: (any IPNBusSubscription)?
-    /// The consumer whose subscription is live. Errors and notifies from any
-    /// other consumer are stragglers from a subscription already torn down and
-    /// are ignored — otherwise a dying stream's terminal error would restart
-    /// the healthy one that replaced it.
+    /// The consumer whose subscription is live. Errors/notifies from any
+    /// other consumer are stragglers from a torn-down subscription, ignored —
+    /// else a dying stream's terminal error would restart its own replacement.
     private var currentConsumer: IPNMessageConsumer?
     /// The attempts still opening, by consumer. A processor starts inside the
-    /// subscriber call, a hop or two before `adopt` runs, so a notify it
-    /// delivers in that window is real (the `.initialState` replay,
-    /// typically) and must not read as a straggler; an error in that window
-    /// is remembered and acted on at adoption instead. Keyed per attempt
-    /// rather than one slot, because the reconnect watchdog can leave a
-    /// timed-out attempt running beside the next one — a single slot would
-    /// forget the older attempt's failure, and `adopt` could then install a
-    /// stream that already died, silently ending the reconnect loop.
+    /// subscriber call, before `adopt` runs, so a notify then is real (the
+    /// `.initialState` replay) and an error then is remembered for adoption.
+    /// Keyed per attempt, not one slot — the watchdog can leave a timed-out
+    /// attempt running beside the next one, and a single slot would forget
+    /// the older attempt's failure.
     private struct OpeningAttempt {
         let consumer: IPNMessageConsumer
         var failure: Error?
@@ -109,12 +98,10 @@ public class TailscaleIPNWatcher: ObservableObject {
     public func startWatching(node: TailscaleNode) async throws {
         let client = LocalAPIClient(localNode: node, logger: logger)
 
-        // Watch for netmap updates with rate limiting to avoid excessive
-        // updates. `.initialState` is what makes tsnet replay the current
-        // browse-to-URL on first subscribe, so we catch it even if it was
-        // generated before this watcher started — and, on a reconnect, what
-        // replays the netmap so `peers` is whole again without waiting for
-        // the next change.
+        // `.initialState` makes tsnet replay the current browse-to-URL on
+        // first subscribe (catching one generated before this watcher
+        // started), and on reconnect replays the netmap so `peers` is whole
+        // again without waiting for the next change.
         let mask: Ipn.NotifyWatchOpt = [.initialState, .netmap, .rateLimitNetmaps]
 
         try await startWatching { consumer in
@@ -122,14 +109,13 @@ public class TailscaleIPNWatcher: ObservableObject {
         }
     }
 
-    /// Start watching through an arbitrary subscriber. The seam the reconnect
-    /// suite drives (internal, reached through `@testable`);
-    /// `startWatching(node:)` is this with the LocalAPI client.
+    /// Start watching through an arbitrary subscriber — the seam the
+    /// reconnect suite drives; `startWatching(node:)` is this with the
+    /// LocalAPI client.
     ///
     /// Idempotent while armed. A subscriber that throws on the first attempt
     /// disarms the watcher again before rethrowing, so the caller sees the
-    /// same watcher it would have seen had it never called — no half-armed
-    /// state to tear down, though `stopWatching()` stays harmless.
+    /// same watcher it would have seen had it never called.
     func startWatching(subscriber: @escaping Subscriber) async throws {
         guard !armed else { return }
         armed = true
@@ -167,9 +153,8 @@ public class TailscaleIPNWatcher: ObservableObject {
     }
 
     /// Cancel the live subscription, if any, and forget it. Dropping the last
-    /// reference matters as much as `cancel()`: `MessageProcessor.cancel()`
-    /// only stops the poll task, and the HTTP stream under it closes in the
-    /// processor's `deinit`.
+    /// reference matters as much as `cancel()` — `MessageProcessor.cancel()`
+    /// only stops the poll task; the HTTP stream closes in `deinit`.
     private func dropSubscription() {
         subscription?.cancel()
         subscription = nil
@@ -208,12 +193,11 @@ public class TailscaleIPNWatcher: ObservableObject {
         opening.removeValue(forKey: ObjectIdentifier(consumer))?.failure
     }
 
-    /// Install a freshly opened subscription — unless the watcher was stopped
-    /// (or restarted) while it was opening, or another attempt already won,
-    /// in which case the newcomer is cancelled on the spot so no stream is
-    /// left running with nobody to cancel it. A stream that already died
-    /// while it was opening is adopted and immediately failed, so it takes
-    /// the same reconnect path as one that dies later.
+    /// Install a freshly opened subscription — unless stopped/restarted
+    /// while opening, or another attempt already won, in which case the
+    /// newcomer is cancelled so no stream runs unowned. A stream that died
+    /// while opening is adopted and immediately failed, taking the same
+    /// reconnect path as one that dies later.
     private func adopt(_ handle: any IPNBusSubscription, consumer: IPNMessageConsumer, epoch attemptEpoch: Int) {
         let failure = forgetOpening(consumer)
         guard armed, attemptEpoch == epoch, subscription == nil else {
@@ -296,10 +280,8 @@ public class TailscaleIPNWatcher: ObservableObject {
         Task { @MainActor in
             guard consumer === currentConsumer || isOpening(consumer) else { return }
 
-            // tsnet emits BrowseToURL whenever the user needs to visit a
-            // page in their browser — primarily the interactive-login URL
-            // during first sign-in. Forward to the host app so it can
-            // open it via NSWorkspace.
+            // tsnet emits BrowseToURL for the interactive-login URL during
+            // first sign-in; forward to the host app to open.
             if let raw = notify.BrowseToURL, let url = URL(string: raw) {
                 logger.log("BrowseToURL: \(raw)")
                 onBrowseToURL?(url)
