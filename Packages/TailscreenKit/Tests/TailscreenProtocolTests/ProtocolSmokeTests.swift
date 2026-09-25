@@ -2,11 +2,9 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// Smoke tests proving the TailscreenProtocol module is *usable* on Linux —
-/// encode/decode actually runs, not merely compiles. Deliberately shallow:
-/// the exhaustive wire-format, loss-recovery, and fuzz coverage lives in the
-/// main repo's `Tests/TailscreenTests`, which compiles these same sources as
-/// part of the Tailscreen target. Keep this file to a handful of round trips.
+/// Proves TailscreenProtocol is usable on Linux — encode/decode actually
+/// runs, not merely compiles. Deliberately shallow; exhaustive wire-format,
+/// loss-recovery, and fuzz coverage lives in `Tests/TailscreenTests`.
 final class ProtocolSmokeTests: XCTestCase {
     func testRTPHeaderRoundTrip() {
         let header = RTPHeader(
@@ -126,8 +124,7 @@ final class ProtocolSmokeTests: XCTestCase {
         }
         XCTAssertEqual(ssrc, 0xDEAD_BEEF)
         XCTAssertEqual(decodedCaps, caps)
-        // Legacy strict decoder must reject the extended 6-byte form — that
-        // back-compat contract is what keeps old viewers PLI-only.
+        // Legacy strict decoder rejects the extended 6-byte form, keeping old viewers PLI-only.
         XCTAssertNil(ScreenShareControlMessage.decodeHelloAck(wire))
     }
 }

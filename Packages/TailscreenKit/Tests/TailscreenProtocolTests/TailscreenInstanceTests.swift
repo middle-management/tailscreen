@@ -50,8 +50,7 @@ final class TailscreenInstanceTests: XCTestCase {
     }
 
     func testDisplayNameKeepsTheInstanceSuffix() {
-        // `TAILSCREEN_INSTANCE=2` is the ONLY thing telling two local test
-        // instances apart in a list — stripping it would merge them visually.
+        // `TAILSCREEN_INSTANCE=2` is the only thing telling two local test instances apart.
         XCTAssertEqual(TailscreenInstance.displayName(fromHostname: "tailscreen-wisp-2"), "wisp-2")
     }
 

@@ -3,45 +3,36 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `ViewerApprovalPreference` — the "Require approval for new viewers" gate
-/// value the GTK and Windows apps push into
-/// `TailscaleScreenShareServer.setRequireApproval`.
+/// value pushed into `TailscaleScreenShareServer.setRequireApproval`.
 ///
-/// Worth pinning because every wrong answer here is silent: the server's own
-/// default is off, so a preference that reads `false` when it should read
-/// `true` produces a share that works perfectly and admits strangers. There is
-/// no error and no log line — the only symptom is that the Accept/Deny prompt
-/// never appears, which looks like nobody has connected.
+/// Every wrong answer here is silent: the server's own default is off, so a
+/// preference reading `false` when it should read `true` admits strangers
+/// with no error or log line.
 final class ViewerApprovalPreferenceTests: XCTestCase {
 
     // MARK: - The pure decision
 
-    /// A never-touched install gets the gate. This is the whole point of
-    /// reading `object(forKey:)` instead of `bool(forKey:)`.
+    /// A never-touched install gets the gate: read `object(forKey:)`, not `bool(forKey:)`.
     func testUnsetDefaultsOn() {
         XCTAssertTrue(ViewerApprovalPreference.resolve(stored: .unset, openDoor: false))
     }
 
-    /// An explicit opt-out survives the on-by-default rule. A `bool(forKey:)`
-    /// read cannot tell this case from the one above — both are `false` — so
-    /// flipping the default on would silently re-enable the gate for everyone
-    /// who had turned it off.
+    /// An explicit opt-out survives the on-by-default rule — `bool(forKey:)`
+    /// can't tell "unset" from "chosen false", both read `false`.
     func testStoredChoiceSticks() {
         XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .chosen(false), openDoor: false))
         XCTAssertTrue(ViewerApprovalPreference.resolve(stored: .chosen(true), openDoor: false))
     }
 
-    /// Open-door mode outranks everything, including a stored `true`.
-    /// Otherwise the scripted harnesses park their automated viewers on a
-    /// prompt nobody is there to answer.
+    /// Open-door mode outranks everything, including a stored `true`, or
+    /// scripted harnesses park automated viewers on a prompt nobody answers.
     func testOpenDoorOverridesStoredValue() {
         XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .chosen(true), openDoor: true))
         XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .unset, openDoor: true))
         XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .chosen(false), openDoor: true))
     }
 
-    /// Only the exact `"1"` arms open door. A stray `TAILSCREEN_OPEN_DOOR=0`
-    /// (or `false`, or empty) must not disarm the gate — an env var that means
-    /// "off" when set to "0" is the classic way a safety default is lost.
+    /// Only the exact `"1"` arms open door — `"0"`, `"false"`, or empty must not disarm the gate.
     func testOpenDoorRequiresExactlyOne() {
         XCTAssertTrue(ViewerApprovalPreference.openDoorForced(["TAILSCREEN_OPEN_DOOR": "1"]))
         XCTAssertFalse(ViewerApprovalPreference.openDoorForced(["TAILSCREEN_OPEN_DOOR": "0"]))
@@ -52,8 +43,6 @@ final class ViewerApprovalPreferenceTests: XCTestCase {
 
     // MARK: - Storage
 
-    /// Round-trip through an injected suite, and the unset case reading `true`
-    /// off real storage rather than only off the pure function.
     func testPersistenceRoundTrip() throws {
         let suiteName = "ViewerApprovalPreferenceTests-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -68,9 +57,8 @@ final class ViewerApprovalPreferenceTests: XCTestCase {
         XCTAssertTrue(ViewerApprovalPreference.load(defaults: suite, environment: [:]))
     }
 
-    /// A harness run must not rewrite the user's preference. `save` records
-    /// what the user chose; the env override is applied at `load`, so the
-    /// stored `true` is still there once the harness env goes away.
+    /// A harness run must not rewrite the user's preference: the env override
+    /// applies at `load`, so `save`'s stored value survives.
     func testOpenDoorDoesNotClobberTheStoredChoice() throws {
         let suiteName = "ViewerApprovalPreferenceTests-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))

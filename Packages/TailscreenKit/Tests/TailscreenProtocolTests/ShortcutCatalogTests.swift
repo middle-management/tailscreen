@@ -3,13 +3,9 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `ShortcutCatalog` — the one list of keyboard shortcuts all three hosts
-/// render.
-///
-/// Worth pinning because the failure it replaces was silent and already
-/// happened: macOS kept its menu and its cheat sheet in two hand-written
-/// places, and ⌃⌥. — the panic key that revokes a viewer's control of your
-/// machine — ended up in neither. Nothing catches that at build time, and
-/// nobody notices until the moment they need it.
+/// render. Pinned because the failure it replaces was silent: macOS once kept
+/// its menu and cheat sheet as separate hand-written lists, and ⌃⌥. (the panic
+/// key that revokes a viewer's control) ended up in neither.
 final class ShortcutCatalogTests: XCTestCase {
 
     // MARK: - Integrity
@@ -52,11 +48,9 @@ final class ShortcutCatalogTests: XCTestCase {
         XCTAssertTrue(collisions.isEmpty, "colliding shortcuts: \(collisions)")
     }
 
-    /// The case a macOS-only check cannot see. `primary` (⌘) and `control` (⌃)
-    /// are distinct in the menu bar and both collapse to Ctrl on GTK and
-    /// WinUI, so a pair that reads fine on macOS can become one chord
-    /// elsewhere — where the symptom is not an error but a shortcut running
-    /// the wrong command.
+    /// `primary` (⌘) and `control` (⌃) are distinct in the menu bar but both
+    /// collapse to Ctrl on GTK/WinUI, so a pair fine on macOS can collide
+    /// elsewhere — not an error, just the wrong command running.
     func testNoCollisionsOffMacOS() {
         let collisions = ShortcutCatalog.collisions(.words)
         XCTAssertTrue(collisions.isEmpty, "colliding shortcuts off macOS: \(collisions)")
@@ -122,26 +116,22 @@ final class ShortcutCatalogTests: XCTestCase {
 
     // MARK: - Globals
 
-    /// The two that must work while the app is behind whatever is being
-    /// shared. Muting is a reflex, and taking your machine back from a viewer
-    /// cannot require finding a window first.
+    /// Must work while the app is behind whatever is being shared: muting is
+    /// a reflex, and taking the machine back can't require finding a window first.
     func testGlobalsAreTheTwoMidShareReflexes() {
         XCTAssertEqual(
             Set(ShortcutCatalog.globals.map(\.command)), [.toggleMicrophone, .stopRemoteControl])
     }
 
-    /// A global shortcut is registered with the OS, which can refuse it
-    /// because another app owns the combo. Every such entry is a host
-    /// obligation to report that failure — this asserts the set stays small
-    /// and deliberate rather than growing by accident.
+    /// A global shortcut is registered with the OS, which can refuse it if
+    /// another app owns the combo — each entry is a failure a host must
+    /// surface, so keep the set small and deliberate.
     func testGlobalsAreDeliberatelyFew() {
         XCTAssertLessThanOrEqual(
             ShortcutCatalog.globals.count, 3,
             "each global is a system-wide grab and a failure path a host must surface")
     }
 
-    /// ⌃⌥. is the regression this catalog exists for: it was registered on
-    /// macOS and documented in neither the menu nor the cheat sheet.
     func testThePanicKeyIsInTheCatalog() {
         let entry = ShortcutCatalog.entry(for: .stopRemoteControl)
         XCTAssertNotNil(entry, "the panic key must be documented")
@@ -151,8 +141,6 @@ final class ShortcutCatalogTests: XCTestCase {
 
     // MARK: - Codable
 
-    /// Chords round-trip so a host can persist a user's remapping later
-    /// without the catalog needing to change shape.
     func testChordRoundTrips() throws {
         let chord = ShortcutChord(.delete, [.primary, .shift])
         let data = try JSONEncoder().encode(chord)

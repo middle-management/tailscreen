@@ -2,16 +2,12 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// The sharer's arm/disarm decisions, with a fake surface.
-///
-/// No window, no compositor, no message pump — which is the point: every case
-/// below is a way to strand a person behind a fullscreen window that eats
-/// clicks, and none of them can be reproduced on the machine that would suffer
-/// it.
+/// The sharer's arm/disarm decisions, with a fake surface. No window,
+/// compositor or message pump: every case is a way to strand a person behind
+/// a fullscreen window that eats clicks.
 final class SharerDrawingLatchTests: XCTestCase {
-    /// Records what the host was told to do, so the ORDER and the presence of
-    /// the disarm can be asserted — not just the end state, which is what a
-    /// half-armed surface agrees with.
+    /// Records the ORDER and presence of the disarm, not just end state — a
+    /// half-armed surface can agree with the end state alone.
     private final class FakeSurface {
         var calls: [AnnotationTool?] = []
         var answer: SharerDrawingArmResult = .armed
@@ -34,9 +30,9 @@ final class SharerDrawingLatchTests: XCTestCase {
         XCTAssertEqual(surface.calls, [.pen, nil])
     }
 
-    /// Changing pen mid-draw must not tear the surface down and put it back up:
+    /// Changing tools mid-draw must not tear the surface down and rebuild it:
     /// on both hosts that means dropping and re-taking keyboard focus, and the
-    /// re-take is the step that is allowed to fail.
+    /// re-take can fail.
     func testSwitchingToolsDoesNotDisarmInBetween() {
         var latch = SharerDrawingLatch()
         let surface = FakeSurface()
@@ -48,9 +44,8 @@ final class SharerDrawingLatchTests: XCTestCase {
         XCTAssertEqual(surface.calls, [.pen, .arrow])
     }
 
-    /// The safety property. A host that could not take the keyboard may still
-    /// have a window up eating clicks, and it cannot tell us — so the refusal
-    /// path issues a disarm regardless.
+    /// A host that couldn't take the keyboard may still have a window up
+    /// eating clicks, and can't tell us — so refusal disarms regardless.
     func testARefusalStillDisarmsTheSurface() {
         var latch = SharerDrawingLatch()
         let surface = FakeSurface()
@@ -73,18 +68,15 @@ final class SharerDrawingLatchTests: XCTestCase {
         latch.select(.pen, surface: surface.handle)
         XCTAssertEqual(latch.refusal, .noSurface)
 
-        // And a later success clears it, so a stale sentence does not sit under
-        // a toolbar that is now working.
+        // A later success clears it, so a stale message doesn't sit under a working toolbar.
         surface.answer = .armed
         XCTAssertTrue(latch.select(.pen, surface: surface.handle))
         XCTAssertNil(latch.refusal)
         XCTAssertEqual(latch.activeTool, .pen)
     }
 
-    /// The other half of the safety property, and the one a conditional
-    /// implementation gets wrong: if an arm half-succeeded, this latch thinks
-    /// nothing is armed, and a teardown that trusts it leaves the window up
-    /// after the share has ended.
+    /// If an arm half-succeeded, the latch thinks nothing is armed; a
+    /// teardown that trusts it leaves the window up after the share ends.
     func testTeardownDisarmsEvenWhenNothingIsArmed() {
         var latch = SharerDrawingLatch()
         let surface = FakeSurface()
@@ -99,11 +91,9 @@ final class SharerDrawingLatchTests: XCTestCase {
 
     // MARK: Surface lifetime
 
-    /// The whole point of naming `keep`: a tool change must not rebuild the
-    /// surface, because rebuilding means letting go of keyboard focus and
-    /// asking for it again — and asking is the step allowed to fail. Switching
-    /// from the pen to the arrow would then silently end drawing, blaming a
-    /// keyboard the sharer never touched.
+    /// A tool change must not rebuild the surface: rebuilding means letting go
+    /// of keyboard focus and re-asking, and re-asking can fail, silently
+    /// ending drawing.
     func testSwitchingToolsKeepsTheSurfaceThatAlreadyHasFocus() {
         XCTAssertEqual(
             SharerDrawingSurfacePlan.plan(tool: .arrow, hasSurface: true, hasRegion: true), .keep)
@@ -114,10 +104,8 @@ final class SharerDrawingLatchTests: XCTestCase {
             SharerDrawingSurfacePlan.plan(tool: .pen, hasSurface: false, hasRegion: true), .create)
     }
 
-    /// No known geometry means a stroke has nothing to be normalized against,
-    /// so it is refused rather than drawn somewhere plausible and wrong — the
-    /// same answer remote control and viewer annotations give to the same
-    /// question.
+    /// No known geometry means a stroke has nothing to normalize against, so
+    /// it is refused rather than drawn somewhere plausible and wrong.
     func testNoRegionRefusesRatherThanGuessing() {
         XCTAssertEqual(
             SharerDrawingSurfacePlan.plan(tool: .pen, hasSurface: false, hasRegion: false),
@@ -132,8 +120,7 @@ final class SharerDrawingLatchTests: XCTestCase {
             .release)
     }
 
-    /// Escape, and the surface reporting it lost the keyboard, are the same
-    /// decision: the way out is no longer reachable, so stop.
+    /// Escape and the surface losing the keyboard are the same decision: stop.
     func testReleaseDisarms() {
         var latch = SharerDrawingLatch()
         let surface = FakeSurface()

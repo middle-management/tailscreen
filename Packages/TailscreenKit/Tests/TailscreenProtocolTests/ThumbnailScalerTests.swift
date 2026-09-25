@@ -3,16 +3,12 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// `ThumbnailScaler` — the sharer's own preview of what viewers can see.
-///
-/// Small arithmetic with three ways to be silently wrong: a channel swap that
-/// renders the desktop with red and blue exchanged (which reads as a colour
-/// profile problem, not a bug), a stride assumption that skews the image a
-/// little further with every row, and a throttle that quietly starts running
-/// per frame and costs the share its frame rate.
+/// Three silent failure modes: a channel swap (reads as a colour-profile
+/// issue, not a bug), a stride assumption that skews the image row by row,
+/// and a throttle that starts running per frame and costs the frame rate.
 final class ThumbnailScalerTests: XCTestCase {
 
-    /// A solid BGRA frame, optionally padded — every capture API in this repo
-    /// pads rows, so an unpadded-only test would pass against the bug.
+    /// A solid BGRA frame, optionally padded — every capture API here pads rows.
     private func solidFrame(
         width: Int, height: Int, b: UInt8, g: UInt8, r: UInt8, padding: Int = 0
     ) -> (bytes: [UInt8], stride: Int) {
@@ -43,9 +39,7 @@ final class ThumbnailScalerTests: XCTestCase {
 
     // MARK: Channel order
 
-    /// **BGRA in, RGBA out.** Getting this backwards renders every preview with
-    /// red and blue exchanged, which on a screenshot of a desktop looks like a
-    /// colour-management problem rather than a defect.
+    /// BGRA in, RGBA out — backwards renders every preview with red/blue swapped.
     func testBlueInputBecomesBlueOutputRatherThanRed() {
         // Pure blue in BGRA: B=255, G=0, R=0.
         let frame = solidFrame(width: 8, height: 8, b: 255, g: 0, r: 0)
@@ -70,10 +64,8 @@ final class ThumbnailScalerTests: XCTestCase {
 
     // MARK: Stride
 
-    /// A padded frame must scale identically to an unpadded one. Reading at
-    /// `width * 4` when the pitch is wider skews the image progressively —
-    /// diagonally smeared, which is unmistakable once seen and invisible in a
-    /// test that never pads.
+    /// A padded frame must scale identically to an unpadded one — reading at
+    /// `width * 4` when the pitch is wider skews the image progressively.
     func testPaddedRowsScaleIdenticallyToUnpaddedOnes() {
         let unpadded = solidFrame(width: 16, height: 16, b: 10, g: 120, r: 240)
         let padded = solidFrame(width: 16, height: 16, b: 10, g: 120, r: 240, padding: 37)
@@ -94,9 +86,8 @@ final class ThumbnailScalerTests: XCTestCase {
 
     // MARK: Averaging
 
-    /// Box-average, not point-sample. A half-black half-white frame reduced to
-    /// one pixel must be grey; nearest-neighbour would pick one side and
-    /// report pure black or pure white.
+    /// Box-average, not point-sample: a half-black half-white frame reduced to
+    /// one pixel must be grey, not pure black or white.
     func testDownscalingAveragesTheBlockRatherThanPickingOnePixel() {
         let width = 8
         let height = 8
@@ -140,16 +131,14 @@ final class ThumbnailScalerTests: XCTestCase {
         XCTAssertEqual(size?.width, 135)
     }
 
-    /// Never enlarge: a small window blown up to the box would be a blurry
-    /// magnification of something already legible.
+    /// Never enlarge — a small window blown up would just be blurry.
     func testASmallFrameIsNotScaledUp() {
         let size = ThumbnailScaler.fittedSize(width: 100, height: 50, longestEdge: 240)
         XCTAssertEqual(size?.width, 100)
         XCTAssertEqual(size?.height, 50)
     }
 
-    /// An extreme aspect ratio must not round an axis to zero — a zero-height
-    /// image is a crash in whatever displays it, not a very short preview.
+    /// An extreme aspect ratio must not round an axis to zero — that crashes whatever displays it.
     func testAnExtremeAspectRatioKeepsAtLeastOnePixelPerAxis() {
         let size = ThumbnailScaler.fittedSize(width: 4000, height: 2, longestEdge: 240)
         XCTAssertEqual(size?.width, 240)
@@ -182,9 +171,7 @@ final class ThumbnailScalerTests: XCTestCase {
                 nowNs: 1_000_000_000 + ThumbnailScaler.intervalNs))
     }
 
-    /// A clock that went backwards must not read as "an enormous time has
-    /// passed" and fire on every frame — which is the throttle failing in the
-    /// one direction that costs the share its frame rate.
+    /// A backwards clock must not read as "an enormous time passed" and fire every frame.
     func testABackwardsClockDoesNotFireEveryFrame() {
         XCTAssertFalse(
             ThumbnailScaler.shouldCapture(lastCaptureNs: 5_000_000_000, nowNs: 1_000_000_000))

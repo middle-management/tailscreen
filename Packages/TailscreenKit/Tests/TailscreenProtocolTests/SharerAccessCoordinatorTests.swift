@@ -6,9 +6,7 @@ import XCTest
 ///
 /// Every case here fails silently in production: a decision that never
 /// persists, one that persists against the wrong machine, a Forget that
-/// un-forgets itself a second later. On Linux and Windows there was no code
-/// here at all before this, and on macOS it was five behaviours spread through
-/// a view model with no test between them and the user.
+/// un-forgets itself a second later.
 final class SharerAccessCoordinatorTests: XCTestCase {
     private var directory = ""
 
@@ -26,10 +24,7 @@ final class SharerAccessCoordinatorTests: XCTestCase {
 
     private func makeCoordinator() -> (SharerAccessCoordinator, () -> [[String: PeerPolicy]]) {
         let coordinator = SharerAccessCoordinator(store: PeerAccessStore(directory: directory))
-        // The pushes are the observable side effect that matters: the server
-        // re-runs its admission gate and sweeps the connected roster off this
-        // map, so a change that does not push is a decision the live share
-        // never hears about.
+        // Pushes drive the server's admission-gate re-run; a change that doesn't push is never applied.
         final class Box {
             var pushes: [[String: PeerPolicy]] = []
         }
@@ -59,10 +54,7 @@ final class SharerAccessCoordinatorTests: XCTestCase {
     }
 
     func testRememberingAnUnresolvedPeerQueuesRatherThanDropping() {
-        // The case the whole queue exists for: a sharer who wants somebody gone
-        // wants it NOW, and the netmap lookup producing the only key safe to
-        // remember them under is asynchronous. "Not yet identified" must not
-        // mean "your decision was discarded".
+        // The netmap lookup for a safe key is async; "not yet identified" must not mean "discarded".
         let (coordinator, pushes) = makeCoordinator()
         let applied = coordinator.remember(
             rowID: "100.64.0.5:1", stableID: nil, displayName: "100.64.0.5", policy: .deny)
@@ -76,9 +68,7 @@ final class SharerAccessCoordinatorTests: XCTestCase {
         coordinator.remember(
             rowID: "100.64.0.5:1", stableID: nil, displayName: "100.64.0.5", policy: .deny)
 
-        // The roster is re-emitted whenever anything about it changes —
-        // including the StableNodeID landing, which is the event being waited
-        // on.
+        // Roster is re-emitted on any change, including the StableNodeID landing.
         let changed = coordinator.noteRoster([
             identity("100.64.0.5:1", "nABC", "robert-macbook")
         ])
@@ -89,8 +79,8 @@ final class SharerAccessCoordinatorTests: XCTestCase {
     }
 
     func testAQueuedDecisionForAPeerThatLeftIsDropped() {
-        // Otherwise it lands on THE NEXT CONNECTION FROM THE SAME ADDRESS,
-        // which behind one NAT can be an entirely different machine.
+        // Otherwise it lands on the next connection from the same address, which behind one NAT
+        // can be a different machine.
         let (coordinator, _) = makeCoordinator()
         coordinator.remember(
             rowID: "100.64.0.5:1", stableID: nil, displayName: "100.64.0.5", policy: .deny)
@@ -114,10 +104,7 @@ final class SharerAccessCoordinatorTests: XCTestCase {
     }
 
     func testForgetAlsoCancelsAQueuedDecision() {
-        // Forgetting the stored policy while leaving an intent queued would
-        // silently re-apply the decision the moment the identity resolved —
-        // the exact opposite of what Forget means, and invisible until it
-        // happened.
+        // Otherwise the queued intent silently re-applies once the identity resolves.
         let (coordinator, _) = makeCoordinator()
         coordinator.remember(rowID: "a:1", stableID: nil, displayName: "peer", policy: .deny)
         _ = coordinator.forget(rowID: "a:1", stableID: nil)
@@ -136,9 +123,8 @@ final class SharerAccessCoordinatorTests: XCTestCase {
     // MARK: Roster upkeep
 
     func testDisplayNamesAreRefreshedFromTheRoster() {
-        // A decision is often made against an IP, seconds before the hostname
-        // resolves. Without this the settings list would show that IP forever,
-        // which is unusable for deciding whether to un-block someone.
+        // A decision is often made against an IP before the hostname resolves; without this
+        // refresh the settings list would show the IP forever.
         let (coordinator, _) = makeCoordinator()
         coordinator.remember(
             rowID: "a:1", stableID: "nABC", displayName: "100.64.0.5", policy: .deny)
@@ -148,9 +134,8 @@ final class SharerAccessCoordinatorTests: XCTestCase {
     }
 
     func testAnUnchangedRosterDoesNotPush() {
-        // Pushed on every roster tick, and the roster ticks on every health
-        // update — so a push per tick would re-run the admission gate several
-        // times a second for nothing.
+        // The roster ticks on every health update; pushing unconditionally would re-run
+        // admission several times a second for nothing.
         let (coordinator, pushes) = makeCoordinator()
         coordinator.remember(
             rowID: "a:1", stableID: "nABC", displayName: "robert-macbook", policy: .deny)
@@ -160,8 +145,7 @@ final class SharerAccessCoordinatorTests: XCTestCase {
     }
 
     func testResetForgetsQueuedDecisionsButNotStoredOnes() {
-        // Stopping a share ends the connections, not the sharer's memory of who
-        // they blocked.
+        // Stopping a share ends connections, not the sharer's memory of who they blocked.
         let (coordinator, _) = makeCoordinator()
         coordinator.remember(
             rowID: "a:1", stableID: "nABC", displayName: "peer", policy: .deny)
@@ -173,8 +157,7 @@ final class SharerAccessCoordinatorTests: XCTestCase {
     }
 
     func testPoliciesSurviveANewCoordinatorOverTheSameDirectory() {
-        // The point of persisting at all: a decision made last week has to be
-        // there at the next share, which is a different process.
+        // A decision made last week must be there at the next share, a different process.
         let (coordinator, _) = makeCoordinator()
         coordinator.remember(
             rowID: "a:1", stableID: "nABC", displayName: "peer", policy: .deny)
