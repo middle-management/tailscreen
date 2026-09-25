@@ -12,10 +12,8 @@ permalink: /contributing/
 
 The codebase is small enough to hold most of it in your head after a
 couple of hours. This page tours the layout, the build, and the rough
-edges worth knowing up front.
-
-`CLAUDE.md` at the repo root has the same orientation in a denser form,
-aimed at AI assistants working in the tree.
+edges worth knowing up front. `CLAUDE.md` at the repo root covers the same
+ground in a denser form, aimed at AI assistants working in the tree.
 
 ## Repository layout
 
@@ -81,9 +79,9 @@ target (`.DEFAULT_GOAL := help`). The highlights:
 on your `PATH`, `brew install swift-format` works as a fallback. The
 config lives at `.swift-format` in the repo root.
 
-The most common build failure, worth repeating: **bare `swift build`
-fails to link** until `make tailscale` (or `make build`) has produced
-`libtailscale.a`. Always start with `make`.
+The most common build failure: **bare `swift build` fails to link** until
+`make tailscale` (or `make build`) has produced `libtailscale.a`. Always
+start with `make`.
 
 ## TailscaleKit and the fork
 
@@ -97,21 +95,18 @@ commits on top. After cloning, run:
 git submodule update --init --recursive
 ```
 
-The commits used to be a `.patch` series applied at build time; they were
-converted one-to-one into fork commits, so there is no patch step anymore
-— `make tailscale` just builds what the submodule pins. They're all
-focused: Swift-facing glue (`send`/`receive` on connections, a public
-`logout`, listener poll-timeout handling), the `tsnet ListenPacket` /
-`PacketListener` wrapper for the UDP video path, Linux and Windows
-portability, and the guest (share-by-token) surface — the per-link
-tunnel node behind Share via Link.
+`make tailscale` builds whatever the submodule pins — no patch step. The
+fork's commits are focused: Swift-facing glue (`send`/`receive` on
+connections, a public `logout`, listener poll-timeout handling), the
+`tsnet ListenPacket` / `PacketListener` wrapper for the UDP video path,
+Linux and Windows portability, and the guest (share-by-token) surface
+behind Share via Link.
 
 **Editing `Packages/TailscaleKit/Sources/` edits the submodule** — those
-paths are symlinks into it. That's fine, but the change must be committed
-*in the submodule* on `tailscreen-main`, pushed to the fork, and the
-submodule pointer bumped here; an uncommitted submodule edit is invisible
-to everyone else. Keep each change one logical commit so it can become an
-upstream PR later.
+paths are symlinks into it. That's fine, but commit the change *in the
+submodule* on `tailscreen-main`, push to the fork, and bump the submodule
+pointer here; an uncommitted submodule edit is invisible to everyone else.
+Keep each change one logical commit so it can become an upstream PR later.
 
 ## Auth keys for connectivity tests
 
@@ -185,11 +180,11 @@ on PRs.
 ## CI
 
 CI builds and runs tests on every PR. A published GitHub release triggers
-a universal-binary build, which codesigns and notarizes when the Apple
-secrets are configured and uploads the zipped `.app` plus a checksums file
-to the release. Without all of those secrets the workflow logs a warning
-and uploads an unsigned build (useful for forks). A separate workflow
-deploys this docs site when anything under `docs/` changes.
+a universal-binary build that codesigns and notarizes when the Apple
+secrets are configured, then uploads the zipped `.app` plus a checksums
+file to the release — without those secrets it logs a warning and uploads
+an unsigned build instead (useful for forks). A separate workflow deploys
+this docs site whenever anything under `docs/` changes.
 
 ## Where to start reading
 
