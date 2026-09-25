@@ -607,12 +607,25 @@ async function run(token) {
     renderInk();
     sendFrame(Kc.annotationType, W.annotation.clearAll());
   };
+  // §12.3: the sharer sees the whole link and decides whether to open it.
+  $("btn-link").onclick = () => {
+    const url = (window.prompt("Link to open on the sharer's screen (they choose whether to open it):") ?? "").trim();
+    if (!url) return;
+    if (!tailscreenIsAcceptableLink(url)) {
+      window.alert("That isn't a link the sharer can open. Use a full http:// or https:// address with no spaces.");
+      return;
+    }
+    sendFrame(Kc.openLinkType, { url });
+    log("link sent to the sharer");
+  };
   // The sharer's advertised capabilities decide what the toolbar offers:
   // bit 3 remoteControl ("this host can inject"), bit 4 annotations ("this
-  // host renders/relays strokes") — hidden rather than disabled, like the apps.
+  // host renders/relays strokes"), bit 6 openLink — hidden rather than
+  // disabled, like the apps.
   const applyCaps = (caps) => {
     viewer.serverCaps = caps;
     $("btn-control").hidden = !(caps & 8);
+    $("btn-link").hidden = !(caps & Kc.capOpenLink);
     for (const id of ["btn-draw", "sel-color", "btn-undo", "btn-clear"]) $(id).hidden = !(caps & 16);
   };
 

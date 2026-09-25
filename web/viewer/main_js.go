@@ -49,6 +49,7 @@ func main() {
 	g.Set("tailscreenClassify", js.FuncOf(classifyJS))
 	g.Set("tailscreenNewSession", js.FuncOf(newSessionJS))
 	g.Set("tailscreenDecodeMetadata", js.FuncOf(decodeMetadataJS))
+	g.Set("tailscreenIsAcceptableLink", js.FuncOf(isAcceptableLinkJS))
 	g.Set("tailscreenConstants", js.ValueOf(map[string]any{
 		"port":                 tailscreen.Port,
 		"mediaDatagramType":    int(tailscreen.MsgMediaDatagram),
@@ -60,6 +61,8 @@ func main() {
 		"controlRevokedType":   int(tailscreen.MsgControlRevoked),
 		"inputEventType":       int(tailscreen.MsgInputEvent),
 		"controlReleasedType":  int(tailscreen.MsgControlReleased),
+		"openLinkType":         int(tailscreen.MsgOpenLink),
+		"capOpenLink":          int(tailscreen.CapOpenLink),
 		"keepaliveMs":          int(tailscreen.KeepaliveInterval / time.Millisecond),
 		"idleTimeoutMs":        int(tailscreen.IdleTimeout / time.Millisecond),
 		"pt": map[string]any{
@@ -278,6 +281,12 @@ func classifyJS(this js.Value, args []js.Value) any {
 
 // decodeMetadataJS parses a metadataResponse payload (§13.2) — the share
 // name and hostname the page puts in its title.
+// isAcceptableLinkJS applies the openLink URL rules (TS-LNK-003/004) so the
+// page never sends a link the sharer would drop.
+func isAcceptableLinkJS(this js.Value, args []js.Value) any {
+	return len(args) == 1 && args[0].Type() == js.TypeString && tailscreen.IsAcceptableLink(args[0].String())
+}
+
 func decodeMetadataJS(this js.Value, args []js.Value) any {
 	if len(args) < 1 {
 		return js.Null()

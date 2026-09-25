@@ -30,6 +30,8 @@ You choose what to share, the other person clicks your machine in their
 - Viewer approval by default, remembered allow/deny, and per-session
   remote-control grants with an instant revoke.
 - Two-way annotations, voice chat, and (from a Mac) system-audio sharing.
+- Viewers can send the sharer a link to open in their browser, with the
+  sharer clicking Open first.
 - **Share via Link** for people outside your tailnet — an encrypted
   per-link tunnel with mandatory approval on every join. They can watch
   from the app, or from a **browser** with nothing installed.
