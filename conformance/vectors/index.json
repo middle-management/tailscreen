@@ -6,7 +6,7 @@
     {
       "suite": "udp-control",
       "file": "udp-control.json",
-      "cases": 55
+      "cases": 56
     },
     {
       "suite": "rtp",
@@ -26,12 +26,12 @@
     {
       "suite": "tcp-framing",
       "file": "tcp-framing.json",
-      "cases": 18
+      "cases": 19
     },
     {
       "suite": "json-payloads",
       "file": "json-payloads.json",
-      "cases": 32
+      "cases": 47
     }
   ]
 }

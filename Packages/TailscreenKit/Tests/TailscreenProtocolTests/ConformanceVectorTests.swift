@@ -345,6 +345,11 @@ final class ConformanceVectorTests: XCTestCase {
             else { return ["reason": NSNull()] }
             return ["reason": reason]
 
+        case "json.openLink.decode":
+            guard case .openLink(let url)? = try parsePayload(input, type: .openLink)
+            else { return ["url": NSNull()] }
+            return ["url": url]
+
         case "json.metadata.decode":
             guard case .metadataResponse(let metadata)? = try parsePayload(input, type: .metadataResponse)
             else { return ["metadata": NSNull()] }

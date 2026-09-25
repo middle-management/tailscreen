@@ -21,6 +21,10 @@ public enum SharerNoticeKind: String, Codable, Sendable, CaseIterable {
     /// A viewer's session ended — they disconnected, or were dropped.
     /// Informational.
     case viewerLeft
+    /// A viewer sent a link to open. No buttons on purpose: a banner can
+    /// truncate the URL, so the Open decision is made in-app, where the
+    /// whole link is shown (TS-LNK-010).
+    case linkOffered
 }
 
 extension SharerNoticeKind {
@@ -29,7 +33,7 @@ extension SharerNoticeKind {
     public var actions: [NoticeAction] {
         switch self {
         case .viewerPending, .controlRequested, .requestToShare: [.approve, .deny]
-        case .viewerJoined, .viewerLeft: []
+        case .viewerJoined, .viewerLeft, .linkOffered: []
         }
     }
 
@@ -46,7 +50,7 @@ extension SharerNoticeKind {
     public var blocksSomeone: Bool {
         switch self {
         case .viewerPending, .controlRequested: true
-        case .requestToShare, .viewerJoined, .viewerLeft: false
+        case .requestToShare, .viewerJoined, .viewerLeft, .linkOffered: false
         }
     }
 }
@@ -168,8 +172,8 @@ public enum SharerNoticeDecision {
     /// "is system audio on", since that flag can flip between the decision
     /// and the sound.
     ///
-    /// Only ever changes anything for `requestToShare` — the other four
-    /// kinds exist only *during* a share and are always silent under this
+    /// Only ever changes anything for `requestToShare` — the other kinds
+    /// exist only *during* a share and are always silent under this
     /// rule.
     public static func playsSound(isCapturing: Bool) -> Bool {
         !isCapturing

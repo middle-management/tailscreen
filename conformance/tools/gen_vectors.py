@@ -91,6 +91,7 @@ TCP_TYPES = {
     "metadataRequest": 0x0B,
     "metadataResponse": 0x0C,
     "mediaDatagram": 0x0D,
+    "openLink": 0x0E,
 }
 
 
@@ -356,13 +357,14 @@ def suite_udp_control():
             {"caps": 0x27},
         ),
         case(
-            # Bits 6-7 only: bit 5 became `tenBit`, so a vector claiming to
-            # cover reserved bits must stop asserting about it.
+            # Bit 7 only: bits 5 and 6 became `tenBit` and `openLink`, so a
+            # vector claiming to cover reserved bits must stop asserting
+            # about them.
             "hello/decode-reserved-bits-preserved",
             ["TS-CAP-002"],
             "hello.decodeCaps",
-            {"bytes": "00c1"},
-            {"caps": 0xC1},
+            {"bytes": "0081"},
+            {"caps": 0x81},
         ),
         case(
             "hello/decode-wrong-first-byte",
@@ -427,6 +429,13 @@ def suite_udp_control():
             "helloAck.decodeTolerant",
             {"bytes": "040000000218"},
             {"ssrc": 2, "caps": 0x18},
+        ),
+        case(
+            "hello-ack/decode-tolerant-open-link",
+            ["TS-CAP-005", "TS-LNK-001"],
+            "helloAck.decodeTolerant",
+            {"bytes": "040000000258"},
+            {"ssrc": 2, "caps": 0x58},
         ),
         case(
             "hello-ack/decode-tolerant-short",
@@ -1050,6 +1059,8 @@ def suite_tcp_framing():
     def frame(t, payload=b""):
         return bytes([t]) + be32(len(payload)) + payload
 
+    open_link = b'{"url":"https://tailscreen.dev/usage/"}'
+
     ann = b'{"type":"clearAll"}'
     req = b'{"fromHostname":"studio-imac"}'
 
@@ -1248,6 +1259,14 @@ def suite_tcp_framing():
                 "corrupt": False,
             },
         ),
+        case(
+            # Single-key payload, so it can ride a byte-exact frame vector.
+            "tcp/encode-open-link-frame",
+            ["TS-TCP-001", "TS-LNK-002", "TS-CNF-002"],
+            "frame.encode",
+            {"type": 0x0E, "payload": h(open_link)},
+            {"bytes": h(frame(TCP_TYPES["openLink"], open_link))},
+        ),
     ]
     return {
         "suite": "tcp-framing",
@@ -1260,6 +1279,7 @@ def suite_tcp_framing():
 def suite_json_payloads():
     long_host = "h" * 100
     long_reason = "r" * 200
+    max_url = "https://example.com/" + "p" * (2048 - len("https://example.com/"))
     long_name = "n" * 200
 
     cases = [
@@ -1573,6 +1593,110 @@ def suite_json_payloads():
             "json.metadata.decode",
             {"json": '{"shareName":"a","hostname":"b","isSharing":true,"timestamp":0}'},
             {"metadata": None},
+        ),        case(
+            'json/open-link-https',
+            ['TS-LNK-002'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'https://tailscreen.dev/usage/#share-a-link'})},
+            {"url": 'https://tailscreen.dev/usage/#share-a-link' if True else None},
+        ),
+        case(
+            'json/open-link-http-uppercase-scheme',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'HTTP://intranet.example:8080/wiki?page=1'})},
+            {"url": 'HTTP://intranet.example:8080/wiki?page=1' if True else None},
+        ),
+        case(
+            'json/open-link-at-sign-in-path',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'https://example.com/@someone'})},
+            {"url": 'https://example.com/@someone' if True else None},
+        ),
+        case(
+            'json/open-link-rejects-javascript',
+            ['TS-LNK-003', 'TS-TCP-008'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'javascript:alert(1)'})},
+            {"url": 'javascript:alert(1)' if False else None},
+        ),
+        case(
+            'json/open-link-rejects-file',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'file:///etc/passwd'})},
+            {"url": 'file:///etc/passwd' if False else None},
+        ),
+        case(
+            'json/open-link-rejects-custom-scheme',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'x-apple-systempreferences:com.apple.preference.security'})},
+            {"url": 'x-apple-systempreferences:com.apple.preference.security' if False else None},
+        ),
+        case(
+            'json/open-link-rejects-userinfo',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'https://trusted.example@evil.example/'})},
+            {"url": 'https://trusted.example@evil.example/' if False else None},
+        ),
+        case(
+            'json/open-link-rejects-empty-authority',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'https:///path'})},
+            {"url": 'https:///path' if False else None},
+        ),
+        case(
+            'json/open-link-rejects-space',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'https://example.com/a b'})},
+            {"url": 'https://example.com/a b' if False else None},
+        ),
+        case(
+            'json/open-link-rejects-non-ascii',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'https://exаmple.com/'})},
+            {"url": 'https://exаmple.com/' if False else None},
+        ),
+        case(
+            'json/open-link-rejects-control-char',
+            ['TS-LNK-003'],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": 'https://example.com/\u202e'})},
+            {"url": 'https://example.com/\u202e' if False else None},
+        ),
+        case(
+            "json/open-link-accepts-2048-bytes",
+            ["TS-LNK-004"],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": max_url})},
+            {"url": max_url},
+        ),
+        case(
+            "json/open-link-rejects-2049-bytes",
+            ["TS-LNK-004"],
+            "json.openLink.decode",
+            {"json": json.dumps({"url": max_url + "a"})},
+            {"url": None},
+        ),
+        case(
+            "json/open-link-rejects-missing-url",
+            ["TS-TCP-008"],
+            "json.openLink.decode",
+            {"json": '{}'},
+            {"url": None},
+        ),
+        case(
+            "json/open-link-rejects-non-string-url",
+            ["TS-TCP-008"],
+            "json.openLink.decode",
+            {"json": '{"url":42}'},
+            {"url": None},
         ),
     ]
     return {

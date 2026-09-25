@@ -45,6 +45,10 @@ public final class TailscreenControlListener: @unchecked Sendable {
     /// grant/gate key) and remote address.
     public var onControlRequest: ((UUID, String?) -> Void)?
 
+    /// Fires for every `.openLink` message: the (already shape-checked) URL,
+    /// connection UUID, and remote address for the admitted-viewer gate.
+    public var onOpenLink: ((String, UUID, String?) -> Void)?
+
     /// Fires for every `.inputEvent` message: event, connection UUID
     /// (checked against the live grant), remote address. Fires off the
     /// connection's own receive task, preserving per-connection order.
@@ -232,6 +236,8 @@ public final class TailscreenControlListener: @unchecked Sendable {
             onMetadataRequest?(connectionID)
         case .mediaDatagram(let datagram):
             onMediaDatagram?(datagram, connectionID, peerAddress)
+        case .openLink(let url):
+            onOpenLink?(url, connectionID, peerAddress)
         case .shareResponse, .controlGranted, .controlRevoked, .metadataResponse:
             // `.shareResponse` / `.metadataResponse` ride the requester's own
             // outgoing connection, read inline (see

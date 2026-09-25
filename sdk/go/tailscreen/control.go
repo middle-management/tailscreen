@@ -102,6 +102,10 @@ const (
 	// capability-less HELLO says nothing, which TS-CAP-006 requires be read
 	// as no capabilities rather than as unknown.
 	CapTenBit Caps = 1 << 5
+	// CapOpenLink is advertised by a SHARER only: this sharer offers links
+	// sent with MsgOpenLink to its user (spec §12.3). A viewer must not offer
+	// to send one without it (TS-CAP-008).
+	CapOpenLink Caps = 1 << 6
 )
 
 // Has reports whether every bit in want is set.
@@ -112,7 +116,7 @@ func (c Caps) Has(want Caps) bool { return c&want == want }
 // datagram on a link where the corresponding bit is missing from either
 // side is a protocol violation, not a graceful degradation.
 //
-// The sharer-only bits (CapRemoteControl, CapAnnotations) travel one way, so
+// The sharer-only bits (CapRemoteControl, CapAnnotations, CapOpenLink) travel one way, so
 // a viewer reads them from the acknowledgement directly rather than through
 // this function.
 func Negotiate(local, remote Caps) Caps { return local & remote }

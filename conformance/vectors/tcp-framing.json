@@ -446,6 +446,22 @@
         ],
         "corrupt": false
       }
+    },
+    {
+      "id": "tcp/encode-open-link-frame",
+      "requirements": [
+        "TS-TCP-001",
+        "TS-LNK-002",
+        "TS-CNF-002"
+      ],
+      "op": "frame.encode",
+      "in": {
+        "type": 14,
+        "payload": "7b2275726c223a2268747470733a2f2f7461696c73637265656e2e6465762f75736167652f227d"
+      },
+      "out": {
+        "bytes": "0e000000277b2275726c223a2268747470733a2f2f7461696c73637265656e2e6465762f75736167652f227d"
+      }
     }
   ]
 }

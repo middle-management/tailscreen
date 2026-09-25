@@ -162,6 +162,7 @@ func TestVectorsCoverEveryWireValue(t *testing.T) {
 		"json.controlRevoked.decode": 0x08,
 		"json.inputEvent.decode":     0x09,
 		"json.metadata.decode":       0x0C,
+		"json.openLink.decode":       0x0E,
 	}
 
 	for _, entry := range loadIndex(t).Suites {
@@ -231,6 +232,7 @@ func TestVectorsCoverEveryCapabilityBit(t *testing.T) {
 		{"remoteControl", tailscreen.CapRemoteControl},
 		{"annotations", tailscreen.CapAnnotations},
 		{"tenBit", tailscreen.CapTenBit},
+		{"openLink", tailscreen.CapOpenLink},
 	} {
 		if !seen.Has(bit.cap) {
 			t.Errorf("no vector exercises capability bit %s (%#02x)", bit.name, uint8(bit.cap))

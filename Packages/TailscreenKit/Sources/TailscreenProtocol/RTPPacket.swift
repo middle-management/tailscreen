@@ -328,6 +328,10 @@ public struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     /// every frame with nothing on the wire to say why. `PROFILE_NO` (0x09)
     /// remains the after-the-fact escape hatch.
     public static let tenBit = ScreenShareCaps(rawValue: 1 << 5)
+    /// **Sharer→viewer only**: this sharer accepts `.openLink` and will
+    /// offer the link to its user. Absent, the viewer hides "Open Link on
+    /// Sharer" rather than let it silently do nothing.
+    public static let openLink = ScreenShareCaps(rawValue: 1 << 6)
 
     /// Every defined capability bit, in one production-side list so
     /// `WireByteRegistryTests` can assert its registry matches this exactly
@@ -335,7 +339,7 @@ public struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     /// appended here** in the same change that defines it — a cap that never
     /// joins this list is invisible to the registry's teeth.
     public static let allKnown: [ScreenShareCaps] = [
-        .nack, .receiverReport, .fec, .remoteControl, .annotations, .tenBit
+        .nack, .receiverReport, .fec, .remoteControl, .annotations, .tenBit, .openLink
     ]
 }
 

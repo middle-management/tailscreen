@@ -272,6 +272,53 @@ func DecodeControlRevoked(payload []byte) string {
 	return clamp(*p.Reason, MaxReasonChars)
 }
 
+// MaxURLBytes bounds an openLink URL (TS-LNK-004).
+const MaxURLBytes = 2048
+
+// DecodeOpenLink parses an openLink payload and returns the URL only if it
+// passes every shape rule (TS-LNK-002 … TS-LNK-004). An unacceptable URL is
+// rejected, never repaired or truncated: a shortened URL is a different URL.
+func DecodeOpenLink(payload []byte) (string, error) {
+	var p struct {
+		URL *string `json:"url"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil || p.URL == nil {
+		return "", errMalformed
+	}
+	if !IsAcceptableLink(*p.URL) {
+		return "", errMalformed
+	}
+	return *p.URL, nil
+}
+
+// IsAcceptableLink applies the openLink URL rules. They are byte-level on
+// purpose, so implementations agree without sharing a URL parser.
+func IsAcceptableLink(url string) bool {
+	if len(url) > MaxURLBytes {
+		return false
+	}
+	for i := 0; i < len(url); i++ {
+		if url[i] < 0x21 || url[i] > 0x7E {
+			return false
+		}
+	}
+	lower := strings.ToLower(url)
+	var rest string
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		rest = url[len("https://"):]
+	case strings.HasPrefix(lower, "http://"):
+		rest = url[len("http://"):]
+	default:
+		return false
+	}
+	authority := rest
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		authority = rest[:i]
+	}
+	return authority != "" && !strings.Contains(authority, "@")
+}
+
 // ---------------------------------------------------------------------------
 // Metadata — spec §10.2, §13.2
 // ---------------------------------------------------------------------------

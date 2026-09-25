@@ -23,6 +23,10 @@ const (
 	// (Classify) exactly as if it had arrived on the UDP socket, and
 	// discard an empty payload (TS-STM-001).
 	MsgMediaDatagram MessageType = 0x0D
+
+	// MsgOpenLink offers the sharer a link to open (spec §12.3). Decode it
+	// with DecodeOpenLink, which enforces the URL shape rules.
+	MsgOpenLink MessageType = 0x0E
 )
 
 const (
@@ -34,7 +38,7 @@ var knownMessageTypes = map[MessageType]bool{
 	MsgAnnotation: true, MsgRequestToShare: true, MsgShareResponse: true,
 	MsgControlRequest: true, MsgControlGranted: true, MsgControlRevoked: true,
 	MsgInputEvent: true, MsgControlReleased: true, MsgMetadataRequest: true,
-	MsgMetadataResponse: true, MsgMediaDatagram: true,
+	MsgMetadataResponse: true, MsgMediaDatagram: true, MsgOpenLink: true,
 }
 
 // IsKnownMessageType reports whether a type byte is assigned. An unassigned

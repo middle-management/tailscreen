@@ -19,7 +19,7 @@ import XCTest
 ///      the failure names both claimants.
 ///
 /// Uniqueness is deliberately scoped *per channel*: the TCP message-type
-/// space (0x03–0x0D) and the UDP control-byte space (0x03–0x0D) overlap by
+/// space (0x03–0x0E) and the UDP control-byte space (0x03–0x0D) overlap by
 /// design, and the helper wire's `OutType`/`InType` ride different
 /// pipes (both use 0x01–0x05 and 0xFF). Asserting cross-channel uniqueness
 /// would institutionalize a false invariant — see
@@ -120,7 +120,8 @@ final class WireByteRegistryTests: XCTestCase {
                 WireRow("controlReleased", 0x0A),
                 WireRow("metadataRequest", 0x0B),
                 WireRow("metadataResponse", 0x0C),
-                WireRow("mediaDatagram", 0x0D)
+                WireRow("mediaDatagram", 0x0D),
+                WireRow("openLink", 0x0E)
             ])
     }
 
@@ -198,7 +199,8 @@ final class WireByteRegistryTests: XCTestCase {
             ("fec", .fec),
             ("remoteControl", .remoteControl),
             ("annotations", .annotations),
-            ("tenBit", .tenBit)
+            ("tenBit", .tenBit),
+            ("openLink", .openLink)
         ]
         XCTAssertEqual(ScreenShareCaps.nack.rawValue, 1 << 0)
         XCTAssertEqual(ScreenShareCaps.receiverReport.rawValue, 1 << 1)
@@ -206,6 +208,7 @@ final class WireByteRegistryTests: XCTestCase {
         XCTAssertEqual(ScreenShareCaps.remoteControl.rawValue, 1 << 3)
         XCTAssertEqual(ScreenShareCaps.annotations.rawValue, 1 << 4)
         XCTAssertEqual(ScreenShareCaps.tenBit.rawValue, 1 << 5)
+        XCTAssertEqual(ScreenShareCaps.openLink.rawValue, 1 << 6)
         // Exhaustiveness teeth (as much as Swift allows for an OptionSet):
         // the production-side `allKnown` list must match this registry table
         // exactly. A new cap MUST be appended to `allKnown` when defined —

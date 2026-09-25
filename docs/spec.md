@@ -370,12 +370,13 @@ Both directions use a single `UInt8` bit field.
 | 3 | `0x08` | `remoteControl` | sharer only | This sharer can inject viewer input ([§12](#12-remote-control)). |
 | 4 | `0x10` | `annotations` | sharer only | This sharer renders and relays viewer annotations ([§11](#11-annotations)). |
 | 5 | `0x20` | `tenBit` | viewer only | This viewer can decode a 10-bit bitstream ([§5.3](#53-bit-depth)). |
-| 6–7 | `0xC0` | — | — | Reserved. |
+| 6 | `0x40` | `openLink` | sharer only | This sharer offers links viewers send to its user ([§12.3](#123-opening-a-link-on-the-sharer)). |
+| 7 | `0x80` | — | — | Reserved (TS-CAP-010). |
 
 - **TS-CAP-001**: A sender MUST set reserved capability bits to zero.
 - **TS-CAP-002**: A receiver MUST ignore capability bits it does not
   understand, and MUST NOT reject the message that carried them.
-- **TS-CAP-003**: A viewer MUST NOT set bits 3 or 4 in its `HELLO`, and a
+- **TS-CAP-003**: A viewer MUST NOT set bits 3, 4 or 6 in its `HELLO`, and a
   sharer MUST ignore those bits if a viewer sets them. A sharer MUST NOT set
   bit 5 in its `HELLO_ACK`, and a viewer MUST ignore that bit if a sharer sets
   it.
@@ -414,8 +415,9 @@ extended six-byte form:
 - **TS-CAP-008**: A viewer MUST NOT offer the user an action gated on a
   sharer-only capability bit that the sharer did not advertise. In
   particular it MUST NOT send `controlRequest` to a sharer that did not
-  advertise `remoteControl`, and it MUST NOT accept local annotation input
-  for a sharer that did not advertise `annotations`.
+  advertise `remoteControl`, it MUST NOT accept local annotation input
+  for a sharer that did not advertise `annotations`, and it MUST NOT send
+  `openLink` to a sharer that did not advertise `openLink`.
 - **TS-CAP-009**: A sharer MUST advertise `remoteControl` if and only if the
   build and platform can inject input at all. The bit describes static
   capability; a runtime refusal is signalled with `controlRevoked`
@@ -842,6 +844,7 @@ connection and one framing.
 | `0x0B` | `metadataRequest` | peer → peer | empty |
 | `0x0C` | `metadataResponse` | responder → requester | `TailscreenMetadata` |
 | `0x0D` | `mediaDatagram` | both | raw datagram bytes ([§2.2](#22-stream-carriage-of-the-datagram-plane-reliable-transport-profile)) |
+| `0x0E` | `openLink` | viewer → sharer | `OpenLinkPayload` ([§12.3](#123-opening-a-link-on-the-sharer)) |
 
 - **TS-TCP-001**: An implementation MUST encode each message with the type
   byte above. These values are permanent and MUST NOT be renumbered.
@@ -897,6 +900,12 @@ absent optional fields MUST be treated as unset.
 
 ```json
 {"reason": "the sharer ended remote control"}
+```
+
+`OpenLinkPayload` (`0x0E`):
+
+```json
+{"url": "https://tailscreen.dev/usage/"}
 ```
 
 `TailscreenMetadata` (`0x0C`):
@@ -1046,6 +1055,40 @@ Remote control is opt-in, single-grantee, and revocable at any moment.
 - **TS-RMT-031**: A receiver MUST drop a key event whose HID usage has no
   mapping on its platform, and MUST NOT substitute a different key.
 
+### 12.3 Opening a link on the sharer
+
+A viewer can offer the sharer a link, which the sharer's user may open in
+their own browser. Everyone watching then sees the page without anyone
+reading a URL aloud. Nothing opens unless the sharer's user chooses to open
+it: a link that opened unprompted would let any viewer put any page on the
+shared screen.
+
+- **TS-LNK-001**: A sharer MUST advertise `openLink` only if it presents
+  received links to its user as TS-LNK-010 requires. A sharer that did not
+  advertise it MUST discard `openLink` frames.
+- **TS-LNK-002**: A viewer MUST send only a URL that satisfies TS-LNK-003
+  and TS-LNK-004. A receiver MUST treat a payload whose `url` is absent, is
+  not a string, or fails either rule as undecodable (TS-TCP-008). It MUST
+  NOT repair or truncate the URL, because a shortened URL is a different
+  URL.
+- **TS-LNK-003**: `url` MUST consist only of bytes `0x21`–`0x7E` (printable
+  ASCII, no whitespace), and MUST begin, compared ASCII case-insensitively,
+  with `http://` or `https://`. Its authority, the text after `//` up to the
+  first `/`, `?` or `#` or the end, MUST be non-empty and MUST NOT contain
+  `@`. These rules work on bytes, so implementations agree without sharing
+  a URL parser. Non-ASCII hosts travel in their `xn--` form, which keeps a
+  homograph or bidirectional override from disguising the destination.
+- **TS-LNK-004**: `url` MUST NOT exceed 2048 bytes.
+- **TS-LNK-005**: A sharer MUST accept `openLink` only from an admitted
+  viewer (TS-SEC-001), under the same gate as TS-ANN-006.
+- **TS-LNK-006**: A sharer MUST bound the offers it holds, and SHOULD keep
+  at most one per viewer connection, a newer offer replacing the older. It
+  SHOULD discard a connection's offers when that connection closes.
+- **TS-LNK-010**: A sharer MUST NOT open a link until its user has chosen to
+  open that particular link, and MUST show the whole URL, with its authority
+  set apart, where the user makes that choice. It MUST NOT offer a setting
+  that opens links automatically.
+
 ---
 
 ## 13. Metadata and request-to-share
@@ -1140,8 +1183,9 @@ and input validation, and those are Tailscreen's own responsibility.
 
 - **TS-SEC-001**: Being able to reach port 7447 MUST NOT be treated as
   authorization to do anything. Every privileged action — receiving media,
-  annotating, requesting control, injecting input — MUST be gated
-  separately (TS-ADM-001, TS-ANN-006, TS-RMT-003, TS-RMT-004).
+  annotating, requesting control, injecting input, offering a link — MUST
+  be gated separately (TS-ADM-001, TS-ANN-006, TS-RMT-003, TS-RMT-004,
+  TS-LNK-005).
 - **TS-SEC-002**: An implementation MUST treat every field of every inbound
   message as attacker-controlled, and MUST bounds-check lengths, counts and
   offsets before use (TS-TCP-004, TS-NCK-002, TS-FEC-001 … TS-FEC-003).
@@ -1261,7 +1305,8 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | `0x0B` | `metadataRequest` | 1 |
 | `0x0C` | `metadataResponse` | 1 |
 | `0x0D` | `mediaDatagram` | 2 |
-| `0x0E`–`0xFF` | unassigned | — |
+| `0x0E` | `openLink` | 3 |
+| `0x0F`–`0xFF` | unassigned | — |
 
 ### A.3 Capability bits
 
@@ -1273,7 +1318,8 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | 3 | `remoteControl` | sharer |
 | 4 | `annotations` | sharer |
 | 5 | `tenBit` | viewer |
-| 6–7 | unassigned | — |
+| 6 | `openLink` | sharer |
+| 7 | reserved (TS-CAP-010) | — |
 
 ### A.4 RTP payload types
 
@@ -1328,6 +1374,7 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | Max TCP frame payload | 1 MiB | TS-TCP-004 |
 | Hostname clamp | 64 characters | TS-TCP-023 |
 | Reason / display-string clamp | 128 characters | TS-TCP-023 |
+| Max `openLink` URL | 2048 bytes | TS-LNK-004 |
 
 ---
 
@@ -1339,6 +1386,7 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | 1 | Stated the substrate as a **tailnet** with four named properties (TS-GEN-017 … TS-GEN-019) rather than as Tailscale specifically, so that headscale — already supported and exercised by the end-to-end harness — is inside the specification rather than outside it. A widening: everything conforming before still conforms. |
 | 1 | Added **Appendix D** (informative): transport bootstrap via connection token (guest mode). No wire values added, no normative requirements changed — the appendix records how a token-bootstrapped tunnel relates to TS-GEN-017 and where the sharer compensates at the admission layer. |
 | 2 | Added **§2.2**, the reliable-transport profile (TS-STM-001 … TS-STM-007): the datagram plane carried as `mediaDatagram` frames over the framed TCP channel, for viewers without usable UDP. One wire value added — TCP message type `0x0D` `mediaDatagram` (Appendix A.2). TS-TCP-009 narrowed to the JSON payload types, since `mediaDatagram`'s payload is raw datagram bytes. Degrades cleanly both ways: a sharer without the profile skips the unknown frame (TS-TCP-003) and the viewer's `HELLO` times out. |
+| 3 | Added **§12.3**, opening a link on the sharer (TS-LNK-001 … TS-LNK-010). Two wire values added: TCP message type `0x0E` `openLink` (Appendix A.2) and sharer capability bit 6 `openLink` (Appendix A.3), which leaves bit 7 as the only unassigned bit. Degrades cleanly: a viewer hides the action from a sharer that did not advertise the bit (TS-CAP-008), and an older sharer skips the unknown frame (TS-TCP-003). |
 
 ---
 

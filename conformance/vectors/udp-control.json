@@ -572,10 +572,10 @@
       ],
       "op": "hello.decodeCaps",
       "in": {
-        "bytes": "00c1"
+        "bytes": "0081"
       },
       "out": {
-        "caps": 193
+        "caps": 129
       }
     },
     {
@@ -699,6 +699,21 @@
       "out": {
         "ssrc": 2,
         "caps": 24
+      }
+    },
+    {
+      "id": "hello-ack/decode-tolerant-open-link",
+      "requirements": [
+        "TS-CAP-005",
+        "TS-LNK-001"
+      ],
+      "op": "helloAck.decodeTolerant",
+      "in": {
+        "bytes": "040000000258"
+      },
+      "out": {
+        "ssrc": 2,
+        "caps": 88
       }
     },
     {
