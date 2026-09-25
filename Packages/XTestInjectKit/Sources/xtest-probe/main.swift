@@ -3,39 +3,27 @@ import Foundation
 import TailscreenProtocol
 import XTestInjectKit
 
-// xtest-probe — two jobs, both of which CI can do and neither of which a
-// library target can.
+// xtest-probe:
+//   --audit-keysyms   check X11KeyCodeMapping against Xlib's keysym tables.
+//                     No X server needed.
+//   --live-check      inject a real pointer move and read it back. Needs an
+//                     X server (CI: Xvfb) and MOVES THE CURSOR — opt-in.
+//   (default)         open the display, report findings, print what a sample
+//                     gesture would inject via the test seam (no cursor move).
 //
-//   xtest-probe --audit-keysyms   walk X11KeyCodeMapping through Xlib's own
-//                                 keysym tables and fail on any name Xlib does
-//                                 not know. Needs NO X server.
-//   xtest-probe --live-check      inject a real pointer move against the
-//                                 current display and read the pointer back.
-//                                 Needs an X server (CI uses Xvfb) and MOVES
-//                                 THE CURSOR, which is why it is opt-in.
-//   xtest-probe                   open the display, report what it found, and
-//                                 print what a sample gesture WOULD inject
-//                                 (via the test seam — it moves no cursor).
-//
-// The link check is the reason this is an executable at all: a SwiftPM library
-// target is compiled but never linked, so a missing `-lX11` stays invisible
-// until something downstream links it. That is how WASAPIKit's missing GUIDs
-// passed their own CI step and failed eleven minutes later in the app.
+// An executable so the link check itself is exercised: a library target is
+// compiled but never linked, so a missing `-lX11` stays invisible until
+// something downstream links it.
 
 let args = Array(CommandLine.arguments.dropFirst())
 
 func out(_ s: String) { FileHandle.standardOutput.write(Data("\(s)\n".utf8)) }
 
 if args.contains("--audit-keysyms") {
-    // Every value in the table is a hand-written hex constant, and a typo that
-    // lands on an UNASSIGNED keysym fails completely silently: the mapping
-    // succeeds, XKeysymToKeycode returns 0, the keystroke is dropped, and the
-    // only symptom is that one key does nothing on Linux sharers. Xlib's own
-    // tables are the authority, so ask them.
-    //
-    // It cannot catch a typo that lands on a DIFFERENT VALID keysym — Home
-    // arriving as End would pass this. That class is covered by the unit
-    // tests' spot rows, which assert specific pairs.
+    // A typo landing on an unassigned keysym fails silently (XKeysymToKeycode
+    // returns 0, the keystroke is dropped) — check against Xlib's own tables.
+    // Cannot catch a typo landing on a different VALID keysym; unit tests'
+    // spot rows cover that.
     var bad: [(UInt16, UInt32)] = []
     for (hid, keysym) in X11KeyCodeMapping.keysymByHIDUsage.sorted(by: { $0.key < $1.key }) {
         if ts_xtest_keysym_name(keysym) == nil {
@@ -55,11 +43,8 @@ if args.contains("--audit-keysyms") {
 }
 
 if args.contains("--live-check") {
-    // The one thing no unit test can check: that XTEST actually moves the
-    // pointer on a real server. Everything up to the Xlib call is covered by
-    // XTestInjectKitTests through the inject-nothing seam; this covers the
-    // call, the flush (without which nothing reaches the server at all), and
-    // the display/extension gate.
+    // Covers what XTestInjectKitTests' inject-nothing seam can't: the real
+    // Xlib call, the flush, and the display/extension gate.
     let injector = XTestInjector()
     guard injector.isTrusted() else {
         out("XTEST_LIVE result=FAIL no display, or the server has no XTEST extension")
@@ -69,9 +54,7 @@ if args.contains("--live-check") {
         out("XTEST_LIVE result=FAIL could not read the root window size")
         exit(3)
     }
-    // A quarter in from the top-left, so the target is nowhere near wherever
-    // the pointer already was — a test that passes because nothing moved is
-    // not a test.
+    // A quarter in from the top-left so a no-op wouldn't accidentally pass.
     let target = region.point(normalizedX: 0.25, normalizedY: 0.25)
     injector.activate(region: region)
     injector.apply(.mouseMove(x: 0.25, y: 0.25))
@@ -97,9 +80,7 @@ if let region = injector.rootRegion() {
     out("root: unavailable")
 }
 
-// Dry run through the test seam. Nothing is injected: the point is to show the
-// translation, which is what a person debugging "the remote pointer is in the
-// wrong place" actually wants to see.
+// Dry run through the test seam: shows the translation without injecting.
 var recorded: [XTestInjector.InjectedAction] = []
 injector.onInjectForTesting = { recorded.append($0) }
 let region = injector.rootRegion() ?? XTestInjector.Region(x: 0, y: 0, width: 1920, height: 1080)

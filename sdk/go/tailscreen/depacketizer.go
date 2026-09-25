@@ -60,14 +60,10 @@ func NewH265Depacketizer(reorderDepth int, gapHoldNs uint64) *Depacketizer {
 	return &Depacketizer{hevc: true, reorder: NewReorderBuffer(reorderDepth, gapHoldNs)}
 }
 
-// TornAUCount is the number of access units that completed and were then
-// discarded as torn.
-//
-// It is counted rather than silent because the drop is otherwise invisible:
-// the caller sees Ingest return nil, which is also what an ordinary mid-frame
-// packet returns. A blank viewer whose access-unit count sits still cannot
-// otherwise be told from one where every frame arrives and is discarded here,
-// and those two want opposite fixes.
+// TornAUCount is the number of access units completed and then discarded as
+// torn. Counted because the drop is otherwise invisible: Ingest returning nil
+// also means an ordinary mid-frame packet, so a blank viewer would look
+// identical to one silently discarding every frame.
 func (d *Depacketizer) TornAUCount() int { return d.tornAUCount }
 
 // SkippedGapCount is the number of gaps the reorder buffer gave up on.

@@ -7,12 +7,9 @@ type FECRecovery struct {
 	Packet []byte
 }
 
-// FECGroupBufferConfig carries the buffer's bounds. A zero value in any
-// field selects that field's default — which means an explicit zero bound is
-// not representable at construction. That is deliberate: none of these
-// bounds is meaningful at zero (a zero-byte ring or a zero-entry guard is a
-// buffer that cannot function), so the C convention of 0-means-default costs
-// nothing here, unlike the NACK scheduler's tunables (see
+// FECGroupBufferConfig carries the buffer's bounds. A zero field selects its
+// default; an explicit zero is not representable, but none of these bounds
+// is meaningful at zero anyway (unlike the NACK scheduler's tunables — see
 // NACKSchedulerConfig).
 type FECGroupBufferConfig struct {
 	// MaxHeldBytes caps retained media bytes — about four keyframe-sized
