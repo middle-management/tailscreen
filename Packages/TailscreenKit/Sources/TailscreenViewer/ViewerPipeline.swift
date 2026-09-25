@@ -5,10 +5,9 @@ import TailscreenProtocol
 /// gives the host (the tsnet CLI, or a test) one object to drive: `start()`,
 /// then `receive(_:)` per inbound datagram and `tick(nowNs:)` on a clock.
 ///
-/// It's deliberately thin — all the receive-side logic lives in `ViewerSession`
-/// — but it (a) fixes the wiring in one place both `main` and the integration
-/// test share, and (b) retains the concrete sinks so the host can reach
-/// backend-specific affordances (e.g. polling the host window for a close).
+/// Thin by design — receive-side logic lives in `ViewerSession` — but fixes
+/// the wiring in one place `main` and the integration test share, and retains
+/// the concrete sinks so the host can reach backend-specific affordances.
 ///
 /// Not `Sendable`: like `ViewerSession`, the host must serialize `start` /
 /// `receive` / `tick` onto one queue.

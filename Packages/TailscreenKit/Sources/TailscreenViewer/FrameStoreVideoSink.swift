@@ -2,28 +2,16 @@ import Foundation
 import TailscreenProtocol
 
 /// The `VideoSink` a CPU-blit renderer wants: park the latest decoded frame in
-/// a `FrameStore` for the host's view to draw, poke the host so it redraws, and
-/// report the stats HUD's numbers when an fps window closes.
+/// a `FrameStore`, poke the host to redraw, and report the stats HUD's numbers
+/// when an fps window closes. Shared by the GTK and WinUI viewers, whose
+/// callback needs differ but whose frame handling is identical.
 ///
-/// Both swift-cross-ui viewers had written this out, and their copies had
-/// already drifted in the way copies do: the GTK one announced the first frame
-/// (which is what hides its connecting placard) and the Windows one did not,
-/// because Windows moves its session phase somewhere else. The differences are
-/// all *callbacks*; the frame handling underneath is identical, down to the
-/// `as? DecodedVideoFrame` guard and the reason for it.
+/// The `as? DecodedVideoFrame` guard is not defensive habit: the sink seam is
+/// codec-agnostic (`any DecodedFrame`) but a CPU blit understands only I420,
+/// so an unexpected shape is dropped rather than misread or force-cast.
 ///
-/// **The guard is not defensive habit.** The portable sink seam is
-/// codec-agnostic (`any DecodedFrame`) while a CPU blit path understands only
-/// I420, so a frame of another shape is dropped rather than misread. It cannot
-/// arise today — the `FFmpegVideoDecoder` both hosts pair this with emits only
-/// `DecodedVideoFrame` — which is exactly why it must be a guard and not a
-/// force-cast: the day a decoder emits something else, a dropped frame is a
-/// visible stall and a crash is a bug report.
-///
-/// `@unchecked Sendable` on the terms the hosts already relied on: `FrameStore`
-/// is internally locked, and every callback is expected to marshal onto the
-/// host's UI thread if it needs to. The transport drives `present` on the main
-/// actor today, but nothing here depends on that.
+/// `@unchecked Sendable`: `FrameStore` is internally locked, and every
+/// callback is expected to marshal onto the host's UI thread itself.
 public final class FrameStoreVideoSink: VideoSink, @unchecked Sendable {
     private let store: FrameStore
     private let onFirstFrame: (@Sendable () -> Void)?
@@ -31,25 +19,20 @@ public final class FrameStoreVideoSink: VideoSink, @unchecked Sendable {
     private let onStats: (@Sendable (_ width: Int, _ height: Int, _ fps: Int, _ color: VideoColorInfo) -> Void)?
     private let clock: @Sendable () -> UInt64
 
-    /// Touched only from `present`, which the session drives serially — the
-    /// same contract `FrameRateCounter` documents, and the reason neither of
-    /// these needs a lock.
+    /// Touched only from `present`, which the session drives serially — no
+    /// lock needed (same contract as `FrameRateCounter`).
     private var announcedFirstFrame = false
     private var frameRate = FrameRateCounter()
 
     /// - Parameters:
     ///   - onFirstFrame: fired once per session, before `onFrame`, for a host
-    ///     whose "video is flowing now" state is separate from its redraw. Nil
-    ///     for a host that has no such state.
-    ///   - onFrame: fired for every frame — the redraw request. Nil for a
-    ///     backend whose store already wakes its renderer (the GTK shim does
-    ///     this itself, inside `FrameStore.set`).
-    ///   - onStats: fired only when an fps window closes, roughly once a
-    ///     second. That is what keeps stats off the per-frame path. `color` is
-    ///     the closing frame's reported colour encoding — the one stat a viewer
-    ///     cannot infer by looking, and the one that explains a picture that
-    ///     looks washed out or crushed.
-    ///   - clock: injected so the fps windowing is testable without sleeping.
+    ///     with separate "video is flowing" state. Nil if not needed.
+    ///   - onFrame: the redraw request, fired per frame. Nil if the store
+    ///     already wakes its renderer (GTK does this in `FrameStore.set`).
+    ///   - onStats: fired once per closed fps window (~1/s). `color` is the
+    ///     closing frame's colour encoding, which explains a washed-out or
+    ///     crushed picture that a viewer can't infer by eye.
+    ///   - clock: injected so fps windowing is testable without sleeping.
     public init(
         store: FrameStore,
         onFirstFrame: (@Sendable () -> Void)? = nil,
@@ -66,15 +49,8 @@ public final class FrameStoreVideoSink: VideoSink, @unchecked Sendable {
         self.clock = clock
     }
 
-    /// Forget the first-frame latch and the fps window before a new session.
-    ///
-    /// A sink outlives one viewing session on both hosts, so without this the
-    /// first frame of the next one closes a window opened during the previous
-    /// — reporting a fraction of an fps across the idle gap between them — and
-    /// a reused sink never re-announces video, leaving the connecting placard
-    /// up over a stream that is running.
-    ///
-    /// Call it on the session-driving context before a new `run`.
+    /// Forget the first-frame latch and the fps window before a new session
+    /// (a sink outlives one viewing session on both hosts). Call before `run`.
     public func resetForNewSession() {
         announcedFirstFrame = false
         frameRate.reset()

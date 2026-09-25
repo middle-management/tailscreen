@@ -2,26 +2,18 @@ import Foundation
 import TailscreenProtocol
 
 // The host-agnostic seam of the portable viewer data-plane. `ViewerSession`
-// (see ViewerSession.swift) turns inbound RTP into decoded frames + audio +
-// outbound feedback bytes without owning a socket, a thread, or a timer, and
-// without linking any concrete codec/renderer/audio backend. These value and
-// protocol types are that seam: the Linux viewer plugs the real FFmpeg decoder /
-// GTK-GL renderer / ALSA sink in behind them, while THIS target stays
-// Foundation-only and Linux-buildable (no FFmpeg/GTK/ALSA dependency — see the
-// package README).
+// turns inbound RTP into decoded frames + audio + outbound feedback bytes
+// without owning a socket/thread/timer or linking a concrete codec/renderer/
+// audio backend. These value/protocol types are that seam, so this target
+// stays Foundation-only and Linux-buildable (see the package README).
 
-/// A decoded video frame the session routes **without inspecting** — a marker
-/// so the concrete frame type is opaque to `ViewerSession`. The decoder produces
-/// `DecodedFrame`s and the sink consumes them; the session only carries them
-/// from one to the other, so the type is whatever the host's decoder/renderer
-/// pair agrees on: CPU I420 (`DecodedVideoFrame`) for the FFmpeg→GTK-GL path, or a
-/// platform-native handle (e.g. a `CVPixelBuffer` box on macOS) for a zero-copy
-/// VideoToolbox→Metal path — without the portable target importing CoreVideo.
-/// `ViewerSession` never reads a frame; the sink downcasts to its own concrete
-/// type (a decoder/sink pair always agree on it) to reach the pixels. The only
-/// requirements are the frame **dimensions** — cheap for every backing (I420
-/// carries them; `CVPixelBufferGetWidth/Height` on a mac box) and exactly what
-/// a generic decorator or stats overlay needs, so those don't have to downcast.
+/// A decoded video frame the session routes **without inspecting** — opaque
+/// to `ViewerSession` so the type can be CPU I420 (`DecodedVideoFrame`, the
+/// FFmpeg→GTK-GL path) or a platform-native handle (e.g. a boxed
+/// `CVPixelBuffer` for zero-copy VideoToolbox→Metal) without this target
+/// importing CoreVideo. The sink downcasts to the concrete type it and its
+/// paired decoder agree on. Only **dimensions** are required here — cheap for
+/// every backing and enough for a generic decorator or stats overlay.
 public protocol DecodedFrame {
     /// Frame width in luma samples.
     var width: Int { get }
@@ -29,16 +21,11 @@ public protocol DecodedFrame {
     var height: Int { get }
 }
 
-/// One decoded video frame in packed 8-bit YUV 4:2:0 (I420) planar form.
-///
-/// The plane layout deliberately matches what the FFmpeg decoder in
-/// `Packages/FFmpegKit` emits, so a later adapter can hand its output straight
-/// to a `VideoSink` — but this struct pulls in nothing FFmpeg-specific, keeping
-/// the viewer core dependency-free. `yPlane` is `width × height` luma samples;
-/// `uPlane` / `vPlane` are each `⌈width/2⌉ × ⌈height/2⌉` chroma samples
-/// (tightly packed, no row padding — the host/adapter owns any stride reshuffle).
-///
-/// The default `DecodedFrame` — the Linux/portable instantiation of the seam.
+/// One decoded video frame in packed 8-bit YUV 4:2:0 (I420) planar form. The
+/// default `DecodedFrame` — the Linux/portable instantiation of the seam.
+/// Plane layout matches the FFmpeg decoder's output but is FFmpeg-agnostic.
+/// `yPlane` is `width × height`; `uPlane`/`vPlane` are each
+/// `⌈width/2⌉ × ⌈height/2⌉`, tightly packed with no row padding.
 public struct DecodedVideoFrame: Sendable, Equatable, DecodedFrame {
     /// Frame width in luma samples.
     public let width: Int
@@ -51,13 +38,10 @@ public struct DecodedVideoFrame: Sendable, Equatable, DecodedFrame {
     /// `⌈width/2⌉ × ⌈height/2⌉` red-difference chroma (V/Cr) samples.
     public let vPlane: [UInt8]
     /// What the decoder learned about how these samples encode colour.
-    ///
-    /// `range` is the half a renderer MUST honour: a sharer using full-range
-    /// samples (every default macOS share) rendered with limited-range maths
-    /// loses its shadows and highlights. It defaults to
-    /// `.unspecifiedLimited` so a frame built by a caller that predates this
-    /// field — the colour-bars fixture, the sharer's preview path, a test —
-    /// keeps exactly the behaviour it had.
+    /// `range` is the half a renderer MUST honour: full-range samples (every
+    /// default macOS share) rendered with limited-range maths lose their
+    /// shadows and highlights. Defaults to `.unspecifiedLimited` so callers
+    /// predating this field keep their old behaviour.
     public let colorInfo: VideoColorInfo
 
     public init(
@@ -77,42 +61,33 @@ public struct DecodedVideoFrame: Sendable, Equatable, DecodedFrame {
     }
 }
 
-/// A concrete video decoder the host supplies. `ViewerSession` *submits* one
-/// reassembled AVCC access unit at a time via `decode`, and receives decoded
-/// frames back through the `onDecodedFrame` callback — **synchronously** within
-/// `decode` for a synchronous backend (FFmpeg on Linux, or a test stub), or
-/// **later** for an asynchronous one (VideoToolbox on macOS, whose
-/// decompression session delivers frames on its own thread). A decode failure
-/// is signalled via `onDecodeFailure`; the session answers it with a PLI
-/// (keyframe request) so the stream can recover.
+/// A concrete video decoder the host supplies. `ViewerSession` submits one
+/// reassembled AVCC access unit at a time via `decode`, and receives frames
+/// back through `onDecodedFrame` — synchronously within `decode` for a
+/// synchronous backend (FFmpeg, or a test stub), or later for an async one
+/// (VideoToolbox, whose session delivers on its own thread). A decode failure
+/// is signalled via `onDecodeFailure`; the session answers with a PLI
+/// (keyframe request).
 ///
 /// **Threading contract.** Both callbacks MUST be invoked on the same
-/// serialization context the host drives the session on (the queue it calls
-/// `receiveRTP` / `tick` from). A synchronous backend satisfies this for free
-/// — it fires the callback inside `decode`, which the host already called on
-/// that queue. An asynchronous backend must hop back to that context before
-/// invoking a callback, because `ViewerSession` is not `Sendable` and owns no
-/// queue of its own.
+/// serialization context the host drives the session on. A synchronous
+/// backend gets this for free; an async one must hop back to that context —
+/// `ViewerSession` is not `Sendable` and owns no queue of its own.
 public protocol VideoDecoding: AnyObject {
-    /// Invoked once per decoded frame. The session sets this at wiring time and
-    /// routes the (opaque) frame straight to the `VideoSink`. A decoder is free
-    /// to emit CPU I420 (`DecodedVideoFrame`) or a platform-native handle its
-    /// paired sink understands — the session never inspects it.
+    /// Invoked once per decoded frame, routed straight to the `VideoSink`
+    /// without inspection — a decoder may emit CPU I420 or a platform-native
+    /// handle its paired sink understands.
     var onDecodedFrame: ((any DecodedFrame) -> Void)? { get set }
 
-    /// Invoked when decoding fails (a submit error, or an asynchronous decode
-    /// error). The session responds with a PLI so the sharer sends a fresh
-    /// keyframe. A backend that runs its own recovery ladder calls this only
-    /// when it actually wants the sharer to intervene.
+    /// Invoked on decode failure (submit error or async decode error); the
+    /// session responds with a PLI. A backend with its own recovery ladder
+    /// should call this only when it wants the sharer to intervene.
     var onDecodeFailure: (() -> Void)? { get set }
 
-    /// Submit one AVCC-formatted access unit for decoding. `codec` is the
-    /// stream's codec (`.h264` / `.hevc`), deterministically known from the RTP
-    /// payload type — the session forwards it so the decoder never has to sniff
-    /// the bitstream. `isKeyframe` is true when the AU carries an IDR (its
-    /// in-band parameter sets, if any, are inside `accessUnit` — the decoder
-    /// extracts them). Frames and failures are delivered via the callbacks
-    /// above, not returned.
+    /// Submits one AVCC-formatted access unit. `codec` is deterministically
+    /// known from the RTP payload type. `isKeyframe` is true when the AU
+    /// carries an IDR (in-band parameter sets, if any, are inside
+    /// `accessUnit`). Frames/failures are delivered via the callbacks above.
     func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool)
 }
 
