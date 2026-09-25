@@ -349,17 +349,28 @@ final class SharerAskToShareCoordinatorTests: XCTestCase {
     /// holds. Yielding rather than `wait(for:)`: these tests are on the main
     /// actor and so is the bring-up, so blocking would deadlock the thing
     /// being waited for.
+    ///
+    /// The bound is a **deadline**, not a number of passes. A pass count
+    /// times out after however long those passes happen to take, which on a
+    /// loaded runner is not the duration it was written to mean — the same
+    /// defect that made `SharerLinkSessionTests.awaitNode` flake on CI,
+    /// where the budget was yields alone and so had no floor at all. This
+    /// one at least slept, so it was only weakly wrong; it is now stated in
+    /// the unit it was always trying to express.
     @MainActor
     private func settle(
         until condition: @MainActor () -> Bool,
         _ message: String,
+        within timeout: Duration = .seconds(5),
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
-        for _ in 0..<500 {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while true {
             if condition() { return }
+            if ContinuousClock.now >= deadline { break }
             await Task.yield()
-            try? await Task.sleep(nanoseconds: 2_000_000)
+            try? await Task.sleep(for: .milliseconds(2))
         }
         XCTFail(message, file: file, line: line)
     }

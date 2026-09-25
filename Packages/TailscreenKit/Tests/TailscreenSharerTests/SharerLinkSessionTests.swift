@@ -67,12 +67,39 @@ final class SharerLinkSessionTests: XCTestCase {
 
         /// The session makes its node inside the call, so a test that wants
         /// to reach one has to wait for the call to get that far.
-        func awaitNode(_ id: String) async -> FakeGuestNode? {
-            for _ in 0..<1000 {
+        ///
+        /// Bounded by **time**, not by a count of `Task.yield()`s. The
+        /// budget this replaced was a thousand yields, which is not a
+        /// duration at all: on a loaded runner the task that creates the
+        /// node can simply fail to be scheduled within any fixed number of
+        /// them, and the helper then hands nil to a caller whose
+        /// `XCTUnwrap` reports "expected non-nil value of type
+        /// FakeGuestNode" — which reads as a logic error in
+        /// `SharerLinkSession` rather than as the scheduling shortfall it
+        /// is. That went red once on CI and passed on an immediate re-run
+        /// of the same commit.
+        ///
+        /// Sleeping rather than spinning, for the same reason: a yield loop
+        /// competes for the executor with the very task it is waiting for,
+        /// so the busier the machine, the worse it behaves. The happy path
+        /// returns on the first check, so the deadline costs nothing on a
+        /// run that was going to pass — which is why it can afford to be
+        /// generous.
+        ///
+        /// Still returns nil rather than waiting forever. `Gate` documents
+        /// why a test that hangs is worse than one that fails, and this
+        /// keeps a failure a failure: it arrives with a message, at the
+        /// assertion that wanted the node, instead of as a job that has to
+        /// be killed by its timeout.
+        func awaitNode(
+            _ id: String, within timeout: Duration = .seconds(5)
+        ) async -> FakeGuestNode? {
+            let deadline = ContinuousClock.now.advanced(by: timeout)
+            while true {
                 if let found = node(id) { return found }
-                await Task.yield()
+                if ContinuousClock.now >= deadline { return nil }
+                try? await Task.sleep(for: .milliseconds(1))
             }
-            return nil
         }
     }
 
