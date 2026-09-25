@@ -1218,6 +1218,7 @@ final class AppUIState: ObservableObject {
         guard sessionTask == nil else { return }
         stopRequested = false
         let sessionID = viewerLifecycle.begin(target)
+        frameStore.clear()
         status = L("Connecting to \(target.displayName)…")
         detail = ""
         viewerNotice = nil

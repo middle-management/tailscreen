@@ -79,6 +79,18 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertEqual(counts.firstFrames, 2)
     }
 
+    /// Session start clears the store, so a reused viewer can't paint the
+    /// previous session's last frame before the new first decode.
+    func testClearDropsTheHeldFrameAndRequestsARedraw() {
+        let store = FrameStore()
+        var redraws = 0
+        store.setRedraw { redraws += 1 }
+        store.set(frame())
+        store.clear()
+        XCTAssertNil(store.current())
+        XCTAssertEqual(redraws, 2)
+    }
+
     func testStatsArePublishedOnlyWhenAWindowCloses() {
         let counts = Counts()
         let clock = Clock()

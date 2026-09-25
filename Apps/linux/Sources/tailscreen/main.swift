@@ -421,6 +421,7 @@ if gSelfTest {
             ViewerSessionTarget(
                 host: dialHost, displayName: displayName, guestToken: guestToken))
         sink.resetForNewSession()  // the sink outlives one session
+        gStore.clear()
         gAnnotations.resetForNewSession()
         gUIState.beginSession()
         gUIState.setMicAvailable(false)

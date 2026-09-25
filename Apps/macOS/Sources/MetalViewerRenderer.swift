@@ -362,13 +362,32 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Next display-link tick presents a black drawable; doesn't stop the link.
+    /// Drops any queued frame and presents a black drawable right away, so
+    /// the next session doesn't show the last one's final frame while it
+    /// connects. Presenting here rather than on the next tick: the display
+    /// link only draws when a buffer is pending, and it may be paused while
+    /// the window is ordered out.
     @MainActor
     func clearPendingBuffer() {
         lock.lock()
         pendingBuffer = nil
         pendingReceiveUptimeNs = 0
         lock.unlock()
+        guard !isInvalidated,
+            let drawable = metalLayer.nextDrawable(),
+            let commandBuffer = commandQueue.makeCommandBuffer()
+        else { return }
+        let passDesc = MTLRenderPassDescriptor()
+        passDesc.colorAttachments[0].texture = drawable.texture
+        passDesc.colorAttachments[0].loadAction = .clear
+        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        passDesc.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
+            return
+        }
+        encoder.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
     }
 
     /// No-op — kept for source compatibility; the display link stays attached
