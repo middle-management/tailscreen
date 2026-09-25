@@ -12,50 +12,46 @@ permalink: /usage/
 
 ## First-time setup
 
-You need a Tailscale account — the free personal tier is fine, and it
-doesn't expire. Sign up at [tailscale.com](https://tailscale.com/),
-install the Tailscale app on every machine you want to share between, and
-let it add them to your tailnet. Then install Tailscreen on those machines
-(see [Install]({{ site.baseurl }}{% link install.md %})).
+You need a Tailscale account — the free personal tier works and doesn't
+expire. Sign up at [tailscale.com](https://tailscale.com/), install
+Tailscale on every machine you want to share between, then install
+Tailscreen on those machines (see
+[Install]({{ site.baseurl }}{% link install.md %})).
 
-You do **not** need to register Tailscreen as a Tailscale device. It spins
-up its own ephemeral tsnet node when you start sharing or connecting, and
-Tailscale removes the node automatically when you stop. Your admin console
-stays clean.
+You do **not** need to register Tailscreen as a Tailscale device: it
+spins up its own ephemeral tsnet node when you start sharing or
+connecting, and Tailscale removes it automatically when you stop, so
+your admin console stays clean.
 
-If you'd rather not use Tailscale's hosted control plane — you run
-[headscale](https://github.com/juanfont/headscale), say, or you want a
-fully airgapped tailnet — see
+Running your own control plane —
+[headscale](https://github.com/juanfont/headscale) or a fully
+airgapped tailnet — is covered in
 [Self-hosted control planes]({{ site.baseurl }}{% link self-hosted.md %}).
 
 ## Platform notes
 
-Tailscreen is one app on three platforms — macOS, Linux, and Windows — and
-they all speak the same protocol, so any of them can view or share to any
-other. This page uses the macOS app's menus and keyboard shortcuts in its
-examples; the hub window, share card, and viewer work the same everywhere.
-The honest differences:
+Tailscreen is one app on three platforms — macOS, Linux, and Windows —
+speaking one protocol, so any of them can view or share to any other.
+This page uses the macOS app's menus and shortcuts; the hub window,
+share card, and viewer work the same everywhere. The honest differences:
 
-- **Sharing works everywhere — including Wayland.** On Linux, an X11
-  session captures the root window directly; a Wayland session shares
-  through the ScreenCast portal, so the share starts with your
-  compositor's consent dialog. A Wayland session without a portal refuses
-  to share and says why. Sharing a single window or app on Linux also
-  goes through the portal — the button appears only when one exists.
-- **Remote control** works in both roles on every platform — requesting as
-  a viewer, and granting as a sharer. (Linux injects via X11's XTEST
-  extension; when it's absent, the capability isn't advertised and viewers
-  never see a Request Control button.)
+- **Sharing works everywhere — including Wayland.** X11 captures the
+  root window directly; Wayland shares through the ScreenCast portal,
+  starting with your compositor's consent dialog (a Wayland session
+  without a portal refuses to share and says why). Sharing a single
+  window or app on Linux also goes through the portal — the button
+  appears only when one exists.
+- **Remote control** works in both roles everywhere — requesting as a
+  viewer, granting as a sharer. Linux injects via X11's XTEST extension;
+  when it's absent, viewers never see a Request Control button.
 - **Voice works everywhere; system-audio capture is macOS-only today.**
-  The mic button exists on all three apps. **Share System Audio** exists
-  only on the macOS sharer — viewers on every platform play it back.
+  **Share System Audio** exists only on the macOS sharer — viewers on
+  every platform play it back.
 - **Permissions:** Screen Recording and Accessibility prompts are macOS
-  concepts. Linux and Windows have no equivalent gate.
-- **Signing in is something you start.** All three apps open on a welcome
-  screen — one card for your tailnet, one for a share link — and none of
-  them begins a browser sign-in you did not ask for. Once you have signed
-  in, launching the app restores that session silently; if the saved
-  sign-in has expired, the tailnet card comes back and says so.
+  concepts; Linux and Windows have no equivalent gate.
+- **Signing in is something you start.** No app begins a browser
+  sign-in you didn't ask for. Once signed in, launching the app restores
+  the session silently; if it's expired, the tailnet card says so.
 
 The full feature-by-feature comparison lives in
 [Platform support]({{ site.baseurl }}{% link platform-support.md %}).
@@ -63,32 +59,30 @@ The full feature-by-feature comparison lives in
 ## Sharing your screen
 
 1. Click the 📺 in the menubar, or open the Tailscreen window.
-2. Pick **Choose what to share…**. The native picker opens — choose a
-   display, a single window, or one or more apps.
-3. On a Mac, approve Screen Recording if macOS asks. (See
-   [Install → Permissions]({{ site.baseurl }}{% link install.md %}#permissions) — the
-   permission only takes effect after a relaunch.)
-4. The first time you ever share, Tailscale will open a browser tab to log
-   you in. After that it's a one-click affair.
+2. Pick **Choose what to share…** — the native picker opens: a display,
+   a single window, or one or more apps.
+3. On a Mac, approve Screen Recording if asked. (See
+   [Install → Permissions]({{ site.baseurl }}{% link install.md %}#permissions) —
+   it only takes effect after a relaunch.)
+4. The first time you ever share, Tailscale opens a browser tab to log
+   you in; after that it's one click.
 
-That's the whole flow — no meeting to create, no link to copy. The screen
-is up, people on your tailnet can connect, and by default each one waits
-for your approval before they see anything (see
-[Approving viewers](#approving-viewers)).
+No meeting to create, no link to copy: the screen is up, people on your
+tailnet can connect, and by default each one waits for your approval
+before they see anything (see [Approving viewers](#approving-viewers)).
 
 ### The sharing card
 
-Once a share is up, everything about it lives in one card: a live preview
-of what viewers are seeing, the resolution and viewer count, the session
-buttons (**Change Source…**, **Draw**, mic, **Share System Audio**),
-**Stop Sharing**, the viewer list with its approval prompts, the approval
-toggle, **Share via Link**, and the mic/speaker device pickers.
+Once a share is up, everything about it lives in one card: a live
+preview of what viewers are seeing, the resolution and viewer count,
+session buttons (**Change Source…**, **Draw**, mic, **Share System
+Audio**, **Stop Sharing**), the viewer list with its approval prompts,
+the approval toggle, **Share via Link**, and the mic/speaker device
+pickers.
 
-On macOS that card is in two places at once — the menubar 📺 and the
-Tailscreen window — and they're the same card, not a full version and a
-summary. Use whichever you're already looking at: the menubar when the
-window is buried behind what you're sharing, the window when you have it
-open anyway. On Linux and Windows the card lives in the hub window.
+On macOS that card is the same one in two places — the menubar 📺 and
+the Tailscreen window. Use whichever you're already looking at. On
+Linux and Windows it lives in the hub window.
 
 ### Changing what you share mid-session
 
@@ -101,70 +95,66 @@ changes, so stale strokes don't float over the new content.
 
 Some apps just shouldn't be on stream — Messages, Mail, your password
 manager. Add them once in **Settings → Cloaked Apps** and their windows
-are excluded from every whole-display share, so there's no need to clean
-up your screen before sharing. The **Add App…** menu lists
-your running apps; each entry has a **Remove** button, and the **Hide
-cloaked apps while sharing** toggle lets you temporarily disable cloaking
-without losing the list.
+are excluded from every whole-display share, so there's no need to
+clean up your screen first. The **Add App…** menu lists your running
+apps; each entry has a **Remove** button, and **Hide cloaked apps while
+sharing** lets you temporarily disable cloaking without losing the
+list.
 
-The rules, spelled out:
+The rules:
 
-- **Applies to display shares.** Sharing a single window or app already
-  limits capture to exactly what you picked, so there's nothing to cloak.
-- **An explicit pick wins.** If you deliberately choose to share a cloaked
-  app (window or app share), it's shared — a standing default never
-  overrides a deliberate choice.
-- **It's live.** Editing the list mid-share applies within a second or
-  two; viewers see a brief pause while the capture pipeline rebuilds.
-  A cloaked app that *launches* mid-share is picked up the same way.
-- Cloaked windows are excluded at capture time — the pixels never reach
-  the encoder, never mind the network. Viewers simply see your wallpaper
-  (or whatever is behind the window) where the app would be.
+- **Applies to display shares only** — a window or app share already
+  limits capture to what you picked, so there's nothing to cloak.
+- **An explicit pick wins.** Deliberately sharing a cloaked app (window
+  or app share) shares it — a standing default never overrides a
+  deliberate choice.
+- **It's live.** Editing the list mid-share, or launching a cloaked
+  app, applies within a second or two; viewers see a brief pause while
+  the capture pipeline rebuilds.
+- Cloaked windows are excluded at capture time — the pixels never
+  reach the encoder. Viewers just see your wallpaper (or whatever's
+  behind the window) in their place.
 
 ## Viewing a shared screen
 
 1. Open the Tailscreen window — click its Dock icon, or pick **Open
    Tailscreen** in the menubar.
-2. Find the sharer in the **Screens** list. Search by name or IP, or use
-   the filter to show only screens currently being shared — a peer that's
-   sharing carries a green chip with its share's name.
+2. Find the sharer in the **Screens** list — search by name or IP, or
+   filter to screens currently being shared (a green chip carries the
+   share's name).
 3. Click their row.
 
 A window opens. You're done — unless the sharer has viewer approval on
-(the default), in which case the window says "Connecting to *name*…" and
-shows a waiting placard (with a Cancel button) until they accept you.
+(the default), in which case it says "Connecting to *name*…" and shows
+a waiting placard (with a Cancel button) until they accept you.
 
-On macOS the viewer window behaves like a proper Mac window: it remembers
-its size and position across launches, opens on the screen you're working
-on, and supports full screen (**View → Enter Full Screen**, ⌃⌘F).
+On macOS the viewer window remembers its size and position across
+launches, opens on the screen you're working on, and supports full
+screen (**View → Enter Full Screen**, ⌃⌘F).
 
-If the share ends — the sharer stops, the connection drops, or it times
-out — the viewer doesn't just vanish, on any platform: it says what
-happened, with a **Reconnect** button that rejoins the same peer and a
-way back to the screens list. Video problems that do not end the session
-— a codec fallback, a stall — appear as a banner rather than a modal
-alert, and leave the picture where it is: on macOS at the top of the
-window, carrying its own Reconnect; on Linux and Windows as a strip
-above the video, dismissible, with **Stop** in the bar above it as the
-way back to the list.
+If the share ends — sharer stops, connection drops, or it times out —
+the viewer says what happened, with a **Reconnect** button and a way
+back to the screens list, on any platform. Video problems that don't
+end the session — a codec fallback, a stall — appear as a dismissible
+banner instead of a modal, leaving the picture up: at the top of the
+window on macOS, carrying its own Reconnect; as a strip above the
+video on Linux and Windows, with **Stop** as the way back to the list.
 
-Rows are labelled by machine name. Every Tailscreen install joins your
-tailnet as `tailscreen-<machine>` — that prefix is how peers recognise each
-other, so the list drops it and shows just the machine. In the Tailscale
-admin console the same device still appears with its full name.
+Rows are labelled by machine name. Every install joins your tailnet as
+`tailscreen-<machine>` — the list drops that prefix, but the Tailscale
+admin console still shows the full name.
 
-Want a look before you connect? Expand a row with its chevron: you get the
-live share's resolution and codec, the peer's MagicDNS name and IP (both
-copyable, and the MagicDNS name is where the full `tailscreen-…` hostname
-still shows), and a Route line showing the current Tailscale path — direct
-or DERP-relayed — with a rough latency estimate.
+Expand a row's chevron for a look before you connect: the live share's
+resolution and codec, the peer's copyable MagicDNS name (where the
+full `tailscreen-…` hostname still shows) and IP, and a Route line
+giving the current Tailscale path — direct or DERP-relayed — with a
+rough latency estimate.
 
 ## Approving viewers
 
-**Require approval for new viewers** is on by default. When someone
-connects to your share, they don't see pixels — they wait on their
-Connecting screen while your sharing card — the menubar one and the
-window's, on macOS — shows a row for them with four choices:
+**Require approval for new viewers** is on by default. A connecting
+viewer waits on their Connecting screen while your sharing card shows a
+row for them with four choices:
 
 - **Accept** — admit them, this once.
 - **Always Allow** — admit them now and automatically in the future.
@@ -172,26 +162,24 @@ window's, on macOS — shows a row for them with four choices:
 - **Deny & Block** — reject them now and automatically in the future.
   Blocking someone who's *already* connected kicks them out too.
 
-Once viewers are connected, each row in the sharing card's viewer list
-has a ✕ button that disconnects that viewer on the spot. It's one-time —
-they see "Disconnected by Sharer" and nothing is remembered, so they can
-reconnect and go through the normal approval flow again. To keep someone
-out for good, use **Deny & Block** instead.
+Once connected, each viewer row also has a ✕ that disconnects them on
+the spot — one-time only ("Disconnected by Sharer"), so they can
+reconnect and go through approval again. For good, use **Deny & Block**
+instead.
 
-You also get a notification ("Viewer Wants to Connect") if the menubar
-isn't open — with **Accept** and **Deny** on the banner itself, so you can
-answer without leaving what you're sharing. It breaks through Do Not Disturb
-and Focus, since someone is stuck behind it. Clicking the banner instead of a
-button just opens Tailscreen; swiping it away decides nothing.
+If the menubar isn't open you get a notification ("Viewer Wants to
+Connect") with **Accept**/**Deny** on the banner itself; it breaks
+through Do Not Disturb and Focus since someone is waiting on it.
+Clicking the banner opens Tailscreen; swiping it away decides nothing.
 
-Remembered decisions live in **Settings → Viewers** under
-"Remembered viewers", where you can remove entries any time. They're keyed
-to the peer's stable Tailscale node identity, not its IP or hostname, so a
-renamed machine stays remembered.
+Remembered decisions live in **Settings → Viewers** under "Remembered
+viewers" (removable any time), keyed to the peer's stable Tailscale
+node identity rather than IP or hostname, so a renamed machine stays
+remembered.
 
-If you'd rather have the old anyone-on-the-tailnet-connects-instantly
-behavior, turn the toggle off in **Settings → Viewers**. Blocked peers
-stay blocked even then — the deny list outranks the toggle.
+To let anyone on the tailnet connect instantly, as before, turn the
+approval toggle off in **Settings → Viewers**. Blocked peers stay
+blocked even then — the deny list outranks the toggle.
 
 ## Sharing via link (guests)
 
@@ -199,33 +187,31 @@ Everything above assumes both machines are on your tailnet. **Share via
 Link** is the way in for someone who isn't — no Tailscale account, no
 install ceremony beyond Tailscreen itself.
 
-While sharing, flip **Share via Link** in the sharing card (either copy of
-it on macOS; the hub's share card on Linux and Windows). Tailscreen mints a
-one-off link (a `tailscreen:` URL wrapping a `tc…` token), and all three
-apps put the same four buttons under it:
+Flip **Share via Link** in the sharing card. Tailscreen mints a one-off
+link (a `tailscreen:` URL wrapping a `tc…` token), with the same four
+buttons under it on every platform:
 
-- **Copy Link** — the `tailscreen:` URL. On a machine with Tailscreen
-  installed, opening it lands in the join screen with the token filled in.
-- **Copy Web Link** — the `https:` form, which opens the share in a browser
+- **Copy Link** — the `tailscreen:` URL; opening it on a machine with
+  Tailscreen installed lands in the join screen with the token filled
+  in.
+- **Copy Web Link** — the `https:` form, opening the share in a browser
   with nothing installed (see *Joining* below).
-- **Copy Token** — the bare token, for pasting into the join screen by
-  hand.
-- **New Link** — replaces the link with a fresh one. The old link stops
-  working immediately and any current guests are dropped.
+- **Copy Token** — the bare token, for pasting into the join screen.
+- **New Link** — replaces the link with a fresh one; the old one stops
+  working immediately and drops any current guests.
 
 Guests knock, they don't walk in: **every guest waits at your approval
 prompt, every time** — Always Allow, the open-door toggle, and accepted
-share requests deliberately don't apply to them, because a link gets
-forwarded and you can't know who holds it. Guest rows are badged
-**Guest** and named by a short fingerprint of their cryptographic key
-rather than a machine name (guests don't have one you could trust).
-Denying a guest also closes their tunnel and blocks that key for as long
-as the link lives, so a denied guest can't keep knocking.
+share requests deliberately don't apply, since a link gets forwarded
+and you can't know who holds it. Guest rows are badged **Guest** and
+named by a fingerprint of their cryptographic key rather than a machine
+name. Denying a guest also closes their tunnel and blocks that key for
+as long as the link lives, so they can't keep knocking.
 
 The link dies when you stop sharing, flip the toggle off, or press New
-Link — there is nothing to revoke later. If you never want the feature
-offered, turn it off in **Settings → Link sharing** (macOS; the switch
-also holds a relay override for
+Link — nothing to revoke later. To never offer the feature, turn it off
+in **Settings → Link sharing** (macOS; the switch also holds a relay
+override for
 [self-hosting]({{ site.baseurl }}{% link self-hosted.md %})).
 
 <figure class="ts-shot" style="max-width: 20rem; margin: 1.75rem auto;">
@@ -235,97 +221,90 @@ also holds a relay override for
   <figcaption>Two ways in, before you have signed into anything.</figcaption>
 </figure>
 
-**Sharing without signing in** works too, on all three platforms. Every
-app's welcome screen carries one card per way in — **Your tailnet**, with
-the sign-in button, and **A share link**, with both no-account
-directions — and the second one's **Share your screen via Link…** is the
-one that needs no account. The picker opens, the share starts as a
-*link-only* share — no Tailscale account, no tailnet, the link is the only
-way in — and the sharing card shows the link with the same New Link and
-guest controls. On macOS that card lives in the menu bar; on Linux and
-Windows the sharing view takes over the window until you stop. Approval is
-still mandatory for every guest, and Stop Sharing is the way to end it (a
-link-only share has no link-off toggle: turning off its only transport
-would leave a share running that nobody can reach).
+**Sharing without signing in** works too, everywhere. Every app's
+welcome screen carries a **Your tailnet** card and, beside it, **A
+share link** card whose **Share your screen via Link…** needs no
+account. The picker opens, the share starts as a *link-only* share —
+no account, no tailnet, the link is the only way in — with the same New
+Link and guest controls (menu bar on macOS; the sharing view takes over
+the window on Linux and Windows). Approval is still mandatory for every
+guest, and Stop Sharing is the only way to end it — a link-only share
+has no link-off toggle, since that would leave a share nobody can
+reach.
 
-**Joining** works on all three platforms — clicking a `tailscreen:` link
-opens the app straight into the guest session wherever the scheme is
-registered (macOS; Linux via an installed `.desktop` entry — Flatpak does
-this at install, an AppImage after desktop integration; Windows via the
-MSIX install), and pasting always works:
+**Joining** works everywhere — clicking a `tailscreen:` link opens the
+app straight into the guest session wherever the scheme is registered
+(macOS; Linux via an installed `.desktop` entry — Flatpak does this at
+install, an AppImage after desktop integration; Windows via the MSIX
+install) — and pasting always works:
 
 - **macOS** — click the link, or **Join a Share…** (the link icon in the
   hub header, also offered on the sign-in screen) and paste the link or
   token.
 - **Linux and Windows** — click the link, or paste it: the welcome
   screen's share-link card has a field, and once signed in **Join a
-  Share…** in the hub opens the same one (joining needs no account either
-  way). The Linux app also takes `tailscreen --join <token-or-link>` — or
-  the link as a bare argument — on the command line.
+  Share…** in the hub opens the same one (joining needs no account
+  either way). The Linux app also takes `tailscreen --join
+  <token-or-link>` — or the link as a bare argument — on the command
+  line.
 - **A browser, nothing installed** — open the **web link**
-  (`https://tailscreen.dev/view/#tc…`). On macOS the sharing card's
-  **Copy Web Link** puts it on the clipboard, and Linux and Windows have the
-  same button. Opened *without* a token, the page
-  shows the same join field as the apps — paste the web link, the
-  `tailscreen:` link or the bare token into it. Chrome, Edge and Firefox
-  decode the share; Safari has not been checked yet. The page waits at the same
-  approval placard, then shows the screen, plays audio once you click
-  **Enable Audio** (browsers insist on a click), lets you **draw** when the
-  sharer renders annotations and **request control** when the sharer can
-  inject — the same capability gates as the apps. No microphone from a
-  browser, and no zoom. Two things to know: the token stays in the URL
-  *fragment*, so the site hosting the page never sees it; and a browser
-  cannot hole-punch, so everything it receives comes through the relay — at
-  screen-share bitrate that wants a
-  [self-hosted relay]({{ site.baseurl }}{% link self-hosted.md %}) rather
-  than the free ones. The page is static and self-hostable, and
-  `make web-viewer-bundle` folds it into one HTML file for a network with no
-  web access at all: open the file, add `#tc…` to its URL.
+  (`https://tailscreen.dev/view/#tc…`); every platform's **Copy Web
+  Link** puts it on the clipboard. Opened *without* a token, the page
+  shows the same join field as the apps. Chrome, Edge and Firefox
+  decode the share; Safari has not been checked yet. It waits at the
+  same approval placard, then shows the screen, plays audio once you
+  click **Enable Audio** (browsers insist on a click), and lets you
+  **draw** or **request control** under the same capability gates as
+  the apps — but no microphone, and no zoom. The token stays in the URL
+  *fragment*, so the hosting site never sees it; a browser can't
+  hole-punch, so everything comes through the relay — at screen-share
+  bitrate that wants a
+  [self-hosted relay]({{ site.baseurl }}{% link self-hosted.md %})
+  rather than the free ones. The page is static and self-hostable;
+  `make web-viewer-bundle` folds it into one HTML file for a network
+  with no web access — open the file and add `#tc…` to its URL.
 
-You join as a guest over an encrypted tunnel; the sharer has to approve
-you before you see anything, so expect the waiting placard first. Guest
-sessions carry the full feature set: video, voice, **annotations, and
-remote control** — the same capability gates apply as for tailnet
-viewers (a sharer that can't render strokes or inject input simply
-doesn't offer those tools), and remote control still takes the sharer's
+You join as a guest over an encrypted tunnel; expect the waiting
+placard first. Guest sessions carry the full feature set — video,
+voice, annotations, and remote control — under the same capability
+gates as tailnet viewers, and remote control still takes the sharer's
 explicit per-request grant.
 
 ## Asking someone to share
 
-The flow also works in reverse. Expand a peer's row in the Screens list
-and click **Ask to Share** to ask that peer to share *their* screen.
-Clicking it puts a banner in their Tailscreen — "*name* wants you to
-share", with **Share** and **Decline** buttons — and a notification carrying
-the same two buttons, so they can answer without opening the app. If
-they hit Share, the picker opens on their machine, and you're automatically
-pre-approved for the share that follows — no second approval round-trip.
+The flow also works in reverse: expand a peer's row in the Screens list
+and click **Ask to Share**. It puts a banner in their Tailscreen —
+"*name* wants you to share", with **Share** and **Decline** — and a
+matching notification, so they can answer without opening the app. If
+they hit Share, the picker opens on their machine and you're
+automatically pre-approved for the share that follows.
 
-You'll get one of three outcomes: **Request Accepted** ("…is choosing what
-to share" — click their row once their share is up), **Request Declined**,
-or **No Response** ("They may be away or running an older Tailscreen").
+You'll get one of three outcomes: **Request Accepted** ("…is choosing
+what to share" — click their row once their share is up), **Request
+Declined**, or **No Response** ("They may be away or running an older
+Tailscreen").
 
 ## Multiple accounts
 
 Signed in to more than one tailnet — personal and a work org, say? The
-account menu (the avatar in the window's header) lists every profile with
-its login and tailnet name, Tailscale-style. Click one to switch; the
-others stay signed in on disk, so switching back is instant and
-browser-free. **Add Account…** starts a fresh sign-in, holding ⌥ over a
-profile row swaps it for **Remove Account…**, and the menubar's identity
+account menu (the avatar in the window's header) lists every profile
+with its login and tailnet name, Tailscale-style. Click one to switch;
+the others stay signed in on disk, so switching back is instant and
+browser-free. **Add Account…** starts a fresh sign-in; holding ⌥ over a
+profile row swaps it for **Remove Account…**; the menubar's identity
 strip always shows which account a new share will start on.
 
-The same accounts also live in **Settings → Accounts** (macOS) with
-visible per-row Remove buttons and an Add Account… — no hidden ⌥-click
-required. And if you want Tailscreen ready the moment you log in, flip
-**Settings → General → Launch at login**.
+The same accounts live in **Settings → Accounts** (macOS), with
+visible Remove buttons and an Add Account… needing no ⌥-click. To have
+Tailscreen ready the moment you log in, flip **Settings → General →
+Launch at login**.
 
 ## Annotations
 
-The viewer's toolbar has drawing tools, plus a color swatch — pick one of
-the eight preset colors and your strokes carry it to the sharer and every
-other viewer. Doodle on the sharer's screen and
-your strokes appear in a transparent overlay window on their machine.
-Strokes ride a reliable channel separate from the video (see
+The viewer's toolbar has drawing tools plus a color swatch — pick one
+of the eight preset colors and your strokes carry it to the sharer and
+every other viewer, appearing in a transparent overlay window on their
+machine. Strokes ride a reliable channel separate from the video (see
 [Network Protocol]({{ site.baseurl }}{% link protocol.md %})), so they
 don't drop even when video frames do.
 
@@ -335,34 +314,30 @@ sharing and they're gone.
 ## Voice chat
 
 Both sides have a mic button (on macOS, **⌃⌥M** also works system-wide,
-even when Tailscreen isn't focused — remappable in **Settings → Keyboard
-Shortcuts**, which also warns when another app already owns the combo).
-Audio travels over the same tunnel as the video.
-With multiple viewers, everyone hears everyone — the sharer relays each
-viewer's voice to the other viewers. A lossy Wi-Fi link degrades into
-brief soft spots rather than robotic stutter.
+even when unfocused — remappable in **Settings → Keyboard Shortcuts**,
+which warns when another app already owns the combo). Audio travels
+over the same tunnel as the video. With multiple viewers, everyone
+hears everyone — the sharer relays each viewer's voice to the others.
+A lossy Wi-Fi link degrades into brief soft spots rather than robotic
+stutter.
 
 ## Sharing system audio
 
 The sharing card has a **Share System Audio** button (macOS — see
-[Platform notes](#platform-notes)) — everything your Mac plays gets
-captured and streamed to viewers alongside the video. **Mute
-System Audio** toggles it back off instantly. If you want it on from the
-start of every share, flip **Share system audio when sharing starts** in
-**Settings → Audio**.
+[Platform notes](#platform-notes)) that captures and streams everything
+your Mac plays alongside the video; **Mute System Audio** toggles it
+back off instantly. To have it on from the start of every share, flip
+**Share system audio when sharing starts** in **Settings → Audio**.
 
-Two details worth knowing:
-
-- Tailscreen excludes its **own** audio output from the capture, so
-  viewers' voice chat never loops back to them through the system-audio
-  stream.
-- On the viewer, system audio and voice are mixed together and follow the
-  same speaker-device selection.
+Two details worth knowing: Tailscreen excludes its **own** audio output
+from the capture, so viewers' voice chat never loops back through the
+system-audio stream; and on the viewer, system audio and voice are
+mixed together and follow the same speaker-device selection.
 
 ## Zoom and pan
 
-The viewer window supports continuous content zoom, independent of window
-size:
+The viewer window supports continuous content zoom, independent of
+window size:
 
 | Gesture / key | Action |
 |---|---|
@@ -374,125 +349,112 @@ size:
 | `⌘0` | Reset zoom and window size |
 
 Zoom is anchored under the cursor — the pixel you're pointing at stays
-put while everything magnifies around it — and panning is clamped so you
-can't scroll the video off-screen. The **View** menu's Actual Size /
+put while everything magnifies around it — and panning is clamped so
+you can't scroll the video off-screen. The **View** menu's Actual Size /
 Zoom to 50% / Zoom to 200% entries are different: those resize the
 *window*, not the content.
 
 ## Remote control
 
 A viewer can drive the sharer's machine — mouse and keyboard — but only
-after an explicit grant, and only one viewer at a time. (Granting requires
-a macOS or Windows sharer — see [Platform notes](#platform-notes).)
+after an explicit grant, and only one viewer at a time. (Granting
+requires a macOS or Windows sharer — see
+[Platform notes](#platform-notes).)
 
-**As the viewer:** click **Request Control** in the viewer window's
-toolbar (it's also in the menubar popover; the toolbar button only
-appears when the sharer's build can inject input at all). The button
-shows "Requesting…" until the sharer answers — click it again to cancel.
-Once granted, your clicks and keystrokes in the viewer window are
-injected on their machine, an orange border outlines the video, and the
-title bar reads "— controlling" so there's no mistaking whose Mac your
-keystrokes land on. Your scroll wheel (or trackpad) scrolls *their*
-content while you hold control; **Ctrl+wheel** still zooms your own view
-of the video, so both stay reachable. Stop with the toolbar's **Stop Controlling**,
-**File → Release Remote Control**, or **⌃⌥.** typed in the viewer window
-(the one chord that's never forwarded to the sharer; it follows the
-remap in Settings → Keyboard Shortcuts).
+**As the viewer:** click **Request Control** in the viewer toolbar
+(also in the menubar popover; it only appears when the sharer's build
+can inject input at all). It shows "Requesting…" until the sharer
+answers — click again to cancel. Once granted, your clicks and
+keystrokes are injected on their machine, an orange border outlines
+the video, and the title bar reads "— controlling". Your scroll wheel
+scrolls *their* content while you hold control; **Ctrl+wheel** still
+zooms your own view. Stop with the toolbar's **Stop Controlling**,
+**File → Release Remote Control**, or **⌃⌥.** (the one chord never
+forwarded to the sharer; remappable in Settings → Keyboard Shortcuts).
 
 **As the sharer:** a request shows up as "*name* wants control" with
-**Grant** and **Deny** buttons (plus a notification, carrying the same two
-buttons, if the menubar is closed — granting from the banner needs the Mac
-unlocked). Before you grant, read the caption:
+**Grant**/**Deny** buttons (plus a matching notification if the
+menubar is closed — granting from the banner needs the Mac unlocked).
+Before you grant, read the caption:
 
 Granting gives full keyboard and mouse control of your entire computer —
 not just the shared window.
 {: .warning }
 
-That's not boilerplate. The *pointer* is confined to the shared content
-(a shared window or app can't be used to click your menu bar, Dock, or
-taskbar), but keystrokes land wherever the sharer's OS focus is — scoping
-the keyboard to one app isn't something any platform lets us do reliably,
-so we don't pretend otherwise.
+The *pointer* is confined to the shared content (a window or app share
+can't click your menu bar, Dock, or taskbar), but keystrokes land
+wherever the sharer's OS focus is — no platform lets us scope the
+keyboard to one app reliably.
 
-On macOS, the first grant prompts for **Accessibility** permission (System
-Settings → Privacy & Security → Accessibility) — that's the macOS
-permission for synthesizing input events, separate from Screen Recording.
-The grant you clicked is queued while you make the trip to System
-Settings (the request's row says "Waiting for Accessibility permission…")
-and completes on its own the moment the permission lands. Windows needs
-no equivalent permission.
+On macOS, the first grant prompts for **Accessibility** permission
+(System Settings → Privacy & Security → Accessibility) — separate from
+Screen Recording. The grant is queued while you make the trip ("Waiting
+for Accessibility permission…") and completes on its own once granted.
+Windows needs no equivalent permission.
 
-Ending it: the **Stop** button in the sharing card, **File → Stop Remote
-Control**, or the **⌃⌥.** panic hotkey — which is registered system-wide
-only while a grant is live, so you can kill control from inside any app,
-including whatever the viewer is currently driving. Control also revokes
-automatically when the viewer disconnects, when they release it, or when
-you stop sharing.
+Ending it: the **Stop** button in the sharing card, **File → Stop
+Remote Control**, or the **⌃⌥.** panic hotkey — registered system-wide
+only while a grant is live, so it works from inside any app, including
+whatever the viewer is driving. Control also revokes automatically on
+viewer disconnect, release, or Stop Sharing.
 
-Don't want to be asked at all? Turn off **Allow control requests** in
-**Settings → Remote control**. Requests are then declined automatically
+To skip being asked at all, turn off **Allow control requests** in
+**Settings → Remote control**; requests are then declined automatically
 and silently.
 
 ## Quality settings
 
 **Settings → Quality** controls the sharing side:
 
-- **Preset** — Low / Balanced / High / Custom. Balanced is the default and
-  matches Tailscreen's original behavior; Low caps at 30 fps and 3 Mbps
-  for constrained links; High spends more encoder quality. Touch any knob
-  individually and the preset re-labels itself Custom.
+- **Preset** — Low / Balanced / High / Custom. Balanced is the default;
+  Low caps at 30 fps and 3 Mbps for constrained links; High spends more
+  encoder quality. Touching any knob individually re-labels the preset
+  Custom.
 - **Frame rate** — 15 / 30 / 60 fps cap.
 - **Codec** — Automatic (HEVC with H.264 fallback), HEVC, or H.264.
-  Explicit HEVC is the no-safety-net choice: it never falls back, so
-  viewers that can only decode H.264 won't be able to watch — the pane
-  says so when you pick it. On a sharer with no HEVC encoder (Windows,
-  and Linux without libx265) the share starts in H.264 instead; the
-  stats overlay shows the codec actually in use.
-- **Encoder quality** — a 0.30–1.00 slider for the encoder's
-  quality/bitrate trade-off. It's what the presets mostly differ on, so it
-  unlocks only on Custom (the other presets just show their value).
+  Explicit HEVC never falls back, so viewers stuck on H.264 won't be
+  able to watch (the pane says so when picked). A sharer with no HEVC
+  encoder (Windows, and Linux without libx265) starts in H.264 instead;
+  the stats overlay shows the codec in use.
+- **Encoder quality** — a 0.30–1.00 quality/bitrate slider, what the
+  presets mostly differ on, unlocked only on Custom.
 - **Limit bandwidth** — an optional hard ceiling, 1–50 Mbps. Off means
-  *automatic*, not unlimited: the rate is derived from the captured
-  resolution and frame rate and then bounded at 50 Mbps, the same maximum
-  the slider offers. That bound only ever bites above 4K — a 4K 60 fps
-  capture already derives around 40 Mbps — so on a 5K or 6K display,
-  where the derivation lands near 98 Mbps, automatic now stays at 50.
+  *automatic*, not unlimited: the rate derives from captured resolution
+  and frame rate, bounded at 50 Mbps. That bound only bites above 4K — a
+  4K 60 fps capture already derives ~40 Mbps, while 5K/6K would derive
+  ~98 Mbps but stays capped at 50.
 
 **Settings → Color** holds the 10-bit and HDR capture opt-ins that used
-to require environment variables. Both apply the next time you start
-sharing; HDR needs a display with EDR headroom, and viewers have to be
-able to decode 10-bit video — each one says so when it connects, and the
-share stays at 8-bit for everyone while one that can't is watching (the
-Linux and Windows viewers can't yet). Nothing breaks either way; you just
-don't get the extra depth.
+to require environment variables, applying next time you share. HDR
+needs a display with EDR headroom, and viewers must be able to decode
+10-bit video — the share stays 8-bit for everyone while one that can't
+(Linux and Windows, today) is watching, with no other side effects.
 
 The bandwidth ceiling applies live, mid-share. Frame rate, codec,
-encoder quality, and color changes apply the next time you start sharing.
-Note these are *caps*, not targets — the adaptive congestion control
-still reduces bitrate and frame rate below them when the network demands
-it.
+encoder quality, and color changes apply the next time you start
+sharing. Note these are *caps*, not targets — the adaptive congestion
+control still reduces bitrate and frame rate below them when the
+network demands it.
 
 ## The stats overlay
 
 The **Stats** button in the viewer toolbar toggles a live overlay:
 Latency, FPS, Dropped, Decode errs, PLIs sent, FEC recovered, Bitrate,
-Codec, and Connection. It's the first place to look when video quality
-drops — see [Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}) for how to
-read it.
-
-When the connection degrades badly enough that automatic recovery is
-struggling, the Stats button itself flags it ("Connection degraded — click
+Codec, and Connection — the first place to look when video quality
+drops (see
+[Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}) for
+how to read it). When degradation is bad enough that automatic recovery
+is struggling, the button itself flags it ("Connection degraded — click
 for stats") so you don't need the overlay open to notice.
 
 ## Keyboard shortcuts
 
-Press **⇧⌘/** — in the viewer window *or while sharing* (there it opens
-in its own floating panel) — or click the **?** button in the viewer
-toolbar, or pick **Help → Keyboard Shortcuts**, to bring up a cheat sheet
-listing everything below, with the remote-control shortcuts split by
-role. Esc dismisses it. Hovering any toolbar button also surfaces its
-shortcut. (These are the macOS app's shortcuts; the in-app cheat sheet is
-always the authority for the build you're running.)
+Press **⇧⌘/** (a floating panel while sharing), click the **?** button
+in the viewer toolbar, or pick **Help → Keyboard Shortcuts**, for a
+cheat sheet listing everything below, split by role for remote control.
+Esc dismisses it; hovering a toolbar button also surfaces its shortcut.
+(These are the macOS shortcuts; the in-app cheat sheet is always the
+authority for the build you're running.)
 
 | Shortcut | Action |
 |---|---|
@@ -517,56 +479,53 @@ always the authority for the build you're running.)
   Both surfaces' viewing cards also have a **Show Window** button when
   the viewer window is buried.
 
-Either way, the ephemeral tsnet nodes get torn down. Nothing to clean up.
+Either way, the ephemeral tsnet nodes get torn down. Nothing to clean
+up.
 
 ## Testing on one machine
 
-You can run the full peer-discovery + connection path on a single machine
-using the bundled launcher:
+You can run the full peer-discovery + connection path on a single
+machine using the bundled launcher:
 
 ```bash
 ./test-local.sh        # 2 instances
 ./test-local.sh 3      # N instances
 ```
 
-Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale
-state directory and hostname (`wisp-1`, `wisp-2`, ...) so the processes
-register as different tailnet nodes. Without it they share one state
-directory and one machine key, the tailnet treats them as the same
-device, and the **Screens** list comes back empty — the most common cause
-of an empty peer list when testing locally.
+Each child gets `TAILSCREEN_INSTANCE=<i>`, suffixing the Tailscale
+state directory and hostname (`wisp-1`, `wisp-2`, ...) so they register
+as different tailnet nodes. Without it they share one state directory
+and machine key, the tailnet treats them as the same device, and the
+**Screens** list comes back empty — the most common cause of an empty
+peer list when testing locally.
 
 The launcher also sets `TAILSCREEN_OPEN_DOOR=1` so the second instance
-isn't left parked on the viewer-approval prompt — see
-[Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}) if you're scripting your
-own automation.
+isn't parked on the viewer-approval prompt — see
+[Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}) if
+scripting your own automation. Logs from all children merge into
+`/tmp/tailscreen-merged.log` (`TAILSCREEN_LOG=...` to override); Ctrl-C
+kills the whole process group.
 
-Logs from all children are merged into `/tmp/tailscreen-merged.log`
-(`TAILSCREEN_LOG=...` to override). Ctrl-C kills the whole process group.
-
-This setup tests Tailscale integration and peer discovery, but it does
-**not** test NAT traversal — both processes share the same network stack.
-For that, you need two actual machines.
+This tests Tailscale integration and peer discovery, but **not** NAT
+traversal — both processes share the same network stack. For that,
+use two actual machines.
 
 ## Performance: getting it to feel snappy
 
-Tailscale tries hard to get you a direct WireGuard connection. When that
-works, latency is essentially the round-trip time between the two
-machines. When it falls back to a DERP relay, you'll feel it.
+Tailscale tries hard to get you a direct WireGuard connection, where
+latency is essentially round-trip time between the two machines; a
+DERP relay fallback is felt. Things you can do:
 
-Things you can do:
-
-- **Wired Ethernet on at least one end.** Wi-Fi is the largest source of
-  jitter in any video pipeline; Tailscreen is no exception.
-- **Disable Wi-Fi power saving.** macOS happily parks the radio between
-  packets to save battery, which murders interactive latency.
-- **Check `tailscale status`.** If it says `relay "..."`, you're going
-  through DERP. Direct connections show as `direct`. If you're stuck on
-  DERP, it's almost always a NAT or firewall issue on one side, not
-  Tailscale.
+- **Wired Ethernet on at least one end.** Wi-Fi is the largest source
+  of jitter in any video pipeline.
+- **Disable Wi-Fi power saving.** macOS parks the radio between packets
+  to save battery, which murders interactive latency.
+- **Check `tailscale status`.** `relay "..."` means DERP; `direct`
+  means a direct connection. Stuck on DERP is almost always a NAT or
+  firewall issue on one side, not Tailscale.
 - **Pause large background uploads.** Cloud sync, backups, or anything
-  saturating the upstream link will crowd out the video and show up as
-  stutters — pause them while you share.
-- **On a genuinely bad link, pick the Low preset** in Settings → Quality.
-  The adaptive machinery copes with loss automatically, but starting from
-  a smaller budget gives it less work to do.
+  saturating the upstream link crowds out the video and shows up as
+  stutters.
+- **On a genuinely bad link, pick the Low preset** in Settings →
+  Quality — adaptive loss recovery works better from a smaller budget.
+</content>
