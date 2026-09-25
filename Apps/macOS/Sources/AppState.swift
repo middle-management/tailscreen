@@ -3656,7 +3656,13 @@ class AppState: ObservableObject {
         }
     }
 
-    func discoverPeers() async {
+    /// - Parameter surfacingFailures: whether a failure reaches the person as
+    ///   an alert. True for anything a press started; **false for the visible
+    ///   list's periodic refresh**, which would otherwise put a modal on
+    ///   screen every 20 seconds for as long as the tailnet stayed unhappy,
+    ///   and an unauthenticated one the moment the pane rendered without a
+    ///   node. A background refresh that cannot speak still logs.
+    func discoverPeers(surfacingFailures: Bool = true) async {
         // UI-preview mode renders the seeded list: there is no node, and the
         // unauthenticated-discovery alert would land on the screenshot.
         if Self.isUIPreview { return }
@@ -3669,7 +3675,7 @@ class AppState: ObservableObject {
         // Need an active Tailscale node to discover peers
         // Try to get it from either server or client
         guard let node = server?.node ?? client?.node ?? self.node else {
-            presentError(.discoveryUnauthenticated())
+            if surfacingFailures { presentError(.discoveryUnauthenticated()) }
             hasCompletedInitialDiscovery = true
             return
         }
@@ -3695,7 +3701,7 @@ class AppState: ObservableObject {
                 Task { @MainActor [weak self] in await self?.refreshPeerShareStatus() }
             } catch {
                 logger.log("Discovery: reseed failed with \(error)")
-                presentError(.discoveryFailed(error))
+                if surfacingFailures { presentError(.discoveryFailed(error)) }
             }
             isDiscovering = false
             settleInitialDiscoveryAnswer()
@@ -3749,7 +3755,7 @@ class AppState: ObservableObject {
             // no popup needed.
         } catch {
             logger.log("Discovery: failed with \(error)")
-            presentError(.discoveryFailed(error))
+            if surfacingFailures { presentError(.discoveryFailed(error)) }
         }
         isDiscovering = false
         settleInitialDiscoveryAnswer()
