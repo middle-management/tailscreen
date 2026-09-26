@@ -120,6 +120,9 @@ public final class LinuxShareSession {
     public var onViewersChanged: (([ConnectedViewer]) -> Void)?
     public var onPendingViewersChanged: (([PendingViewer]) -> Void)?
     public var onControlRequestsChanged: (([ControlRequestInfo]) -> Void)?
+    /// Links viewers sent with `.openLink`, awaiting the sharer's Open /
+    /// Dismiss (TS-LNK-010: opening one is always the host's own click).
+    public var onLinkOffersChanged: (([LinkOfferInfo]) -> Void)?
     /// The display name of whoever is driving this machine, or nil. Already
     /// stale-guarded — see the generation note on `lastGrantGeneration`.
     public var onControlGrantChanged: ((String?) -> Void)?
@@ -378,7 +381,10 @@ public final class LinuxShareSession {
             inputInjector: injector,
             // Claimed only when there's a real surface to draw on — otherwise
             // viewers' strokes would reach nobody, silently.
-            rendersAnnotations: overlay != nil
+            rendersAnnotations: overlay != nil,
+            // This host always shows offers to the user with Open/Dismiss —
+            // never auto-opens (TS-LNK-010).
+            promptsForLinks: true
         )
         // Nil when diagnostics are off (stable-release default).
         DiagnosticsCenter.shared.recorder?.beginSession()
@@ -425,6 +431,12 @@ public final class LinuxShareSession {
             Task { @MainActor [weak self] in
                 guard let self, self.core.isCurrentShare(generation) else { return }
                 self.onControlRequestsChanged?(requests)
+            }
+        }
+        server.onLinkOffersChanged = { [weak self] offers in
+            Task { @MainActor [weak self] in
+                guard let self, self.core.isCurrentShare(generation) else { return }
+                self.onLinkOffersChanged?(offers)
             }
         }
         server.onControlGrantChanged = { [weak self] grantGeneration, grant in
@@ -554,6 +566,7 @@ public final class LinuxShareSession {
         pendingViewers = []
         onPendingViewersChanged?([])
         clearControlState()
+        onLinkOffersChanged?([])
         setPhase(.idle)
         // Queued decisions do not outlive the share — an intent that survived
         // would land on whoever connects to the NEXT share from that address.
@@ -596,6 +609,7 @@ public final class LinuxShareSession {
         pendingViewers = []
         onPendingViewersChanged?([])
         clearControlState()
+        onLinkOffersChanged?([])
         teardownOverlay()
         stopVoice()
         // `self.server` is still set (see above), which lets teardown
@@ -861,6 +875,19 @@ public final class LinuxShareSession {
     /// moving reads as a decision rather than a fault.
     public func revokeControl() {
         server?.revokeControl(reason: "the sharer took control back")
+    }
+
+    // MARK: Open link on sharer
+
+    /// Take the offer for the host to open in its browser, removing it. Nil
+    /// means it's already gone (the viewer left, or it was evicted).
+    public func takeLinkOffer(id: UUID) -> LinkOfferInfo? {
+        server?.takeLinkOffer(id: id)
+    }
+
+    /// Take an offer back off the prompt without opening it.
+    public func dismissLinkOffer(id: UUID) {
+        server?.dismissLinkOffer(id: id)
     }
 
     /// Drop every control row on teardown. The high-water mark resets too —

@@ -430,6 +430,19 @@ func Run(c Case) (map[string]any, error) {
 		}
 		return map[string]any{"reason": tailscreen.DecodeControlRevoked([]byte(in.JSON))}, nil
 
+	case "json.openLink.decode":
+		var in struct {
+			JSON string `json:"json"`
+		}
+		if err := json.Unmarshal(c.In, &in); err != nil {
+			return nil, err
+		}
+		url, err := tailscreen.DecodeOpenLink([]byte(in.JSON))
+		if err != nil {
+			return map[string]any{"url": nil}, nil
+		}
+		return map[string]any{"url": url}, nil
+
 	case "json.metadata.decode":
 		var in struct {
 			JSON string `json:"json"`

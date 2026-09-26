@@ -68,6 +68,10 @@ final class ViewerCommands: NSObject {
         }
     }
 
+    @objc func openLinkOnSharer(_ sender: Any?) {
+        appState?.presentOpenLinkSheet()
+    }
+
     @objc func toggleStatsOverlay(_ sender: Any?) {
         statsModel?.isVisible.toggle()
     }
@@ -125,6 +129,9 @@ extension ViewerCommands: NSToolbarItemValidation {
             // can't grey out mid-teardown.
             return appState.viewerControlState != .none
                 || (appState.sharerSupportsRemoteControl && appState.connectionState == .viewing)
+        case #selector(openLinkOnSharer(_:)):
+            guard let appState else { return false }
+            return appState.sharerSupportsOpenLink && appState.connectionState == .viewing
         default:
             return true
         }

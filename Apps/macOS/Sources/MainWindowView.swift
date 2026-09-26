@@ -932,6 +932,9 @@ private struct ActiveShareCard: View {
             if !appState.controlRequests.isEmpty {
                 ControlRequestsList(requests: appState.controlRequests)
             }
+            if !appState.linkOffers.isEmpty {
+                LinkOffersList(offers: appState.linkOffers)
+            }
             SharePreviewThumbnail(height: Self.previewHeight)
             ShareSessionControls(style: .window)
             if !appState.currentViewers.isEmpty {

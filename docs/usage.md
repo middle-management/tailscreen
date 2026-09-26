@@ -402,6 +402,27 @@ To skip being asked at all, turn off **Allow control requests** in
 **Settings → Remote control**; requests are then declined automatically
 and silently.
 
+## Opening a link on the sharer
+
+Instead of reading a URL aloud, a viewer can send it to the sharer, whose
+browser opens it on the shared screen so everyone sees the page.
+
+**As the viewer:** choose **Open Link on Sharer…** (next to Request
+Control; **Send link** in the browser viewer), paste an `http://` or
+`https://` address, and send it. It only appears when the sharer's app
+supports it.
+
+**As the sharer:** the link shows up in the sharing card as "*name* sent
+a link", with the site's address and the whole URL, and **Open** /
+**Dismiss** buttons. Open uses your default browser. A notification tells
+you a link arrived if the app is in the background, but it has no Open
+button: a banner can cut a URL short, so you choose after seeing all of it
+in the app.
+
+Nothing ever opens on its own, and there is no setting to make it. Each
+viewer can have one link waiting at a time (a new one replaces their old
+one), and a viewer's links disappear when they leave.
+
 ## Quality settings
 
 **Settings → Quality** controls the sharing side:

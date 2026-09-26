@@ -275,6 +275,8 @@ public struct HubPrompt: Identifiable, Sendable {
     /// callbacks. An IP on one platform, a connection UUID on another.
     public let id: String
     public let message: String
+    /// A second line under the message, e.g. the full URL of a link offer.
+    public let detail: String?
     public let acceptLabel: String
     public let declineLabel: String
     /// A share-by-token guest knocking — badged, since this admits someone
@@ -282,11 +284,12 @@ public struct HubPrompt: Identifiable, Sendable {
     public let isGuest: Bool
 
     public init(
-        id: String, message: String, acceptLabel: String = L("Allow"),
+        id: String, message: String, detail: String? = nil, acceptLabel: String = L("Allow"),
         declineLabel: String = L("Deny"), isGuest: Bool = false
     ) {
         self.id = id
         self.message = message
+        self.detail = detail
         self.acceptLabel = acceptLabel
         self.declineLabel = declineLabel
         self.isGuest = isGuest

@@ -528,6 +528,202 @@
       "out": {
         "metadata": null
       }
+    },
+    {
+      "id": "json/open-link-https",
+      "requirements": [
+        "TS-LNK-002"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://tailscreen.dev/usage/#share-a-link\"}"
+      },
+      "out": {
+        "url": "https://tailscreen.dev/usage/#share-a-link"
+      }
+    },
+    {
+      "id": "json/open-link-http-uppercase-scheme",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"HTTP://intranet.example:8080/wiki?page=1\"}"
+      },
+      "out": {
+        "url": "HTTP://intranet.example:8080/wiki?page=1"
+      }
+    },
+    {
+      "id": "json/open-link-at-sign-in-path",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://example.com/@someone\"}"
+      },
+      "out": {
+        "url": "https://example.com/@someone"
+      }
+    },
+    {
+      "id": "json/open-link-rejects-javascript",
+      "requirements": [
+        "TS-LNK-003",
+        "TS-TCP-008"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"javascript:alert(1)\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-file",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"file:///etc/passwd\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-custom-scheme",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"x-apple-systempreferences:com.apple.preference.security\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-userinfo",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://trusted.example@evil.example/\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-empty-authority",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https:///path\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-space",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://example.com/a b\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-non-ascii",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://ex\\u0430mple.com/\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-control-char",
+      "requirements": [
+        "TS-LNK-003"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://example.com/\\u202e\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-accepts-2048-bytes",
+      "requirements": [
+        "TS-LNK-004"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://example.com/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"}"
+      },
+      "out": {
+        "url": "https://example.com/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+      }
+    },
+    {
+      "id": "json/open-link-rejects-2049-bytes",
+      "requirements": [
+        "TS-LNK-004"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\": \"https://example.com/ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppa\"}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-missing-url",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{}"
+      },
+      "out": {
+        "url": null
+      }
+    },
+    {
+      "id": "json/open-link-rejects-non-string-url",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.openLink.decode",
+      "in": {
+        "json": "{\"url\":42}"
+      },
+      "out": {
+        "url": null
+      }
     }
   ]
 }

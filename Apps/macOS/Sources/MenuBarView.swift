@@ -411,6 +411,10 @@ private struct SharingCard: View {
                 ControlRequestsList(requests: appState.controlRequests)
             }
 
+            if !appState.linkOffers.isEmpty {
+                LinkOffersList(offers: appState.linkOffers)
+            }
+
             // A guest-only share has no tailnet viewers to approve.
             if !appState.isGuestOnlyShare {
                 ApprovalToggle()
@@ -1145,6 +1149,109 @@ struct ControlRequestsList: View {
     }
 }
 
+/// Links viewers sent. Nothing opens without the sharer's Open click, and
+/// the host is set apart in bold so the destination can't hide in a long
+/// path.
+struct LinkOffersList: View {
+    let offers: [LinkOfferInfo]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(offers) { offer in
+                LinkOfferRow(offer: offer)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous)
+                .fill(Color.teal.opacity(0.12))
+        )
+    }
+}
+
+private struct LinkOfferRow: View {
+    @EnvironmentObject var appState: AppState
+    let offer: LinkOfferInfo
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "link")
+                    .font(.subheadline)
+                    .foregroundStyle(.teal)
+                    .accessibilityHidden(true)
+                Text(L("\(offer.displayName) sent a link"))
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button(L("Dismiss")) {
+                    appState.dismissLinkOffer(offer.id)
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .fixedSize()
+                Button(L("Open")) {
+                    appState.openLinkOffer(offer.id)
+                }
+                .font(.caption)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                .fixedSize()
+                .help(offer.url)
+            }
+            Text(verbatim: offer.displayHost)
+                .font(.subheadline.weight(.bold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            HStack(alignment: .top, spacing: 4) {
+                urlText
+                // A click target rather than hover, so the whole URL is
+                // reachable without a pointer hovering over it.
+                Button {
+                    isExpanded.toggle()
+                } label: {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(L("Show details"))
+                .accessibilityAddTraits(isExpanded ? .isSelected : [])
+            }
+        }
+    }
+
+    /// Collapsed truncates in the middle, keeping both the host end and the
+    /// tail visible; expanded shows every byte, scrolling past a few lines
+    /// since a link may be 2 KB.
+    @ViewBuilder
+    private var urlText: some View {
+        let text = Text(verbatim: offer.url)
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+        if isExpanded {
+            ScrollView {
+                text
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 120)
+        } else {
+            text
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(offer.url)
+        }
+    }
+}
+
 /// "X is controlling your Mac" banner with a prominent Stop button, shown in
 /// the SharingCard while a viewer holds remote control.
 struct RemoteControlGranteeBanner: View {
@@ -1227,6 +1334,18 @@ private struct ViewingCard: View {
             }
 
             RemoteControlViewerButton()
+
+            if appState.sharerSupportsOpenLink {
+                Button {
+                    appState.presentOpenLinkSheet()
+                } label: {
+                    Label(L("Open Link on Sharer…"), systemImage: "link")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(L("The sharer sees the whole link and chooses whether to open it."))
+            }
 
             Button {
                 appState.focusViewerWindow()

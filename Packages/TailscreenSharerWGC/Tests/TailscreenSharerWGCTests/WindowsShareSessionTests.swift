@@ -137,6 +137,16 @@ final class WindowsShareSessionTests: XCTestCase {
         session.approveViewer("100.64.0.5:1234")
         session.denyViewer("100.64.0.5:1234")
         session.disconnectViewer("100.64.0.5:1234")
+        XCTAssertNil(session.takeLinkOffer(id: UUID()), "no server means no offer to take")
+        session.dismissLinkOffer(id: UUID())
+    }
+
+    // MARK: Link offers
+
+    /// `Status()` starts with an empty queue — a fresh session (or one whose
+    /// share just ended) has nothing pending for the UI to render.
+    func testLinkOffersStartEmpty() {
+        XCTAssertEqual(WindowsShareSession.Status().linkOffers, [])
     }
 
     func testStopSharingWithoutAServerLeavesNothingClaimingToShare() async {

@@ -401,6 +401,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// declined immediately with `.controlRevoked` so the viewer's UI clears.
     private let controlRequestsAllowed = Guarded<Bool>(true)
 
+    /// Links viewers sent with `.openLink`, awaiting the sharer's Open /
+    /// Dismiss. Bounded by `LinkOfferQueue`.
+    private let linkOffers = Guarded(LinkOfferQueue())
+    /// Fires whenever the pending link offers change. Snapshot, oldest
+    /// first; runs on any thread — bounce to MainActor.
+    public var onLinkOffersChanged: (@Sendable ([LinkOfferInfo]) -> Void)?
+
     /// Fires whenever the set of pending control requests changes. Snapshot;
     /// replace the UI list wholesale. Runs on any thread — bounce to MainActor.
     public var onControlRequestsChanged: (@Sendable ([ControlRequestInfo]) -> Void)?
@@ -714,6 +721,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         var caps = Self.baseServerCaps
         if remoteControlInjector != nil { caps.insert(.remoteControl) }
         if rendersAnnotations { caps.insert(.annotations) }
+        if promptsForLinks { caps.insert(.openLink) }
         return caps
     }
 
@@ -721,6 +729,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// like `.remoteControl` — a host without an overlay must withhold the
     /// bit, or a viewer's toolbar draws confidently at nobody watching.
     public let rendersAnnotations: Bool
+
+    /// Whether this host shows `onLinkOffersChanged` to its user with an
+    /// Open action. Same fail-safe default as `rendersAnnotations`.
+    public let promptsForLinks: Bool
 
     /// Adaptive FEC state (group size + off-gate hysteresis), stepped once
     /// per sweep window by `fecSweepDecision`. `groupSize == 0` means FEC
@@ -834,6 +846,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     ///     Supplying one adds `.remoteControl` to the advertised caps.
     ///   - rendersAnnotations: whether this host displays viewers' strokes.
     ///     Adds `.annotations` to the advertised caps.
+    ///   - promptsForLinks: whether this host offers viewers' links to its
+    ///     user. Adds `.openLink` to the advertised caps.
     ///
     /// Both backends are required with no defaults, deliberately: a host must
     /// say it lacks capture/injection rather than get that by omission.
@@ -846,12 +860,14 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         port: UInt16 = NetworkConfig.tailscreenPort,
         captureFactory: (@Sendable () -> any CaptureEncoding)?,
         inputInjector: (any InputInjecting)?,
-        rendersAnnotations: Bool = false
+        rendersAnnotations: Bool = false,
+        promptsForLinks: Bool = false
     ) {
         self.port = port
         self.captureFactory.withLock { $0 = captureFactory }
         self.remoteControlInjector = inputInjector
         self.rendersAnnotations = rendersAnnotations
+        self.promptsForLinks = promptsForLinks
         self.logger = PrintLogSink(prefix: "Tailscale", dropListeningNoise: true)
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
         // Unbounded: dropping the oldest could drop the `.add` a later `.undo`
@@ -1571,6 +1587,38 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// Hand the sharer the offer they clicked Open on, removing it. The host
+    /// opens `url` in its browser; nil means it's gone (viewer left).
+    public func takeLinkOffer(id: UUID) -> LinkOfferInfo? {
+        let offer = linkOffers.withLock { $0.take(id: id) }
+        if offer != nil { notifyLinkOffersChanged() }
+        return offer
+    }
+
+    public func dismissLinkOffer(id: UUID) {
+        let removed = linkOffers.withLock { $0.take(id: id) } != nil
+        if removed { notifyLinkOffersChanged() }
+    }
+
+    private func recordLinkOffer(url: String, connectionID: UUID, ip: String) {
+        let hostname = peerNameCache.withLock { $0[ip] }
+        let offer = LinkOfferInfo(
+            connectionID: connectionID, viewerIP: ip, hostname: hostname, url: url, arrivedAt: Date())
+        linkOffers.withLock { $0.add(offer) }
+        logger.log("Link offered by \(ip)")
+        notifyLinkOffersChanged()
+    }
+
+    private func removeLinkOffers(connectionID: UUID) {
+        let removed = linkOffers.withLock { $0.removeAll(connectionID: connectionID) }
+        if removed { notifyLinkOffersChanged() }
+    }
+
+    private func notifyLinkOffersChanged() {
+        guard let cb = onLinkOffersChanged else { return }
+        cb(linkOffers.withLock { $0.offers })
+    }
+
     private func notifyControlRequestsChanged() {
         guard let cb = onControlRequestsChanged else { return }
         let snapshot = controlRequests.withLock { state -> [ControlRequestInfo] in
@@ -1661,6 +1709,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             self.recordControlRequest(connectionID: connectionID, ip: peerIP)
         }
+        listener.onOpenLink = { [weak self] url, connectionID, peerAddress in
+            guard let self else { return }
+            // A host that doesn't prompt never advertised `.openLink`, and
+            // has no safe thing to do with the link.
+            guard self.promptsForLinks else { return }
+            let peerIP = peerAddress.map { Self.ipFromAddr($0) }
+            guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
+                self.logger.log("Dropped link from non-admitted peer \(peerAddress ?? "unknown")")
+                return
+            }
+            self.recordLinkOffer(url: url, connectionID: connectionID, ip: peerIP)
+        }
         listener.onInputEvent = { [weak self] event, connectionID, _ in
             guard let self else { return }
             // Authoritative gate: inject only from the current grantee's
@@ -1705,6 +1765,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             self.annotationConnectionIP.withLock { _ = $0.removeValue(forKey: connectionID) }
             // A closed connection can't hold a grant or a pending request.
             self.removeControlRequest(connectionID: connectionID)
+            self.removeLinkOffers(connectionID: connectionID)
             self.revokeControlIfHeld(byConnection: connectionID, reason: "viewer disconnected")
             let outstanding = self.annotationsByConnection.withLock {
                 $0.removeValue(forKey: connectionID) ?? []
@@ -1733,6 +1794,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             channel.onAnnotation = nil
             channel.onConnectionClosed = nil
             channel.onControlRequest = nil
+            channel.onOpenLink = nil
             channel.onInputEvent = nil
             channel.onControlReleased = nil
             channel.onMediaDatagram = nil
@@ -4058,6 +4120,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         inputRateLimiter.withLock { $0 = EventRateLimiter() }
         if hadGrant { notifyControlGrantChanged() }
         notifyControlRequestsChanged()
+        linkOffers.withLock { $0.clear() }
+        notifyLinkOffersChanged()
 
         // Drain any in-flight `restartCapture` before touching
         // `helperCapture` — else its final assignment races our detach and

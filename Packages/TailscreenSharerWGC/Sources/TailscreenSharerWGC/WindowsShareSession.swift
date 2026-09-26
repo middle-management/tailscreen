@@ -40,6 +40,10 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// Viewers asking for remote control, awaiting an answer. The server
         /// surfaces these and does nothing else — the grant is the person's decision.
         public var controlRequests: [ControlRequestInfo] = []
+        /// Links viewers have sent, awaiting Open or Dismiss. The server
+        /// surfaces these and does nothing else — opening is the sharer's
+        /// click, never automatic (TS-LNK-010).
+        public var linkOffers: [LinkOfferInfo] = []
         /// Viewers parked at the approval gate, awaiting Accept or Deny.
         public var pendingViewers: [PendingViewer] = []
         /// Whether new viewers have to be let in by hand. Mirrored into
@@ -362,7 +366,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             // means "your strokes will appear on my screen", so a share with
             // no resolvable geometry — and therefore no overlay — must not
             // claim it, exactly as it must not claim `.remoteControl`.
-            rendersAnnotations: annotationOverlay != nil
+            rendersAnnotations: annotationOverlay != nil,
+            // Always on: unlike remote control/annotations this needs no
+            // resolvable geometry — it's just a prompt with a click.
+            promptsForLinks: true
         )
         // The one recorder the host installed, if any. Same seam the macOS app
         // and the GTK engine use; nil when diagnostics are off, which is the
@@ -415,6 +422,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             guard let self, self.isCurrentShare(generation) else { return }
             self.update { $0.controlRequests = requests }
         }
+        newServer.onLinkOffersChanged = { [weak self] offers in
+            guard let self, self.isCurrentShare(generation) else { return }
+            self.update { $0.linkOffers = offers }
+        }
         newServer.onControlGrantChanged = { [weak self] _, grant in
             guard let self, self.isCurrentShare(generation) else { return }
             self.update { $0.controlGrantedTo = grant?.displayName }
@@ -448,6 +459,7 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.viewerCount = 0
                 $0.viewers = []
                 $0.pendingViewers = []
+                $0.linkOffers = []
                 $0.message = error.map { "Sharing stopped: \($0)" } ?? ""
                 $0.remoteControlAvailable = false
                 $0.annotationsAvailable = false
@@ -776,6 +788,21 @@ public final class WindowsShareSession: @unchecked Sendable {
     public func revokeControl() {
         let server = lock.withLock { self.server }
         server?.revokeControl(reason: "the sharer took control back")
+    }
+
+    /// The sharer clicked Open: removes the offer and hands back its URL for
+    /// the caller to open. Returns nil if it was already taken/dismissed
+    /// (double-click, or the connection dropped it first).
+    @discardableResult
+    public func takeLinkOffer(id: UUID) -> LinkOfferInfo? {
+        let server = lock.withLock { self.server }
+        return server?.takeLinkOffer(id: id)
+    }
+
+    /// The sharer clicked Dismiss: removes the offer, opens nothing.
+    public func dismissLinkOffer(id: UUID) {
+        let server = lock.withLock { self.server }
+        server?.dismissLinkOffer(id: id)
     }
 
     /// Re-point a live share at a different target, keeping the viewers.

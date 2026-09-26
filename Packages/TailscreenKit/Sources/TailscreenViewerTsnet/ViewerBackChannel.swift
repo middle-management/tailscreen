@@ -131,6 +131,13 @@ public actor ViewerBackChannel {
         await send(.controlRequest, label: "controlRequest")
     }
 
+    /// Offer the sharer a link to open in their browser (`.openLink`). Gate
+    /// the affordance on `ScreenShareCaps.openLink` and check
+    /// `OpenLinkPayload.isAcceptable` first — the sharer drops anything else.
+    public func sendOpenLink(_ url: String) async {
+        await send(.openLink(url: url), label: "openLink")
+    }
+
     /// Send one input event for injection on the sharer (`.inputEvent`). Rides
     /// the same reliable, ordered TCP channel as annotations so a `mouseDown`
     /// never arrives without its `mouseUp`.

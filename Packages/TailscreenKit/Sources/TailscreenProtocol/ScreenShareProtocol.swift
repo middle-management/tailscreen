@@ -47,6 +47,10 @@ import Foundation
 ///         The ONE non-JSON payload on this channel: hand it to the
 ///         datagram demultiplexer exactly as if it had arrived on the
 ///         UDP socket (first-byte classification, TS-GEN-020).
+///     .openLink       (0x0E)  — viewer→sharer
+///         "open this link in your browser." payload = JSON
+///         ``OpenLinkPayload``; a URL failing its shape rules is
+///         undecodable and dropped. The sharer asks its user every time.
 public enum ScreenShareMessage {
     case annotation(AnnotationOp)
     case requestToShare(fromHostname: String)
@@ -59,6 +63,7 @@ public enum ScreenShareMessage {
     case metadataRequest
     case metadataResponse(TailscreenMetadata)
     case mediaDatagram(Data)
+    case openLink(url: String)
 
     public static let headerSize = 5
 
@@ -89,6 +94,7 @@ public enum ScreenShareMessage {
         case metadataRequest = 0x0B
         case metadataResponse = 0x0C
         case mediaDatagram = 0x0D
+        case openLink = 0x0E
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -126,6 +132,13 @@ public enum ScreenShareMessage {
             return Self.frame(type: .metadataResponse, payload: payload)
         case .mediaDatagram(let datagram):
             return Self.frame(type: .mediaDatagram, payload: datagram)
+        case .openLink(let url):
+            // Unescaped `/`: the bytes then match every other encoder, and
+            // the URL stays legible in a capture.
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .withoutEscapingSlashes
+            let payload = (try? encoder.encode(OpenLinkPayload(url: url))) ?? Data()
+            return Self.frame(type: .openLink, payload: payload)
         }
     }
 
@@ -216,6 +229,8 @@ public struct ScreenShareMessageParser {
                 // frame shape of TS-GEN-022): drop it like any payload
                 // that fails to decode (TS-TCP-008).
                 message = payload.isEmpty ? nil : .mediaDatagram(Data(payload))
+            case .openLink:
+                message = decodeOpenLink(payload)
             }
             if let message {
                 return message
@@ -283,6 +298,14 @@ public struct ScreenShareMessageParser {
         return .metadataResponse(clamped)
     }
 
+    private func decodeOpenLink(_ payload: Data) -> ScreenShareMessage? {
+        guard
+            let decoded = try? JSONDecoder().decode(OpenLinkPayload.self, from: Data(payload)),
+            OpenLinkPayload.isAcceptable(decoded.url)
+        else { return nil }
+        return .openLink(url: decoded.url)
+    }
+
     private func decodeInputEvent(_ payload: Data) -> ScreenShareMessage? {
         // INVARIANT: the stock decoder's default `.throw` for
         // non-conforming floats rejects NaN/Infinity/1e999 in coordinate
@@ -304,6 +327,43 @@ public struct ControlRevokedPayload: Codable, Sendable {
     public static let maxReasonLength = 128
 
     public let reason: String
+}
+
+/// Wire payload for `.openLink`. The URL is peer-controlled and ends up in
+/// the system browser, so it is rejected (never repaired or truncated —
+/// a shortened URL is a different URL) unless it passes spec §12.3
+/// (TS-LNK-001 … TS-LNK-004). The rules are byte-level on purpose so every
+/// implementation agrees without sharing a URL parser.
+public struct OpenLinkPayload: Codable, Sendable {
+    public static let maxURLLength = 2048
+
+    public let url: String
+
+    public init(url: String) {
+        self.url = url
+    }
+
+    public static func isAcceptable(_ url: String) -> Bool {
+        let bytes = Array(url.utf8)
+        guard bytes.count <= maxURLLength else { return false }
+        // Printable ASCII only: no whitespace or controls, and no raw
+        // non-ASCII, so a homograph or bidi override can't dress the host
+        // up as something else in the prompt.
+        guard bytes.allSatisfy({ (0x21...0x7E).contains($0) }) else { return false }
+        let lower = url.lowercased()
+        let rest: Substring
+        if lower.hasPrefix("https://") {
+            rest = url.dropFirst("https://".count)
+        } else if lower.hasPrefix("http://") {
+            rest = url.dropFirst("http://".count)
+        } else {
+            return false
+        }
+        let authority = rest.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        // `https://trusted.example@evil.example` reads as the first host
+        // and opens the second.
+        return !authority.isEmpty && !authority.contains("@")
+    }
 }
 
 /// Wire payload for `.requestToShare`. Kept as its own type so the field

@@ -15,12 +15,11 @@ extension ScreenShareCaps {
         if contains(.remoteControl) { parts.append("control") }
         if contains(.annotations) { parts.append("annotations") }
         if contains(.tenBit) { parts.append("10bit") }
+        if contains(.openLink) { parts.append("link") }
 
         // Report unknown bits rather than drop them: a peer advertising
         // something newer than this build needs to be visible, not silent.
-        let known: ScreenShareCaps = [
-            .nack, .receiverReport, .fec, .remoteControl, .annotations, .tenBit
-        ]
+        let known = ScreenShareCaps(ScreenShareCaps.allKnown)
         let unknown = rawValue & ~known.rawValue
         if unknown != 0 {
             parts.append(String(format: "unknown:0x%02x", unknown))

@@ -118,6 +118,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// sharer that can't render/relay them.
     var onAnnotationSupportChanged: ((Bool) -> Void)?
 
+    /// `true` if HELLO_ACK carried `ScreenShareCaps.openLink`. Gates the
+    /// "Open Link on Sharer…" affordance.
+    var onOpenLinkSupportChanged: ((Bool) -> Void)?
+
     /// Argument is the sharer's short reason tag (English, logs only).
     var onControlRevoked: ((String) -> Void)?
 
@@ -169,6 +173,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             try await annotationWriter.send(ScreenShareMessage.controlRequest.encode(), over: conn)
         } catch {
             logger.log("Client: requestControl failed: \(error)")
+        }
+    }
+
+    /// Offer the sharer a link (`.openLink`); they see it and choose whether
+    /// to open it. Returns whether it reached the wire, so the UI never
+    /// claims "sent" for a link that wasn't. Callers validate with
+    /// `OpenLinkPayload.isAcceptable` first — the sharer drops anything else.
+    func sendOpenLink(_ url: String) async -> Bool {
+        guard let conn = annotationChannel, isConnected else { return false }
+        do {
+            try await annotationWriter.send(ScreenShareMessage.openLink(url: url).encode(), over: conn)
+            return true
+        } catch {
+            logger.log("Client: sendOpenLink failed: \(error)")
+            return false
         }
     }
 
@@ -772,6 +791,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 // same build that would or wouldn't accept the dial.
                 onRemoteControlSupportChanged?(session.serverCaps.contains(.remoteControl))
                 onAnnotationSupportChanged?(session.serverCaps.contains(.annotations))
+                onOpenLinkSupportChanged?(session.serverCaps.contains(.openLink))
             }
             if session.isStopped {
                 logger.log("Receive(VS): sharer stopped")
@@ -853,6 +873,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func resetViewerSupportState() {
         onRemoteControlSupportChanged?(false)
         onAnnotationSupportChanged?(true)
+        onOpenLinkSupportChanged?(false)
     }
 
     func disconnect() async {

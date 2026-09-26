@@ -97,6 +97,10 @@ class AppState: ObservableObject {
     /// Cleared on stopSharing.
     @Published var controlRequests: [ControlRequestInfo] = []
 
+    /// Links viewers sent, awaiting Open/Dismiss. Mirrors
+    /// `onLinkOffersChanged`. Cleared on stopSharing.
+    @Published var linkOffers: [LinkOfferInfo] = []
+
     /// The viewer that currently holds remote control, or nil. Mirrors
     /// `onControlGrantChanged`; drives the "X is controlling your Mac"
     /// banner. Cleared on stopSharing.
@@ -110,6 +114,14 @@ class AppState: ObservableObject {
     /// in HELLO_ACK — hides "Request Control" until then. False on
     /// disconnect.
     @Published var sharerSupportsRemoteControl = false
+
+    /// Whether the current sharer advertised `ScreenShareCaps.openLink` —
+    /// hides "Open Link on Sharer…" until then. False on disconnect.
+    @Published var sharerSupportsOpenLink = false {
+        didSet {
+            if !sharerSupportsOpenLink { dismissOpenLinkSheet() }
+        }
+    }
 
     /// Whether the current sharer advertised `ScreenShareCaps.annotations`.
     /// Defaults *true* (unlike remote control) so mac→mac shows tools
@@ -142,6 +154,10 @@ class AppState: ObservableObject {
     /// notification; pruned when the request leaves the pending snapshot, so
     /// a genuine re-request notifies again. Cleared on `stopSharing`.
     private var notifiedControlRequestIPs: Set<String> = []
+
+    /// Link offers that already fired a notification, by offer id. Pruned
+    /// with the offer. Cleared on `stopSharing`.
+    private var notifiedLinkOfferIDs: Set<String> = []
 
     /// Highest grant-change generation applied so far. Reset when a new
     /// server is wired up and on `stopSharing`.
@@ -1607,6 +1623,12 @@ class AppState: ObservableObject {
                     }
                 }
 
+                srv.onLinkOffersChanged = { [weak self] offers in
+                    Task { @MainActor [weak self] in
+                        self?.handleLinkOffersChanged(offers)
+                    }
+                }
+
                 lastControlGrantGeneration = 0  // fresh server, fresh counter
                 srv.onControlGrantChanged = { [weak self] generation, grant in
                     Task { @MainActor [weak self] in
@@ -1842,6 +1864,7 @@ class AppState: ObservableObject {
         currentViewers = []
         pendingViewers = []
         controlRequests = []
+        linkOffers = []
         controlGrantee = nil
         revokeControlHotkey = nil
         lastControlGrantGeneration = 0
@@ -1852,7 +1875,10 @@ class AppState: ObservableObject {
             kind: .viewerPending, identities: Array(notifiedPendingViewerIDs))
         SharerNoticeCenter.shared.withdraw(
             kind: .controlRequested, identities: Array(notifiedControlRequestIPs))
+        SharerNoticeCenter.shared.withdraw(
+            kind: .linkOffered, identities: Array(notifiedLinkOfferIDs))
         notifiedControlRequestIPs.removeAll()
+        notifiedLinkOfferIDs.removeAll()
         notifiedViewerIDs.removeAll()
         notifiedPendingViewerIDs.removeAll()
         pendingPreApprovedIPs.removeAll()
@@ -2449,6 +2475,13 @@ class AppState: ObservableObject {
                 }
             }
 
+            c.onOpenLinkSupportChanged = { [weak self] supported in
+                Task { @MainActor [weak self] in
+                    guard let self, self.viewerPresentation.isActive(sessionID) else { return }
+                    self.sharerSupportsOpenLink = supported
+                }
+            }
+
             c.onControlGranted = { [weak self] in
                 Task { @MainActor [weak self] in
                     guard
@@ -3018,6 +3051,7 @@ class AppState: ObservableObject {
         dismissViewerNotice()
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
+        sharerSupportsOpenLink = false
         // `viewerPresentation.dismiss()` above deliberately retained the
         // target: Reconnect redials the most recent session.
         if viewerControlState != .none {
@@ -3058,6 +3092,7 @@ class AppState: ObservableObject {
         isAwaitingAdmission = false
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
+        sharerSupportsOpenLink = false
         if viewerControlState != .none {
             exitViewerControl()
         }
@@ -4605,6 +4640,13 @@ class AppState: ObservableObject {
         requests.map { NoticeCandidate(identity: $0.viewerIP, label: $0.displayName) }
     }
 
+    /// Project link offers onto notice candidates, keyed by offer id: each
+    /// offer is its own decision, and the server already bounds how many
+    /// one viewer can hold.
+    nonisolated static func noticeCandidates(_ offers: [LinkOfferInfo]) -> [NoticeCandidate] {
+        offers.map { NoticeCandidate(identity: $0.id.uuidString, label: $0.displayName) }
+    }
+
     /// Diff the new viewer roster to fire a per-join and per-leave
     /// notification exactly once per `id`. Notifications are best-effort: dev
     /// builds without a bundle ID won't be authorized by macOS to display
@@ -4697,6 +4739,39 @@ class AppState: ObservableObject {
         notifiedControlRequestIPs = decision.notified
         SharerNoticeCenter.shared.withdraw(kind: .controlRequested, identities: Array(answered))
         post(decision.post)
+    }
+
+    // MARK: - Link offers (sharer side)
+
+    /// Sync the published offer list; a banner announces each new offer and
+    /// is withdrawn once it's opened, dismissed or gone. The banner has no
+    /// buttons — the whole URL is only ever judged in-app.
+    private func handleLinkOffersChanged(_ offers: [LinkOfferInfo]) {
+        linkOffers = offers
+        let candidates = Self.noticeCandidates(offers)
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedLinkOfferIDs)
+        let decision = SharerNoticeDecision.noticesToPost(
+            kind: .linkOffered, candidates: candidates,
+            alreadyNotified: notifiedLinkOfferIDs)
+        notifiedLinkOfferIDs = decision.notified
+        SharerNoticeCenter.shared.withdraw(kind: .linkOffered, identities: Array(answered))
+        post(decision.post)
+    }
+
+    /// The sharer clicked Open: the one path by which a viewer's link
+    /// reaches the browser.
+    func openLinkOffer(_ id: UUID) {
+        guard let offer = server?.takeLinkOffer(id: id) else { return }
+        guard let url = OpenLinkEntry.openableURL(offer.url) else {
+            logger.log("Link offer from \(offer.displayName) isn't openable — dropped")
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    func dismissLinkOffer(_ id: UUID) {
+        server?.dismissLinkOffer(id: id)
     }
 
     /// The control request the sharer explicitly clicked Grant on while the
@@ -4849,6 +4924,51 @@ class AppState: ObservableObject {
         Task { await client.requestControl() }
     }
 
+    /// The "Open Link on Sharer…" sheet, while up. Attached to the viewer
+    /// window so it goes wherever the session goes.
+    private var openLinkSheet: NSWindow?
+
+    /// Viewer clicks "Open Link on Sharer…" (popover or viewer toolbar).
+    /// Starts empty: reading the pasteboard unasked trips macOS's paste
+    /// privacy prompt, and ⌘V is one keystroke.
+    func presentOpenLinkSheet() {
+        guard connectionState == .viewing, sharerSupportsOpenLink, let viewerWindow else { return }
+        focusViewerWindow()
+        guard openLinkSheet == nil else { return }
+        let hosting = NSHostingController(
+            rootView: OpenLinkSheet(
+                onSend: { [weak self] url in self?.sendOpenLink(url) },
+                onCancel: { [weak self] in self?.dismissOpenLinkSheet() }))
+        // Grows the sheet when the inline error line appears.
+        hosting.sizingOptions = [.preferredContentSize]
+        let sheet = NSWindow(contentViewController: hosting)
+        openLinkSheet = sheet
+        viewerWindow.beginSheet(sheet, completionHandler: nil)
+    }
+
+    private func dismissOpenLinkSheet() {
+        guard let sheet = openLinkSheet else { return }
+        openLinkSheet = nil
+        sheet.sheetParent?.endSheet(sheet)
+    }
+
+    /// `url` already passed `OpenLinkEntry.sendable`. The confirmation
+    /// reports only whether it reached the wire; the sharer's Open or
+    /// Dismiss is deliberately never reported back.
+    private func sendOpenLink(_ url: String) {
+        dismissOpenLinkSheet()
+        guard connectionState == .viewing, let client else { return }
+        Task { @MainActor [weak self] in
+            let sent = await client.sendOpenLink(url)
+            guard let self, self.client === client, self.connectionState == .viewing else { return }
+            self.showViewerNotice(
+                message: sent
+                    ? L("Link sent. The sharer decides whether to open it.")
+                    : L("The link couldn't be sent. Try again."),
+                persistent: false)
+        }
+    }
+
     /// Viewer leaves control mode and tells the sharer to release via
     /// `.controlReleased`, so the sharer's banner + gate clear in step.
     /// Covers both `.requested` and `.controlling`.
@@ -4927,8 +5047,9 @@ class AppState: ObservableObject {
                 return
             }
             respondToShareRequest(request, accepted: action == .approve)
-        case .viewerJoined, .viewerLeft:
-            // Reports, not asks: no buttons, nothing to have pressed.
+        case .viewerJoined, .viewerLeft, .linkOffered:
+            // No buttons, nothing to have pressed. A link offer is an ask,
+            // but one answered only in-app, where the whole URL shows.
             break
         }
     }

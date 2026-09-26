@@ -152,7 +152,7 @@ bytes and rejects the 6-byte form, so it never half-enters a mode it doesn't
 support. The whole recovery matrix degrades cleanly in both directions,
 ending at plain PLI.
 
-`serverCaps` also carries two bits the viewer never sends back — sharer
+`serverCaps` also carries three bits the viewer never sends back — sharer
 capabilities the viewer uses to gate its own UI so it never offers an
 interaction the sharer can't honour:
 
@@ -164,8 +164,10 @@ interaction the sharer can't honour:
 - **bit 4 `annotations`** — this sharer renders and relays viewer
   annotations. The annotation toolbar is disabled when absent, so a viewer
   never draws local-only strokes that reach nobody.
+- **bit 6 `openLink`** — this sharer shows links viewers send it, with an
+  Open button. "Open Link on Sharer…" shows only when set.
 
-Both degrade the same way the loss-recovery caps do: absence means
+All three degrade the same way the loss-recovery caps do: absence means
 "feature off," and — pre-1.0, with no deployed peers — the bit is
 authoritative.
 
@@ -178,7 +180,7 @@ The viewer's HELLO carries one bit beyond the recovery three:
   a decoder that refuses every frame is worse than two bits of colour
   depth nobody was promised.
 
-Bits 0–5 are assigned; the rest are reserved, with an escape hatch to a
+Bits 0–6 are assigned; bit 7 is reserved as the escape hatch to a
 second caps byte specified in
 [Growing the capability field]({{ site.baseurl }}{% link spec.md %}#54-growing-the-capability-field).
 
@@ -260,6 +262,7 @@ The message types on this channel:
 | `0x0B` | `metadataRequest` | peer → peer     | Empty payload: "describe yourself". See [Metadata](#metadata--tcp-requestresponse). |
 | `0x0C` | `metadataResponse` | receiver → requester | Share name / resolution / whether sharing, on the same connection. |
 | `0x0D` | `mediaDatagram`   | viewer ↔ sharer | **Not JSON**: one raw datagram exactly as it would have gone over UDP. See [Stream carriage](#stream-carriage--the-reliable-transport-profile-0x0d). |
+| `0x0E` | `openLink`        | viewer → sharer | `{url}`: "open this in your browser". http/https only, printable ASCII, no `user@` in the host, ≤ 2048 bytes; anything else is dropped. The sharer's user always clicks Open first ([details]({{ site.baseurl }}{% link spec.md %}#123-opening-a-link-on-the-sharer)). |
 
 `0x00`–`0x02` are historical and stay reserved. Types `0x0A`–`0x0D` also
 appear in the UDP control table above — that's fine, they're disjoint

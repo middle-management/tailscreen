@@ -272,6 +272,7 @@ if gSelfTest {
         )
         gUIState.remoteControlAvailable = true
         gUIState.annotationsAvailable = true
+        gUIState.openLinkAvailable = true
         gUIState.hasVideo = true
         gUIState.videoWidth = 1920
         gUIState.videoHeight = 1080
@@ -459,7 +460,8 @@ if gSelfTest {
                             guard gViewerLifecycle.markViewing(for: sessionID) else { return }
                             gUIState.setCaps(
                                 remoteControl: caps.contains(.remoteControl),
-                                annotations: caps.contains(.annotations))
+                                annotations: caps.contains(.annotations),
+                                openLink: caps.contains(.openLink))
                         }
                     },
                     onAwaitingApproval: {
@@ -1024,6 +1026,13 @@ struct ViewerApp: App {
                         id: $0.id.uuidString,
                         message: L("\($0.fromHostname) wants you to share your screen"),
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
+                }
+                // A link offer, last: nothing is stuck waiting on it, and the
+                // whole URL rides in `detail` since a banner might truncate it.
+                + sharer.linkOffers.map {
+                    HubPrompt(
+                        id: $0.id.uuidString, message: L("\($0.displayName) sent a link"),
+                        detail: $0.url, acceptLabel: L("Open"), declineLabel: L("Dismiss"))
                 },
             // The approval gate governs TAILNET viewers; a link-only share
             // has none (every viewer is a guest, always parked for explicit
@@ -1178,8 +1187,16 @@ struct ViewerApp: App {
             }
             return
         }
-        guard gSharer.shareRequests.contains(where: { $0.id == requestID }) else { return }
-        gSharer.answerShareRequest(id: requestID, accept: accept)
+        if gSharer.shareRequests.contains(where: { $0.id == requestID }) {
+            gSharer.answerShareRequest(id: requestID, accept: accept)
+            return
+        }
+        guard gSharer.linkOffers.contains(where: { $0.id == requestID }) else { return }
+        if accept {
+            gSharer.openLinkOffer(requestID)
+        } else {
+            gSharer.dismissLinkOffer(requestID)
+        }
     }
 
     /// The picker's discovered machines as hub rows, with the metadata
@@ -1289,7 +1306,7 @@ struct ViewerApp: App {
                     }
                     // Session affordances, pinned at the bottom. Each appears
                     // on its own capability, independently.
-                    if ui.micAvailable || ui.remoteControlAvailable {
+                    if ui.micAvailable || ui.remoteControlAvailable || ui.openLinkAvailable {
                         VStack {
                             Spacer()
                             HStack(spacing: 8) {
@@ -1307,6 +1324,16 @@ struct ViewerApp: App {
                                         controllingHost: sessionHost.isEmpty
                                             ? nil : sessionHost,
                                         onToggle: { gControls.toggleControl() })
+                                }
+                                if ui.openLinkAvailable {
+                                    OpenLinkControl(
+                                        isOpen: ui.openLinkComposerOpen,
+                                        text: $ui.openLinkText,
+                                        error: ui.openLinkError,
+                                        sent: ui.openLinkSent,
+                                        onOpen: { gControls.openLinkComposer() },
+                                        onSend: { gControls.sendLink() },
+                                        onCancel: { gControls.cancelLinkComposer() })
                                 }
                             }
                             .padding(12)

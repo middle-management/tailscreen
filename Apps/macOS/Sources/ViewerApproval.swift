@@ -13,7 +13,7 @@ private struct TSLogger: LogSink {
     }
 }
 
-/// `UNUserNotificationCenter` delivery for `SharerNotice` — all five kinds,
+/// `UNUserNotificationCenter` delivery for `SharerNotice` — every kind,
 /// one code path.
 ///
 /// Decisions (which candidates get a banner, which break through Focus, which
@@ -110,6 +110,7 @@ final class SharerNoticeCenter {
         case .requestToShare: L("Tailscreen request")
         case .viewerJoined: L("Viewer Connected")
         case .viewerLeft: L("Viewer Disconnected")
+        case .linkOffered: L("Link Received")
         }
     }
 
@@ -121,6 +122,7 @@ final class SharerNoticeCenter {
         case .requestToShare: return L("\(label) wants you to share your screen")
         case .viewerJoined: return L("\(label) is now viewing your screen.")
         case .viewerLeft: return L("\(label) stopped viewing your screen.")
+        case .linkOffered: return L("\(label) sent a link. Open Tailscreen to see it.")
         }
     }
 

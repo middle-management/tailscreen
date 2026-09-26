@@ -128,6 +128,8 @@ Viewers on every platform can still play it back.
 | Request remote control as a viewer | ✅ | ✅ | ✅ | ✅ |
 | Visible "you are controlling" indicator | ✅ border + title | ✅ | ✅ | ✅ outline |
 | Grant + inject remote control as a sharer | ✅ | ✅ | ✅ | — |
+| Send a link for the sharer to open | ✅ | ✅ | ✅ | ✅ |
+| Open a viewer's link as a sharer (after a click) | ✅ | ✅ | ✅ | — |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ | — |
 | Zoom + pan the viewer | ✅ | ✅ | ✅ | ❌ |
 | Told why a session ended, with Reconnect | ✅ | ✅ | ✅ | ✅ |
