@@ -21,6 +21,6 @@ public enum TailscreenInviteToViewClient {
     ) async throws -> ShareRequestOutcome {
         try await TailscreenRequestToShareClient.ask(
             .inviteToView(fromHostname: hostname), toIP: host, port: port, via: node,
-            responseTimeout: responseTimeout, logPrefix: "InviteToView")
+            responseTimeout: responseTimeout)
     }
 }

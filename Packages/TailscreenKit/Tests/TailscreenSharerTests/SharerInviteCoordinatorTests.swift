@@ -1,8 +1,7 @@
 import Foundation
+import TailscreenSharer
 import TailscreenTransport
 import XCTest
-
-import TailscreenSharer
 
 /// The sharer's invite sequencing (spec §13.3): pre-approve only on accept,
 /// and never let an answer outlive the share it was sent for.
@@ -34,7 +33,7 @@ final class SharerInviteCoordinatorTests: XCTestCase {
             let all = waiters
             waiters.removeAll()
             lock.unlock()
-            all.forEach { $0.resume(returning: outcome) }
+            for waiter in all { waiter.resume(returning: outcome) }
         }
 
         var parked: Int {

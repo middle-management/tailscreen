@@ -27,7 +27,8 @@ public final class SharerInviteCoordinator {
 
     /// The wire call, injected so the sequencing is testable with no node.
     /// Hosts pass a closure over `TailscreenInviteToViewClient.invite`.
-    public typealias Send = @Sendable (_ ip: String, _ fromHostname: String) async ->
+    public typealias Send =
+        @Sendable (_ ip: String, _ fromHostname: String) async ->
         ShareRequestOutcome
 
     private let send: Send

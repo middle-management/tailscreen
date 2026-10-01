@@ -38,7 +38,7 @@ public enum TailscreenRequestToShareClient {
     ) async throws -> ShareRequestOutcome {
         try await ask(
             .requestToShare(fromHostname: hostname), toIP: host, port: port, via: node,
-            responseTimeout: responseTimeout, logPrefix: "RequestToShare")
+            responseTimeout: responseTimeout)
     }
 
     /// Send `message` and park for the `.shareResponse` on the same
@@ -49,9 +49,10 @@ public enum TailscreenRequestToShareClient {
         toIP host: String,
         port: UInt16,
         via node: TailscaleNode,
-        responseTimeout: TimeInterval,
-        logPrefix: String
+        responseTimeout: TimeInterval
     ) async throws -> ShareRequestOutcome {
+        let logPrefix: String
+        if case .inviteToView = message { logPrefix = "InviteToView" } else { logPrefix = "RequestToShare" }
         // Throws rather than reading as `.noAnswer`: no interface handle is
         // a fault on THIS machine, not "they didn't reply".
         guard let tailscaleHandle = await node.tailscale else {

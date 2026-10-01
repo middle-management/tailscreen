@@ -8,7 +8,9 @@ import XCTest
 final class InvitedViewerAdmissionTests: XCTestCase {
     private typealias Candidate = TailscaleScreenShareServer.InvitedPendingCandidate
 
-    private func admit(_ parked: [Candidate], ip: String, policies: [String: PeerPolicy] = [:])
+    private func admit(
+        _ parked: [Candidate], ip: String, policies: [String: PeerPolicy] = [:]
+    )
         -> [String]
     {
         TailscaleScreenShareServer.invitedPendingToAdmit(parked, ip: ip, policies: policies)

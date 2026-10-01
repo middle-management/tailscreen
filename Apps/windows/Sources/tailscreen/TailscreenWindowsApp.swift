@@ -20,6 +20,7 @@ import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.DiagnosticsHost
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import enum TailscreenProtocol.InviteStatus
 import struct TailscreenProtocol.LinkOfferInfo
 import enum TailscreenProtocol.NodeBringUpPhase
 import struct TailscreenProtocol.NoticeCandidate
@@ -43,7 +44,6 @@ import struct TailscreenProtocol.ViewerSessionTarget
 import enum TailscreenProtocol.WelcomePaneDecision
 import class TailscreenSharer.SharerAskToShareCoordinator
 import class TailscreenSharer.SharerInviteCoordinator
-import enum TailscreenProtocol.InviteStatus
 // Targeted, like its neighbours: one enum, to word a viewer's link state.
 import enum TailscreenSharer.ViewerHealth
 import class TailscreenSharerWGC.WindowsShareSession
