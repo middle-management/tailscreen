@@ -551,6 +551,15 @@ class AppState: ObservableObject {
     /// and the notification-press router.
     @Published private(set) var pendingShareRequests: [PendingShareRequest] = []
 
+    /// Invites to watch another machine's share (spec §13.3), mirrored from
+    /// `askToShare.invites` for the banner and the notice router.
+    @Published private(set) var pendingInvites: [PendingShareRequest] = []
+    private var notifiedInviteKeys: Set<String> = []
+
+    /// This machine's outgoing invites while sharing, keyed by peer IP.
+    @Published private(set) var inviteStatuses: [String: SharerInviteCoordinator.Status] = [:]
+    private lazy var inviter: SharerInviteCoordinator = makeInviter()
+
     /// Requester IPs the sharer accepted (via request-to-share) but hasn't
     /// pushed to a live server yet — applied to `server.preApproveViewer`
     /// once the share starts. Cleared on `stopSharing`.
@@ -947,6 +956,20 @@ class AppState: ObservableObject {
         }
         askToShare.onStartShare = { [weak self] in
             Task { await self?.presentNativePicker() }
+        }
+        askToShare.invites.onInvitesChanged = { [weak self] invites in
+            guard let self else { return }
+            self.pendingInvites = invites
+            self.refreshInviteNotices()
+        }
+        askToShare.invites.onJoin = { [weak self] ip, hostname in
+            guard let self else { return }
+            // Prefer the tailnet's name for that address over the one the
+            // invite claimed.
+            let peer = self.availablePeers.first {
+                $0.tailscaleIP == ip || $0.tailscaleIPs.contains(ip)
+            }
+            Task { await self.connect(to: ip, displayName: peer?.displayName ?? hostname) }
         }
         askToShare.configureListener = { [weak self] listener in
             // Answer peer metadata queries on the same connection they
@@ -1843,6 +1866,9 @@ class AppState: ObservableObject {
         // `startSharing` learns it was superseded before it can publish a
         // token or arm an outline this stop is clearing.
         shareCore.endShare()
+        // An accept landing after this must not pre-approve into the next
+        // share.
+        inviter.endShare()
         let stopping = server
         await server?.stop()
         server = nil
@@ -4105,6 +4131,79 @@ class AppState: ObservableObject {
         askToShare.answer(id: request.id, accept: accepted)
     }
 
+    // MARK: - Invite to view (spec §13.3)
+
+    private func makeInviter() -> SharerInviteCoordinator {
+        let inviter = SharerInviteCoordinator { [weak self] ip, hostname in
+            await self?.sendInvite(toIP: ip, from: hostname) ?? .noAnswer
+        }
+        inviter.onStatusesChanged = { [weak self] statuses in
+            self?.inviteStatuses = statuses
+        }
+        inviter.onPreApproveViewer = { [weak self] ip in
+            self?.preApproveInvitee(ip)
+        }
+        return inviter
+    }
+
+    /// Invite `peer` to watch the running share. Its row shows the outcome.
+    func inviteToView(_ peer: TailscreenPeer) {
+        guard sharingState.isLive, !isGuestOnlyShare else { return }
+        logger.log("Inviting \(peer.displayName) to view")
+        inviter.invite(
+            ip: peer.tailscaleIP, fromHostname: Host.current().localizedName ?? "Unknown")
+    }
+
+    private func sendInvite(toIP ip: String, from hostname: String) async -> ShareRequestOutcome {
+        do {
+            let node = try await getOrCreateNode()
+            return try await TailscreenInviteToViewClient.invite(
+                toIP: ip, from: hostname, via: node)
+        } catch {
+            logger.log("Invite to \(ip) failed: \(error)")
+            return .noAnswer
+        }
+    }
+
+    /// The invitee accepted. Its HELLO may already be parked at the gate if
+    /// it beat the accept here, so admit that too rather than prompting for
+    /// someone just invited.
+    private func preApproveInvitee(_ ip: String) {
+        server?.preApproveViewer(ip: ip)
+        for pending in pendingViewers where pending.tailscaleIP == ip && !pending.isGuest {
+            approvePendingViewer(pending.id)
+        }
+    }
+
+    /// Answer an invite. Join connects a viewer to the address the invite
+    /// came from (the coordinator's `onJoin`); the row and notice come down
+    /// via `onInvitesChanged`.
+    func respondToInvite(_ invite: PendingShareRequest, accepted: Bool) {
+        if accepted, sharingState.isLive {
+            // Viewing while sharing isn't supported; keep the invite so it
+            // can be answered after Stop Sharing.
+            showAlertMessage(
+                title: L("Stop Sharing First"),
+                message: L("Stop sharing your screen to watch \(invite.fromHostname)."))
+            return
+        }
+        askToShare.invites.answer(id: invite.id, accept: accepted)
+    }
+
+    /// Same reconcile as `refreshShareRequestNotices`, for invites.
+    private func refreshInviteNotices() {
+        let candidates = pendingInvites.map {
+            NoticeCandidate(identity: $0.sourceKey, label: $0.fromHostname)
+        }
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedInviteKeys)
+        let decision = SharerNoticeDecision.noticesToPost(
+            kind: .inviteToView, candidates: candidates, alreadyNotified: notifiedInviteKeys)
+        notifiedInviteKeys = decision.notified
+        SharerNoticeCenter.shared.withdraw(kind: .inviteToView, identities: Array(answered))
+        post(decision.post)
+    }
+
     /// Spin up an IPN-bus watcher that opens the browser-login URL tsnet
     /// emits during interactive sign-in.
     private func startBrowseURLWatcher(node: TailscaleNode) async -> TailscaleIPNWatcher? {
@@ -5047,6 +5146,12 @@ class AppState: ObservableObject {
                 return
             }
             respondToShareRequest(request, accepted: action == .approve)
+        case .inviteToView:
+            guard let invite = pendingInvites.first(where: { $0.sourceKey == identity }) else {
+                logger.log("Notification \(action.rawValue) for \(identity): invite already gone")
+                return
+            }
+            respondToInvite(invite, accepted: action == .approve)
         case .viewerJoined, .viewerLeft, .linkOffered:
             // No buttons, nothing to have pressed. A link offer is an ask,
             // but one answered only in-app, where the whole URL shows.

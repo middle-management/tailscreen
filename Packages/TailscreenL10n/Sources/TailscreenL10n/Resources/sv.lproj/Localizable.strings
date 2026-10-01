@@ -715,3 +715,14 @@
 "Link Received" = "Länk mottagen";
 "%@ sent a link. Open Tailscreen to see it." = "%@ skickade en länk. Öppna Tailscreen för att se den.";
 "The link couldn't be sent. Try again." = "Länken kunde inte skickas. Försök igen.";
+"Invitation to Watch" = "Inbjudan att titta";
+"%@ invites you to watch their screen" = "%@ bjuder in dig att titta på sin skärm";
+"Stop Sharing First" = "Sluta dela först";
+"Stop sharing your screen to watch %@." = "Sluta dela din skärm för att titta på %@.";
+"%@ invites you to watch" = "%@ bjuder in dig att titta";
+"Stop sharing to join" = "Sluta dela för att gå med";
+"Watching" = "Tittar";
+"Invite to Watch" = "Bjud in att titta";
+"Ask %@ to watch your screen" = "Be %@ att titta på din skärm";
+"Invited…" = "Inbjuden…";
+"Joining" = "Ansluter";

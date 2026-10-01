@@ -249,6 +249,9 @@ final class SharerModel: ObservableObject {
             case .viewerJoined, .viewerLeft, .linkOffered:
                 // Reports carry no buttons, so nothing can arrive here.
                 break
+            case .inviteToView:
+                // Not posted by this host yet (plans/invite-to-view.md).
+                break
             }
         }
     }

@@ -1,11 +1,9 @@
 # Invite to view — "ask Fredrik to join my share"
 
-> Status: **steps 1–2 landed** — wire (`0x0F inviteToView`, spec §13.3)
-> and the portable core (`TailscreenInviteToViewClient`,
-> `IncomingInviteCoordinator`, `SharerInviteCoordinator`). No host UI yet,
-> so nothing sends an invite and received ones sit in an inbox no one shows. The mirror image of Ask to Share
-> (spec §13.1): there a would-be viewer asks a peer to share; here a sharer
-> asks a peer to watch.
+> Status: **steps 1–3 landed** — wire (`0x0F inviteToView`, spec §13.3),
+> the portable core, and the macOS UI. Linux/Windows next (shared hub UI).
+> The mirror image of Ask to Share (spec §13.1): there a would-be viewer
+> asks a peer to share; here a sharer asks a peer to watch.
 
 ## What it is
 
@@ -97,5 +95,9 @@ invite. The invite is tailnet-only.
    late answers. Known race: an accepted invitee whose HELLO beats the
    response to the sharer lands in the pending queue; the host should also
    approve a pending viewer from that IP when `onPreApproveViewer` fires.
-3. macOS UI, then the shared hub UI for Linux/Windows.
+3. ~~macOS UI~~ (done): `InviteToViewButton` in `PeerDetailView` while
+   sharing (not link-only), `PendingInvitesBanner` in hub + popover,
+   `SharerNoticeKind.inviteToView` (Join/Decline). Join is refused while
+   this machine shares. Then the shared hub UI for Linux/Windows; Linux's
+   notice switch already has an `.inviteToView` placeholder.
 4. Admission option 1, if verified.

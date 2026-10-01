@@ -695,6 +695,7 @@ private struct HubView: View {
             ScrollViewReader { proxy in
                 VStack(alignment: .leading, spacing: 16) {
                     PendingRequestsBanner()
+                    PendingInvitesBanner()
                     ShareStatusSection()
                     PeerListSection(scrollProxy: proxy)
                 }
@@ -1561,6 +1562,11 @@ private struct PeerDetailView: View {
         return info
     }
 
+    /// Link-only shares have no tailnet node to invite from.
+    private var canInvite: Bool {
+        appState.sharingState.isLive && !appState.isGuestOnlyShare
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let share = shareInfo {
@@ -1602,6 +1608,10 @@ private struct PeerDetailView: View {
                     .controlSize(.small)
                     .disabled(!canConnect)
                     .help(L("Ask \(peer.displayName) to share their screen"))
+
+                    if canInvite {
+                        InviteToViewButton(peer: peer)
+                    }
                 }
             }
 

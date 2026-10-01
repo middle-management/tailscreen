@@ -111,6 +111,7 @@ final class SharerNoticeCenter {
         case .viewerJoined: L("Viewer Connected")
         case .viewerLeft: L("Viewer Disconnected")
         case .linkOffered: L("Link Received")
+        case .inviteToView: L("Invitation to Watch")
         }
     }
 
@@ -123,6 +124,7 @@ final class SharerNoticeCenter {
         case .viewerJoined: return L("\(label) is now viewing your screen.")
         case .viewerLeft: return L("\(label) stopped viewing your screen.")
         case .linkOffered: return L("\(label) sent a link. Open Tailscreen to see it.")
+        case .inviteToView: return L("\(label) invites you to watch their screen")
         }
     }
 
@@ -163,6 +165,8 @@ final class SharerNoticeCenter {
         case (.approve, .controlRequested): return L("Grant")
         case (.approve, .requestToShare): return L("Share")
         case (.deny, .requestToShare): return L("Decline")
+        case (.approve, .inviteToView): return L("Join")
+        case (.deny, .inviteToView): return L("Decline")
         case (.deny, _): return L("Deny")
         case (.approve, _), (.dismiss, _): return nil
         }

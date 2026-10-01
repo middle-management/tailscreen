@@ -44,6 +44,7 @@ final class SharerNoticeTextTests: XCTestCase {
         XCTAssertEqual(render(.viewerPending).buttons.first?.label, "Accept")
         XCTAssertEqual(render(.controlRequested).buttons.first?.label, "Allow")
         XCTAssertEqual(render(.requestToShare).buttons.first?.label, "Share")
+        XCTAssertEqual(render(.inviteToView).buttons.first?.label, "Join")
     }
 
     /// Keys cross a process boundary and come back verbatim, so must NOT

@@ -113,6 +113,7 @@ public enum SharerNoticeText {
         case .viewerJoined: "Viewer joined"
         case .viewerLeft: "Viewer left"
         case .linkOffered: "Link received"
+        case .inviteToView: "Invitation"
         }
     }
 
@@ -125,6 +126,7 @@ public enum SharerNoticeText {
         case .viewerJoined: "\(label) started watching."
         case .viewerLeft: "\(label) stopped watching."
         case .linkOffered: "\(label) sent a link. Open Tailscreen to see it."
+        case .inviteToView: "\(label) invites you to watch their screen."
         }
     }
 
@@ -139,6 +141,8 @@ public enum SharerNoticeText {
             [Button(key: approveKey, label: "Allow"), Button(key: denyKey, label: "Deny")]
         case .requestToShare:
             [Button(key: approveKey, label: "Share"), Button(key: denyKey, label: "Decline")]
+        case .inviteToView:
+            [Button(key: approveKey, label: "Join"), Button(key: denyKey, label: "Decline")]
         case .viewerJoined, .viewerLeft, .linkOffered: []
         }
     }

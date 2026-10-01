@@ -60,6 +60,7 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 0) {
                 PopoverIdentityHeader()
                 PendingRequestsBanner()
+                PendingInvitesBanner()
                 StatusSection()
                 Divider().padding(.vertical, 4)
                 MenuRow(
@@ -253,6 +254,107 @@ struct PendingRequestsBanner: View {
             }
             .padding(.horizontal, 10)
             .padding(.bottom, 6)
+        }
+    }
+}
+
+// MARK: - Invites (a sharer asked us to watch)
+
+/// One card per incoming invite to view (spec §13.3). Join connects to the
+/// address the invite came from; nothing connects without the click.
+struct PendingInvitesBanner: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        let invites = appState.pendingInvites
+        if invites.isEmpty {
+            EmptyView()
+        } else {
+            VStack(spacing: 6) {
+                ForEach(invites) { invite in
+                    HStack(spacing: 10) {
+                        Image(systemName: "eye.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.blue)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("\(invite.fromHostname) invites you to watch"))
+                                .font(.callout.weight(.semibold))
+                                .lineLimit(2)
+                            if appState.sharingState.isLive {
+                                Text(L("Stop sharing to join"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 4)
+                        Button(L("Decline")) {
+                            appState.respondToInvite(invite, accepted: false)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.bordered)
+                        Button(L("Join")) {
+                            appState.respondToInvite(invite, accepted: true)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(appState.sharingState.isLive)
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: PopoverRadius.card, style: .continuous)
+                            .fill(Color.blue.opacity(0.12))
+                    )
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+        }
+    }
+}
+
+/// "Invite to Watch" for one peer while sharing, and how that invite went.
+struct InviteToViewButton: View {
+    @EnvironmentObject var appState: AppState
+    let peer: TailscreenPeer
+
+    private var isWatching: Bool {
+        appState.currentViewers.contains { $0.tailscaleIP == peer.tailscaleIP }
+    }
+
+    var body: some View {
+        if isWatching {
+            Label(L("Watching"), systemImage: "eye")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            let status = appState.inviteStatuses[peer.tailscaleIP]
+            HStack(spacing: 6) {
+                Button {
+                    appState.inviteToView(peer)
+                } label: {
+                    Label(L("Invite to Watch"), systemImage: "person.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!peer.isOnline || status == .waiting)
+                .help(L("Ask \(peer.displayName) to watch your screen"))
+
+                if let status {
+                    Text(Self.caption(for: status))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private static func caption(for status: SharerInviteCoordinator.Status) -> String {
+        switch status {
+        case .waiting: L("Invited…")
+        case .accepted: L("Joining")
+        case .declined: L("Declined")
+        case .noAnswer: L("No reply")
         }
     }
 }
