@@ -36,6 +36,22 @@ public enum TailscreenRequestToShareClient {
         via node: TailscaleNode,
         responseTimeout: TimeInterval = 120
     ) async throws -> ShareRequestOutcome {
+        try await ask(
+            .requestToShare(fromHostname: hostname), toIP: host, port: port, via: node,
+            responseTimeout: responseTimeout, logPrefix: "RequestToShare")
+    }
+
+    /// Send `message` and park for the `.shareResponse` on the same
+    /// connection. Shared with `TailscreenInviteToViewClient`, whose invite is
+    /// the same exchange pointed the other way (spec §13.3).
+    static func ask(
+        _ message: ScreenShareMessage,
+        toIP host: String,
+        port: UInt16,
+        via node: TailscaleNode,
+        responseTimeout: TimeInterval,
+        logPrefix: String
+    ) async throws -> ShareRequestOutcome {
         // Throws rather than reading as `.noAnswer`: no interface handle is
         // a fault on THIS machine, not "they didn't reply".
         guard let tailscaleHandle = await node.tailscale else {
@@ -49,15 +65,14 @@ public enum TailscreenRequestToShareClient {
                 tailscale: tailscaleHandle,
                 to: target,
                 proto: .tcp,
-                logger: PrintLogSink(prefix: "RequestToShare")
+                logger: PrintLogSink(prefix: logPrefix)
             )
         }
         defer { Task { await conn.close() } }
         try await TailscalePeerDiscovery.withWatchdog(seconds: 8) {
             try await conn.connect()
         }
-        try await conn.send(
-            ScreenShareMessage.requestToShare(fromHostname: hostname).encode())
+        try await conn.send(message.encode())
         // Drain until `.shareResponse`, close, or deadline; other frames are
         // ignored (forward compatible). 5s poll, not 1s: the wait is two
         // minutes, so a 1s interval would wake 120 times for nothing.

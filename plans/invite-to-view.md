@@ -1,7 +1,9 @@
 # Invite to view — "ask Fredrik to join my share"
 
-> Status: **step 1 (wire) landed** — `0x0F inviteToView`, spec §13.3,
-> vectors, Go SDK, registry; nothing sends or handles it yet. The mirror image of Ask to Share
+> Status: **steps 1–2 landed** — wire (`0x0F inviteToView`, spec §13.3)
+> and the portable core (`TailscreenInviteToViewClient`,
+> `IncomingInviteCoordinator`, `SharerInviteCoordinator`). No host UI yet,
+> so nothing sends an invite and received ones sit in an inbox no one shows. The mirror image of Ask to Share
 > (spec §13.1): there a would-be viewer asks a peer to share; here a sharer
 > asks a peer to watch.
 
@@ -87,6 +89,13 @@ invite. The invite is tailnet-only.
 ## Order
 
 1. ~~Wire + spec + vectors + Go SDK + registry~~ (done).
-2. Portable client/inbox/coordinator + tests.
+2. ~~Portable client/inbox/coordinator + tests~~ (done). Invitee side:
+   `SharerAskToShareCoordinator.invites` (its listener hears the invite;
+   inbox is `ShareRequestInbox`; `onJoin(ip, hostname)` fires only from
+   `answer(accept: true)`). Sharer side: `SharerInviteCoordinator(send:)`,
+   per-IP status, `onPreApproveViewer` on accept only, `endShare()` drops
+   late answers. Known race: an accepted invitee whose HELLO beats the
+   response to the sharer lands in the pending queue; the host should also
+   approve a pending viewer from that IP when `onPreApproveViewer` fires.
 3. macOS UI, then the shared hub UI for Linux/Windows.
 4. Admission option 1, if verified.
