@@ -2695,6 +2695,53 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         preApprovedIPs.withLock { _ = $0.insert(ip) }
     }
 
+    /// `preApproveViewer` for a peer that just accepted an invite to view
+    /// (spec §13.3, TS-MET-026). Its HELLO can beat the accept here and
+    /// already be parked at the gate, so a parked tailnet viewer from `ip` is
+    /// admitted now; with none parked, the next HELLO is. A remembered deny
+    /// still wins.
+    public func admitInvitedViewer(ip: String) {
+        let parked = pendingViewers.withLock { state in
+            state.values.map {
+                InvitedPendingCandidate(
+                    addr: $0.addr, isGuest: $0.info.isGuest, stableID: $0.info.stableID)
+            }
+        }
+        let policies = accessPolicies.withLock { $0 }
+        let admit = Self.invitedPendingToAdmit(parked, ip: ip, policies: policies)
+        guard !admit.isEmpty else {
+            preApproveViewer(ip: ip)
+            return
+        }
+        for addr in admit { approveViewer(addr: addr) }
+    }
+
+    public struct InvitedPendingCandidate: Sendable, Equatable {
+        public let addr: String
+        public let isGuest: Bool
+        public let stableID: String?
+
+        public init(addr: String, isGuest: Bool, stableID: String?) {
+            self.addr = addr
+            self.isGuest = isGuest
+            self.stableID = stableID
+        }
+    }
+
+    /// Which parked viewers an accepted invite to `ip` admits: tailnet (never
+    /// guest) viewers from that IP without a remembered deny. Sorted, so the
+    /// admission order is deterministic.
+    public static func invitedPendingToAdmit(
+        _ parked: [InvitedPendingCandidate], ip: String, policies: [String: PeerPolicy]
+    ) -> [String] {
+        parked.filter { candidate in
+            guard !candidate.isGuest, ipFromAddr(candidate.addr) == ip else { return false }
+            return candidate.stableID.flatMap { policies[$0] } != .deny
+        }
+        .map(\.addr)
+        .sorted()
+    }
+
     /// Run the admission gate for a viewer currently parked in
     /// `pendingViewers` and act on the outcome. `.park` leaves them
     /// waiting on the sharer's manual Accept / Deny. No-op for addresses

@@ -4165,14 +4165,8 @@ class AppState: ObservableObject {
         }
     }
 
-    /// The invitee accepted. Its HELLO may already be parked at the gate if
-    /// it beat the accept here, so admit that too rather than prompting for
-    /// someone just invited.
     private func preApproveInvitee(_ ip: String) {
-        server?.preApproveViewer(ip: ip)
-        for pending in pendingViewers where pending.tailscaleIP == ip && !pending.isGuest {
-            approvePendingViewer(pending.id)
-        }
+        server?.admitInvitedViewer(ip: ip)
     }
 
     /// Answer an invite. Join connects a viewer to the address the invite

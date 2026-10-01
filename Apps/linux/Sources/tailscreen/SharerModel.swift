@@ -137,6 +137,12 @@ final class SharerModel: ObservableObject {
 
     /// Peers asking this machine to share — the engine's inbox, mirrored.
     @Published private(set) var shareRequests: [PendingShareRequest] = []
+    /// Invites to watch another machine's share (spec §13.3), mirrored.
+    @Published private(set) var invites: [PendingShareRequest] = []
+    /// This machine's outgoing invites while sharing, keyed by peer IP.
+    @Published private(set) var inviteStatuses: [String: SharerInviteCoordinator.Status] = [:]
+    /// Supplied by `main`: Join was clicked — view `ip`, the invite's source.
+    var onJoinInvite: ((_ ip: String, _ fromHostname: String) -> Void)?
 
     /// The share engine: server lifecycle, access control, drawing latch,
     /// voice, idle control listener; tested headless on Linux CI.
@@ -250,8 +256,8 @@ final class SharerModel: ObservableObject {
                 // Reports carry no buttons, so nothing can arrive here.
                 break
             case .inviteToView:
-                // Not posted by this host yet (plans/invite-to-view.md).
-                break
+                guard let inviteID = UUID(uuidString: identity) else { return }
+                self.answerInvite(id: inviteID, accept: accept)
             }
         }
     }
@@ -331,6 +337,18 @@ final class SharerModel: ObservableObject {
                     NoticeCandidate(identity: $0.id.uuidString, label: $0.fromHostname)
                 })
         }
+        engine.onInvitesChanged = { [weak self] invites in
+            guard let self else { return }
+            // Card and notification together, same reason as asks above.
+            self.invites = invites
+            self.notifications.applyAsk(
+                kind: .inviteToView,
+                candidates: invites.map {
+                    NoticeCandidate(identity: $0.id.uuidString, label: $0.fromHostname)
+                })
+        }
+        engine.onInviteStatusesChanged = { [weak self] in self?.inviteStatuses = $0 }
+        engine.onJoinInvite = { [weak self] ip, hostname in self?.onJoinInvite?(ip, hostname) }
         engine.onAccessChanged = { [weak self] in self?.accessGeneration &+= 1 }
         engine.onStartShareRequested = { [weak self] in self?.startSharing() }
     }
@@ -658,6 +676,16 @@ final class SharerModel: ObservableObject {
     /// side's job).
     func answerShareRequest(id: UUID, accept: Bool) {
         engine.answerShareRequest(id: id, accept: accept)
+    }
+
+    /// Invite a peer to watch the running share; its row shows the outcome.
+    func inviteToView(ip: String) {
+        engine.inviteToView(ip: ip, fromHostname: localShareName())
+    }
+
+    /// Answer an invite on its own connection; Join fires `onJoinInvite`.
+    func answerInvite(id: UUID, accept: Bool) {
+        engine.answerInvite(id: id, accept: accept)
     }
 
     /// What is remembered about a row's peer, for the roster's label.

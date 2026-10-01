@@ -455,6 +455,18 @@ public final class TsnetTransport {
         }
     }
 
+    /// Invite a peer to watch this node's share (spec §13.3), and park until
+    /// it answers. Same shape and same no-node answer as `requestToShare`.
+    public func inviteToView(ip: String, from hostname: String) async -> ShareRequestOutcome {
+        guard let node = preparedNode else { return .noAnswer }
+        do {
+            return try await TailscreenInviteToViewClient.invite(
+                toIP: ip, from: hostname, via: node)
+        } catch {
+            return .noAnswer
+        }
+    }
+
     /// Bring the current node down and clear it so a later `prepare` can bring
     /// up a fresh one (e.g. switching profiles). No-op if no node is up.
     /// The picker-idle teardown path; `run`'s own `defer` clears on session exit.

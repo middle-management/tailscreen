@@ -1,7 +1,9 @@
 # Invite to view — "ask Fredrik to join my share"
 
-> Status: **steps 1–3 landed** — wire (`0x0F inviteToView`, spec §13.3),
-> the portable core, and the macOS UI. Linux/Windows next (shared hub UI).
+> Status: **shipped on all three apps** — wire (`0x0F inviteToView`,
+> spec §13.3), the portable core, macOS UI, and the shared hub UI for
+> Linux/Windows. Open: admission option 1 below (pre-approve by user, for
+> invitees viewing from a different node).
 > The mirror image of Ask to Share (spec §13.1): there a would-be viewer
 > asks a peer to share; here a sharer asks a peer to watch.
 
@@ -87,17 +89,17 @@ invite. The invite is tailnet-only.
 ## Order
 
 1. ~~Wire + spec + vectors + Go SDK + registry~~ (done).
-2. ~~Portable client/inbox/coordinator + tests~~ (done). Invitee side:
-   `SharerAskToShareCoordinator.invites` (its listener hears the invite;
-   inbox is `ShareRequestInbox`; `onJoin(ip, hostname)` fires only from
-   `answer(accept: true)`). Sharer side: `SharerInviteCoordinator(send:)`,
-   per-IP status, `onPreApproveViewer` on accept only, `endShare()` drops
-   late answers. Known race: an accepted invitee whose HELLO beats the
-   response to the sharer lands in the pending queue; the host should also
-   approve a pending viewer from that IP when `onPreApproveViewer` fires.
-3. ~~macOS UI~~ (done): `InviteToViewButton` in `PeerDetailView` while
-   sharing (not link-only), `PendingInvitesBanner` in hub + popover,
-   `SharerNoticeKind.inviteToView` (Join/Decline). Join is refused while
-   this machine shares. Then the shared hub UI for Linux/Windows; Linux's
-   notice switch already has an `.inviteToView` placeholder.
-4. Admission option 1, if verified.
+2. ~~Portable core~~ (done). Invitee: `SharerAskToShareCoordinator.invites`
+   (`IncomingInviteCoordinator`; `onJoin(ip, hostname)` fires only from
+   `answer(accept: true)`). Sharer: `SharerInviteCoordinator(send:)`,
+   per-IP `InviteStatus`, pre-approve on accept only, `endShare()` drops
+   late answers. `TailscaleScreenShareServer.admitInvitedViewer(ip:)` also
+   admits a HELLO that beat the accept and is already parked.
+3. ~~macOS UI~~ (done): `InviteToViewButton` in `PeerDetailView`,
+   `PendingInvitesBanner` in hub + popover, `SharerNoticeKind.inviteToView`.
+   Join is refused while this machine shares.
+4. ~~Linux/Windows~~ (done): `SharerDetail`'s Invite button via
+   `PickerContent(onInvite:inviteStatuses:)`; incoming invites are
+   `HubPrompt`s on the share card plus a notification. Linux's engine
+   (`LinuxShareSession`) owns the inviter; Windows's `AppUIState` does.
+5. Admission option 1, if verified.

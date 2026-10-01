@@ -1,5 +1,6 @@
 import Foundation
 import TailscreenProtocol
+import TailscreenSharer
 import XCTest
 
 @testable import TailscreenSharerLinux
@@ -86,6 +87,34 @@ final class LinuxShareSessionTests: XCTestCase {
         // Empty already — a second clear must not republish (and re-notify).
         engine.clearShareRequests()
         XCTAssertEqual(published.count, count)
+    }
+
+    // MARK: Invites to view
+
+    @MainActor
+    func testInviteIsPublishedAndJoinHandsTheSourceAddressToTheHost() async throws {
+        let engine = makeEngine()
+        var latest: [PendingShareRequest] = []
+        var joined: [String] = []
+        engine.onInvitesChanged = { latest = $0 }
+        engine.onJoinInvite = { ip, _ in joined.append(ip) }
+
+        engine.noteInvite(from: "studio-imac", sourceAddr: "100.64.0.9:40100", connectionID: UUID())
+        let invite = try XCTUnwrap(latest.first)
+        XCTAssertTrue(joined.isEmpty, "an invite never opens a viewer by itself")
+
+        engine.answerInvite(id: invite.id, accept: true)
+        XCTAssertEqual(latest, [])
+        XCTAssertEqual(joined, ["100.64.0.9"])
+    }
+
+    @MainActor
+    func testInvitingWithNoShareSendsNothing() async throws {
+        let engine = makeEngine()
+        var statuses: [[String: SharerInviteCoordinator.Status]] = []
+        engine.onInviteStatusesChanged = { statuses.append($0) }
+        engine.inviteToView(ip: "100.64.0.9", fromHostname: "me")
+        XCTAssertTrue(statuses.isEmpty, "no share, no node: the invite must not go out")
     }
 
     // MARK: Drawing latch

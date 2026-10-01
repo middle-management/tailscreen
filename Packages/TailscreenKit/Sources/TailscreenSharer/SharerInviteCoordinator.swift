@@ -15,12 +15,7 @@ import TailscreenTransport
 @MainActor
 public final class SharerInviteCoordinator {
 
-    public enum Status: Sendable, Equatable {
-        case waiting
-        case accepted
-        case declined
-        case noAnswer
-    }
+    public typealias Status = InviteStatus
 
     /// Fired on every status change, keyed by the invited peer's IP.
     public var onStatusesChanged: (([String: Status]) -> Void)?

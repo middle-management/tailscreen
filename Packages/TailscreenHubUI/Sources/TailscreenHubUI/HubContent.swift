@@ -1,5 +1,6 @@
 import SwiftCrossUI
 import TailscreenL10n
+import TailscreenProtocol
 
 /// The hub's content column: an optional login card, an optional share card,
 /// then either the "Screens" list or a centered status pane.
@@ -29,6 +30,11 @@ public struct PickerContent: View {
     var askingIDs: Set<String> = []
     /// How the last ask to each screen ended, by screen id.
     var askNotes: [String: String] = [:]
+    /// Invite the tapped screen's machine to watch this one's share (spec
+    /// §13.3). Nil ⇒ not sharing (or link-only), and no button on any row.
+    var onInvite: (@MainActor @Sendable (String) -> Void)?
+    /// Outgoing invites by screen id.
+    var inviteStatuses: [String: InviteStatus] = [:]
     var onOpenLogin: (@MainActor @Sendable () -> Void)?
     /// The sharing half of the hub, when this host can share. `nil` renders a
     /// viewer-only hub — a build with no capture backend, or a screenshot.
@@ -65,8 +71,10 @@ public struct PickerContent: View {
         hiddenByFilter: Int = 0,
         askingIDs: Set<String> = [],
         askNotes: [String: String] = [:],
+        inviteStatuses: [String: InviteStatus] = [:],
         onSelect: @escaping @MainActor @Sendable (String) -> Void,
         onAskToShare: (@MainActor @Sendable (String) -> Void)? = nil,
+        onInvite: (@MainActor @Sendable (String) -> Void)? = nil,
         onOpenLogin: (@MainActor @Sendable () -> Void)? = nil,
         shareCard: ShareCard? = nil,
         joinCard: HubJoinCard? = nil
@@ -83,6 +91,8 @@ public struct PickerContent: View {
         self.askNotes = askNotes
         self.onSelect = onSelect
         self.onAskToShare = onAskToShare
+        self.inviteStatuses = inviteStatuses
+        self.onInvite = onInvite
         self.onOpenLogin = onOpenLogin
         self.shareCard = shareCard
         self.joinCard = joinCard
@@ -152,6 +162,14 @@ public struct PickerContent: View {
         return { onAskToShare(id) }
     }
 
+    /// The per-row invite action — a method for the same result-builder
+    /// reason as `askAction`.
+    private func inviteAction(for screen: HubScreen) -> (@MainActor @Sendable () -> Void)? {
+        guard let onInvite else { return nil }
+        let id = screen.id
+        return { onInvite(id) }
+    }
+
     @ViewBuilder private var listContent: some View {
         if screens.isEmpty && hiddenByFilter > 0 {
             // Filter hid every match; "none found" would misdirect debugging.
@@ -196,7 +214,9 @@ public struct PickerContent: View {
                             tags: screen.tags,
                             onAskToShare: askAction(for: screen),
                             isAsking: askingIDs.contains(screen.id),
-                            askNote: askNotes[screen.id])
+                            askNote: askNotes[screen.id],
+                            onInvite: inviteAction(for: screen),
+                            inviteStatus: inviteStatuses[screen.id])
                     }
                 }
                 if hiddenByFilter > 0 && searchText.isEmpty {

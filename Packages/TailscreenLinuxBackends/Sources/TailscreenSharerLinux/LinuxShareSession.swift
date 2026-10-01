@@ -131,6 +131,12 @@ public final class LinuxShareSession {
     public var onDrawingChanged: ((AnnotationTool?, SharerDrawingRefusal?) -> Void)?
     public var onVoiceChanged: ((_ micAvailable: Bool, _ micOn: Bool) -> Void)?
     public var onShareRequestsChanged: (([PendingShareRequest]) -> Void)?
+    /// Invites to watch another machine's share (spec §13.3), on every change.
+    public var onInvitesChanged: (([PendingShareRequest]) -> Void)?
+    /// The user clicked Join on an invite: view `ip`, the invite's source.
+    public var onJoinInvite: ((_ ip: String, _ fromHostname: String) -> Void)?
+    /// This machine's outgoing invites while sharing, keyed by peer IP.
+    public var onInviteStatusesChanged: (([String: SharerInviteCoordinator.Status]) -> Void)?
     /// Something about the remembered-policy layer changed and roster rows may
     /// render differently.
     public var onAccessChanged: (() -> Void)?
@@ -313,6 +319,12 @@ public final class LinuxShareSession {
             self.server?.preApproveViewer(ip: sourceKey)
         }
         askToShare.onStartShare = { [weak self] in self?.onStartShareRequested?() }
+        askToShare.invites.onInvitesChanged = { [weak self] invites in
+            self?.onInvitesChanged?(invites)
+        }
+        askToShare.invites.onJoin = { [weak self] ip, hostname in
+            self?.onJoinInvite?(ip, hostname)
+        }
         // Both hop: the latch moves from whichever thread opened, closed or
         // lost the device, and this actor owns the published pair.
         voiceSession.onStateChanged = { [weak self] available, on in
@@ -540,6 +552,8 @@ public final class LinuxShareSession {
     /// ended is dropped when it lands.
     func endShareGeneration() {
         core.endShare()
+        // An accept landing after this must not pre-approve into the next share.
+        inviter.endShare()
     }
 
     /// Apply one grant snapshot, dropping it when stale or superseded — both
@@ -817,6 +831,42 @@ public final class LinuxShareSession {
     /// node went away.
     public func clearShareRequests() {
         askToShare.clearRequests()
+    }
+
+    // MARK: Invites to view (spec §13.3)
+
+    private lazy var inviter: SharerInviteCoordinator = {
+        let inviter = SharerInviteCoordinator { [weak self] ip, hostname in
+            await self?.sendInvite(toIP: ip, from: hostname) ?? .noAnswer
+        }
+        inviter.onStatusesChanged = { [weak self] in self?.onInviteStatusesChanged?($0) }
+        inviter.onPreApproveViewer = { [weak self] ip in self?.server?.admitInvitedViewer(ip: ip) }
+        return inviter
+    }()
+
+    /// Invite `ip` to watch the running share. No-op without a tailnet share
+    /// (idle, or link-only — there is no node to invite from).
+    public func inviteToView(ip: String, fromHostname: String) {
+        guard server != nil, !isLinkOnlyShare else { return }
+        inviter.invite(ip: ip, fromHostname: fromHostname)
+    }
+
+    private func sendInvite(toIP ip: String, from hostname: String) async -> ShareRequestOutcome {
+        guard let node = nodeProvider?() else { return .noAnswer }
+        return (try? await TailscreenInviteToViewClient.invite(toIP: ip, from: hostname, via: node))
+            ?? .noAnswer
+    }
+
+    /// Answer an invite on its own connection; Join fires `onJoinInvite`.
+    public func answerInvite(id: UUID, accept: Bool) {
+        askToShare.invites.answer(id: id, accept: accept)
+    }
+
+    /// Test seam onto the invite inbox, so the engine suite can drive an
+    /// invite without a listener.
+    func noteInvite(from hostname: String, sourceAddr: String?, connectionID: UUID) {
+        askToShare.invites.noteInvite(
+            from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
     }
 
     // MARK: Access control
