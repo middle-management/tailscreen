@@ -60,6 +60,14 @@ final class VoiceChannel: @unchecked Sendable {
     /// Same five-second window the transport rows use, so an audio row lines
     /// up with the transport row beside it.
     private var audioSummarySampler = DiagnosticsTransportSampler()
+    private var uplinkSummarySampler = DiagnosticsTransportSampler()
+    private var uplinkStats = UplinkStats()
+    private var lastUplinkStats = UplinkStats()
+    /// Per-window level gauges, reset with each row so it describes its own
+    /// window. On `queue` with the counters beside them.
+    private var uplinkPeak: Float = 0
+    private var uplinkSumOfSquares = 0.0
+    private var uplinkLevelSamples = 0
     /// Counters as of the previous `audio.summary`, so each row carries
     /// deltas rather than running totals.
     private var lastSummaryStats = VoiceStats()
@@ -76,6 +84,37 @@ final class VoiceChannel: @unchecked Sendable {
     /// what the target was sized against.
     private var burstDepthSinceSummary = 0
     private let statsLock = OSAllocatedUnfairLock<VoiceStats>(initialState: VoiceStats())
+    /// What the capture chain is doing, pushed by `MicCapture` for the same
+    /// reason `outputDeviceName` is: the send path cannot observe its own
+    /// device or whether the host engaged voice processing.
+    struct CaptureNote: Sendable, Equatable {
+        var capturing = false
+        var sampleRate: Double = 0
+        var channels = 0
+        var voiceProcessing = false
+    }
+    private let captureNote = OSAllocatedUnfairLock<CaptureNote>(initialState: CaptureNote())
+
+    /// The format the tap actually delivered. Only knowable once a buffer has
+    /// arrived — see `TapBuffer.ensureConverter`.
+    func noteCaptureFormat(sampleRate: Double, channels: Int) {
+        captureNote.withLock {
+            $0.sampleRate = sampleRate
+            $0.channels = channels
+        }
+    }
+
+    /// Whether the host's voice processing (echo cancellation, noise
+    /// suppression, gain) is in the capture path.
+    func noteVoiceProcessing(_ engaged: Bool) {
+        captureNote.withLock { $0.voiceProcessing = engaged }
+    }
+
+    /// Whether a microphone is open at all. Gates the uplink row.
+    func noteCapturing(_ capturing: Bool) {
+        captureNote.withLock { $0.capturing = capturing }
+    }
+
     private let jitterTargetDepth = OSAllocatedUnfairLock<Int>(
         initialState: VoiceChannel.initialJitterTargetDepth)
     private let outputDeviceName = OSAllocatedUnfairLock<String?>(initialState: nil)
@@ -123,11 +162,16 @@ final class VoiceChannel: @unchecked Sendable {
             // Also the summary's clock while transmitting, so a session
             // whose inbound voice stopped keeps reporting it.
             self.maybeRecordAudioSummary(nowNs: DispatchTime.now().uptimeNanoseconds)
+            self.maybeRecordUplinkSummary(nowNs: DispatchTime.now().uptimeNanoseconds)
+            self.noteUplinkLevels(of: pcm)
             do {
                 guard let au = try self.encoder.encode(pcm: pcm) else { return }
+                self.uplinkStats.framesEncoded += 1
+                self.uplinkStats.bytesEncoded += au.count
                 let packet = self.packetizer.packetize(au: au)
                 self.onSend(packet)
             } catch {
+                self.uplinkStats.encodeFailures += 1
                 self.logger.log("VoiceChannel: encode failed: \(error)")
             }
         }
@@ -150,6 +194,12 @@ final class VoiceChannel: @unchecked Sendable {
             self.lastStatsLogNs = 0
             self.lastLoggedStats = VoiceStats()
             self.audioSummarySampler.reset()
+            self.uplinkSummarySampler.reset()
+            self.uplinkStats = UplinkStats()
+            self.lastUplinkStats = UplinkStats()
+            self.uplinkPeak = 0
+            self.uplinkSumOfSquares = 0
+            self.uplinkLevelSamples = 0
             self.lastSummaryStats = VoiceStats()
             self.voiceSSRCsThisWindow.removeAll()
             self.systemAudioThisWindow = false
@@ -204,6 +254,9 @@ final class VoiceChannel: @unchecked Sendable {
     private func processInbound(_ packet: Data) {
         guard let parsed = depacketizer.unpack(packet) else { return }
         maybeRecordAudioSummary(nowNs: DispatchTime.now().uptimeNanoseconds)
+        // Also here, not only on the encode path: that one returns early while
+        // muted, and a muted window is exactly the one worth a row.
+        maybeRecordUplinkSummary(nowNs: DispatchTime.now().uptimeNanoseconds)
         switch VoiceReceiveDecisions.audioRoute(payloadType: parsed.payloadType) {
         case .drop:
             return
@@ -541,6 +594,60 @@ final class VoiceChannel: @unchecked Sendable {
                 since: previous, windowNs: windowNs, context: context))
     }
 
+    /// The send side's counterpart. `audio.summary` says only what this machine
+    /// heard, so a voice that arrived wrong at the far end left nothing here.
+    ///
+    /// Driven off the encode and inbound paths, like `audio.summary` — so a
+    /// host that is muted *and* receiving nothing produces no row. That pairing
+    /// means no audio is moving in either direction, which the lifecycle events
+    /// already state.
+    private func maybeRecordUplinkSummary(nowNs: UInt64) {
+        guard let windowNs = uplinkSummarySampler.windowClosed(nowNs: nowNs) else { return }
+        let note = captureNote.withLock { $0 }
+        let rms =
+            uplinkLevelSamples > 0
+            ? (uplinkSumOfSquares / Double(uplinkLevelSamples)).squareRoot() : 0
+        let context = UplinkStats.CaptureContext(
+            capturing: note.capturing,
+            muted: _isMuted,
+            captureSampleRate: note.sampleRate,
+            captureChannels: note.channels,
+            voiceProcessing: note.voiceProcessing,
+            peakLevel: uplinkPeak,
+            rmsLevel: rms,
+            encoderBitrate: OpusVoiceEncoder.defaultBitrate)
+        // Gauges reset whether or not the row is recorded — a suppressed window
+        // must not fold its levels into the next.
+        uplinkPeak = 0
+        uplinkSumOfSquares = 0
+        uplinkLevelSamples = 0
+        guard UplinkStats.shouldRecordUplinkSummary(context: context) else { return }
+
+        let snapshot = uplinkStats
+        let previous = lastUplinkStats
+        lastUplinkStats = snapshot
+        DiagnosticsCenter.shared.recorder?.record(
+            .audioUplinkSummary,
+            fields: snapshot.uplinkSummaryFields(
+                since: previous, windowNs: windowNs, context: context))
+    }
+
+    /// Level and clipping of one outbound frame, measured where Opus will see
+    /// it — after the downmix and resample, before encoding.
+    private func noteUplinkLevels(of pcm: [Float]) {
+        var peak: Float = 0
+        var squares = 0.0
+        for sample in pcm {
+            let magnitude = abs(sample)
+            if magnitude > peak { peak = magnitude }
+            squares += Double(sample) * Double(sample)
+        }
+        uplinkPeak = max(uplinkPeak, peak)
+        uplinkSumOfSquares += squares
+        uplinkLevelSamples += pcm.count
+        if peak > 1 { uplinkStats.clippedBuffers += 1 }
+    }
+
     /// Worst backlog since the previous row, then reset — a summary reports
     /// its own window, like every counter beside it. The open backlog is
     /// folded in so a burst still draining at the row boundary is reported
@@ -632,6 +739,8 @@ private final class TapBuffer: @unchecked Sendable {
             && sourceFormat.commonFormat == .pcmFormatFloat32
         {
             converter = nil
+            channel.noteCaptureFormat(
+                sampleRate: sourceFormat.sampleRate, channels: Int(sourceFormat.channelCount))
             logger.log("MicCapture: tap delivering \(sourceFormat) — using channel 0, no resample needed.")
             return true
         }
@@ -649,6 +758,8 @@ private final class TapBuffer: @unchecked Sendable {
             return false
         }
         converter = conv
+        channel.noteCaptureFormat(
+            sampleRate: sourceFormat.sampleRate, channels: Int(sourceFormat.channelCount))
         logger.log(
             "MicCapture: tap delivering \(sourceFormat) — picking channel 0, resampling \(sourceFormat.sampleRate) → 48 kHz."
         )
@@ -956,7 +1067,9 @@ final class MicCapture {
         do {
             try engine.inputNode.setVoiceProcessingEnabled(true)
             try engine.outputNode.setVoiceProcessingEnabled(true)
+            channel.noteVoiceProcessing(true)
         } catch {
+            channel.noteVoiceProcessing(false)
             // Don't swallow: without VPIO, AEC is off and the tap often
             // fires once before the engine renegotiates.
             logger.log("MicCapture: VPIO not engaged: \(error). Continuing without AEC.")
@@ -999,6 +1112,7 @@ final class MicCapture {
         logger.log("MicCapture: capture started (engineRunning=\(engine.isRunning)).")
 
         isCapturing = true
+        channel.noteCapturing(true)
     }
 
     /// Disable microphone capture. Removes the tap; engine stays running
@@ -1009,12 +1123,14 @@ final class MicCapture {
             t.cancel()
             testToneTimer = nil
             isCapturing = false
+            channel.noteCapturing(false)
             logger.log("MicCapture: test-tone capture disabled.")
             return
         }
         engine.inputNode.removeTap(onBus: 0)
         tapBuffer = nil
         isCapturing = false
+        channel.noteCapturing(false)
         logger.log("MicCapture: capture disabled.")
     }
 
@@ -1027,6 +1143,7 @@ final class MicCapture {
             engine.inputNode.removeTap(onBus: 0)
             tapBuffer = nil
             isCapturing = false
+            channel.noteCapturing(false)
         }
         if isPlaying {
             resetPlaybackQueues(reason: "stop")

@@ -47,13 +47,25 @@ public struct PCMFramer {
 ///
 /// **Not** thread-safe: driven from the backend's serial capture thread.
 /// `isMuted` is the exception (set from the UI), which is why the mute
-/// decision happens at the top of `ingest`, not after encoding.
+/// decision happens at the top of `ingest`, not after encoding. The diagnostics
+/// readers — `takeUplinkStats()` and `capturedFormat` — are the other
+/// exception: a host records its summary row off its own clock, so those are
+/// lock-guarded and safe to call while `ingest` runs.
 public final class MicrophonePipeline: @unchecked Sendable {
     private let converter = CapturePCMConverter()
     private var framer: PCMFramer
     private let encoder: OpusVoiceEncoder
     private let lock = NSLock()
     private var muted = false
+    private var stats = UplinkStats()
+    /// Per-window level gauges, drained by whoever records the row. Peak and
+    /// mean-square are reset together so the two always describe one window.
+    private var peakLevel: Float = 0
+    private var sumOfSquares: Double = 0
+    private var levelSamples = 0
+    /// Last format the backend delivered. Nil until the first buffer, which is
+    /// the earliest any host can know it.
+    private var observedFormat: AudioInputFormat?
 
     /// One encoded Opus packet, ready to packetize as RTP PT 98.
     public var onAccessUnit: ((Data) -> Void)?
@@ -83,18 +95,65 @@ public final class MicrophonePipeline: @unchecked Sendable {
 
     /// Feed one buffer from the backend. Emits zero or more access units.
     public func ingest(_ interleaved: [Float], format: AudioInputFormat) {
+        // Recorded even while muted: the format is what a "you sounded wrong"
+        // report needs, and it does not stop being true because nothing is
+        // being sent.
+        lock.withLock { observedFormat = format }
         guard !isMuted else { return }
         let mono = converter.convert(interleaved, from: format)
         guard !mono.isEmpty else { return }
+        noteLevels(of: mono)
         let frames = lock.withLock { framer.push(mono) }
         for frame in frames {
             do {
-                if let au = try encoder.encode(pcm: frame) { onAccessUnit?(au) }
+                if let au = try encoder.encode(pcm: frame) {
+                    lock.withLock {
+                        stats.framesEncoded += 1
+                        stats.bytesEncoded += au.count
+                    }
+                    onAccessUnit?(au)
+                }
             } catch {
+                lock.withLock { stats.encodeFailures += 1 }
                 onEncodeError?(error)
             }
         }
     }
+
+    /// Level and clipping of one converted buffer. Measured after the downmix,
+    /// where the signal is what Opus will actually see, and before framing, so
+    /// a buffer held back as a remainder still counts.
+    private func noteLevels(of mono: [Float]) {
+        var peak: Float = 0
+        var squares = 0.0
+        for sample in mono {
+            let magnitude = abs(sample)
+            if magnitude > peak { peak = magnitude }
+            squares += Double(sample) * Double(sample)
+        }
+        lock.withLock {
+            peakLevel = max(peakLevel, peak)
+            sumOfSquares += squares
+            levelSamples += mono.count
+            if peak > 1 { stats.clippedBuffers += 1 }
+        }
+    }
+
+    /// Counters so far, plus this window's level gauges — which are reset, so
+    /// each row describes its own window like every counter beside it.
+    public func takeUplinkStats() -> (stats: UplinkStats, peak: Float, rms: Double) {
+        lock.withLock {
+            let rms = levelSamples > 0 ? (sumOfSquares / Double(levelSamples)).squareRoot() : 0
+            let snapshot = (stats, peakLevel, rms)
+            peakLevel = 0
+            sumOfSquares = 0
+            levelSamples = 0
+            return snapshot
+        }
+    }
+
+    /// Format the backend last delivered, or nil before the first buffer.
+    public var capturedFormat: AudioInputFormat? { lock.withLock { observedFormat } }
 
     /// Drop all carried state — a new session, or a device change.
     public func reset() {

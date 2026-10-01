@@ -144,6 +144,10 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
     /// ``DiagnosticsTransportSampler`` for cadence, `VoiceStats.audioSummaryFields`
     /// for the row. Recorded every window audio is running, even if no counter moved.
     case audioSummary = "audio.summary"
+    /// The send side's counterpart. `audio.summary` describes only what a
+    /// machine hears, so "you sounded wrong to me" left nothing behind at the
+    /// end that produced the sound.
+    case audioUplinkSummary = "audio.uplink.summary"
 
     // MARK: Remote control
 
@@ -241,7 +245,7 @@ public enum DiagnosticEventName: String, Sendable, CaseIterable, Codable {
 
         case .audioDevicesChanged, .micAttached, .micDetached, .micFailed,
             .micMuteChanged, .systemAudioStarted, .systemAudioStopped,
-            .voiceSSRCAssigned, .audioSummary:
+            .voiceSSRCAssigned, .audioSummary, .audioUplinkSummary:
             return .audio
 
         case .actionShareStart, .actionShareStop, .actionConnect,

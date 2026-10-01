@@ -82,6 +82,19 @@ public final class VoiceUplink: @unchecked Sendable {
     /// Encoded frames dropped for want of an SSRC.
     public var withheldPacketCount: Int { lock.withLock { withheld } }
 
+    /// Everything an `audio.uplink.summary` row needs from this side, with the
+    /// level gauges drained so each row describes its own window.
+    ///
+    /// The counters are cumulative and the caller diffs them, like
+    /// `VoiceStats`; `peak`/`rms` are per-window and reset here.
+    public func takeUplinkSummaryInputs() -> (
+        stats: UplinkStats, peak: Float, rms: Double, format: AudioInputFormat?
+    ) {
+        var (stats, peak, rms) = pipeline.takeUplinkStats()
+        stats.packetsWithheld = lock.withLock { withheld }
+        return (stats, peak, rms, pipeline.capturedFormat)
+    }
+
     /// Start capturing. Throws whatever the backend throws when the device
     /// cannot be opened — a host should treat that as "no microphone" and say
     /// so, not retry silently.

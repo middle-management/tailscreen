@@ -43,7 +43,15 @@ public final class OpusVoiceEncoder {
     ///   - bitrate: target bits/second. 64 kbps matches the old AAC voice
     ///     rate; Opus reaches equal quality with far less, but parity keeps
     ///     the wire footprint predictable and it's still tiny (< 8 KB/s).
-    public init(application: Opus.Application = .voip, bitrate: Int32 = 64_000) throws {
+    /// The bitrate a voice encoder is configured for unless a caller says
+    /// otherwise. Named so a diagnostics row can report what was asked for
+    /// beside what was achieved.
+    public static let defaultBitrate = 64_000
+
+    public init(
+        application: Opus.Application = .voip,
+        bitrate: Int32 = Int32(OpusVoiceEncoder.defaultBitrate)
+    ) throws {
         encoder = try Opus.Encoder(application: application)
         try encoder.setBitrate(bitrate)
     }
