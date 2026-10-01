@@ -496,8 +496,7 @@ final class VoiceResilienceDecisionTests: XCTestCase {
         }
     }
     /// Sizing to exactly the measured peak leaves a burst one frame deeper
-    /// nowhere to go, and it lands as a drop the moment it arrives. An rc.18
-    /// bundle grew 6 → 7 → 8 one step at a time and paid on each.
+    /// nowhere to go, and it lands as a drop the moment it arrives.
     func testTargetAddsHeadroomAboveTheObservedBurst() {
         XCTAssertEqual(
             VoiceReceiveDecisions.jitterBufferTarget(
@@ -533,13 +532,10 @@ final class VoiceResilienceDecisionTests: XCTestCase {
     /// One second of a backed-up but steady stream: `burst` frames arriving
     /// back to back, then the rest of the second on its 20 ms cadence.
     ///
-    /// Pacing matters, in two ways. One frame per second instead of 50 leaves
-    /// the carried depth a full second stale, since `drainPeak` carries `depth`
-    /// as of the last arrival. And a stream arriving at exactly the playout
-    /// rate **keeps** whatever depth a burst gave it — playout consumes one
-    /// frame per arrival, so the backlog is standing latency that only a gap
-    /// can clear. That is why an rc.18 bundle reports `burst_depth` 21 in every
-    /// window of a call long after the stall that caused it.
+    /// Pacing matters. At one frame per second the carried depth stays a full
+    /// second stale; and a stream arriving at exactly the playout rate **keeps**
+    /// whatever depth a burst gave it, since playout consumes one frame per
+    /// arrival — standing latency only a gap can clear.
     private func runBurstWindow(
         _ backlog: inout VoiceReceiveDecisions.PlayoutBacklog, burst: Int, now: inout UInt64
     ) -> Int {
@@ -553,10 +549,9 @@ final class VoiceResilienceDecisionTests: XCTestCase {
         return backlog.drainPeak()
     }
 
-    /// A second in which the queue ran dry — silence, then one frame. This is
-    /// the shape that produced the rc.18 oscillation: underruns let the backlog
-    /// collapse, the next burst rebuilt it, and the one-window reading swung
-    /// between the two.
+    /// A second in which the queue ran dry — silence, then one frame. The shape
+    /// that produced the oscillation: underruns collapse the backlog, the next
+    /// burst rebuilds it, and the one-window reading swings between the two.
     private func runDryWindow(
         _ backlog: inout VoiceReceiveDecisions.PlayoutBacklog, now: inout UInt64
     ) -> Int {
@@ -594,16 +589,13 @@ final class VoiceResilienceDecisionTests: XCTestCase {
     }
 
     /// The reason `sustainedPeak` exists, replayed from the bundle that named
-    /// it: an rc.18 viewer's one-window burst reading swung 6, 7, 6, 7, 6, 8
-    /// across eleven seconds — bursts with underruns between them — and the
-    /// target followed every wobble: 3 → 6 → 7 → 6 → 7 → 6 → 8, four changes in
-    /// eleven seconds, with underruns and concealment on every one, because
-    /// each step down drags the playback cap below frames already in hand.
+    /// it: a viewer's one-window reading swung 6, 7, 6, 7, 6, 8 — bursts with
+    /// underruns between — and the target followed every wobble, dropping audio
+    /// on each step down.
     ///
-    /// The target may climb through this and must never dip. Sizing on the
-    /// single-window reading instead — `drainPeak()`'s return value, which this
-    /// deliberately ignores — fails the monotonicity assertion, which is the
-    /// point of the test.
+    /// The target may climb through this and must never dip. Sizing on
+    /// `drainPeak()`'s single-window value instead fails the monotonicity
+    /// assertion, which is the point of the test.
     func testTheObservedOscillationNoLongerMovesTheTarget() {
         var backlog = VoiceReceiveDecisions.PlayoutBacklog()
         var target = VoiceReceiveDecisions.initialJitterTargetDepth

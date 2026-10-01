@@ -95,9 +95,8 @@ public final class MicrophonePipeline: @unchecked Sendable {
 
     /// Feed one buffer from the backend. Emits zero or more access units.
     public func ingest(_ interleaved: [Float], format: AudioInputFormat) {
-        // Recorded even while muted: the format is what a "you sounded wrong"
-        // report needs, and it does not stop being true because nothing is
-        // being sent.
+        // Recorded even while muted: the format is still true, and is what a
+        // "you sounded wrong" report needs.
         lock.withLock { observedFormat = format }
         guard !isMuted else { return }
         let mono = converter.convert(interleaved, from: format)
@@ -120,9 +119,8 @@ public final class MicrophonePipeline: @unchecked Sendable {
         }
     }
 
-    /// Level and clipping of one converted buffer. Measured after the downmix,
-    /// where the signal is what Opus will actually see, and before framing, so
-    /// a buffer held back as a remainder still counts.
+    /// Measured after the downmix, where the signal is what Opus sees, and
+    /// before framing, so a remainder held back still counts.
     private func noteLevels(of mono: [Float]) {
         var peak: Float = 0
         var squares = 0.0
@@ -139,8 +137,7 @@ public final class MicrophonePipeline: @unchecked Sendable {
         }
     }
 
-    /// Counters so far, plus this window's level gauges — which are reset, so
-    /// each row describes its own window like every counter beside it.
+    /// Counters so far, plus this window's level gauges, which are reset.
     public func takeUplinkStats() -> (stats: UplinkStats, peak: Float, rms: Double) {
         lock.withLock {
             let rms = levelSamples > 0 ? (sumOfSquares / Double(levelSamples)).squareRoot() : 0

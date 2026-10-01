@@ -63,8 +63,7 @@ final class VoiceChannel: @unchecked Sendable {
     private var uplinkSummarySampler = DiagnosticsTransportSampler()
     private var uplinkStats = UplinkStats()
     private var lastUplinkStats = UplinkStats()
-    /// Per-window level gauges, reset with each row so it describes its own
-    /// window. On `queue` with the counters beside them.
+    /// Per-window gauges, reset with each row. On `queue`, like the counters.
     private var uplinkPeak: Float = 0
     private var uplinkSumOfSquares = 0.0
     private var uplinkLevelSamples = 0
@@ -84,9 +83,8 @@ final class VoiceChannel: @unchecked Sendable {
     /// what the target was sized against.
     private var burstDepthSinceSummary = 0
     private let statsLock = OSAllocatedUnfairLock<VoiceStats>(initialState: VoiceStats())
-    /// What the capture chain is doing, pushed by `MicCapture` for the same
-    /// reason `outputDeviceName` is: the send path cannot observe its own
-    /// device or whether the host engaged voice processing.
+    /// Pushed by `MicCapture` for the same reason `outputDeviceName` is: the
+    /// send path cannot observe its own device or whether VPIO engaged.
     struct CaptureNote: Sendable, Equatable {
         var capturing = false
         var sampleRate: Double = 0
@@ -95,8 +93,7 @@ final class VoiceChannel: @unchecked Sendable {
     }
     private let captureNote = OSAllocatedUnfairLock<CaptureNote>(initialState: CaptureNote())
 
-    /// The format the tap actually delivered. Only knowable once a buffer has
-    /// arrived — see `TapBuffer.ensureConverter`.
+    /// Only knowable once a buffer has arrived — see `TapBuffer.ensureConverter`.
     func noteCaptureFormat(sampleRate: Double, channels: Int) {
         captureNote.withLock {
             $0.sampleRate = sampleRate
@@ -104,8 +101,7 @@ final class VoiceChannel: @unchecked Sendable {
         }
     }
 
-    /// Whether the host's voice processing (echo cancellation, noise
-    /// suppression, gain) is in the capture path.
+    /// Whether VPIO (echo cancellation, noise suppression, gain) is engaged.
     func noteVoiceProcessing(_ engaged: Bool) {
         captureNote.withLock { $0.voiceProcessing = engaged }
     }
@@ -594,13 +590,9 @@ final class VoiceChannel: @unchecked Sendable {
                 since: previous, windowNs: windowNs, context: context))
     }
 
-    /// The send side's counterpart. `audio.summary` says only what this machine
-    /// heard, so a voice that arrived wrong at the far end left nothing here.
-    ///
-    /// Driven off the encode and inbound paths, like `audio.summary` — so a
-    /// host that is muted *and* receiving nothing produces no row. That pairing
-    /// means no audio is moving in either direction, which the lifecycle events
-    /// already state.
+    /// The send side's counterpart. Driven off the encode and inbound paths
+    /// like `audio.summary`, so a host both muted and receiving nothing
+    /// produces no row — no audio is moving either way.
     private func maybeRecordUplinkSummary(nowNs: UInt64) {
         guard let windowNs = uplinkSummarySampler.windowClosed(nowNs: nowNs) else { return }
         let note = captureNote.withLock { $0 }
@@ -632,8 +624,7 @@ final class VoiceChannel: @unchecked Sendable {
                 since: previous, windowNs: windowNs, context: context))
     }
 
-    /// Level and clipping of one outbound frame, measured where Opus will see
-    /// it — after the downmix and resample, before encoding.
+    /// Measured where Opus sees it: after downmix and resample, before encode.
     private func noteUplinkLevels(of pcm: [Float]) {
         var peak: Float = 0
         var squares = 0.0

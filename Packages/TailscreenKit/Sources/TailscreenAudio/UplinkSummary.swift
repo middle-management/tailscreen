@@ -1,12 +1,8 @@
 // The voice SEND path's `audio.uplink.summary` row, as a pure function on
-// `UplinkStats` — the same shape as `VoiceStats.audioSummaryFields`, and
-// pinned the same way by `UplinkSummaryTests` with no microphone behind it.
-//
-// Why it exists: `audio.summary` describes only what this machine HEARS, so
-// "you sounded wrong to me" left nothing behind at the end that produced the
-// sound. An rc.18 report of a voice arriving muffled had to be reasoned about
-// from a capture format in an unstructured log line and the absence of
-// anything else.
+// `UplinkStats` — the same shape as `VoiceStats.audioSummaryFields`, pinned
+// the same way with no microphone behind it. `audio.summary` describes only
+// what a machine HEARS, so "you sounded wrong to me" had nothing behind it.
+// See `.claude/rules/diagnostics.md`.
 
 import Foundation
 import TailscreenProtocol
@@ -33,13 +29,9 @@ public struct UplinkStats: Equatable, Sendable {
 
 extension UplinkStats {
 
-    /// What the capture chain was doing while the counters were measured.
-    ///
-    /// The format half is not something the send path can derive after the
-    /// fact and is exactly what a muffled-voice report needs: the device's own
-    /// rate and channel count, whether a resample stands between it and Opus,
-    /// and whether the host's voice processing (echo cancellation, noise
-    /// suppression, automatic gain) is in the path at all.
+    /// What the capture chain was doing while the counters were measured. The
+    /// format half cannot be derived after the fact, and is what a
+    /// muffled-voice report needs.
     public struct CaptureContext: Equatable, Sendable {
         /// Whether capture is running. False records no row — a closed
         /// microphone is already stated by `mic.detached`.
@@ -97,19 +89,15 @@ extension UplinkStats {
         }
     }
 
-    /// Whether this window is worth a row — true while capture runs, muted or
-    /// not. Deliberately not "only when a counter moved": a voice that sounds
-    /// wrong while the counters sit still is the case this exists for.
+    /// True while capture runs, muted or not. Deliberately not "only when a
+    /// counter moved" — that hides the steady-state case this is for.
     public static func shouldRecordUplinkSummary(context: CaptureContext) -> Bool {
         context.capturing
     }
 
-    /// The `audio.uplink.summary` fields for one window: deltas for every
-    /// counter, gauges as they stand.
-    ///
-    /// `bitrate_kbps` is what the window achieved; `encoder_kbps` what was
-    /// asked for. The two apart means the encoder is not delivering what the
-    /// configuration claims.
+    /// Deltas for every counter, gauges as they stand. `bitrate_kbps` is what
+    /// the window achieved against the `encoder_kbps` asked for; the two apart
+    /// means the encoder is not delivering its configuration.
     public func uplinkSummaryFields(
         since previous: UplinkStats, windowNs: UInt64, context: CaptureContext
     ) -> [String: DiagnosticValue] {

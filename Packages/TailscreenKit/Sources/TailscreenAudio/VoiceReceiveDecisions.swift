@@ -55,12 +55,9 @@ public enum VoiceReceiveDecisions {
     /// an incoming buffer instead of scheduling it (clock-drift backstop).
     /// Lives here so this and `concealmentEmitCount` can't drift apart.
     public static let playbackSlackBuffers = 3
-    /// Buffers held above the deepest burst actually observed.
-    ///
-    /// Sizing the target to exactly the measured peak means a burst one frame
-    /// deeper than the last costs audio the moment it lands, and a path whose
-    /// bursts grow by one at a time pays on every step. One buffer is 20 ms of
-    /// latency for the margin.
+    /// Buffers held above the deepest burst observed. Sizing to exactly the
+    /// measured peak drops a burst one frame deeper the moment it lands; one
+    /// buffer is 20 ms of latency for the margin.
     public static let burstHeadroom = 1
     /// Idle time after which a peer's receive state is evicted (10 s) — a
     /// departed peer's frozen `smoothedJitterMs` would otherwise pin the
@@ -216,9 +213,7 @@ public enum VoiceReceiveDecisions {
         public static let depthCeiling = 64
 
         /// How many closed windows ``sustainedPeak`` looks back over. Four at
-        /// the ~1 Hz sweep spans the gap between two bursts on a path that
-        /// stalls every second or two — the span a single window's peak cannot
-        /// see.
+        /// the ~1 Hz sweep spans the gap between two bursts.
         public static let sustainWindows = 4
 
         private var depth = 0
@@ -239,14 +234,10 @@ public enum VoiceReceiveDecisions {
         /// or the one still open — whichever is deeper.
         ///
         /// **This, not ``drainPeak()``, is what should size the buffer.** One
-        /// window's peak oscillates on a path that bursts every second or
-        /// two: an rc.18 bundle has it reading 6, 7, 6, 7, 6, 8 across eleven
-        /// seconds, and a target following that moves on nearly every sweep.
-        /// Each step down costs audio, because the playback cap moves with the
-        /// target and frames already in hand fall outside it. A high-water
-        /// mark over several windows lets the target fall only once the path
-        /// has genuinely been calmer for that long, and needs no hysteresis
-        /// counter kept in sync beside it.
+        /// window's peak oscillates on a path that bursts every second or two,
+        /// and a target following it drops audio on each step down as the
+        /// playback cap moves below frames already in hand. The horizon is the
+        /// hysteresis, so there is no counter to keep in sync beside it.
         public var sustainedPeak: Int { max(closedPeaks.max() ?? 0, peak) }
 
         /// Record one frame handed to the playback queue.
@@ -296,11 +287,9 @@ public enum VoiceReceiveDecisions {
     /// frame-duration of smoothed jitter (+1 base) is the steady-state
     /// answer; `burstDepth` — see ``PlayoutBacklog`` — is what bursts actually
     /// demanded, plus ``burstHeadroom``, and on a stalling path it is the
-    /// larger of the two by a wide margin.
-    ///
-    /// Pass ``PlayoutBacklog/sustainedPeak`` as `burstDepth`, not
-    /// ``PlayoutBacklog/drainPeak()``: a single window's peak oscillates and
-    /// the asymmetry below then thrashes rather than settles.
+    /// larger of the two by a wide margin. Pass
+    /// ``PlayoutBacklog/sustainedPeak``, never ``PlayoutBacklog/drainPeak()``:
+    /// the single-window reading makes the asymmetry below thrash.
     ///
     /// **Growth is immediate, shrink is one step per call.** They are
     /// asymmetric on purpose. Climbing one step at a time from 3 to 12 takes

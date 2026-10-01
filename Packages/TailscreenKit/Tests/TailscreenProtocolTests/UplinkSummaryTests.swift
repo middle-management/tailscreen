@@ -5,12 +5,9 @@ import XCTest
 @testable import TailscreenAudio
 
 /// `UplinkStats.uplinkSummaryFields` and `shouldRecordUplinkSummary` — the
-/// `audio.uplink.summary` row.
-///
-/// Why it exists: an rc.18 tester's voice arrived muffled at the far end, and
-/// the only evidence this machine left about its own capture chain was an
-/// unstructured log line naming the tap format. Read
-/// `testTheCaptureChainIsOnTheRow` first — the format half is the point.
+/// `audio.uplink.summary` row. Read `testTheCaptureChainIsOnTheRow` first: a
+/// voice arriving muffled at the far end used to leave no evidence here at all,
+/// and the format half is the point.
 final class UplinkSummaryTests: XCTestCase {
 
     private let window: UInt64 = 5_000_000_000
@@ -38,10 +35,7 @@ final class UplinkSummaryTests: XCTestCase {
 
     // MARK: - The reason this exists
 
-    /// The facts that a "you sounded wrong" report needs and that nothing
-    /// recorded: the device's own rate, how many channels it hands over,
-    /// whether a resample stands in the path, and whether the host's voice
-    /// processing is running.
+    /// The facts a "you sounded wrong" report needs and that nothing recorded.
     func testTheCaptureChainIsOnTheRow() {
         let row = UplinkStats().uplinkSummaryFields(
             since: UplinkStats(), windowNs: window,
@@ -194,13 +188,9 @@ final class UplinkSummaryTests: XCTestCase {
     // MARK: - The counters, across threads
 
     /// `takeUplinkStats()` is read from the host's summary clock while `ingest`
-    /// runs on the capture thread, which is a second thread touching state the
-    /// pipeline's doc comment otherwise calls single-threaded. Without a test
-    /// that actually overlaps them, `linux-tsan` watches nothing here.
-    ///
-    /// Asserts only interleaving-independent facts: counters never go backwards,
-    /// a drained peak never exceeds the loudest sample fed, and the total
-    /// encoded matches what was pushed once the dust settles.
+    /// runs on the capture thread — a second thread on state the type otherwise
+    /// calls single-threaded, and without an overlapping test `linux-tsan`
+    /// watches nothing. Asserts only interleaving-independent facts.
     func testStatsAreSafeToDrainWhileIngesting() throws {
         struct Observed {
             var finished = false
