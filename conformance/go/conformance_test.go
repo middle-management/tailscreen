@@ -163,6 +163,7 @@ func TestVectorsCoverEveryWireValue(t *testing.T) {
 		"json.inputEvent.decode":     0x09,
 		"json.metadata.decode":       0x0C,
 		"json.openLink.decode":       0x0E,
+		"json.inviteToView.decode":   0x0F,
 	}
 
 	for _, entry := range loadIndex(t).Suites {

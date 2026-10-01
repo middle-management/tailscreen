@@ -172,6 +172,11 @@ public struct SharerDetail: View {
     /// not instead of it — a silent revert to resting state is
     /// indistinguishable from an ask that never left.
     let askNote: String?
+    /// Invite this peer to watch the running share. Nil ⇒ absent (not
+    /// sharing, or a link-only share with no node to invite from).
+    let onInvite: (@MainActor @Sendable () -> Void)?
+    /// How the invite to this peer stands, if one was sent this share.
+    let inviteStatus: InviteStatus?
 
     public init(
         hostname: String, ip: String, isOnline: Bool, sharingCaption: String?,
@@ -181,7 +186,9 @@ public struct SharerDetail: View {
         tags: [String] = [],
         onAskToShare: (@MainActor @Sendable () -> Void)? = nil,
         isAsking: Bool = false,
-        askNote: String? = nil
+        askNote: String? = nil,
+        onInvite: (@MainActor @Sendable () -> Void)? = nil,
+        inviteStatus: InviteStatus? = nil
     ) {
         self.hostname = hostname
         self.ip = ip
@@ -194,6 +201,8 @@ public struct SharerDetail: View {
         self.onAskToShare = onAskToShare
         self.isAsking = isAsking
         self.askNote = askNote
+        self.onInvite = onInvite
+        self.inviteStatus = inviteStatus
     }
 
     public var body: some View {
@@ -228,6 +237,24 @@ public struct SharerDetail: View {
                         .foregroundColor(HubStyle.secondaryText)
                         .lineLimit(1)
                 }
+                if let onInvite {
+                    HStack(spacing: 8) {
+                        if inviteStatus == .waiting {
+                            // Absent rather than disabled while waiting: a
+                            // second press would only be ignored.
+                            Text(L("Invited — waiting for a reply"))
+                                .font(.caption)
+                                .foregroundColor(HubStyle.secondaryText)
+                        } else {
+                            Button(L("Invite to Watch"), action: onInvite)
+                            if let inviteStatus {
+                                Text(Self.inviteNote(inviteStatus))
+                                    .font(.caption)
+                                    .foregroundColor(HubStyle.secondaryText)
+                            }
+                        }
+                    }
+                }
             }
             VStack(alignment: .leading, spacing: 4) {
                 detailRow(label: L("Host"), value: hostname)
@@ -248,6 +275,16 @@ public struct SharerDetail: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(HubStyle.detailFill))
         .padding(.leading, 20)
+    }
+
+    /// How a settled invite went. `.waiting` has its own line above.
+    static func inviteNote(_ status: InviteStatus) -> String {
+        switch status {
+        case .waiting: L("Invited…")
+        case .accepted: L("Joining")
+        case .declined: L("Declined")
+        case .noAnswer: L("No reply")
+        }
     }
 
     /// The Route line: path first, then how far away it feels. Nil is a real

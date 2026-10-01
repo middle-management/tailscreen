@@ -19,7 +19,7 @@ import XCTest
 ///      the failure names both claimants.
 ///
 /// Uniqueness is deliberately scoped *per channel*: the TCP message-type
-/// space (0x03–0x0E) and the UDP control-byte space (0x03–0x0D) overlap by
+/// space (0x03–0x0F) and the UDP control-byte space (0x03–0x0D) overlap by
 /// design, and the helper wire's `OutType`/`InType` ride different
 /// pipes (both use 0x01–0x05 and 0xFF). Asserting cross-channel uniqueness
 /// would institutionalize a false invariant — see
@@ -121,7 +121,8 @@ final class WireByteRegistryTests: XCTestCase {
                 WireRow("metadataRequest", 0x0B),
                 WireRow("metadataResponse", 0x0C),
                 WireRow("mediaDatagram", 0x0D),
-                WireRow("openLink", 0x0E)
+                WireRow("openLink", 0x0E),
+                WireRow("inviteToView", 0x0F)
             ])
     }
 

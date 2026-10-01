@@ -65,6 +65,10 @@ public final class SharerAskToShareCoordinator {
 
     private var inbox = ShareRequestInbox()
 
+    /// Invites to view other people's shares (spec §13.3). They arrive on
+    /// this coordinator's listener, so it owns their inbox too.
+    public let invites = IncomingInviteCoordinator()
+
     /// Where the long-lived listener is in its life.
     ///
     /// Three phases, not a `(listener, node)` pair — that pair couldn't say
@@ -132,7 +136,9 @@ public final class SharerAskToShareCoordinator {
     /// observable with no tsnet node.
     var stopListenerForTesting: ((TailscreenControlListener) async -> Void)?
 
-    public init() {}
+    public init() {
+        invites.listenerProvider = { [weak self] in self?.controlListener }
+    }
 
     // MARK: Listener lifecycle
 
@@ -169,6 +175,8 @@ public final class SharerAskToShareCoordinator {
             state.phase = .idle
             return live
         }
+        // Parked invites point at connections on the listener just dropped.
+        invites.clearInvites()
         if let previous { await stop(previous) }
     }
 
@@ -226,6 +234,12 @@ public final class SharerAskToShareCoordinator {
             // Fires on the listener's own thread; inbox state is main-actor.
             Task { @MainActor [weak self] in
                 self?.noteRequest(
+                    from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
+            }
+        }
+        fresh.onInviteToView = { [weak self] hostname, connectionID, sourceAddr in
+            Task { @MainActor [weak self] in
+                self?.invites.noteInvite(
                     from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
             }
         }

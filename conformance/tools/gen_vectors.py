@@ -92,6 +92,7 @@ TCP_TYPES = {
     "metadataResponse": 0x0C,
     "mediaDatagram": 0x0D,
     "openLink": 0x0E,
+    "inviteToView": 0x0F,
 }
 
 
@@ -1267,6 +1268,13 @@ def suite_tcp_framing():
             {"type": 0x0E, "payload": h(open_link)},
             {"bytes": h(frame(TCP_TYPES["openLink"], open_link))},
         ),
+        case(
+            "tcp/encode-invite-to-view-frame",
+            ["TS-TCP-001", "TS-MET-020", "TS-CNF-002"],
+            "frame.encode",
+            {"type": 0x0F, "payload": h(req)},
+            {"bytes": h(frame(TCP_TYPES["inviteToView"], req))},
+        ),
     ]
     return {
         "suite": "tcp-framing",
@@ -1483,6 +1491,28 @@ def suite_json_payloads():
             "json.shareResponse.decode",
             {"json": '{"type":"requestToShare","from":"studio-imac"}'},
             {"accepted": None},
+        ),
+        # --- invite to view (§13.3) ---------------------------------------
+        case(
+            "json/invite-to-view",
+            ["TS-MET-020"],
+            "json.inviteToView.decode",
+            {"json": '{"fromHostname":"studio-imac"}'},
+            {"fromHostname": "studio-imac"},
+        ),
+        case(
+            "json/invite-to-view-clamps-hostname",
+            ["TS-TCP-023", "TS-SEC-005"],
+            "json.inviteToView.decode",
+            {"json": json.dumps({"fromHostname": long_host})},
+            {"fromHostname": long_host[:64]},
+        ),
+        case(
+            "json/invite-to-view-rejects-missing-field",
+            ["TS-TCP-008"],
+            "json.inviteToView.decode",
+            {"json": "{}"},
+            {"fromHostname": None},
         ),
         # --- control revoked ---------------------------------------------
         case(

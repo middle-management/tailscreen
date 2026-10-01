@@ -263,6 +263,7 @@ The message types on this channel:
 | `0x0C` | `metadataResponse` | receiver → requester | Share name / resolution / whether sharing, on the same connection. |
 | `0x0D` | `mediaDatagram`   | viewer ↔ sharer | **Not JSON**: one raw datagram exactly as it would have gone over UDP. See [Stream carriage](#stream-carriage--the-reliable-transport-profile-0x0d). |
 | `0x0E` | `openLink`        | viewer → sharer | `{url}`: "open this in your browser". http/https only, printable ASCII, no `user@` in the host, ≤ 2048 bytes; anything else is dropped. The sharer's user always clicks Open first ([details]({{ site.baseurl }}{% link spec.md %}#123-opening-a-link-on-the-sharer)). |
+| `0x0F` | `inviteToView`    | sharer → peer   | `{fromHostname}`: "come watch my screen". Answered with `shareResponse` on the same connection; the invitee joins the address the invite came from, and only after its user clicks Join ([details]({{ site.baseurl }}{% link spec.md %}#133-invite-to-view)). |
 
 `0x00`–`0x02` are historical and stay reserved. Types `0x0A`–`0x0D` also
 appear in the UDP control table above — that's fine, they're disjoint

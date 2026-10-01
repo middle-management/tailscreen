@@ -51,6 +51,12 @@ import Foundation
 ///         "open this link in your browser." payload = JSON
 ///         ``OpenLinkPayload``; a URL failing its shape rules is
 ///         undecodable and dropped. The sharer asks its user every time.
+///     .inviteToView   (0x0F)  — sharer→peer
+///         "come watch my share" — Ask to Share pointed the other way.
+///         payload = JSON ``InviteToViewPayload``; answered with
+///         `.shareResponse` on the SAME connection. The invitee connects to
+///         the invite's source address, never a claimed one, and only after
+///         its user clicks Join.
 public enum ScreenShareMessage {
     case annotation(AnnotationOp)
     case requestToShare(fromHostname: String)
@@ -64,6 +70,7 @@ public enum ScreenShareMessage {
     case metadataResponse(TailscreenMetadata)
     case mediaDatagram(Data)
     case openLink(url: String)
+    case inviteToView(fromHostname: String)
 
     public static let headerSize = 5
 
@@ -95,6 +102,7 @@ public enum ScreenShareMessage {
         case metadataResponse = 0x0C
         case mediaDatagram = 0x0D
         case openLink = 0x0E
+        case inviteToView = 0x0F
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -139,6 +147,11 @@ public enum ScreenShareMessage {
             encoder.outputFormatting = .withoutEscapingSlashes
             let payload = (try? encoder.encode(OpenLinkPayload(url: url))) ?? Data()
             return Self.frame(type: .openLink, payload: payload)
+        case .inviteToView(let fromHostname):
+            let payload =
+                (try? JSONEncoder().encode(InviteToViewPayload(fromHostname: fromHostname)))
+                ?? Data()
+            return Self.frame(type: .inviteToView, payload: payload)
         }
     }
 
@@ -231,6 +244,8 @@ public struct ScreenShareMessageParser {
                 message = payload.isEmpty ? nil : .mediaDatagram(Data(payload))
             case .openLink:
                 message = decodeOpenLink(payload)
+            case .inviteToView:
+                message = decodeInviteToView(payload)
             }
             if let message {
                 return message
@@ -255,6 +270,16 @@ public struct ScreenShareMessageParser {
         // hostile peer can't bloat the popover banner with a 10 KB string.
         let clamped = String(request.fromHostname.prefix(RequestToSharePayload.maxHostnameLength))
         return .requestToShare(fromHostname: clamped)
+    }
+
+    private func decodeInviteToView(_ payload: Data) -> ScreenShareMessage? {
+        guard
+            let invite = try? JSONDecoder().decode(InviteToViewPayload.self, from: Data(payload))
+        else { return nil }
+        // Peer-controlled and shown in the invite banner — clamp like
+        // `.requestToShare`'s hostname.
+        let clamped = String(invite.fromHostname.prefix(InviteToViewPayload.maxHostnameLength))
+        return .inviteToView(fromHostname: clamped)
     }
 
     private func decodeShareResponse(_ payload: Data) -> ScreenShareMessage? {
@@ -374,6 +399,14 @@ public struct RequestToSharePayload: Codable, Sendable {
     /// labels at 63 chars and FQDNs at 253; rendered in a 12pt menubar row
     /// where anything past ~64 is already truncated.
     public static let maxHostnameLength = 64
+
+    public let fromHostname: String
+}
+
+/// Wire payload for `.inviteToView`. Display only: the invitee dials the
+/// connection's source address, so no field here is ever used for routing.
+public struct InviteToViewPayload: Codable, Sendable {
+    public static let maxHostnameLength = RequestToSharePayload.maxHostnameLength
 
     public let fromHostname: String
 }

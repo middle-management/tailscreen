@@ -432,6 +432,12 @@ func FuzzDecodePayloads(f *testing.F) {
 			}
 		}
 
+		if host, err := DecodeInviteToView(payload); err == nil {
+			if clamp(host, MaxHostnameChars) != host {
+				t.Fatalf("returned an unclamped invite hostname: %q", host)
+			}
+		}
+
 		if reason := DecodeControlRevoked(payload); clamp(reason, MaxReasonChars) != reason {
 			t.Fatalf("returned an unclamped reason: %q", reason)
 		}

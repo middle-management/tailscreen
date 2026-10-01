@@ -543,6 +543,15 @@ if gSelfTest {
         gPicker.onSelect = { sharer in
             startSession(host: sharer.tailscaleIP, displayName: sharer.displayName)
         }
+        gPicker.onJoin = { ip, displayName in
+            startSession(host: ip, displayName: displayName)
+        }
+        // Join on an invite: the address is the invite's source; the name
+        // is the tailnet's for that address when the list has it.
+        gSharer.onJoinInvite = { ip, hostname in
+            let known = gPicker.sharers.first { $0.tailscaleIP == ip }
+            gPicker.join(ip: ip, displayName: known?.displayName ?? hostname)
+        }
         // Ask a machine to start sharing. Parks for up to two minutes on the
         // far side; nothing here awaits it inline, so the window stays usable.
         gPicker.onAskToShare = { sharer in
@@ -1027,6 +1036,12 @@ struct ViewerApp: App {
                         message: L("\($0.fromHostname) wants you to share your screen"),
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
                 }
+                + sharer.invites.map {
+                    HubPrompt(
+                        id: $0.id.uuidString,
+                        message: L("\($0.fromHostname) invites you to watch"),
+                        acceptLabel: L("Join"), declineLabel: L("Decline"))
+                }
                 // A link offer, last: nothing is stuck waiting on it, and the
                 // whole URL rides in `detail` since a banner might truncate it.
                 + sharer.linkOffers.map {
@@ -1191,6 +1206,10 @@ struct ViewerApp: App {
             gSharer.answerShareRequest(id: requestID, accept: accept)
             return
         }
+        if gSharer.invites.contains(where: { $0.id == requestID }) {
+            gSharer.answerInvite(id: requestID, accept: accept)
+            return
+        }
         guard gSharer.linkOffers.contains(where: { $0.id == requestID }) else { return }
         if accept {
             gSharer.openLinkOffer(requestID)
@@ -1209,6 +1228,25 @@ struct ViewerApp: App {
                 isOnline: sharer.isOnline, metadata: picker.shareInfo[sharer.id],
                 route: sharer.route, latencyMs: picker.latencyMs[sharer.id],
                 tags: sharer.tags)
+        }
+    }
+
+    /// Outgoing invites, re-keyed from peer IP to screen id for the rows.
+    private var hubInviteStatuses: [String: InviteStatus] {
+        var byID: [String: InviteStatus] = [:]
+        for screen in picker.sharers {
+            if let status = sharer.inviteStatuses[screen.tailscaleIP] { byID[screen.id] = status }
+        }
+        return byID
+    }
+
+    /// The row's Invite action — only while a tailnet share runs (a
+    /// link-only share has no node to invite from).
+    private var inviteAction: (@MainActor @Sendable (String) -> Void)? {
+        guard sharer.phase == .sharing, !sharer.isLinkOnlyShare else { return nil }
+        return { id in
+            guard let chosen = gPicker.sharers.first(where: { $0.id == id }) else { return }
+            gSharer.inviteToView(ip: chosen.tailscaleIP)
         }
     }
 
@@ -1399,6 +1437,7 @@ struct ViewerApp: App {
                         hiddenByFilter: picker.hiddenByFilter,
                         askingIDs: picker.asking,
                         askNotes: picker.askOutcome,
+                        inviteStatuses: hubInviteStatuses,
                         onSelect: { id in
                             guard let chosen = gPicker.sharers.first(where: { $0.id == id })
                             else { return }
@@ -1409,6 +1448,7 @@ struct ViewerApp: App {
                             else { return }
                             gPicker.askToShare(chosen)
                         },
+                        onInvite: inviteAction,
                         onOpenLogin: gOpenLogin,
                         shareCard: shareCard,
                         joinCard: hubJoinCard)

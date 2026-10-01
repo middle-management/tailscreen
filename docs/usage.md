@@ -284,6 +284,20 @@ what to share" — click their row once their share is up), **Request
 Declined**, or **No Response** ("They may be away or running an older
 Tailscreen").
 
+## Inviting someone to watch
+
+While you're sharing, expand a peer's row in the Screens list and click
+**Invite to Watch**. They get a banner — "*name* invites you to watch",
+with **Join** and **Decline** — and a matching notification. Join opens
+your screen in their viewer and lets them straight in, with no approval
+prompt on your side; nothing opens on their machine until they click.
+
+The row shows how it went: **Invited…** while you wait, then **Joining**,
+**Declined**, or **No reply** (they're away, or on a Tailscreen too old
+for invites). Invite again any time. Invites aren't available for
+link-only shares. On macOS, someone who is sharing their own screen has
+to stop before they can join yours.
+
 ## Multiple accounts
 
 Signed in to more than one tailnet — personal and a work org, say? The

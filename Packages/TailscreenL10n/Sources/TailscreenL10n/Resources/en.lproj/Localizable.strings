@@ -744,3 +744,15 @@
 "Link Received" = "Link Received";
 "%@ sent a link. Open Tailscreen to see it." = "%@ sent a link. Open Tailscreen to see it.";
 "The link couldn't be sent. Try again." = "The link couldn't be sent. Try again.";
+"Invitation to Watch" = "Invitation to Watch";
+"%@ invites you to watch their screen" = "%@ invites you to watch their screen";
+"Stop Sharing First" = "Stop Sharing First";
+"Stop sharing your screen to watch %@." = "Stop sharing your screen to watch %@.";
+"%@ invites you to watch" = "%@ invites you to watch";
+"Stop sharing to join" = "Stop sharing to join";
+"Watching" = "Watching";
+"Invite to Watch" = "Invite to Watch";
+"Ask %@ to watch your screen" = "Ask %@ to watch your screen";
+"Invited…" = "Invited…";
+"Joining" = "Joining";
+"Invited — waiting for a reply" = "Invited — waiting for a reply";

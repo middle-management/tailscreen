@@ -157,6 +157,13 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertFalse(SharerNoticeKind.requestToShare.blocksSomeone)
     }
 
+    /// Same reasoning for an invite to view: it arrives while idle, and the
+    /// sharer can simply invite again.
+    func testInviteToViewIsActionableButNotUrgent() {
+        XCTAssertEqual(SharerNoticeKind.inviteToView.actions, [.approve, .deny])
+        XCTAssertFalse(SharerNoticeKind.inviteToView.blocksSomeone)
+    }
+
     /// Urgency implies actionability, not the reverse.
     func testEveryBlockingKindIsActionable() {
         for kind in SharerNoticeKind.allCases where kind.blocksSomeone {

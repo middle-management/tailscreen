@@ -122,6 +122,7 @@ nothing else. `conformance/go/runner.go` is the reference dispatcher;
 | `json.inputEvent.decode` | `json` | `event` |
 | `json.annotationOp.decode` | `json` | `op` |
 | `json.requestToShare.decode` | `json` | `fromHostname` (clamped) |
+| `json.inviteToView.decode` | `json` | `fromHostname` (clamped) |
 | `json.shareResponse.decode` | `json` | `accepted` |
 | `json.controlRevoked.decode` | `json` | `reason` (clamped) |
 | `json.metadata.decode` | `json` | `metadata` (display strings clamped) |

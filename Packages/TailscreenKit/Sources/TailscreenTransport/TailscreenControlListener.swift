@@ -41,6 +41,11 @@ public final class TailscreenControlListener: @unchecked Sendable {
     /// (for dedup by source identity, not the spoofable hostname).
     public var onRequestToShare: ((String, UUID, String?) -> Void)?
 
+    /// Fires for every `.inviteToView` message: sharer hostname (display
+    /// only), connection UUID (answer on it), and remote address — the
+    /// address to view, and the dedup key.
+    public var onInviteToView: ((String, UUID, String?) -> Void)?
+
     /// Fires for every `.controlRequest` message: connection UUID (the
     /// grant/gate key) and remote address.
     public var onControlRequest: ((UUID, String?) -> Void)?
@@ -238,6 +243,8 @@ public final class TailscreenControlListener: @unchecked Sendable {
             onMediaDatagram?(datagram, connectionID, peerAddress)
         case .openLink(let url):
             onOpenLink?(url, connectionID, peerAddress)
+        case .inviteToView(let from):
+            onInviteToView?(from, connectionID, peerAddress)
         case .shareResponse, .controlGranted, .controlRevoked, .metadataResponse:
             // `.shareResponse` / `.metadataResponse` ride the requester's own
             // outgoing connection, read inline (see

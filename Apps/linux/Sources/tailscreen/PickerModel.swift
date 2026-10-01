@@ -131,6 +131,8 @@ final class PickerModel: ObservableObject {
 
     /// Set by `main` — invoked on the main actor when the user taps a row.
     var onSelect: ((DiscoveredSharer) -> Void)?
+    /// Set by `main` — connects to an accepted invite's address.
+    var onJoin: ((_ ip: String, _ displayName: String) -> Void)?
     /// Set by `main` — asks the given machine to start sharing.
     var onAskToShare: ((DiscoveredSharer) -> Void)?
     /// Set by `main` — re-runs discovery when the header Refresh is tapped.
@@ -169,6 +171,14 @@ final class PickerModel: ObservableObject {
     /// that ended (`gReturnToPicker`) and a node coming up fresh (`bringUp`).
     func endDialing() {
         isDialing = false
+    }
+
+    /// Join an invite's share at `ip` (spec §13.3) — `select` for an address
+    /// the list may not show yet.
+    func join(ip: String, displayName: String) {
+        guard phase.isReady, !isDialing else { return }
+        isDialing = true
+        onJoin?(ip, displayName)
     }
 
     /// Unlike `select`, does NOT set `isDialing`: the ask parks for up to two

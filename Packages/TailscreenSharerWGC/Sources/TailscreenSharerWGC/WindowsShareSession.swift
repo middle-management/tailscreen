@@ -756,6 +756,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         server?.preApproveViewer(ip: ip)
     }
 
+    /// A peer accepted this share's invite to view (spec §13.3). Unlike
+    /// `preApproveViewer` nothing is held: an invite only goes out while a
+    /// server runs, and one that outlives it must not reach the next share.
+    public func admitInvitedViewer(ip: String) {
+        let server = lock.withLock { self.server }
+        server?.admitInvitedViewer(ip: ip)
+    }
+
     /// Admit a viewer parked at the gate. `id` is a `PendingViewer.id`.
     public func approveViewer(_ id: String) {
         let server = lock.withLock { self.server }

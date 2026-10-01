@@ -20,6 +20,7 @@ import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.DiagnosticsHost
 import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import enum TailscreenProtocol.InviteStatus
 import struct TailscreenProtocol.LinkOfferInfo
 import enum TailscreenProtocol.NodeBringUpPhase
 import struct TailscreenProtocol.NoticeCandidate
@@ -42,6 +43,7 @@ import struct TailscreenProtocol.ViewerSessionLifecycle
 import struct TailscreenProtocol.ViewerSessionTarget
 import enum TailscreenProtocol.WelcomePaneDecision
 import class TailscreenSharer.SharerAskToShareCoordinator
+import class TailscreenSharer.SharerInviteCoordinator
 // Targeted, like its neighbours: one enum, to word a viewer's link state.
 import enum TailscreenSharer.ViewerHealth
 import class TailscreenSharerWGC.WindowsShareSession
@@ -343,6 +345,13 @@ struct TailscreenWindowsApp: App {
         return HubJoinCard(onJoin: { token in model.joinShare(token: token) })
     }
 
+    /// The rows' Invite action, only while a tailnet share runs.
+    private var inviteAction: (@MainActor @Sendable (String) -> Void)? {
+        guard state.canInvite else { return nil }
+        let model = state
+        return { id in model.inviteToView(id: id) }
+    }
+
     /// Signed in, or on the way there. `PickerContent` covers both: with
     /// `isPicking` false it shows the login card over a spinner, and with it
     /// true, the Screens list.
@@ -363,8 +372,10 @@ struct TailscreenWindowsApp: App {
             hiddenByFilter: state.hiddenByFilter,
             askingIDs: state.asking,
             askNotes: state.askOutcome,
+            inviteStatuses: state.hubInviteStatuses,
             onSelect: { id in model.connect(toID: id) },
             onAskToShare: { id in model.askToShare(id: id) },
+            onInvite: inviteAction,
             onOpenLogin: { model.openLoginURL() },
             shareCard: state.shareCard,
             joinCard: hubJoinCard)
@@ -549,6 +560,20 @@ final class AppUIState: ObservableObject {
             self?.shareSession.preApproveViewer(ip: sourceKey)
         }
         askToShare.onStartShare = { [weak self] in self?.startSharing() }
+        askToShare.invites.onInvitesChanged = { [weak self] invites in
+            guard let self else { return }
+            // Card and toast together, or an expired invite keeps a toast
+            // whose Join answers a connection already gone.
+            self.invites = invites
+            self.notifications.applyAsk(
+                kind: .inviteToView,
+                candidates: invites.map {
+                    NoticeCandidate(identity: $0.id.uuidString, label: $0.fromHostname)
+                })
+        }
+        askToShare.invites.onJoin = { [weak self] ip, hostname in
+            self?.joinInvite(ip: ip, fromHostname: hostname)
+        }
         askToShare.onListenerError = { [weak self] (error: Error) in
             self?.detail = L("Not listening for share requests: \(error)")
         }
@@ -680,6 +705,21 @@ final class AppUIState: ObservableObject {
     /// GTK engine and macOS. What stays here: the `@Published` mirror, the
     /// toast reconcile, and where a listener failure is said.
     private let askToShare = SharerAskToShareCoordinator()
+
+    /// Invites to watch another machine's share (spec §13.3), mirrored.
+    @Published private(set) var invites: [PendingShareRequest] = []
+    /// This machine's outgoing invites while sharing, keyed by peer IP.
+    @Published private(set) var inviteStatuses: [String: InviteStatus] = [:]
+    private lazy var inviter: SharerInviteCoordinator = {
+        let inviter = SharerInviteCoordinator { [weak self] ip, hostname in
+            await self?.transport.inviteToView(ip: ip, from: hostname) ?? .noAnswer
+        }
+        inviter.onStatusesChanged = { [weak self] in self?.inviteStatuses = $0 }
+        inviter.onPreApproveViewer = { [weak self] ip in
+            self?.shareSession.admitInvitedViewer(ip: ip)
+        }
+        return inviter
+    }()
 
     /// Screens with an outstanding "please share" ask, by `DiscoveredSharer.id`.
     @Published private(set) var asking: Set<String> = []
@@ -845,6 +885,12 @@ final class AppUIState: ObservableObject {
                         id: $0.id.uuidString,
                         message: L("\($0.fromHostname) wants you to share your screen"),
                         acceptLabel: L("Share"), declineLabel: L("Decline"))
+                }
+                + invites.map {
+                    HubPrompt(
+                        id: $0.id.uuidString,
+                        message: L("\($0.fromHostname) invites you to watch"),
+                        acceptLabel: L("Join"), declineLabel: L("Decline"))
                 },
             // The approval gate governs TAILNET viewers, and a link-only
             // share has none — showing it would be a switch wired to nothing.
@@ -975,7 +1021,12 @@ final class AppUIState: ObservableObject {
         let wasSharing = sharing.isSharing
         sharing = status
         guard status.isSharing else {
-            if wasSharing { notifications.stop() }
+            if wasSharing {
+                notifications.stop()
+                // An accept landing after this must not pre-approve into the
+                // next share.
+                inviter.endShare()
+            }
             return
         }
         // Keyed by `ip:port`: a genuine rejoin IS news (mac keys the same way).
@@ -1031,6 +1082,10 @@ final class AppUIState: ObservableObject {
         // Both UUID-shaped; each matched against its own live list, never by shape.
         if shareRequests.contains(where: { $0.id == requestID }) {
             answerShareRequest(id: requestID, accept: accept)
+            return
+        }
+        if invites.contains(where: { $0.id == requestID }) {
+            askToShare.invites.answer(id: requestID, accept: accept)
             return
         }
         if sharing.controlRequests.contains(where: { $0.id == requestID }) {
@@ -1659,6 +1714,37 @@ final class AppUIState: ObservableObject {
     /// asker past the approval gate and open the capture picker.
     func answerShareRequest(id: UUID, accept: Bool) {
         askToShare.answer(id: id, accept: accept)
+    }
+
+    // MARK: Invites to view (spec §13.3)
+
+    /// A tailnet share is running (a link-only share has no node to invite from).
+    var canInvite: Bool { sharing.isSharing && !sharing.linkIsOnlyWayIn }
+
+    /// Outgoing invites, re-keyed from peer IP to screen id for the rows.
+    var hubInviteStatuses: [String: InviteStatus] {
+        var byID: [String: InviteStatus] = [:]
+        for peer in peers {
+            if let status = inviteStatuses[peer.tailscaleIP] { byID[peer.id] = status }
+        }
+        return byID
+    }
+
+    func inviteToView(id: String) {
+        guard canInvite, let peer = peers.first(where: { $0.id == id }) else { return }
+        inviter.invite(ip: peer.tailscaleIP, fromHostname: Self.machineName())
+    }
+
+    /// Join was clicked: view the invite's source address, named as the
+    /// tailnet names it when the list has it.
+    private func joinInvite(ip: String, fromHostname: String) {
+        guard phase.isReady else { return }
+        let known = peers.first { $0.tailscaleIP == ip }
+        startSession(
+            config: ViewerConfig(hostname: ip, statePath: stateDirectory()),
+            target: ViewerSessionTarget(
+                identifier: known?.id ?? ip, host: ip,
+                displayName: known?.displayName ?? fromHostname))
     }
 
     /// Ask a machine to start sharing. Nothing awaits this inline: the ask

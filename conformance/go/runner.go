@@ -408,6 +408,19 @@ func Run(c Case) (map[string]any, error) {
 		}
 		return map[string]any{"fromHostname": host}, nil
 
+	case "json.inviteToView.decode":
+		var in struct {
+			JSON string `json:"json"`
+		}
+		if err := json.Unmarshal(c.In, &in); err != nil {
+			return nil, err
+		}
+		host, err := tailscreen.DecodeInviteToView([]byte(in.JSON))
+		if err != nil {
+			return map[string]any{"fromHostname": nil}, nil
+		}
+		return map[string]any{"fromHostname": host}, nil
+
 	case "json.shareResponse.decode":
 		var in struct {
 			JSON string `json:"json"`

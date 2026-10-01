@@ -172,6 +172,8 @@ Three specifics worth knowing:
 | Remembered allow / "Deny & Block" | ✅ | ✅ | ✅ | — |
 | Kick a connected viewer | ✅ | ✅ | ✅ | — |
 | Ask a peer to share their screen | ✅ | ✅ | ✅ | — |
+| Invite a peer to watch your share | ✅ | ✅ | ✅ | — |
+| Answer an invite to watch | ✅ | ✅ | ✅ | ❌ |
 
 All of it is shared code: the approval gate, decision logic and the
 StableNodeID-keyed intent queue live in the portable tier
@@ -191,6 +193,11 @@ a machine is *not* sharing, so a listener that lives only as long as a
 share answers nothing, indistinguishable to the asker from the peer being
 away. Accepting also waives the approval gate for that peer — otherwise
 the person you just invited hits your own gate and waits.
+
+Invites are the same exchange pointed the other way, on the same idle
+listener. Accepting one lets the invitee straight in — including when its
+join request beats the accept to the sharer and is already parked at the
+gate — but never past a remembered "Deny & Block", and never a guest.
 
 ## The hub
 

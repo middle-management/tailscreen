@@ -821,8 +821,8 @@ everything from byte 12 onward.
 
 ## 10. The framed TCP channel
 
-Annotations, remote control, metadata and request-to-share share one TCP
-connection and one framing.
+Annotations, remote control, metadata, request-to-share and invite-to-view
+share one TCP connection and one framing.
 
 ```
 [type:1][length:4 BE][payload:length]
@@ -845,6 +845,7 @@ connection and one framing.
 | `0x0C` | `metadataResponse` | responder → requester | `TailscreenMetadata` |
 | `0x0D` | `mediaDatagram` | both | raw datagram bytes ([§2.2](#22-stream-carriage-of-the-datagram-plane-reliable-transport-profile)) |
 | `0x0E` | `openLink` | viewer → sharer | `OpenLinkPayload` ([§12.3](#123-opening-a-link-on-the-sharer)) |
+| `0x0F` | `inviteToView` | sharer → peer | `InviteToViewPayload` ([§13.3](#133-invite-to-view)) |
 
 - **TS-TCP-001**: An implementation MUST encode each message with the type
   byte above. These values are permanent and MUST NOT be renumbered.
@@ -883,6 +884,12 @@ The JSON encodings below are normative. Field order is not significant;
 absent optional fields MUST be treated as unset.
 
 `RequestToSharePayload` (`0x04`):
+
+```json
+{"fromHostname": "studio-imac"}
+```
+
+`InviteToViewPayload` (`0x0F`):
 
 ```json
 {"fromHostname": "studio-imac"}
@@ -1127,6 +1134,34 @@ shared screen.
   does not already expose, beyond the share state a viewer would learn by
   connecting.
 
+### 13.3 Invite to view
+
+Request-to-share pointed the other way: a sharer asks a peer to watch. The
+answer is the same `shareResponse` — `acceptShare` means the invitee will
+connect, `declineShare` that it will not.
+
+- **TS-MET-020**: An inviting sharer MUST send `inviteToView` on a TCP
+  connection it holds open, and MUST wait for the `shareResponse` on that
+  same connection.
+- **TS-MET-021**: An invitee MUST send `shareResponse` back on the
+  connection the invite arrived on, and MUST NOT dial the sharer back to
+  answer.
+- **TS-MET-022**: An invitee that accepts MUST connect as a viewer to the
+  **source address** of the connection the invite arrived on. `fromHostname`
+  is for display only; an invitee MUST NOT derive an address from it.
+- **TS-MET-023**: An invitee MUST NOT accept, nor start viewing, without an
+  explicit action by its user. An invite MUST NOT open a viewer by itself.
+- **TS-MET-024**: A sharer MUST treat a timeout or end-of-file as "no
+  answer", which is also what a peer that predates `inviteToView` produces
+  (TS-TCP-003).
+- **TS-MET-025**: An invitee MUST deduplicate and bound pending invites by
+  the peer's source address, and MUST bound how long it holds an unanswered
+  invite's connection open.
+- **TS-MET-026**: A sharer whose invite is accepted SHOULD pre-approve the
+  invited address for one admission, so the person it invited is not
+  prompted for approval. It MUST NOT treat an invite that was declined or
+  went unanswered as approval.
+
 ---
 
 ## 14. Discovery
@@ -1306,7 +1341,8 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | `0x0C` | `metadataResponse` | 1 |
 | `0x0D` | `mediaDatagram` | 2 |
 | `0x0E` | `openLink` | 3 |
-| `0x0F`–`0xFF` | unassigned | — |
+| `0x0F` | `inviteToView` | 4 |
+| `0x10`–`0xFF` | unassigned | — |
 
 ### A.3 Capability bits
 
@@ -1387,6 +1423,7 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | 1 | Added **Appendix D** (informative): transport bootstrap via connection token (guest mode). No wire values added, no normative requirements changed — the appendix records how a token-bootstrapped tunnel relates to TS-GEN-017 and where the sharer compensates at the admission layer. |
 | 2 | Added **§2.2**, the reliable-transport profile (TS-STM-001 … TS-STM-007): the datagram plane carried as `mediaDatagram` frames over the framed TCP channel, for viewers without usable UDP. One wire value added — TCP message type `0x0D` `mediaDatagram` (Appendix A.2). TS-TCP-009 narrowed to the JSON payload types, since `mediaDatagram`'s payload is raw datagram bytes. Degrades cleanly both ways: a sharer without the profile skips the unknown frame (TS-TCP-003) and the viewer's `HELLO` times out. |
 | 3 | Added **§12.3**, opening a link on the sharer (TS-LNK-001 … TS-LNK-010). Two wire values added: TCP message type `0x0E` `openLink` (Appendix A.2) and sharer capability bit 6 `openLink` (Appendix A.3), which leaves bit 7 as the only unassigned bit. Degrades cleanly: a viewer hides the action from a sharer that did not advertise the bit (TS-CAP-008), and an older sharer skips the unknown frame (TS-TCP-003). |
+| 4 | Added **§13.3**, invite to view (TS-MET-020 … TS-MET-026): request-to-share pointed the other way, answered with the existing `shareResponse`. One wire value added — TCP message type `0x0F` `inviteToView` (Appendix A.2). Degrades cleanly: an older invitee skips the unknown frame (TS-TCP-003) and the sharer reads the silence as no answer (TS-MET-024). |
 
 ---
 
