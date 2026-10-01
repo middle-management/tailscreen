@@ -453,8 +453,11 @@ public final class VoiceDownlink: @unchecked Sendable {
         worstJitterMs = receiveStates.values.map(\.smoothedJitterMs).max() ?? 0
         let burstDepth = playoutBacklog.drainPeak()
         burstDepthSinceSummary = max(burstDepthSinceSummary, burstDepth)
+        // `sustainedPeak`, not this window's `burstDepth`: the latter is the
+        // diagnostic reading, and sizing on it thrashes. See `PlayoutBacklog`.
         jitterTarget = VoiceReceiveDecisions.jitterBufferTarget(
-            smoothedJitterMs: worstJitterMs, burstDepth: burstDepth, currentTarget: jitterTarget)
+            smoothedJitterMs: worstJitterMs, burstDepth: playoutBacklog.sustainedPeak,
+            currentTarget: jitterTarget)
     }
 
     // MARK: - Decoder pool

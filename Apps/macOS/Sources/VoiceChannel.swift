@@ -363,17 +363,21 @@ final class VoiceChannel: @unchecked Sendable {
         statsLock.withLock { $0.smoothedJitterMs = worstJitterMs }
         let burstDepth = playoutBacklog.drainPeak()
         burstDepthSinceSummary = max(burstDepthSinceSummary, burstDepth)
+        let sustained = playoutBacklog.sustainedPeak
         let (previous, next) = jitterTargetDepth.withLock { depth -> (Int, Int) in
             let old = depth
+            // `sustainedPeak`, not this window's `burstDepth`: the latter is
+            // the diagnostic reading, and sizing on it thrashes. See
+            // `PlayoutBacklog`.
             depth = VoiceReceiveDecisions.jitterBufferTarget(
-                smoothedJitterMs: worstJitterMs, burstDepth: burstDepth, currentTarget: old)
+                smoothedJitterMs: worstJitterMs, burstDepth: sustained, currentTarget: old)
             return (old, depth)
         }
         guard next != previous else { return }
         logger.log(
             "VoiceChannel: jitter buffer target \(previous) → \(next) buffers "
                 + "(smoothed jitter \(String(format: "%.1f", worstJitterMs)) ms, "
-                + "burst \(burstDepth) buffers)")
+                + "burst \(burstDepth) buffers, sustained \(sustained))")
     }
 
     /// Emit `frames` frames of silence to cover a sequence gap, ramping

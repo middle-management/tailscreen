@@ -55,6 +55,13 @@ public enum VoiceReceiveDecisions {
     /// an incoming buffer instead of scheduling it (clock-drift backstop).
     /// Lives here so this and `concealmentEmitCount` can't drift apart.
     public static let playbackSlackBuffers = 3
+    /// Buffers held above the deepest burst actually observed.
+    ///
+    /// Sizing the target to exactly the measured peak means a burst one frame
+    /// deeper than the last costs audio the moment it lands, and a path whose
+    /// bursts grow by one at a time pays on every step. One buffer is 20 ms of
+    /// latency for the margin.
+    public static let burstHeadroom = 1
     /// Idle time after which a peer's receive state is evicted (10 s) — a
     /// departed peer's frozen `smoothedJitterMs` would otherwise pin the
     /// jitter target high.
@@ -208,8 +215,16 @@ public enum VoiceReceiveDecisions {
         /// finite so a pathological clock cannot make the drain loop long.
         public static let depthCeiling = 64
 
+        /// How many closed windows ``sustainedPeak`` looks back over. Four at
+        /// the ~1 Hz sweep spans the gap between two bursts on a path that
+        /// stalls every second or two — the span a single window's peak cannot
+        /// see.
+        public static let sustainWindows = 4
+
         private var depth = 0
         private var peak = 0
+        /// Peaks of the last ``sustainWindows`` closed windows, oldest first.
+        private var closedPeaks: [Int] = []
         /// When the next frame is due out; nil before the first arrival and
         /// whenever the model has drained.
         private var playoutDueNs: UInt64?
@@ -219,6 +234,20 @@ public enum VoiceReceiveDecisions {
         /// The deepest the modelled queue has been since the last
         /// ``drainPeak()``.
         public var peakDepth: Int { peak }
+
+        /// The deepest any of the last ``sustainWindows`` closed windows got,
+        /// or the one still open — whichever is deeper.
+        ///
+        /// **This, not ``drainPeak()``, is what should size the buffer.** One
+        /// window's peak oscillates on a path that bursts every second or
+        /// two: an rc.18 bundle has it reading 6, 7, 6, 7, 6, 8 across eleven
+        /// seconds, and a target following that moves on nearly every sweep.
+        /// Each step down costs audio, because the playback cap moves with the
+        /// target and frames already in hand fall outside it. A high-water
+        /// mark over several windows lets the target fall only once the path
+        /// has genuinely been calmer for that long, and needs no hysteresis
+        /// counter kept in sync beside it.
+        public var sustainedPeak: Int { max(closedPeaks.max() ?? 0, peak) }
 
         /// Record one frame handed to the playback queue.
         public mutating func noteFrameQueued(nowNs: UInt64) {
@@ -252,6 +281,8 @@ public enum VoiceReceiveDecisions {
         public mutating func drainPeak() -> Int {
             let closing = peak
             peak = depth
+            closedPeaks.append(closing)
+            if closedPeaks.count > Self.sustainWindows { closedPeaks.removeFirst() }
             return closing
         }
 
@@ -263,9 +294,13 @@ public enum VoiceReceiveDecisions {
     ///
     /// The target is the deeper of two readings. One buffer of slack per
     /// frame-duration of smoothed jitter (+1 base) is the steady-state
-    /// answer; `burstDepth` — see ``PlayoutBacklog`` — is what the last
-    /// window's worst burst actually demanded, and on a stalling path it is
-    /// the larger of the two by a wide margin.
+    /// answer; `burstDepth` — see ``PlayoutBacklog`` — is what bursts actually
+    /// demanded, plus ``burstHeadroom``, and on a stalling path it is the
+    /// larger of the two by a wide margin.
+    ///
+    /// Pass ``PlayoutBacklog/sustainedPeak`` as `burstDepth`, not
+    /// ``PlayoutBacklog/drainPeak()``: a single window's peak oscillates and
+    /// the asymmetry below then thrashes rather than settles.
     ///
     /// **Growth is immediate, shrink is one step per call.** They are
     /// asymmetric on purpose. Climbing one step at a time from 3 to 12 takes
@@ -284,7 +319,7 @@ public enum VoiceReceiveDecisions {
     ) -> Int {
         let frameMs = Double(VoiceReceiveDecisions.samplesPerFrame) / 48.0
         let slack = Int((max(0, smoothedJitterMs) / frameMs).rounded(.up))
-        let wanted = max(1 + slack, burstDepth)
+        let wanted = max(1 + slack, burstDepth == 0 ? 0 : burstDepth + burstHeadroom)
         let ideal = min(max(wanted, minDepth), maxDepth)
         if ideal > currentTarget { return ideal }
         if ideal < currentTarget { return max(currentTarget - 1, minDepth) }
