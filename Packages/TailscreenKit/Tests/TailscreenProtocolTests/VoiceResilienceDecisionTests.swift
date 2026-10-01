@@ -179,11 +179,11 @@ final class VoiceResilienceDecisionTests: XCTestCase {
             VoiceReceiveDecisions.jitterBufferTarget(
                 smoothedJitterMs: 100, burstDepth: 2, currentTarget: 2),
             6)
-        // Jitter wants 2, burst saw 7 → 7.
+        // Jitter wants 2, burst saw 7 → 7 + `burstHeadroom`.
         XCTAssertEqual(
             VoiceReceiveDecisions.jitterBufferTarget(
                 smoothedJitterMs: 0, burstDepth: 7, currentTarget: 2),
-            7)
+            8)
     }
 
     func testTargetClampsAtMaxDepth() {
@@ -494,5 +494,141 @@ final class VoiceResilienceDecisionTests: XCTestCase {
             mutate(&stats)
             XCTAssertTrue(stats.countersDiffer(from: VoiceStats()), "\(name) must register a change")
         }
+    }
+    /// Sizing to exactly the measured peak leaves a burst one frame deeper
+    /// nowhere to go, and it lands as a drop the moment it arrives.
+    func testTargetAddsHeadroomAboveTheObservedBurst() {
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 0, burstDepth: 6, currentTarget: 2),
+            6 + VoiceReceiveDecisions.burstHeadroom)
+    }
+
+    /// Headroom must not turn the self-limiting case into "deepen every call":
+    /// a path whose queue never backs up past a frame or two keeps the
+    /// jitter-derived target it had.
+    func testHeadroomDoesNotDeepenACalmPath() {
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 5, burstDepth: 1, currentTarget: 2),
+            2)
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 30, burstDepth: 2, currentTarget: 3),
+            3)
+    }
+
+    /// A reading of 0 means nothing was measured, not "a burst of zero", so it
+    /// must not collect headroom.
+    func testNoBurstReadingGetsNoHeadroom() {
+        XCTAssertEqual(
+            VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 30, burstDepth: 0, currentTarget: 3),
+            3)
+    }
+
+    // MARK: - PlayoutBacklog.sustainedPeak
+
+    /// One second of a backed-up but steady stream: `burst` frames arriving
+    /// back to back, then the rest of the second on its 20 ms cadence.
+    ///
+    /// Pacing matters. At one frame per second the carried depth stays a full
+    /// second stale; and a stream arriving at exactly the playout rate **keeps**
+    /// whatever depth a burst gave it, since playout consumes one frame per
+    /// arrival — standing latency only a gap can clear.
+    private func runBurstWindow(
+        _ backlog: inout VoiceReceiveDecisions.PlayoutBacklog, burst: Int, now: inout UInt64
+    ) -> Int {
+        let frame = VoiceReceiveDecisions.frameDurationNs
+        for _ in 0..<burst { backlog.noteFrameQueued(nowNs: now) }
+        for _ in 0..<max(0, 50 - burst) {
+            now &+= frame
+            backlog.noteFrameQueued(nowNs: now)
+        }
+        now &+= frame
+        return backlog.drainPeak()
+    }
+
+    /// A second in which the queue ran dry — silence, then one frame. The shape
+    /// that produced the oscillation: underruns collapse the backlog, the next
+    /// burst rebuilds it, and the one-window reading swings between the two.
+    private func runDryWindow(
+        _ backlog: inout VoiceReceiveDecisions.PlayoutBacklog, now: inout UInt64
+    ) -> Int {
+        now &+= 1_000_000_000
+        backlog.noteFrameQueued(nowNs: now)
+        now &+= VoiceReceiveDecisions.frameDurationNs
+        return backlog.drainPeak()
+    }
+
+    func testSustainedPeakRemembersRecentWindows() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        var now: UInt64 = 0
+
+        XCTAssertGreaterThanOrEqual(runBurstWindow(&backlog, burst: 9, now: &now), 9)
+        XCTAssertGreaterThanOrEqual(backlog.sustainedPeak, 9)
+
+        for _ in 0..<(VoiceReceiveDecisions.PlayoutBacklog.sustainWindows - 1) {
+            _ = runDryWindow(&backlog, now: &now)
+            XCTAssertGreaterThanOrEqual(
+                backlog.sustainedPeak, 9, "the deep window is still inside the horizon")
+        }
+
+        // Then it ages out. Bounded rather than exact: a window that closes
+        // mid-drain hands its outstanding depth to the next one by design, so a
+        // deep window occupies the horizon a beat longer than its own slot.
+        var aged = false
+        for _ in 0...(VoiceReceiveDecisions.PlayoutBacklog.sustainWindows + 1) {
+            _ = runDryWindow(&backlog, now: &now)
+            if backlog.sustainedPeak < 9 {
+                aged = true
+                break
+            }
+        }
+        XCTAssertTrue(aged, "a deep window must leave the horizon, not latch forever")
+    }
+
+    /// The reason `sustainedPeak` exists, replayed from the bundle that named
+    /// it: a viewer's one-window reading swung 6, 7, 6, 7, 6, 8 — bursts with
+    /// underruns between — and the target followed every wobble, dropping audio
+    /// on each step down.
+    ///
+    /// The target may climb through this and must never dip. Sizing on
+    /// `drainPeak()`'s single-window value instead fails the monotonicity
+    /// assertion, which is the point of the test.
+    func testTheObservedOscillationNoLongerMovesTheTarget() {
+        var backlog = VoiceReceiveDecisions.PlayoutBacklog()
+        var target = VoiceReceiveDecisions.initialJitterTargetDepth
+        var now: UInt64 = 0
+        var targets: [Int] = []
+
+        func size() {
+            target = VoiceReceiveDecisions.jitterBufferTarget(
+                smoothedJitterMs: 33, burstDepth: backlog.sustainedPeak, currentTarget: target)
+            targets.append(target)
+        }
+
+        for burst in [6, 7, 6, 7, 6, 8] {
+            _ = runBurstWindow(&backlog, burst: burst, now: &now)
+            size()
+            // The underruns between the bursts — what let the reading swing.
+            _ = runDryWindow(&backlog, now: &now)
+            size()
+        }
+        for (index, value) in targets.enumerated() where index > 0 {
+            XCTAssertGreaterThanOrEqual(
+                value, targets[index - 1],
+                "target dipped at window \(index): \(targets) — this is the rc.18 thrash")
+        }
+        XCTAssertGreaterThan(targets.last ?? 0, VoiceReceiveDecisions.initialJitterTargetDepth)
+
+        // And it is not a ratchet: once the bursts stop the target gives the
+        // latency back, one step per sweep.
+        let peak = target
+        for _ in 0..<30 {
+            _ = runDryWindow(&backlog, now: &now)
+            size()
+        }
+        XCTAssertLessThan(target, peak, "a path that stops bursting must recover its latency")
     }
 }

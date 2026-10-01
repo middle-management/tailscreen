@@ -47,7 +47,7 @@ final class DiagnosticEventNameTests: XCTestCase {
             "transport.summary", "fec.armed", "fec.disarmed",
             "congestion.armed", "transport.receive_loop.failed",
             "annotation.summary",
-            "audio.devices.changed", "audio.summary",
+            "audio.devices.changed", "audio.summary", "audio.uplink.summary",
             "mic.attached", "mic.detached", "mic.failed", "mic.mute.changed",
             "system_audio.started", "system_audio.stopped", "voice.ssrc.assigned",
             "control.requested", "control.granted", "control.denied",
