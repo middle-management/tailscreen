@@ -235,6 +235,13 @@ func DecodeRequestToShare(payload []byte) (string, error) {
 	return clamp(*p.FromHostname, MaxHostnameChars), nil
 }
 
+// DecodeInviteToView parses an inviteToView payload, clamping the
+// peer-supplied hostname (TS-TCP-023). The hostname is display only: the
+// invitee views the connection's source address (TS-MET-022).
+func DecodeInviteToView(payload []byte) (string, error) {
+	return DecodeRequestToShare(payload)
+}
+
 // DecodeShareResponse parses a shareResponse payload. A request payload
 // arriving inside a response frame is malformed and MUST be dropped, not
 // reinterpreted.

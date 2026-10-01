@@ -396,6 +396,46 @@
       }
     },
     {
+      "id": "json/invite-to-view",
+      "requirements": [
+        "TS-MET-020"
+      ],
+      "op": "json.inviteToView.decode",
+      "in": {
+        "json": "{\"fromHostname\":\"studio-imac\"}"
+      },
+      "out": {
+        "fromHostname": "studio-imac"
+      }
+    },
+    {
+      "id": "json/invite-to-view-clamps-hostname",
+      "requirements": [
+        "TS-TCP-023",
+        "TS-SEC-005"
+      ],
+      "op": "json.inviteToView.decode",
+      "in": {
+        "json": "{\"fromHostname\": \"hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\"}"
+      },
+      "out": {
+        "fromHostname": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
+      }
+    },
+    {
+      "id": "json/invite-to-view-rejects-missing-field",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.inviteToView.decode",
+      "in": {
+        "json": "{}"
+      },
+      "out": {
+        "fromHostname": null
+      }
+    },
+    {
       "id": "json/control-revoked-reason",
       "requirements": [
         "TS-RMT-005"

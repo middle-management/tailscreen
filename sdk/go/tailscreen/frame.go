@@ -27,6 +27,11 @@ const (
 	// MsgOpenLink offers the sharer a link to open (spec §12.3). Decode it
 	// with DecodeOpenLink, which enforces the URL shape rules.
 	MsgOpenLink MessageType = 0x0E
+
+	// MsgInviteToView is a sharer inviting a peer to watch (spec §13.3).
+	// Answer with MsgShareResponse on the same connection; decode it with
+	// DecodeInviteToView.
+	MsgInviteToView MessageType = 0x0F
 )
 
 const (
@@ -39,6 +44,7 @@ var knownMessageTypes = map[MessageType]bool{
 	MsgControlRequest: true, MsgControlGranted: true, MsgControlRevoked: true,
 	MsgInputEvent: true, MsgControlReleased: true, MsgMetadataRequest: true,
 	MsgMetadataResponse: true, MsgMediaDatagram: true, MsgOpenLink: true,
+	MsgInviteToView: true,
 }
 
 // IsKnownMessageType reports whether a type byte is assigned. An unassigned

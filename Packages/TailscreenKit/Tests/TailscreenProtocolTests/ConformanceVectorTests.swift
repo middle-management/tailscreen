@@ -345,6 +345,11 @@ final class ConformanceVectorTests: XCTestCase {
             else { return ["reason": NSNull()] }
             return ["reason": reason]
 
+        case "json.inviteToView.decode":
+            guard case .inviteToView(let hostname)? = try parsePayload(input, type: .inviteToView)
+            else { return ["fromHostname": NSNull()] }
+            return ["fromHostname": hostname]
+
         case "json.openLink.decode":
             guard case .openLink(let url)? = try parsePayload(input, type: .openLink)
             else { return ["url": NSNull()] }

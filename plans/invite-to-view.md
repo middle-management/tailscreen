@@ -1,6 +1,7 @@
 # Invite to view — "ask Fredrik to join my share"
 
-> Status: **proposed**, nothing built. The mirror image of Ask to Share
+> Status: **step 1 (wire) landed** — `0x0F inviteToView`, spec §13.3,
+> vectors, Go SDK, registry; nothing sends or handles it yet. The mirror image of Ask to Share
 > (spec §13.1): there a would-be viewer asks a peer to share; here a sharer
 > asks a peer to watch.
 
@@ -28,23 +29,16 @@ Almost every piece exists, pointed the other way:
 - Old peers drop unknown TCP type bytes, so an invite to an old build reads
   as "no reply", the same as TS-MET-003.
 
-## Wire change (one commit, four places)
+## Wire (done)
 
-- New TCP framed type **`0x0F inviteToView`**, sharer → peer, payload
-  `InviteToViewPayload` `{"fromHostname": "...", "sharerIP": "..."}`.
-  The spec uses `fromHostname` only for display; the invitee connects to the
-  **source address of the invite connection**, never to a claimed IP (same
-  rule as TS-MET-004). `sharerIP` could then be dropped entirely; keep the
-  payload minimal unless a guest-tunnel case needs it.
-- Answer reuses **`0x05 shareResponse`** with two new `TailscreenRequest`
-  types, `acceptInvite` / `declineInvite`. This keeps the type-byte budget
-  and the client's read loop unchanged. (Alternative: new `0x10`. Prefer
-  reuse unless conformance shows the type-string enum is closed.)
-- Spec: new §13.3 with TS-MET-02x requirements mirroring 001–006 (hold the
-  connection, answer on it, timeout = no answer, dedupe by source address,
-  bound pending invites, never auto-join).
-- `WireByteRegistryTests` TCP table, spec appendix, conformance vector for
-  `0x0F` encode/decode and the two new response strings, `sdk/go` support.
+- TCP type **`0x0F inviteToView`**, sharer → peer, payload
+  `{"fromHostname": "..."}` — display only; the invitee views the invite
+  connection's **source address** (TS-MET-022).
+- The answer is the unchanged **`0x05 shareResponse`** (`acceptShare` /
+  `declineShare`): the connection already says what was asked, so no new
+  response strings.
+- Spec §13.3, TS-MET-020…026; `InviteToViewProtocolTests`;
+  `TailscreenControlListener.onInviteToView` (no host sets it yet).
 
 ## Admission: the one real design question
 
@@ -92,7 +86,7 @@ invite. The invite is tailnet-only.
 
 ## Order
 
-1. Wire + spec + vectors + Go SDK + registry (lands alone, nothing calls it).
+1. ~~Wire + spec + vectors + Go SDK + registry~~ (done).
 2. Portable client/inbox/coordinator + tests.
 3. macOS UI, then the shared hub UI for Linux/Windows.
 4. Admission option 1, if verified.
