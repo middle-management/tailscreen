@@ -90,7 +90,7 @@ func main() {
 	derpAddr := derpLn.Addr().(*net.TCPAddr)
 
 	dm := &tailcfg.DERPMap{
-		Regions: map[int]*tailcfg.DERPRegion{
+		Regions: map[tailcfg.DERPRegionID]*tailcfg.DERPRegion{
 			1: {
 				RegionID:   1,
 				RegionCode: "local",
