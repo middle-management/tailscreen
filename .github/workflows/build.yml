@@ -951,7 +951,7 @@ jobs:
   # (plans/browser-viewer.md, Phase 2; .claude/rules/testing.md). Standalone
   # like linux-viewer because it needs the same A/V + Xvfb set plus Node and
   # a browser. `go: setup-go`, not the container's apt Go: the wasm module's
-  # `go` directive follows the fork's (1.26.x), and Debian's Go never
+  # `go` directive follows the fork's (1.27.x), and Debian's Go never
   # downloads a toolchain (see the linux-app-arm64 note).
   linux-web-spike:
     runs-on: ubuntu-latest
