@@ -1025,6 +1025,14 @@ jobs:
         working-directory: dist
         run: ../scripts/windows/embed-regfree-manifest.ps1
 
+      # After the reg-free embed, which it merges with: without a Windows 10
+      # supportedOS entry, tailscale.com's wingoes panics on the first control
+      # dial ("incoherent Windows version") — see the script's header.
+      - name: Embed the OS-compatibility manifest
+        shell: pwsh
+        working-directory: dist
+        run: ../scripts/windows/embed-os-compat-manifest.ps1
+
       - name: Check the staged binaries match the app's architecture
         shell: pwsh
         working-directory: dist
